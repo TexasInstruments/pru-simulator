@@ -47,7 +47,7 @@ _config_lock = asyncio.Lock()
 
 # ---- Step history (for step-back) ----------------------------------------
 _MAX_HISTORY = 500
-_history: dict[str, list] = {"pru0": [], "rtu0": []}
+_history: dict[str, list] = {"pru0": [], "rtu0": [], "pru1": []}
 
 
 def _snapshot(core: str) -> dict:
@@ -174,6 +174,7 @@ async def put_config(request: Request):
             sim = Simulator(config_path=config_path)
             _history["pru0"].clear()
             _history["rtu0"].clear()
+            _history["pru1"].clear()
             return {"ok": True}
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=400)

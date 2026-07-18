@@ -21,6 +21,8 @@ from perif.perif_registers import PerifRegisters
 from perif.gpcfg import GpcfgRegisters, MUX_PERIF
 from perif.loopback import Loopback
 
+_GPCFG_INDEX = {"pru0": 0, "pru1": 1}   # rtu0 has no GPCFG GP-mux (TRM)
+
 
 class SDRegisterRegion(MemoryRegion):
     """Memory region backed by SD configuration registers with write callbacks.
@@ -84,17 +86,23 @@ class Simulator:
         self.constant_table = self._load_constants(config_path)
         io_pru0 = IOPort()
         io_rtu0 = IOPort()
+        io_pru1 = IOPort()
         self.cores: dict[str, PRUCore] = {
             "pru0": PRUCore("PRU0", self.memory, self.xfr, io_pru0, self.constant_table),
             "rtu0": PRUCore("RTU0", self.memory, self.xfr, io_rtu0, self.constant_table),
+            "pru1": PRUCore("PRU1", self.memory, self.xfr, io_pru1, self.constant_table),
         }
 
-        # Wire SD filters to each core's IOPort
-        pru_clock_mhz = float(self._get_device_config(config_path).get("pru_clock_mhz", "200"))
+        # Wire SD filters to each core's IOPort (PRU1 runs on its own clock)
+        dev = self._get_device_config(config_path)
+        pru_clock_mhz = float(dev.get("pru_clock_mhz", "200"))
+        pru1_clock_mhz = float(dev.get("pru1_clock_mhz", str(pru_clock_mhz)))
         self._pru_clock_mhz = pru_clock_mhz
-        for core in self.cores.values():
-            sd = SigmaDeltaFilter(pru_clock_mhz=pru_clock_mhz)
-            core.io_port.sd_filter = sd
+        self._pru1_clock_mhz = pru1_clock_mhz
+        core_clocks = {"pru0": pru_clock_mhz, "rtu0": pru_clock_mhz,
+                       "pru1": pru1_clock_mhz}
+        for name, core in self.cores.items():
+            core.io_port.sd_filter = SigmaDeltaFilter(pru_clock_mhz=core_clocks[name])
 
         # Wire SD registers into memory bus (pru0 owns the register region)
         pru0_sd = self.cores["pru0"].io_port.sd_filter
@@ -111,15 +119,15 @@ class Simulator:
             rtu0_sd._on_config_change(ch, field, value)
         pru0_sd.registers.on_config_change = _combined_config_change
 
-        # ---- Peripheral Interface (3-channel SCU), one per core -------------
-        uart_clock_mhz = float(self._get_device_config(config_path).get(
-            "uart_clock_mhz", "192"))
-        core_order = ["pru0", "rtu0"]
-        perif_bases = {"pru0": 0x260E0, "rtu0": 0x26100}
+        # ---- Peripheral Interface (3-channel SCU): PRU0 + PRU1 --------------
+        # TRM: GPCFG1_REG (0x2600C) and block 0x26100 belong to PRU1, not RTU0.
+        uart_clock_mhz = float(dev.get("uart_clock_mhz", "192"))
+        core_order = ["pru0", "pru1"]
+        perif_bases = {"pru0": 0x260E0, "pru1": 0x26100}
         self._perif = {}
         for name in core_order:
             core = self.cores[name]
-            perif = PeripheralInterface(pru_clock_mhz=pru_clock_mhz,
+            perif = PeripheralInterface(pru_clock_mhz=core_clocks[name],
                                         uart_clock_mhz=uart_clock_mhz)
             perif.registers = PerifRegisters(perif_bases[name])
             perif.build_channels()
@@ -137,8 +145,8 @@ class Simulator:
         self._gpcfg.on_mux_change = _on_mux_change
         self.memory.add_region(GpcfgRegion(self._gpcfg))
 
-        # Loopback: PRU0 TX channel-N -> core-1 (rtu0) RX channel-N.
-        self._loopback = Loopback(self._perif["pru0"], self._perif["rtu0"])
+        # Loopback: PRU0 TX channel-N -> PRU1 RX channel-N.
+        self._loopback = Loopback(self._perif["pru0"], self._perif["pru1"])
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -301,13 +309,15 @@ class Simulator:
 
     def gpcfg_write(self, core: str, mux_sel: int) -> None:
         """Set the GPCFG PRU_GP_MUX_SEL for *core* (0=GP, 1=Perif, 3=SD)."""
-        pru_index = 0 if core == "pru0" else 1
-        self._gpcfg.set_mux_sel(pru_index, mux_sel)
+        idx = _GPCFG_INDEX.get(core)
+        if idx is None:
+            return          # rtu0: no GPCFG mux — ignore (keeps WS server robust)
+        self._gpcfg.set_mux_sel(idx, mux_sel)
 
     def gpcfg_state(self, core: str) -> dict:
         """Return the current GPCFG PRU_GP_MUX_SEL for *core*."""
-        pru_index = 0 if core == "pru0" else 1
-        return {"mux_sel": self._gpcfg.get_mux_sel(pru_index)}
+        idx = _GPCFG_INDEX.get(core)
+        return {"mux_sel": self._gpcfg.get_mux_sel(idx) if idx is not None else 0}
 
     def write_perif_register(self, core: str, addr: int, value: int) -> None:
         """Write a 32-bit Peripheral Interface config register on *core*."""
