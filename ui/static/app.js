@@ -755,7 +755,7 @@ function updatePerifPanel(io) {
   const muxSel = document.getElementById('io-mux-sel');
   const muxNote = document.getElementById('io-mux-note');
   if (muxSel && document.activeElement !== muxSel) {
-    muxSel.value = (io && io.mode === 'perif') ? '1' : '0';
+    muxSel.value = (io && io.mux_sel != null) ? String(io.mux_sel) : '0';
   }
   if (muxNote) muxNote.textContent = io ? ('mode: ' + io.mode) : '';
 

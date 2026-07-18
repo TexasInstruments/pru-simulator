@@ -35,6 +35,26 @@ def test_gpcfg_switches_mode_and_exposes_perif_state():
         assert st["io"]["mode"] == "gpio"
 
 
+def test_gpcfg_switches_mode_to_sd_without_sd_en():
+    """Setting the GPCFG mux to SD (3) switches the IO window to SD view
+    immediately, same as Perif mode does for mux_sel=1 - it should not
+    require firmware to separately assert sd_en (R30 bit 25) first."""
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "reset", "core": "pru0"})
+        ws.receive_json()
+
+        ws.send_json({"action": "gpcfg_write", "core": "pru0", "mux_sel": 3})
+        state = ws.receive_json()
+        assert state["io"]["mode"] == "sd"
+        assert state["io"]["mux_sel"] == 3
+        assert state["io"]["sd"]["sd_en"] is False
+
+        # Restore GP mode so shared server state doesn't leak.
+        ws.send_json({"action": "gpcfg_write", "core": "pru0", "mux_sel": 0})
+        st = ws.receive_json()
+        assert st["io"]["mode"] == "gpio"
+
+
 def test_write_perif_register_via_ws():
     with client.websocket_connect("/ws") as ws:
         ws.send_json({"action": "reset", "core": "pru0"})

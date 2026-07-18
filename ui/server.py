@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from simulator import Simulator
 from core.branch import LoopState
+from perif.gpcfg import MUX_SD
 from xfr.xfr_bus import SPAD_BANK0, SPAD_BANK1, SPAD_BANK2, IPC_SPAD
 
 app = FastAPI(title="PRU Simulator Dashboard")
@@ -502,15 +503,21 @@ async def _send_state(ws, core, at_breakpoint=False):
     gpo_pins = [(r30 >> i) & 1 for i in range(20)]
     sd_data = sim.sd_state(core)
     perif_data = sim.perif_state(core)
+    mux_sel = sim.gpcfg_state(core)["mux_sel"]
     perif_on = bool(perif_data and perif_data.get("enabled"))
+    # SD view switches on the GPCFG mux select (same as Peripheral mode) so the
+    # IO window shows Sigma-Delta as soon as the mode is configured, not only
+    # once firmware asserts sd_en (R30 bit 25).
+    sd_on = mux_sel == MUX_SD or bool(sd_data and sd_data.get("sd_en"))
     if perif_on:
         mode = "perif"
-    elif sd_data and sd_data.get("sd_en"):
+    elif sd_on:
         mode = "sd"
     else:
         mode = "gpio"
     io_section = {
         "mode": mode,
+        "mux_sel": mux_sel,
         "gpo_pins": gpo_pins,
         "gpi_pins": c.io_port.get_gpi_pins(),
     }

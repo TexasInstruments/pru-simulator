@@ -304,6 +304,11 @@ class Simulator:
         pru_index = 0 if core == "pru0" else 1
         self._gpcfg.set_mux_sel(pru_index, mux_sel)
 
+    def gpcfg_state(self, core: str) -> dict:
+        """Return the current GPCFG PRU_GP_MUX_SEL for *core*."""
+        pru_index = 0 if core == "pru0" else 1
+        return {"mux_sel": self._gpcfg.get_mux_sel(pru_index)}
+
     def write_perif_register(self, core: str, addr: int, value: int) -> None:
         """Write a 32-bit Peripheral Interface config register on *core*."""
         perif = self._get_core(core).io_port.perif
