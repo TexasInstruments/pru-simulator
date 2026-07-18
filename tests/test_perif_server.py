@@ -55,6 +55,17 @@ def test_gpcfg_switches_mode_to_sd_without_sd_en():
         assert st["io"]["mode"] == "gpio"
 
 
+def test_pru1_state_has_perif_rtu0_does_not():
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "get_state", "core": "pru1"})
+        st = ws.receive_json()
+        assert st["core"] == "pru1"
+        assert "perif" in st["io"]
+        ws.send_json({"action": "get_state", "core": "rtu0"})
+        st = ws.receive_json()
+        assert "perif" not in st["io"]
+
+
 def test_write_perif_register_via_ws():
     with client.websocket_connect("/ws") as ws:
         ws.send_json({"action": "reset", "core": "pru0"})

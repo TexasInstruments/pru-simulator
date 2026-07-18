@@ -56,7 +56,8 @@
       cursor: help;
     }
 
-    #core-select {
+    #core-select,
+    #mc-partner-select {
       background: var(--btn);
       color: var(--text);
       border: 1px solid var(--border);
@@ -1249,9 +1250,14 @@
     <select id="core-select">
       <option value="pru0">PRU0</option>
       <option value="rtu0">RTU0</option>
+      <option value="pru1">PRU1</option>
     </select>
 
     <button id="btn-multicore" title="Toggle dual-core debug view">Multi-core</button>
+    <select id="mc-partner-select" title="Second core in multi-core view" style="display:none;">
+      <option value="rtu0">RTU0</option>
+      <option value="pru1">PRU1</option>
+    </select>
 
     <button id="btn-step" class="btn-step">Step</button>
     <button id="btn-run" class="btn-run">Run</button>
@@ -1307,6 +1313,7 @@
           <select id="mc-load-core" style="display:none;background:var(--btn);color:var(--text);border:1px solid var(--border);padding:2px 4px;border-radius:3px;font-family:inherit;font-size:12px;" title="Load target core">
             <option value="pru0">→ PRU0</option>
             <option value="rtu0">→ RTU0</option>
+            <option value="pru1">→ PRU1</option>
           </select>
           <input type="file" id="file-input" accept=".asm,.inc,.s,.out" style="display:none" />
           <button id="btn-file" class="btn-load">Open</button>
@@ -1455,7 +1462,7 @@ Example:
             </div>
             <div class="perif-r30-decode" id="perif-r30-decode"></div>
             <div class="perif-channels" id="perif-channels"></div>
-            <div class="perif-section-title">Loopback → core-1 RX (jitter / latency / drift)</div>
+            <div class="perif-section-title">Loopback → PRU1 RX (jitter / latency / drift)</div>
             <div class="perif-lb-card" id="perif-loopback"></div>
             <div class="perif-lb-status" id="perif-lb-status"></div>
           </div>
@@ -1596,7 +1603,7 @@ Example:
       <!-- MC RTU0 source panel -->
       <div class="panel" id="mc-rtu0-source-panel">
         <div class="panel-title" data-panel-id="mc-rtu0-source" style="display:flex;align-items:center;">
-          <span>RTU0 Source</span>
+          <span id="mc-partner-source-title">RTU0 Source</span>
           <span class="mc-pc-badge" id="mc-rtu0-pc">PC: 0</span>
         </div>
         <div class="panel-body">
@@ -1607,7 +1614,7 @@ Example:
       <!-- MC RTU0 register panel -->
       <div class="panel" id="mc-rtu0-reg-panel">
         <div class="panel-title mc-reg-title" data-panel-id="mc-rtu0-registers">
-          <span>RTU0 Registers</span>
+          <span id="mc-partner-reg-title">RTU0 Registers</span>
           <span class="mc-carry-row">Carry: <span class="mc-carry-val" id="mc-rtu0-carry">0</span></span>
           <span class="mc-mac-row">MAC: <span class="mc-mac-mode" id="mc-rtu0-mac-mode">MPY</span><span class="mc-mac-carry" id="mc-rtu0-mac-carry"></span></span>
         </div>

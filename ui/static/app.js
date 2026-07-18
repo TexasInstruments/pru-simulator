@@ -18,14 +18,16 @@ let _lastSourceKey = '';
 
 // ---- Multi-core state ------------------------------------------------------
 let multiCoreMode = false;
+let mcPartner = "rtu0";            // second core shown in multi-core view
 let mcPrevRegs = {
   pru0: new Array(32).fill("0x00000000"),
   rtu0: new Array(32).fill("0x00000000"),
+  pru1: new Array(32).fill("0x00000000"),
 };
-let mcLastSourceKey = { pru0: '', rtu0: '' };
-let mcBreakpoints   = { pru0: new Set(), rtu0: new Set() };
-let mcHaltedState   = { pru0: false, rtu0: false };
-let mcBreakState    = { pru0: false, rtu0: false };
+let mcLastSourceKey = { pru0: '', rtu0: '', pru1: '' };
+let mcBreakpoints   = { pru0: new Set(), rtu0: new Set(), pru1: new Set() };
+let mcHaltedState   = { pru0: false, rtu0: false, pru1: false };
+let mcBreakState    = { pru0: false, rtu0: false, pru1: false };
 let mcSpadVisible   = new Set();   // SPAD banks visible in PRU0 MC reg panel
 let mcPrevSpad      = {};          // key -> Array for change detection
 
@@ -325,7 +327,7 @@ function connect() {
     wsStatus.className = "connected";
     if (multiCoreMode) {
       sendAction({ action: "get_state", core: "pru0" });
-      sendAction({ action: "get_state", core: "rtu0" });
+      sendAction({ action: "get_state", core: mcPartner });
     } else {
       sendAction({ action: "get_state", core: currentCore });
     }
@@ -751,6 +753,10 @@ function updatePerifPanel(io) {
   const sec = document.getElementById('perif-interface');
   if (!sec) return;
 
+  // RTU0 has no GPCFG GP-mux (TRM) — hide the mux row for it.
+  const muxRow = document.getElementById('io-mux-row');
+  if (muxRow) muxRow.style.display = (currentCore === 'rtu0') ? 'none' : '';
+
   // Keep the GP-mux selector in sync (unless the user is interacting with it).
   const muxSel = document.getElementById('io-mux-sel');
   const muxNote = document.getElementById('io-mux-note');
@@ -767,7 +773,7 @@ function updatePerifPanel(io) {
 
   const info = document.getElementById('perif-mode-info');
   if (info) {
-    info.textContent = (currentCore === 'pru0' ? 'PRU0' : 'core-1') +
+    info.textContent = (currentCore === 'pru0' ? 'PRU0' : 'PRU1') +
       ' · 3 channels · ch_sel=' + p.ch_sel;
   }
 
@@ -1435,7 +1441,7 @@ btnStep.addEventListener("click", () => {
   stopRun(); stopSim();
   if (multiCoreMode) {
     sendAction({ action: "step", core: "pru0", count: 1 });
-    sendAction({ action: "step", core: "rtu0", count: 1 });
+    sendAction({ action: "step", core: mcPartner, count: 1 });
   } else {
     sendAction({ action: "step", core: currentCore, count: 1 });
   }
@@ -1457,7 +1463,7 @@ btnReset.addEventListener("click", () => {
   if (multiCoreMode) {
     mcPrevRegs = { pru0: new Array(32).fill("0x00000000"), rtu0: new Array(32).fill("0x00000000") };
     sendAction({ action: "reset", core: "pru0" });
-    sendAction({ action: "reset", core: "rtu0" });
+    sendAction({ action: "reset", core: mcPartner });
   } else {
     sendAction({ action: "reset", core: currentCore });
   }
@@ -1470,7 +1476,7 @@ btnHardReset.addEventListener("click", () => {
   if (multiCoreMode) {
     mcPrevRegs = { pru0: new Array(32).fill("0x00000000"), rtu0: new Array(32).fill("0x00000000") };
     sendAction({ action: "hard_reset", core: "pru0" });
-    sendAction({ action: "get_state", core: "rtu0" });
+    sendAction({ action: "get_state", core: mcPartner });
   } else {
     sendAction({ action: "hard_reset", core: currentCore });
   }
@@ -1942,7 +1948,7 @@ function startRun() {
     const max_steps = signalGraph.recording ? 100 : 1000;
     if (multiCoreMode) {
       sendAction({ action: "run", core: "pru0", max_steps });
-      sendAction({ action: "run", core: "rtu0", max_steps });
+      sendAction({ action: "run", core: mcPartner, max_steps });
     } else {
       sendAction({ action: "run", core: currentCore, max_steps });
     }
@@ -1971,7 +1977,7 @@ function startSim() {
   simTimer = setInterval(() => {
     if (multiCoreMode) {
       sendAction({ action: "step", core: "pru0", count: 1 });
-      sendAction({ action: "step", core: "rtu0", count: 1 });
+      sendAction({ action: "step", core: mcPartner, count: 1 });
     } else {
       sendAction({ action: "step", core: currentCore, count: 1 });
     }
@@ -2843,6 +2849,36 @@ function flashStatus(text, cssClass) {
 btnMulticore.addEventListener("click", toggleMultiCore);
 document.getElementById("btn-reset-layout").addEventListener("click", resetLayout);
 
+// ---- Multi-core partner (second core in the MC view: RTU0 or PRU1) --------
+const mcPartnerSelect = document.getElementById("mc-partner-select");
+
+function applyMCPartnerLabels() {
+  const label = mcPartner === "pru1" ? "PRU1" : "RTU0";
+  const srcTitle = document.getElementById("mc-partner-source-title");
+  const regTitle = document.getElementById("mc-partner-reg-title");
+  const cntLabel = document.getElementById("cnt-p1-label");
+  if (srcTitle) srcTitle.textContent = `${label} Source`;
+  if (regTitle) regTitle.textContent = `${label} Registers`;
+  if (cntLabel) cntLabel.textContent = label;
+}
+
+mcPartnerSelect.addEventListener("change", () => {
+  stopRun(); stopSim();
+  mcPartner = mcPartnerSelect.value;
+  applyMCPartnerLabels();
+  if (multiCoreMode) {
+    // Reset the partner DOM slot and re-request state for the new core.
+    mcPrevRegs.rtu0 = new Array(32).fill("0x00000000");
+    mcLastSourceKey.rtu0 = '';
+    mcBreakpoints.rtu0 = new Set();
+    mcHaltedState.rtu0 = false;
+    mcBreakState.rtu0 = false;
+    buildMCRegTable("rtu0");
+    sendAction({ action: "get_state", core: "pru0" });
+    sendAction({ action: "get_state", core: mcPartner });
+  }
+});
+
 function toggleMultiCore() {
   multiCoreMode = !multiCoreMode;
   stopRun(); stopSim();
@@ -2850,6 +2886,8 @@ function toggleMultiCore() {
   if (multiCoreMode) {
     coreSelect.style.display = "none";
     mcLoadCore.style.display = "";
+    mcPartnerSelect.style.display = "";
+    applyMCPartnerLabels();
     btnMulticore.classList.add("mc-active");
 
     // Show per-core counter labels and RTU0 counter spans
@@ -2876,11 +2914,12 @@ function toggleMultiCore() {
 
     // Request state for both cores
     sendAction({ action: "get_state", core: "pru0" });
-    sendAction({ action: "get_state", core: "rtu0" });
+    sendAction({ action: "get_state", core: mcPartner });
 
   } else {
     coreSelect.style.display = "";
     mcLoadCore.style.display = "none";
+    mcPartnerSelect.style.display = "none";
     btnMulticore.classList.remove("mc-active");
 
     // Restore SC counter layout
@@ -2966,7 +3005,10 @@ function editMCRegister(valEl, core, index) {
 }
 
 function updateMCUI(state) {
-  const core = state.core;
+  if (state.core !== "pru0" && state.core !== mcPartner) return;   // core not shown
+  // The second MC panel's DOM ids are the "rtu0" slot; the partner core
+  // (RTU0 or PRU1) renders into it.
+  const core = state.core === "pru0" ? "pru0" : "rtu0";
 
   // PC badge in panel title
   const pcBadge = document.getElementById(`mc-${core}-pc`);
@@ -3144,7 +3186,7 @@ document.getElementById("mc-rtu0-source-panel").addEventListener("dblclick", (e)
   const li = e.target.closest("li[id^='mc-rtu0-src-line-']");
   if (!li) return;
   const addr = parseInt(li.id.replace("mc-rtu0-src-line-", ""), 10);
-  if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: "rtu0", addr });
+  if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: mcPartner, addr });
 });
 
 // ---- Init -----------------------------------------------------------------
@@ -3178,7 +3220,7 @@ document.addEventListener("keydown", (e) => {
     stopRun(); stopSim();
     if (multiCoreMode) {
       sendAction({ action: "step", core: "pru0", count: 1 });
-      sendAction({ action: "step", core: "rtu0", count: 1 });
+      sendAction({ action: "step", core: mcPartner, count: 1 });
     } else {
       sendAction({ action: "step", core: currentCore, count: 1 });
     }
@@ -3187,7 +3229,7 @@ document.addEventListener("keydown", (e) => {
     stopRun(); stopSim();
     if (multiCoreMode) {
       sendAction({ action: "step_back", core: "pru0" });
-      sendAction({ action: "step_back", core: "rtu0" });
+      sendAction({ action: "step_back", core: mcPartner });
     } else {
       sendAction({ action: "step_back", core: currentCore });
     }
