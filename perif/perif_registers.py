@@ -196,4 +196,7 @@ class PerifRegisters:
             "tx_div_factor": self.get_tx_div_factor(),
             "tx_div_factor_frac": self.get_tx_div_factor_frac(),
             "share_en": self.get_share_en(),
+            "rxcfg": self._read_u32(_RXCFG),
+            "txcfg": self._read_u32(_TXCFG),
+            "base_addr": self._base,
         }

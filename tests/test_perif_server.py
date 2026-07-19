@@ -78,5 +78,16 @@ def test_write_perif_register_via_ws():
         state = ws.receive_json()
         cfg = state["io"]["perif"]["channels"][0]["config"]
         assert cfg["tx_frame_size"] == 8
+        # TXCFG @ 0x260E4 raw value must round-trip into the shared payload
+        ws.send_json({"action": "write_perif_register", "core": "pru0",
+                      "addr": 0x260E4, "value": 0x00070010})
+        state = ws.receive_json()
+        sh = state["io"]["perif"]["shared"]
+        assert sh["txcfg"] == 0x00070010
+        assert sh["base_addr"] == 0x260E0
+        # Restore TXCFG so shared server state doesn't leak.
+        ws.send_json({"action": "write_perif_register", "core": "pru0",
+                      "addr": 0x260E4, "value": 0})
+        ws.receive_json()
         ws.send_json({"action": "gpcfg_write", "core": "pru0", "mux_sel": 0})
         ws.receive_json()

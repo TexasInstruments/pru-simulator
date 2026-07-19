@@ -61,6 +61,15 @@ class TestRegisters:
         assert r.get_tx_tst_delay(1) == 200
         assert r.get_rx_en_count_delay(1) == 50
 
+    def test_shared_config_carries_raw_registers_and_base(self):
+        r = mk_regs()
+        _w(r, 0x00, 0x0007001F)   # RXCFG
+        _w(r, 0x04, 0x00070010)   # TXCFG
+        sh = r.get_shared_config()
+        assert sh["rxcfg"] == 0x0007001F
+        assert sh["txcfg"] == 0x00070010
+        assert sh["base_addr"] == _BASE
+
     def test_busy_bits(self):
         r = mk_regs()
         r.set_busy(2, True)
