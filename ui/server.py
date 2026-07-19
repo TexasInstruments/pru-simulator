@@ -406,6 +406,28 @@ async def websocket_endpoint(websocket: WebSocket):
                 except ValueError as ve:
                     await websocket.send_json({"type": "error", "errors": [str(ve)]})
                 await _send_state(websocket, core, at_breakpoint=at_breakpoint)
+            elif action == "run_multicore":
+                max_steps = int(msg.get("max_steps", 1000))
+                partner = msg.get("partner", "pru1")
+                lead_pru = sim.cores[core]
+                partner_pru = sim.cores[partner]
+                lead_bp = partner_bp = False
+                try:
+                    steps = 0
+                    while (steps < max_steps and not lead_pru.halted
+                           and lead_pru.pc < len(lead_pru.instructions)):
+                        sim.step_paced(core, partner, 1)
+                        steps += 1
+                        if lead_pru.pc in lead_pru.breakpoints:
+                            lead_bp = True
+                            break
+                        if partner_pru.pc in partner_pru.breakpoints:
+                            partner_bp = True
+                            break
+                except ValueError as ve:
+                    await websocket.send_json({"type": "error", "errors": [str(ve)]})
+                await _send_state(websocket, core, at_breakpoint=lead_bp)
+                await _send_state(websocket, partner, at_breakpoint=partner_bp)
             elif action == "set_sd_modulator":
                 ch = int(msg.get("channel", 0))
                 params = msg.get("params", {})
