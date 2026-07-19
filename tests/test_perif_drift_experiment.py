@@ -127,6 +127,17 @@ def test_rx_firmware_self_configures():
     assert sim._perif["pru1"].registers.get_shared_config()["rxcfg"] == 0x0007001F
 
 
+def test_roundtrip_with_no_host_register_setup():
+    """Only loopback is enabled by the host; firmware does the rest."""
+    sim = Simulator()
+    sim.perif_loopback(0, True)
+    _load_demo_firmware(sim)
+    for _ in range(60):
+        sim.step_paced("pru0", "pru1", 1000)
+    data = list(sim.memory_read(0x2000, 32))
+    assert data == [i & 0xFF for i in range(32)]
+
+
 def test_step_paced_rtu0_fallback_is_one_to_one():
     """No perif on rtu0: both cores advance exactly count instructions."""
     sim = Simulator()

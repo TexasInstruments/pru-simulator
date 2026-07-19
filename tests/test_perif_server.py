@@ -160,6 +160,34 @@ def test_run_multicore_paces_perif_demo():
             ws.receive_json()
 
 
+def test_io_window_mode_follows_firmware_gpcfg_write():
+    """Firmware writing GPCFG must flip io.mode in the next state push."""
+    prog = (
+        "start:\n"
+        "        ldi  r0, 0x0000\n"
+        "        ldi  r0.w2, 0x0400\n"
+        "        ldi  r1, 0x6008\n"
+        "        ldi  r1.w2, 0x0002\n"
+        "        sbbo r0, r1, 0, 4\n"
+        "        halt\n"
+    )
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "reset", "core": "pru0"})
+        ws.receive_json()
+        ws.send_json({"action": "load", "core": "pru0", "source": prog})
+        st = ws.receive_json()
+        assert st["io"]["mode"] == "gpio"
+        ws.send_json({"action": "run", "core": "pru0", "max_steps": 20})
+        st = ws.receive_json()
+        assert st["io"]["mode"] == "perif"
+        assert st["io"]["mux_sel"] == 1
+        # Restore GP mode + reset so shared server state doesn't leak.
+        ws.send_json({"action": "gpcfg_write", "core": "pru0", "mux_sel": 0})
+        ws.receive_json()
+        ws.send_json({"action": "reset", "core": "pru0"})
+        ws.receive_json()
+
+
 def test_run_multicore_stops_at_lead_breakpoint():
     with client.websocket_connect("/ws") as ws:
         ws.send_json({"action": "reset", "core": "pru0"})
