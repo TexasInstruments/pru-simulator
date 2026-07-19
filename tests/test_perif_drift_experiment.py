@@ -75,3 +75,44 @@ def test_drift_failure_length_monotonic(tmp_path):
         assert first_bad is not None
         results[ppm] = first_bad
     assert results[1000.0] < results[200.0]
+
+
+def _load_demo_firmware(sim):
+    assert sim.load("pru0", (_SRC / "perif_tx_pattern.asm").read_text()) == []
+    assert sim.load("pru1", (_SRC / "perif_rx_capture.asm").read_text()) == []
+
+
+def test_step_paced_produces_clean_capture():
+    """Regression: instruction-lockstep corrupted the capture within bytes
+    (observed 00 01 81 01 82 ...); step_paced must yield the clean pattern."""
+    sim = Simulator()
+    _setup_perif(sim)
+    _load_demo_firmware(sim)
+    for _ in range(60):
+        sim.step_paced("pru0", "pru1", 1000)
+    count = int.from_bytes(bytes(sim.memory_read(0x3FF8, 4)), "little")
+    assert count >= 64
+    data = list(sim.memory_read(0x2000, 64))
+    assert data == [i & 0xFF for i in range(64)]
+
+
+def test_step_paced_follow_never_leads():
+    sim = Simulator()
+    _setup_perif(sim)
+    _load_demo_firmware(sim)
+    for _ in range(50):
+        sim.step_paced("pru0", "pru1", 100)
+        t0 = sim._perif["pru0"]._now_ns
+        t1 = sim._perif["pru1"]._now_ns
+        assert t1 <= t0, f"follow leads: pru1 {t1} > pru0 {t0}"
+
+
+def test_step_paced_rtu0_fallback_is_one_to_one():
+    """No perif on rtu0: both cores advance exactly count instructions."""
+    sim = Simulator()
+    prog = "start:\n        add r2, r2, 1\n        jmp start\n"
+    assert sim.load("pru0", prog) == []
+    assert sim.load("rtu0", prog) == []
+    sim.step_paced("pru0", "rtu0", 250)
+    assert sim.cores["pru0"].counters.cycles == 250
+    assert sim.cores["rtu0"].counters.cycles == 250

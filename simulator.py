@@ -258,6 +258,36 @@ class Simulator:
             "halted": pru.halted,
         }
 
+    def step_paced(self, lead: str, follow: str, count: int = 1,
+                   guard_ns: float = 20.0) -> None:
+        """Step *lead* by *count* instructions, pacing *follow* by perif time.
+
+        After each lead instruction, *follow* is stepped until its perif
+        clock trails lead's by at most *guard_ns* — follow never leads, so
+        an RX on follow only samples line history a TX on lead has already
+        recorded. Falls back to 1:1 instruction interleave when either
+        core has no perif block (e.g. rtu0).
+        """
+        lead_pru = self._get_core(lead)
+        follow_pru = self._get_core(follow)
+        lead_perif = self._perif.get(lead)
+        follow_perif = self._perif.get(follow)
+        paced = lead_perif is not None and follow_perif is not None
+        for _ in range(count):
+            if not lead_pru.halted and lead_pru.pc < len(lead_pru.instructions):
+                lead_pru.step()
+            if not paced:
+                if not follow_pru.halted and follow_pru.pc < len(follow_pru.instructions):
+                    follow_pru.step()
+                continue
+            target = lead_perif._now_ns - guard_ns
+            safety = 1000
+            while (follow_perif._now_ns < target and safety > 0
+                   and not follow_pru.halted
+                   and follow_pru.pc < len(follow_pru.instructions)):
+                follow_pru.step()
+                safety -= 1
+
     def registers(self, core: str) -> list[int]:
         """Return the 32 general-purpose register values for *core*."""
         pru = self._get_core(core)
