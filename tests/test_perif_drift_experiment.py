@@ -118,6 +118,15 @@ def test_tx_firmware_self_configures():
     assert regs.get_tx_frame_size(0) == 0
 
 
+def test_rx_firmware_self_configures():
+    """No host setup at all: the RX firmware writes GPCFG1/RXCFG."""
+    sim = Simulator()
+    assert sim.load("pru1", (_SRC / "perif_rx_capture.asm").read_text()) == []
+    sim.step("pru1", 40)
+    assert sim.gpcfg_state("pru1")["mux_sel"] == 1
+    assert sim._perif["pru1"].registers.get_shared_config()["rxcfg"] == 0x0007001F
+
+
 def test_step_paced_rtu0_fallback_is_one_to_one():
     """No perif on rtu0: both cores advance exactly count instructions."""
     sim = Simulator()
