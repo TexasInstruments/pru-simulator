@@ -1221,6 +1221,14 @@
     .perif-mode-info { color: #888; font-size: 10px; }
     .perif-r30-decode { background: #1a1a2e; padding: 6px 8px; border-radius: 4px; margin-bottom: 8px; font-size: 10px; }
     .perif-r30-field { background: #2d2d44; padding: 1px 5px; border-radius: 2px; margin-right: 4px; display: inline-block; }
+    .perif-cfg-regs { background: #1a1a2e; padding: 6px 8px; border-radius: 4px; margin-bottom: 8px; font-size: 10px; }
+    .perif-cfgreg-row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+    .perif-cfgreg-name { color: #4fc3f7; font-weight: bold; width: 44px; }
+    .perif-cfgreg-addr { color: #888; }
+    .perif-cfgreg-row input { background: #0d1117; color: #e0e0e0; border: 1px solid #333; border-radius: 3px; font-family: monospace; font-size: 10px; padding: 2px 4px; width: 90px; }
+    .perif-cfgreg-btn { background: #2d2d44; color: #e0e0e0; border: 1px solid #444; border-radius: 3px; font-size: 10px; cursor: pointer; padding: 1px 8px; }
+    .perif-cfgreg-btn:hover { background: #3a3a55; }
+    .perif-cfgreg-err { color: #ef5350; }
     .perif-channels { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
     .perif-channel-card { border: 1px solid #333; padding: 8px; border-radius: 4px; flex: 1; min-width: 120px; background: #0d1117; }
     .perif-channel-card.busy { border-color: #ffb74d; }
@@ -1460,6 +1468,7 @@ Example:
               <span class="perif-mode-badge">PERIPHERAL</span>
               <span class="perif-mode-info" id="perif-mode-info"></span>
             </div>
+            <div class="perif-cfg-regs" id="perif-cfg-regs"></div>
             <div class="perif-r30-decode" id="perif-r30-decode"></div>
             <div class="perif-channels" id="perif-channels"></div>
             <div class="perif-section-title">Loopback → PRU1 RX (jitter / latency / drift)</div>

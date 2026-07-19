@@ -790,6 +790,44 @@ function updatePerifPanel(io) {
       `<span class="perif-r30-field">sb_pol=<b>${sh.rx_sb_pol ?? 1}</b></span>`;
   }
 
+  // CFG register editor (skip rebuild while the user edits an input)
+  const cfgRegs = document.getElementById('perif-cfg-regs');
+  if (cfgRegs) {
+    const sh = p.shared || {};
+    const cfgFocus = document.activeElement;
+    const cfgEditing = cfgRegs.contains(cfgFocus) && cfgFocus.tagName === 'INPUT';
+    if (sh.base_addr != null && !cfgEditing) {
+      const hex8 = v => '0x' + (v >>> 0).toString(16).toUpperCase().padStart(8, '0');
+      cfgRegs.innerHTML = '';
+      [['RXCFG', 0x0, sh.rxcfg], ['TXCFG', 0x4, sh.txcfg]].forEach(([name, off, val]) => {
+        const addr = sh.base_addr + off;
+        const row = document.createElement('div');
+        row.className = 'perif-cfgreg-row';
+        row.innerHTML = `
+          <span class="perif-cfgreg-name">${name}</span>
+          <span class="perif-cfgreg-addr">@0x${addr.toString(16).toUpperCase()}</span>
+          <input type="text" spellcheck="false" value="${hex8(val ?? 0)}">
+          <button class="perif-cfgreg-btn" data-addr="${addr}">Apply</button>
+          <span class="perif-cfgreg-err"></span>`;
+        cfgRegs.appendChild(row);
+      });
+      cfgRegs.querySelectorAll('.perif-cfgreg-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const row = btn.closest('.perif-cfgreg-row');
+          const err = row.querySelector('.perif-cfgreg-err');
+          const v = parseHexOrDec(row.querySelector('input').value.trim());
+          if (isNaN(v) || v < 0 || v > 0xFFFFFFFF) {
+            err.textContent = 'invalid value';
+            return;
+          }
+          err.textContent = '';
+          sendAction({ action: 'write_perif_register', core: currentCore,
+                       addr: parseInt(btn.dataset.addr, 10), value: v });
+        });
+      });
+    }
+  }
+
   // Channel cards
   const cont = document.getElementById('perif-channels');
   if (cont) {
