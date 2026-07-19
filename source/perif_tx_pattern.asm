@@ -9,16 +9,31 @@
 ; carry_next = (p_k & 1) << 7, with carry_0 = 0x80 (the start bit).
 ; The receiver then captures exactly p_0, p_1, ... byte-aligned.
 ;
-; Host prerequisites (set before running):
-;   GPCFG mux = 1 (perif mode) on pru0
-;   TXCFG (0x260E4) = 0x00070010   ; clk_sel=core, div=7 -> 25 MHz bit clock
-;   CH0CFG0 (0x260E8) = 0          ; tx_frame_size=0 -> continuous mode
+; Self-configuring: the prologue writes GPCFG0 mux=1 (perif mode),
+; TXCFG (0x260E4) = 0x00070010 (clk_sel=core, div=7 -> 25 MHz bit clock)
+; and CH0CFG0 (0x260E8) = 0 (tx_frame_size=0 -> continuous mode).
+; Host prerequisite: enable loopback ch0 (harness, not memory-mapped).
 ;
 ; Register map: r2=pattern byte p, r3=carry bits, r4=byte to push,
-;               r5=R31 status scratch, r6=prefill counter, r0=TX-go word
+;               r5=R31 status scratch, r6=prefill counter,
+;               r0=prologue value scratch / TX-go word, r1=prologue addr scratch
 ; =============================================================
 
 start:
+        ldi  r0, 0x0000         ; GPCFG0: mux_sel=1 (bits 29:26)
+        ldi  r0.w2, 0x0400
+        ldi  r1, 0x6008
+        ldi  r1.w2, 0x0002
+        sbbo r0, r1, 0, 4
+        ldi  r0, 0x0010         ; TXCFG = 0x00070010
+        ldi  r0.w2, 0x0007
+        ldi  r1, 0x60E4
+        ldi  r1.w2, 0x0002
+        sbbo r0, r1, 0, 4
+        ldi  r0, 0              ; CH0CFG0 = 0 (continuous mode)
+        ldi  r0.w2, 0
+        sbbo r0, r1, 4, 4       ; 0x260E8, full 32-bit clear
+
         ldi  r30.b2, 0x00       ; select ch0 (byte2 strobe; clk_mode 0)
         ldi  r2, 0              ; p = 0
         ldi  r3, 0x80           ; carry = start bit

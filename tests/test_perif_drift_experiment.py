@@ -107,6 +107,17 @@ def test_step_paced_follow_never_leads():
         assert t1 <= t0, f"follow leads: pru1 {t1} > pru0 {t0}"
 
 
+def test_tx_firmware_self_configures():
+    """No host setup at all: the TX firmware writes GPCFG0/TXCFG/CH0CFG0."""
+    sim = Simulator()
+    assert sim.load("pru0", (_SRC / "perif_tx_pattern.asm").read_text()) == []
+    sim.step("pru0", 40)
+    assert sim.gpcfg_state("pru0")["mux_sel"] == 1
+    regs = sim._perif["pru0"].registers
+    assert regs.get_shared_config()["txcfg"] == 0x00070010
+    assert regs.get_tx_frame_size(0) == 0
+
+
 def test_step_paced_rtu0_fallback_is_one_to_one():
     """No perif on rtu0: both cores advance exactly count instructions."""
     sim = Simulator()
