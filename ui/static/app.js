@@ -1985,8 +1985,8 @@ function startRun() {
     // samples per UART bit for the decoder to detect the correct bit period.
     const max_steps = signalGraph.recording ? 100 : 1000;
     if (multiCoreMode) {
-      sendAction({ action: "run", core: "pru0", max_steps });
-      sendAction({ action: "run", core: mcPartner, max_steps });
+      sendAction({ action: "run_multicore", core: "pru0",
+                   partner: mcPartner, max_steps });
     } else {
       sendAction({ action: "run", core: currentCore, max_steps });
     }
