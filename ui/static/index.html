@@ -57,7 +57,8 @@
     }
 
     #core-select,
-    #mc-partner-select {
+    #mc-partner-select,
+    #pru-speed-select {
       background: var(--btn);
       color: var(--text);
       border: 1px solid var(--border);
@@ -1259,6 +1260,14 @@
       <option value="pru0">PRU0</option>
       <option value="rtu0">RTU0</option>
       <option value="pru1">PRU1</option>
+    </select>
+
+    <select id="pru-speed-select" title="PRU core clock speed (applies to PRU0, RTU0, and PRU1)">
+      <option value="200">200 MHz</option>
+      <option value="225">225 MHz</option>
+      <option value="250">250 MHz</option>
+      <option value="300">300 MHz</option>
+      <option value="333">333 MHz</option>
     </select>
 
     <button id="btn-multicore" title="Toggle dual-core debug view">Multi-core</button>
