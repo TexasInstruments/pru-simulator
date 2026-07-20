@@ -5,6 +5,7 @@ import json
 import math
 import os
 import pathlib
+import re
 import sys
 
 # Ensure project root is on path so simulator can be imported
@@ -169,6 +170,62 @@ async def put_config(request: Request):
     text = (await request.body()).decode("utf-8")
     async with _config_lock:
         try:
+            with open(config_path, "w") as f:
+                f.write(text)
+            sim = Simulator(config_path=config_path)
+            _history["pru0"].clear()
+            _history["rtu0"].clear()
+            _history["pru1"].clear()
+            return {"ok": True}
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+
+
+ALLOWED_CLOCK_MHZ = {200, 225, 250, 300, 333}
+
+
+def _set_ini_value(text: str, section: str, key: str, value: str) -> str:
+    """Set key = value inside [section] of an ini-format string, preserving
+    all other formatting/comments. Replaces the key if present, otherwise
+    inserts it as the last line of the section. Section must already exist."""
+    section_re = re.compile(
+        r"(\[" + re.escape(section) + r"\]\n)(.*?)(?=\n\[|\Z)", re.DOTALL
+    )
+    match = section_re.search(text)
+    if match is None:
+        raise ValueError(f"[{section}] section not found in config")
+    header, body = match.group(1), match.group(2)
+
+    key_re = re.compile(r"^" + re.escape(key) + r"\s*=.*$", re.MULTILINE)
+    if key_re.search(body):
+        new_body = key_re.sub(f"{key} = {value}", body)
+    else:
+        new_body = body.rstrip("\n") + f"\n{key} = {value}"
+
+    return text[:match.start()] + header + new_body + text[match.end():]
+
+
+@app.get("/config/clock_speed")
+async def get_clock_speed():
+    return {"mhz": sim._pru_clock_mhz}
+
+
+@app.put("/config/clock_speed")
+async def put_clock_speed(request: Request):
+    global sim
+    body = await request.json()
+    mhz = body.get("mhz")
+    if mhz not in ALLOWED_CLOCK_MHZ:
+        return JSONResponse(
+            {"error": f"mhz must be one of {sorted(ALLOWED_CLOCK_MHZ)}"},
+            status_code=400,
+        )
+    async with _config_lock:
+        try:
+            with open(config_path, "r") as f:
+                text = f.read()
+            text = _set_ini_value(text, "device", "pru_clock_mhz", str(mhz))
+            text = _set_ini_value(text, "device", "pru1_clock_mhz", str(mhz))
             with open(config_path, "w") as f:
                 f.write(text)
             sim = Simulator(config_path=config_path)
