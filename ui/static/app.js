@@ -103,6 +103,7 @@ const btnOpenProject  = document.getElementById("btn-open-project");
 const btnConfig       = document.getElementById("btn-config");
 const configModal     = document.getElementById("config-modal");
 const configTextarea  = document.getElementById("config-textarea");
+const pruSpeedSelect  = document.getElementById("pru-speed-select");
 const configError     = document.getElementById("config-error");
 const btnConfigSave   = document.getElementById("btn-config-save");
 const btnConfigCancel = document.getElementById("btn-config-cancel");
@@ -1942,6 +1943,7 @@ btnConfigSave.addEventListener("click", async () => {
       flashStatus("RELOADED", "reloaded");
       refreshMemory();
       loadRegions();
+      loadClockSpeed();
     } else {
       configError.textContent = data.error || "Unknown error";
     }
@@ -1950,6 +1952,44 @@ btnConfigSave.addEventListener("click", async () => {
   } finally {
     btnConfigSave.disabled    = false;
     btnConfigSave.textContent = "Save \u0026 Reload";
+  }
+});
+
+// ---- PRU core speed selector ------------------------------------------------
+
+async function loadClockSpeed() {
+  try {
+    const res  = await fetch("/config/clock_speed");
+    const data = await res.json();
+    pruSpeedSelect.value = String(Math.round(data.mhz));
+  } catch (e) {
+    // leave dropdown at its last-known value
+  }
+}
+loadClockSpeed();
+
+pruSpeedSelect.addEventListener("change", async () => {
+  pruSpeedSelect.disabled = true;
+  try {
+    const res = await fetch("/config/clock_speed", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mhz: Number(pruSpeedSelect.value) }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      flashStatus("RELOADED", "reloaded");
+      refreshMemory();
+      loadRegions();
+    } else {
+      alert(data.error || "Failed to set clock speed");
+      loadClockSpeed();
+    }
+  } catch (e) {
+    alert(String(e));
+    loadClockSpeed();
+  } finally {
+    pruSpeedSelect.disabled = false;
   }
 });
 
