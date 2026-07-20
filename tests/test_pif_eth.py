@@ -1,0 +1,222 @@
+"""pif_eth: 8b/10b line-coded Ethernet TX over the PRU perif (PRU0, ch0)."""
+import sys
+from pathlib import Path
+
+import pytest
+
+_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(_ROOT / "source"))
+
+from pif_eth import codec, crc32, prng, frames  # noqa: E402
+from pif_eth.decoder import decode_symbols       # noqa: E402
+
+
+# --------------------------------------------------------------------------
+# 8b/10b codec
+# --------------------------------------------------------------------------
+
+def test_encode_decode_roundtrip_all_bytes_both_rd():
+    dm = codec.build_decode_map()
+    for b in range(256):
+        for rd in (codec.RD_MINUS, codec.RD_PLUS):
+            sym, _ = codec.encode_byte(b, rd)
+            assert dm[sym] == b
+
+
+def test_running_disparity_stays_bounded():
+    """RD must be +/-1 at every symbol boundary; symbol disparity in {-2,0,+2}."""
+    rd = codec.RD_MINUS
+    # A long stream exercising every octet many times.
+    for b in list(range(256)) * 4:
+        sym, new_rd = codec.encode_byte(b, rd)
+        ones = codec.symbol_ones(sym)
+        assert ones in (4, 5, 6), f"byte {b}: {ones} ones (disparity out of range)"
+        assert new_rd in (codec.RD_MINUS, codec.RD_PLUS)
+        # neutral symbol keeps RD; +/-2 symbol flips it
+        if ones == 5:
+            assert new_rd == rd
+        else:
+            assert new_rd == -rd
+        rd = new_rd
+
+
+def test_no_run_longer_than_five():
+    """Concatenated symbol stream never has 6 identical consecutive bits."""
+    rd = codec.RD_MINUS
+    bits = []
+    for b in list(range(256)) * 3:
+        sym, rd = codec.encode_byte(b, rd)
+        bits.extend((sym >> i) & 1 for i in range(9, -1, -1))
+    run = 1
+    for i in range(1, len(bits)):
+        run = run + 1 if bits[i] == bits[i - 1] else 1
+        assert run <= 5, f"run of {run} at bit {i}"
+
+
+def test_comma_flips_disparity():
+    for rd in (codec.RD_MINUS, codec.RD_PLUS):
+        sym, new_rd = codec.encode_comma(rd)
+        assert new_rd == -rd
+        assert sym in codec.COMMA_SYMBOLS
+
+
+def test_dram0_lut_matches_encoder():
+    lut = codec.build_dram0_lut()
+    assert len(lut) == 256 * 4
+    for b in range(256):
+        word = int.from_bytes(lut[b * 4:b * 4 + 4], "little")
+        code_n, rd_n = codec.encode_byte(b, codec.RD_MINUS)
+        code_p, rd_p = codec.encode_byte(b, codec.RD_PLUS)
+        assert word & 0x3FF == code_n
+        assert (word >> 10) & 1 == (1 if rd_n == codec.RD_PLUS else 0)
+        assert (word >> 16) & 0x3FF == code_p
+        assert (word >> 26) & 1 == (1 if rd_p == codec.RD_PLUS else 0)
+
+
+def test_stream_decode_with_commas():
+    dm = codec.build_decode_map()
+    rd = codec.RD_MINUS
+    payloads = [b"\x00\x01\x02\x03", b"hello", bytes(range(10))]
+    symbols = []
+    for p in payloads:
+        c, rd = codec.encode_comma(rd)
+        symbols.append(c)
+        for byte in p:
+            s, rd = codec.encode_byte(byte, rd)
+            symbols.append(s)
+    c, rd = codec.encode_comma(rd)
+    symbols.append(c)
+    res = decode_symbols(symbols, dm)
+    assert res.invalid_symbols == 0
+    assert res.frames == payloads
+
+
+# --------------------------------------------------------------------------
+# CRC32 / PRNG / frames
+# --------------------------------------------------------------------------
+
+def test_crc32_bitwise_matches_zlib():
+    for data in (b"", b"123456789", bytes(range(64)), b"Hello World Text"):
+        assert crc32.crc32_bitwise(data) == crc32.crc32(data)
+
+
+def test_crc32_check_value():
+    # Classic CRC-32 check string.
+    assert crc32.crc32(b"123456789") == 0xCBF43926
+
+
+def test_prng_deterministic_and_reproducible():
+    a = prng.prng_bytes(128, seed=0x1BADC0DE)
+    b = prng.prng_bytes(128, seed=0x1BADC0DE)
+    assert a == b and len(a) == 128
+
+
+def test_bert_frame_shape():
+    f = frames.build_bert_frame()
+    assert f.kind == "bert"
+    assert len(f.core) == 132           # 128 payload + 4 CRC
+    assert f.core[:128] == f.l2
+    assert crc32.fcs_bytes(f.l2) == f.core[128:]
+
+
+def test_udp_frame_valid_length_and_fcs():
+    f = frames.build_udp_frame()
+    assert f.kind == "udp"
+    assert len(f.l2) == 60              # padded to Ethernet minimum
+    assert len(f.core) == 64            # + 4 FCS
+    assert crc32.fcs_bytes(f.l2) == f.core[60:]
+    assert f.l2[12:14] == b"\x08\x00"   # ethertype IPv4
+
+
+def test_full_frame_line_roundtrip():
+    """Encode a full frame's on-wire bytes and decode them back."""
+    dm = codec.build_decode_map()
+    for f in (frames.build_bert_frame(), frames.build_udp_frame()):
+        syms, _ = codec.encode_bytes(f.core)
+        res = decode_symbols(syms, dm)
+        assert res.invalid_symbols == 0
+        assert res.frames == [f.core]
+
+
+# --------------------------------------------------------------------------
+# Firmware on the simulator (PRU0, single core)
+# --------------------------------------------------------------------------
+
+from pif_eth import driver                          # noqa: E402
+from pif_eth.crc32 import fcs_bytes                  # noqa: E402
+from pif_eth.prng import prng_bytes, DEFAULT_SEED    # noqa: E402
+
+
+def test_firmware_self_configures_perif_ch0():
+    """No host register setup: firmware writes GPCFG0/TXCFG/CH0CFG0."""
+    from simulator import Simulator
+    sim = Simulator()
+    assert sim.load("pru0", driver.FIRMWARE) == []
+    sim.step("pru0", 40)
+    assert sim.gpcfg_state("pru0")["mux_sel"] == 1
+    regs = sim._perif["pru0"].registers
+    assert regs.get_shared_config()["txcfg"] == 0x00070010
+    assert regs.get_tx_frame_size(0) == 0            # continuous mode
+
+
+def test_firmware_prng_and_crc_in_dram():
+    """The firmware's PRNG payload and CRC32 FCS match the golden reference."""
+    res = driver.run("bert", 1)
+    sim = res.sim
+    payload = bytes(sim.memory_read(driver.A_COREBUF, 128))
+    fcs = bytes(sim.memory_read(driver.A_COREBUF + 128, 4))
+    assert payload == prng_bytes(128, DEFAULT_SEED)
+    assert fcs == fcs_bytes(payload)
+
+
+def test_firmware_bert_roundtrip_zero_ber():
+    res = driver.run("bert", 4)
+    assert res.frame_count == 4
+    assert res.all_ok and res.total_bit_errors == 0
+    # Payload advances with the running PRNG -> frames differ.
+    assert res.frames[0].decoded != res.frames[1].decoded
+
+
+def test_firmware_udp_roundtrip_and_valid_ethernet():
+    res = driver.run("udp", 3)
+    assert res.all_ok and res.ber == 0.0
+    l2 = res.frames[0].decoded[:-4]
+    assert len(l2) == 60
+    assert l2[12:14] == b"\x08\x00"                  # ethertype IPv4
+    assert b"Hello World Text" in l2
+
+
+def test_pcap_output_roundtrips(tmp_path):
+    from pif_eth.pcap import write_pcap
+    res = driver.run("udp", 5)
+    path = tmp_path / "udp.pcap"
+    n = write_pcap(str(path), res.l2_frames())
+    assert n == 5
+    data = path.read_bytes()
+    import struct
+    magic, _vj, _vn, _tz, _sig, _snap, link = struct.unpack("<IHHiIII", data[:24])
+    assert magic == 0xA1B2C3D4 and link == 1         # classic pcap, Ethernet
+
+
+def test_via_mcp_server():
+    """Drive the firmware through the MCP server wrapper (pru_load/step/memory)."""
+    from mcp_server.server import PRUSimulatorMCP
+    mcp = PRUSimulatorMCP()
+    # Set up DRAM0: LUT + control block for one BERT frame.
+    mcp.sim.memory.write(driver.LUT_ADDR, codec.build_dram0_lut())
+    for addr, val in ((driver.A_NUMF, 1), (driver.A_MODE, driver.MODE_PRNG),
+                      (driver.A_SEED, DEFAULT_SEED), (driver.A_PLEN, 128),
+                      (driver.A_FCNT, 0), (driver.A_BURST, 0), (driver.A_GOFLAG, 1)):
+        mcp.sim.memory.write(addr, (val & 0xFFFFFFFF).to_bytes(4, "little"))
+    assert mcp.pru_load(driver.FIRMWARE, core="pru0")["success"]
+    # Step until the frame counter reports completion.
+    for _ in range(200):
+        mcp.pru_step(core="pru0", count=2000)
+        if int.from_bytes(mcp.sim.memory_read(driver.A_FCNT, 4), "little") == 1:
+            break
+    assert int.from_bytes(mcp.sim.memory_read(driver.A_FCNT, 4), "little") == 1
+    # Verify the firmware-built frame in DRAM via the MCP memory tool.
+    dump = mcp.pru_memory(driver.A_COREBUF, 132)
+    frame = bytes.fromhex(dump["hex_dump"])
+    assert frame[:128] == prng_bytes(128, DEFAULT_SEED)
+    assert frame[128:] == fcs_bytes(frame[:128])
