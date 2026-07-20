@@ -200,7 +200,9 @@ def _set_ini_value(text: str, section: str, key: str, value: str) -> str:
     if key_re.search(body):
         new_body = key_re.sub(f"{key} = {value}", body)
     else:
-        new_body = body.rstrip("\n") + f"\n{key} = {value}"
+        if body and not body.endswith("\n"):
+            body += "\n"
+        new_body = body + f"{key} = {value}\n"
 
     return text[:match.start()] + header + new_body + text[match.end():]
 

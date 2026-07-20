@@ -75,6 +75,8 @@ def test_put_clock_speed_inserts_missing_pru1_key(tmp_path, monkeypatch):
     # Key was inserted inside [device], not appended after [DRAM0]
     device_block = text.split("[DRAM0]")[0]
     assert "pru1_clock_mhz = 300" in device_block
+    # Blank line separating [device] from [DRAM0] must be preserved
+    assert "pru1_clock_mhz = 300\n\n[DRAM0]" in text
 
 
 def test_put_clock_speed_rejects_disallowed_value(tmp_path, monkeypatch):
