@@ -188,6 +188,14 @@ pf_symbol:
                                     ; r11 is a running shift register)
         lsl  r24, r22, 1            ; LUT offset = symbol * 2
         lbco r23, c24, r24, 2       ; decode entry (c24 = own DRAM = DRAM1)
+                                    ; NOTE: this is a 2-byte load, so it only
+                                    ; strobes r23 bits 0-15; bits 16-31 are
+                                    ; left stale from whatever wrote r23 last.
+                                    ; Safe ONLY because every consumer below
+                                    ; masks to bits 0-11 (bit 8 valid, bit 9
+                                    ; neutral, bit 10 RD, bit 11 comma, and
+                                    ; the stored octet is `and 0xFF`) -- none
+                                    ; of it reads bits 16-31.
 
         qbbc ps_bad, r23, 8         ; valid?
         qbbs ps_comma, r23, 11      ; comma -> alignment anchor
@@ -251,10 +259,19 @@ rc_store:
 ;   Skipped (counters zeroed) when mode != 0.
 ;   r20 prng state  r21 ptr  r22 i  r23 rx byte  r24 xor  r25 tmp
 ;   r17 bit errors
+;
+;   Self-contained: clears r23 itself in the prologue below, so this
+;   routine's correctness does NOT depend on the caller, nor on
+;   rx_crc_check (or crc32_core) having run first and happening to
+;   leave r23's upper bits clean.
 ; -------------------------------------------------------------
 rx_ber_check:
         ldi  r17, 0
         ldi  r6, 0
+        ldi  r23, 0                 ; 1-byte lbbo below only strobes r23's
+                                    ; low byte -- clear the upper 24 bits
+                                    ; once here so they can't survive the
+                                    ; xor into the popcount loop.
         qbne rb_publish, r18, 0     ; mode != 0 -> not a BERT frame
         mov  r20, r13               ; PRNG state = seed
         ldi  r21, 0x0E00
