@@ -1387,6 +1387,11 @@ def characterize(option: str = "o1", num_frames: int = 2) -> list[dict]:
             sim = run_rx(n_tx, option=option, num_frames=num_frames)
             payload = prng_bytes(BERT_PAYLOAD_LEN, DEFAULT_SEED)
             expected = payload + fcs_bytes(payload)
+            # Strip trailing idle-zero bytes before decoding a firmware capture,
+            # exactly as capture_python_rx does. The firmware's reported length
+            # already drops one EOF byte, but that only avoids a spurious tail
+            # symbol by bit-count arithmetic; rstrip makes it robust by
+            # construction (a real symbol always ends with a '1' sample).
             row.update(
                 ovf=ru32(sim, S_OVF),
                 sym_err=ru32(sim, S_SYMERR),
