@@ -21,7 +21,7 @@
 - **No sustained-rate claim may rest on a hand cycle-tally.** Every rate is confirmed by running the simulator and asserting `rx_ovf_count == 0`.
 - DRAM1 map: LUT `0x2000`, capture `0x2800`, symbols `0x2C00`, frame `0x2E00`, stats `0x2F00`, control `0x2F40`.
 
-**Scope note:** Options 2 and 3 are deliberately excluded. Their task detail depends on the service-loop cycle cost this plan *measures* (Task 7); planning them now would be speculation. A second plan follows once Option 1's numbers are in.
+**Scope note:** Options 2 and 3 are deliberately excluded. Their task detail depends on the service-loop cycle cost this plan *measures* (Task 8); planning them now would be speculation. A second plan follows once Option 1's numbers are in.
 
 ---
 
@@ -421,9 +421,14 @@ def test_tx_firmware_selection_pins_skipchecks_to_n2():
         assert rx_driver.tx_firmware_for(n) == "pif_eth_tx_n2.asm"
 
 
-@pytest.mark.parametrize("n_tx", [2, 4, 6, 8])
+@pytest.mark.parametrize("n_tx", [4, 6, 8])
 def test_python_armed_rx_recovers_bert_frame(n_tx):
-    """Loopback + clock ladder + reference layer agree, with no RX firmware."""
+    """Loopback + clock ladder + reference layer agree, with no RX firmware.
+
+    n_tx=2 is deliberately excluded: whether 125 Mbaud is reachable is the
+    question Task 8's characterize() answers, and it reports FAIL rows without
+    turning the suite red.  This test is a harness gate, not a rate claim.
+    """
     sim = rx_driver.build_sim(n_tx)
     captures = rx_driver.capture_python_rx(sim, n_tx, num_frames=1)
     assert len(captures) == 1
@@ -570,11 +575,25 @@ def capture_python_rx(sim: Simulator, n_tx: int, num_frames: int = 1,
                       max_steps: int = 4_000_000) -> list[bytes]:
     """Arm PRU1's RX channel from Python and capture raw oversample bytes.
 
-    Used to validate the loopback and clock ladder before RX firmware exists.
+    Validates the loopback and clock ladder before RX firmware exists.
+
+    PRU1 has NO firmware at this point, so ``step_paced`` cannot be used: its
+    inner loop is gated on the follow core having instructions, so with an
+    empty program PRU1 never steps, its perif never advances, and RX captures
+    nothing.  PRU0 is stepped in small batches instead and PRU1's perif is
+    advanced manually from PRU0's cycle count -- the pattern established by
+    tests/test_perif_drift_experiment.py.
+
+    The batch must be short enough that the 4-deep RX FIFO cannot overflow
+    between drains.  A byte is captured every ``8 * n_rx == 4 * n_tx`` core
+    cycles, so four bytes span ``16 * n_tx`` cycles; half that is used, leaving
+    margin for the gap between instruction count and true cycle count.
     """
     sim.write_perif_register("pru1", RXCFG_PRU1, rxcfg_word(n_tx // 2))
     ch = sim._perif["pru1"].channels[0]
     ch.arm_rx(True)
+    rx_perif = sim.cores["pru1"].io_port.perif
+    batch = max(1, 8 * n_tx)
 
     captures: list[bytes] = []
     for i in range(num_frames):
@@ -583,8 +602,13 @@ def capture_python_rx(sim: Simulator, n_tx: int, num_frames: int = 1,
         zeros = 0
         steps = 0
         while steps < max_steps:
-            sim.step_paced("pru0", "pru1", 200)
-            steps += 200
+            sim.step("pru0", batch)
+            steps += batch
+            rx_perif.advance_cycles(sim.cores["pru0"].counters.cycles)
+            if ch.rx_ovf:
+                raise RuntimeError(
+                    f"n_tx={n_tx}: RX FIFO overflowed between drains -- "
+                    f"batch of {batch} instructions is too coarse")
             while ch.rx_valid:
                 byte = ch.rx_head()
                 ch.clr_val()
@@ -601,9 +625,9 @@ def capture_python_rx(sim: Simulator, n_tx: int, num_frames: int = 1,
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `python3 -m pytest tests/test_pif_eth_rx.py -v`
-Expected: PASS (6 tests)
+Expected: PASS (5 tests — 2 unit + 3 parametrized rungs)
 
-If `test_python_armed_rx_recovers_bert_frame` fails at `n_tx=2` only, that is a *real finding* about the TX side, not a harness bug — record it and continue with the rungs that pass.
+All three rungs must pass. A failure here is a harness or reference-layer bug, not a rate limit: the Python-armed RX has no cycle budget of its own, and the batch size is chosen so the FIFO cannot overflow. If `RX FIFO overflowed between drains` is raised, reduce `batch`.
 
 - [ ] **Step 6: Commit**
 
@@ -1007,7 +1031,189 @@ git commit -m "feat(pif_eth): Option 1 post-frame 8b/10b decode into DRAM1"
 
 ---
 
-### Task 6: Option 1 post-frame CRC32 and PRNG BER
+### Task 6: Extract the CRC-32 routine into a shared include
+
+TX and RX both need the same reflected CRC-32 inner loop. The assembler
+supports `.include`, so the loop is extracted once rather than copied. This
+task changes only *where* the code lives — TX behaviour must be unchanged,
+which the existing TX tests prove.
+
+**Files:**
+- Create: `source/pif_eth/pif_eth_crc32.inc`
+- Modify: `source/pif_eth/pif_eth_tx.asm` (replace the `crc32_compute` body, append the include)
+- Modify: `source/pif_eth/driver.py`
+- Modify: `source/pif_eth/rx_driver.py`
+- Modify: `mcp_server/server.py:18-22`
+- Test: `tests/test_pif_eth.py:154`, `tests/test_pif_eth.py:211`
+
+**Interfaces:**
+- Produces: `crc32_core` — entry `r21` = buffer base, `r8` = byte count; exit `r20` = final CRC (already inverted), `r21` = base + count; clobbers `r22`–`r25`; returns via **`r26`**
+- Produces: `driver.ASM_DIR: str` — the directory to pass as `include_paths`
+- Produces: `MCPServer.pru_load(source, core="pru0", include_paths=None)`
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `tests/test_pif_eth.py`:
+
+```python
+def test_mcp_pru_load_accepts_include_paths():
+    """The MCP wrapper must be able to load multi-file assembly."""
+    import inspect
+    from mcp_server.server import PRUSimulatorMCP
+    assert "include_paths" in inspect.signature(PRUSimulatorMCP.pru_load).parameters
+
+
+def test_tx_firmware_uses_shared_crc32_include():
+    src = (Path(driver.ASM_DIR) / "pif_eth_tx.asm").read_text()
+    assert ".include" in src and "pif_eth_crc32.inc" in src
+    # The inner loop must live in exactly one place.
+    assert "0xEDB8" not in src
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `python3 -m pytest tests/test_pif_eth.py -k "include" -v`
+Expected: FAIL — `include_paths` missing from the signature, and `AttributeError: module 'pif_eth.driver' has no attribute 'ASM_DIR'`
+
+- [ ] **Step 3: Create the shared include**
+
+Create `source/pif_eth/pif_eth_crc32.inc`:
+
+```asm
+; =============================================================
+; crc32_core — reflected CRC-32 (poly 0xEDB88320, init/final 0xFFFFFFFF)
+; Shared by pif_eth_tx.asm and the pif_eth RX firmware.
+; =============================================================
+; Entry:  r21 = buffer base address, r8 = byte count
+; Exit:   r20 = final CRC (already inverted), r21 = base + count
+;         (so the caller can read/append the 4 FCS octets at r21)
+; Clobbers: r22, r23, r24, r25
+; Returns via r26.
+;
+; MUST be included at the END of a program: it is straight-line code and
+; would execute at startup if pasted before the entry point.
+; =============================================================
+crc32_core:
+        ldi  r20, 0xFFFF
+        ldi  r20.w2, 0xFFFF        ; crc = 0xFFFFFFFF
+        ldi  r22, 0
+c3_byte:
+        qble c3_done, r22, r8      ; i >= count
+        lbbo r23, r21, 0, 1
+        xor  r20, r20, r23         ; crc ^= byte
+        ldi  r24, 0
+c3_bit:
+        qble c3_bitend, r24, 8     ; j >= 8
+        and  r25, r20, 1
+        qbeq c3_noxor, r25, 0
+        lsr  r20, r20, 1
+        ldi  r25, 0x8320
+        ldi  r25.w2, 0xEDB8        ; poly 0xEDB88320
+        xor  r20, r20, r25
+        jmp  c3_bitnext
+c3_noxor:
+        lsr  r20, r20, 1
+c3_bitnext:
+        add  r24, r24, 1
+        jmp  c3_bit
+c3_bitend:
+        add  r21, r21, 1
+        add  r22, r22, 1
+        jmp  c3_byte
+c3_done:
+        not  r20, r20              ; final XOR 0xFFFFFFFF
+        jmp  r26
+```
+
+- [ ] **Step 4: Rewrite `crc32_compute` in `pif_eth_tx.asm`**
+
+Replace the whole `crc32_compute` routine (from the `crc32_compute:` label through its `jmp r29`, including the `cc_*` labels) with:
+
+```asm
+; -------------------------------------------------------------
+; crc32_compute: CRC-32 over payload_len bytes at 0x0500, append the
+;   4 FCS bytes little-endian at 0x0500+payload_len. ret r29
+;   The inner loop lives in pif_eth_crc32.inc (shared with the RX firmware).
+;   r26 is free here: it is only used as push_symbol's return register
+;   inside send_frame, which runs after this.
+; -------------------------------------------------------------
+crc32_compute:
+        ldi  r21, 0x0500
+        jal  r26, crc32_core       ; -> r20 = FCS, r21 = 0x0500+payload_len
+        sbbo r20, r21, 0, 4        ; append FCS (little-endian)
+        jmp  r29
+```
+
+Then append as the **last line** of `pif_eth_tx.asm`:
+
+```asm
+        .include "pif_eth_crc32.inc"
+```
+
+- [ ] **Step 5: Thread `include_paths` through the loaders**
+
+In `source/pif_eth/driver.py`, add next to the `FIRMWARE` definition:
+
+```python
+ASM_DIR = str(_HERE)
+```
+
+and change the load call to:
+
+```python
+    errors = sim.load("pru0", FIRMWARE, include_paths=[ASM_DIR])
+```
+
+In `source/pif_eth/rx_driver.py`, change both load calls:
+
+```python
+    errors = sim.load("pru0", fw, include_paths=[str(_HERE)])
+```
+```python
+    errors = sim.load("pru1", fw, include_paths=[str(_HERE)])
+```
+
+In `mcp_server/server.py`, replace `pru_load`:
+
+```python
+    def pru_load(self, source: str, core: str = "pru0",
+                 include_paths: list[str] | None = None) -> dict:
+        """Parse and load assembly source into a PRU core."""
+        errors = self.sim.load(core, source, include_paths)
+        line_count = len([l for l in source.split('\n') if l.strip()])
+        return {"success": len(errors) == 0, "errors": errors, "line_count": line_count}
+```
+
+In `tests/test_pif_eth.py`, update the two existing load sites:
+
+```python
+    assert sim.load("pru0", driver.FIRMWARE, include_paths=[driver.ASM_DIR]) == []
+```
+```python
+    assert mcp.pru_load(driver.FIRMWARE, core="pru0",
+                        include_paths=[driver.ASM_DIR])["success"]
+```
+
+- [ ] **Step 6: Verify TX behaviour is unchanged**
+
+Run: `python3 -m pytest tests/test_pif_eth.py -q`
+Expected: all PASS — including the existing zero-BER round-trip and MCP tests. Any BER regression means the register contract in the include is wrong.
+
+Run: `python3 -m pytest tests/test_pif_eth_rx.py -q`
+Expected: all PASS (rx_driver loads TX firmware too)
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add source/pif_eth/pif_eth_crc32.inc source/pif_eth/pif_eth_tx.asm \
+        source/pif_eth/driver.py source/pif_eth/rx_driver.py \
+        mcp_server/server.py tests/test_pif_eth.py
+git commit -m "refactor(pif_eth): share CRC-32 routine between TX and RX via .include"
+```
+
+---
+
+### Task 7: Option 1 post-frame CRC32 and PRNG BER
 
 **Files:**
 - Modify: `source/pif_eth/pif_eth_rx_o1_raw.asm`
@@ -1052,42 +1258,14 @@ and append:
 
 ```asm
 ; -------------------------------------------------------------
-; rx_crc_check: CRC-32 over the reconstructed payload at 0x2E00;
-;   compare against the 4 received FCS octets.  ret r28
-;   Reflected poly 0xEDB88320, init/final 0xFFFFFFFF -- identical to
-;   crc32_compute in pif_eth_tx.asm.
-;   r20 crc  r21 ptr  r22 i  r23 byte  r24 j  r25 tmp/poly
+; rx_crc_check: CRC-32 over the reconstructed payload at 0x2E00,
+;   compared against the 4 received FCS octets.  ret r28
+;   The inner loop is the shared crc32_core from pif_eth_crc32.inc.
+;   r26 is free here (post_frame uses r28/r29 for returns).
 ; -------------------------------------------------------------
 rx_crc_check:
-        ldi  r20, 0xFFFF
-        ldi  r20.w2, 0xFFFF
         ldi  r21, 0x2E00
-        ldi  r22, 0
-rc_byte:
-        qble rc_done, r22, r8       ; i >= payload_len
-        lbbo r23, r21, 0, 1
-        xor  r20, r20, r23
-        ldi  r24, 0
-rc_bit:
-        qble rc_bitend, r24, 8
-        and  r25, r20, 1
-        qbeq rc_noxor, r25, 0
-        lsr  r20, r20, 1
-        ldi  r25, 0x8320
-        ldi  r25.w2, 0xEDB8
-        xor  r20, r20, r25
-        jmp  rc_bitnext
-rc_noxor:
-        lsr  r20, r20, 1
-rc_bitnext:
-        add  r24, r24, 1
-        jmp  rc_bit
-rc_bitend:
-        add  r21, r21, 1
-        add  r22, r22, 1
-        jmp  rc_byte
-rc_done:
-        not  r20, r20               ; computed FCS
+        jal  r26, crc32_core        ; -> r20 = computed FCS, r21 = end of payload
         lbbo r25, r21, 0, 4         ; received FCS (little-endian)
         ldi  r6, 0
         qbne rc_store, r20, r25
@@ -1141,6 +1319,12 @@ rb_publish:
         jmp  r28
 ```
 
+Finally, append as the **last line** of `pif_eth_rx_o1_raw.asm`:
+
+```asm
+        .include "pif_eth_crc32.inc"
+```
+
 `r13` starts as the seed from the control block and is written back after each
 frame's `payload_len` draws, so frame *n* checks against the same PRNG
 sub-stream PRU0 transmitted. Regenerating from the seed every frame would
@@ -1164,7 +1348,7 @@ git commit -m "feat(pif_eth): Option 1 post-frame CRC32 + PRNG BER validation"
 
 ---
 
-### Task 7: Characterize Option 1 on the ladder and document
+### Task 8: Characterize Option 1 on the ladder and document
 
 Measures the fastest rung Option 1 sustains, pins it as a regression constant, and writes up the result.
 
@@ -1185,7 +1369,7 @@ Append to `source/pif_eth/rx_driver.py`:
 ```python
 LADDER = [2, 4, 6, 8]
 
-# Smallest n_tx each option is MEASURED to run clean at (Task 7).
+# Smallest n_tx each option is MEASURED to run clean at (Task 8).
 # Filled in from characterize() output -- never from a hand cycle-tally.
 RATED_DIVIDER: dict[str, int] = {}
 
@@ -1258,7 +1442,7 @@ Append to `tests/test_pif_eth_rx.py`:
 
 ```python
 def test_o1_clean_at_rated_divider():
-    """Pins the measured rating from Task 7 so a regression is visible."""
+    """Pins the measured rating from Task 8 so a regression is visible."""
     n_tx = rx_driver.RATED_DIVIDER["o1"]
     sim = rx_driver.run_rx(n_tx, option="o1", num_frames=2)
     assert rx_driver.ru32(sim, rx_driver.S_OVF) == 0
