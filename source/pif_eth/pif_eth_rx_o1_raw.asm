@@ -236,14 +236,6 @@ ps_skip:
 ; -------------------------------------------------------------
 rx_crc_check:
         ldi  r21, 0x0E00
-        ldi  r23, 0                 ; crc32_core's LBBO byte-read only strobes
-                                    ; r23's low byte (real PRU byte-write
-                                    ; semantics); pf_symbol leaves stale
-                                    ; LUT-entry garbage in r23's upper bits,
-                                    ; which would otherwise XOR into every
-                                    ; byte of the CRC.  TX's call site never
-                                    ; hits this because r23 is untouched (and
-                                    ; thus already 0) before its own call.
         jal  r26, crc32_core        ; -> r20 = computed FCS, r21 = end of payload
         lbbo r25, r21, 0, 4         ; received FCS (little-endian)
         ldi  r6, 0
