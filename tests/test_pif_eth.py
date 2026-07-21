@@ -220,3 +220,57 @@ def test_via_mcp_server():
     frame = bytes.fromhex(dump["hex_dump"])
     assert frame[:128] == prng_bytes(128, DEFAULT_SEED)
     assert frame[128:] == fcs_bytes(frame[:128])
+
+
+# --------------------------------------------------------------------------
+# PRU1 RX: 8b/10b decode LUT builder
+# --------------------------------------------------------------------------
+
+def test_symbol_disparity_values():
+    assert codec.symbol_disparity(codec.K28_5_RD_MINUS) == 2
+    assert codec.symbol_disparity(codec.K28_5_RD_PLUS) == -2
+    for b in range(256):
+        for rd in (codec.RD_MINUS, codec.RD_PLUS):
+            sym, _ = codec.encode_byte(b, rd)
+            assert codec.symbol_disparity(sym) in (-2, 0, 2)
+
+
+def _lut_entry(lut, code):
+    return int.from_bytes(lut[code * 2:code * 2 + 2], "little")
+
+
+def test_dram1_decode_lut_size_and_octets():
+    lut = codec.build_dram1_decode_lut()
+    assert len(lut) == 2048
+    for b in range(256):
+        for rd in (codec.RD_MINUS, codec.RD_PLUS):
+            sym, _ = codec.encode_byte(b, rd)
+            e = _lut_entry(lut, sym)
+            assert e & 0xFF == b
+            assert (e >> 8) & 1 == 1            # valid
+
+
+def test_dram1_decode_lut_disparity_bits():
+    """Neutral flag and resulting-RD bit must agree with the encoder."""
+    lut = codec.build_dram1_decode_lut()
+    for b in range(256):
+        for rd in (codec.RD_MINUS, codec.RD_PLUS):
+            sym, new_rd = codec.encode_byte(b, rd)
+            e = _lut_entry(lut, sym)
+            neutral = (e >> 9) & 1
+            if codec.symbol_disparity(sym) == 0:
+                assert neutral == 1
+                assert new_rd == rd             # RD unchanged
+            else:
+                assert neutral == 0
+                assert (e >> 10) & 1 == (1 if new_rd == codec.RD_PLUS else 0)
+
+
+def test_dram1_decode_lut_commas_and_invalid():
+    lut = codec.build_dram1_decode_lut()
+    for sym in codec.COMMA_SYMBOLS:
+        e = _lut_entry(lut, sym)
+        assert (e >> 8) & 1 == 1                # valid
+        assert (e >> 11) & 1 == 1               # is-comma
+    # All-zeros is not a legal 8b/10b codeword.
+    assert (_lut_entry(lut, 0) >> 8) & 1 == 0

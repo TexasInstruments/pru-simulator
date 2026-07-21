@@ -151,5 +151,46 @@ def build_dram0_lut() -> bytes:
     return bytes(buf)
 
 
+def symbol_disparity(code10: int) -> int:
+    """Disparity (ones - zeros) of a 10-bit codeword: -2, 0 or +2."""
+    return 2 * bin(code10 & 0x3FF).count("1") - 10
+
+
+def build_dram1_decode_lut() -> bytes:
+    """Build the 1024-entry (2 bytes each) DRAM1 decode table for PRU1 RX.
+
+    A 10-bit codeword identifies its octet without knowing the running
+    disparity, so one flat table suffices (``build_decode_map`` asserts the
+    absence of collisions).  RD is needed only to *validate* the stream.
+
+    Entry layout (little-endian u16) for codeword ``c``::
+
+        [7:0]   decoded octet
+        [8]     valid (1 = legal codeword)
+        [9]     disparity-neutral (1 = disparity 0, RD unchanged)
+        [10]    resulting RD when not neutral (0=negative, 1=positive)
+        [11]    is-comma (K28.5)
+    """
+    dm = build_decode_map()
+    buf = bytearray(1024 * 2)
+    for code in range(1024):
+        octet = dm.get(code)
+        is_comma = code in COMMA_SYMBOLS
+        word = 0
+        if octet is not None or is_comma:
+            word |= 1 << 8
+            if octet is not None:
+                word |= octet & 0xFF
+            disp = symbol_disparity(code)
+            if disp == 0:
+                word |= 1 << 9
+            else:
+                word |= (1 if disp > 0 else 0) << 10
+            if is_comma:
+                word |= 1 << 11
+        buf[code * 2:code * 2 + 2] = word.to_bytes(2, "little")
+    return bytes(buf)
+
+
 def symbol_ones(code10: int) -> int:
     return bin(code10 & 0x3FF).count("1")
