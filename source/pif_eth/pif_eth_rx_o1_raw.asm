@@ -26,7 +26,7 @@
 ;   0x0F40  control: +0 mode  +4 seed  +8 payload_len  +12 go  +16 rxcfg
 ;
 ; Persistent registers:
-;   r1 capture ptr   r5 FIFO-pop cmd   r8 payload_len   r9 core_len
+;   r1 capture ptr   r5 FIFO-pop cmd   r8 payload_len
 ;   r13 seed         r14 frame counter  r18 mode
 ; =============================================================
 
@@ -46,7 +46,6 @@ start:
         lbbo r18, r2, 0, 4          ; mode
         lbbo r13, r2, 4, 4          ; seed
         lbbo r8,  r2, 8, 4          ; payload_len
-        add  r9, r8, 4              ; core_len = payload_len + 4
 
         ldi  r5, 0                  ; R31 bit24 = clr_val ch0 (FIFO pop)
         ldi  r5.w2, 0x0100
@@ -102,11 +101,15 @@ eo_novf:
                                     ; exactly captured_bytes worth would
                                     ; otherwise absorb it into one extra,
                                     ; spurious all-zero 10b symbol at the
-                                    ; tail. Verified empirically across many
-                                    ; seeds: dropping this one byte from the
-                                    ; reported length is what makes
-                                    ; decode_capture's invalid_symbols land
-                                    ; on 0 for the true frame content.
+                                    ; tail. Verified empirically across the
+                                    ; payload lengths actually exercised by
+                                    ; the test/characterization suite (60-128
+                                    ; octets, i.e. UDP and BERT): dropping
+                                    ; this one byte from the reported length
+                                    ; is what makes decode_capture's
+                                    ; invalid_symbols land on 0 for the true
+                                    ; frame content. Not verified beyond that
+                                    ; range.
         sub  r2, r1, r0             ; captured_bytes = ptr - (base+1)
         sbbo r2, r3, 4, 4
         sbbo r6, r3, 8, 4           ; rx_ovf
@@ -126,16 +129,17 @@ eo_novf:
 ; decoding them through the LUT.  The symbol grid is anchored on the
 ; first comma found; octets before that are discarded as pre-alignment.
 ;
-;   r1 cap ptr   r2 cap_bytes   r7 out ptr   r10 rd(0=neg,1=pos)
-;   r11 bit acc  r12 nbits      r15 sym_err  r16 aligned flag
-;   r19 sample toggle           r20 byte     r21 bit index
-;   r22 symbol   r23 LUT entry  r24 LUT offset
+;   r1 cap ptr   r2 cap_bytes   r7 out ptr   r9 overrun flag (frame buffer full)
+;   r10 rd(0=neg,1=pos)         r11 bit acc  r12 nbits      r15 sym_err
+;   r16 aligned flag            r19 sample toggle           r20 byte
+;   r21 bit index               r22 symbol   r23 LUT entry  r24 LUT offset
 ; -------------------------------------------------------------
 post_frame:
         ldi  r1, 0x0800
         ldi  r3, 0x0F00
         lbbo r2, r3, 4, 4           ; captured_bytes
         ldi  r7, 0x0E00             ; frame output pointer
+        ldi  r9, 0                  ; overrun flag: frame buffer not yet full
         ldi  r10, 0                 ; rd = negative
         ldi  r11, 0                 ; bit accumulator
         ldi  r12, 0                 ; nbits held
@@ -182,6 +186,11 @@ pf_done:
 ; 10-bit groups from that anchor.
 ; -------------------------------------------------------------
 pf_symbol:
+        qbeq ps_go, r9, 0           ; r9==0 -> frame buffer still has room
+        jmp  r28                   ; overrun already latched by an earlier
+                                    ; octet this frame: abandon all further
+                                    ; decoding (see ps_full below)
+ps_go:
         ldi  r6, 0x03FF
         and  r22, r11, r6           ; 10-bit symbol (always the last 10 bits
                                     ; pushed, regardless of r12 bookkeeping --
@@ -201,6 +210,24 @@ pf_symbol:
         qbbs ps_comma, r23, 11      ; comma -> alignment anchor
 
         qbeq ps_skip, r16, 0        ; not aligned yet -> discard octet
+        qbgt ps_store, r7, r3       ; r3 == 0x0F00 (frame-buffer end: same
+                                    ; address as the stats block base, loaded
+                                    ; once in post_frame's prologue and never
+                                    ; written here) -- r7 < r3 means there is
+                                    ; still room to store this octet
+ps_full:
+        ldi  r6, 2
+        sbbo r6, r3, 28, 4          ; eof_status = 2 (overflow abort): the
+                                    ; 256 B frame buffer (0x0E00-0x0EFF) is
+                                    ; full. The realtime poll/zrun loop has no
+                                    ; room in its 8-cycle budget for a guard
+                                    ; of its own (see header note) -- this is
+                                    ; the firmware-side backstop that pairs
+                                    ; with the host-side payload_len <= 252
+                                    ; check in rx_driver.py.
+        ldi  r9, 1                  ; latch: abandon all remaining octets
+        jmp  r28
+ps_store:
         and  r6, r23, 0xFF
         sbbo r6, r7, 0, 1           ; store decoded octet
         add  r7, r7, 1

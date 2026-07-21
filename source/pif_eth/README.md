@@ -143,6 +143,16 @@ alignment, CRC-32 verification and PRNG bit-error counting all happen
 **post-frame**, in firmware, after capture completes. Results are published
 to DRAM1 (`rx_driver.STATS_ADDR`, `rx_driver.FRAME_ADDR`).
 
+**`payload_len` ceiling: 252 octets.** The reconstructed-frame buffer at
+`0x0E00` is 256 B, holding `payload_len + 4` (FCS) bytes, so `payload_len`
+must be `<= 252`. `rx_driver.run_rx`/`build_sim` validate this and raise
+`ValueError` rather than let the firmware overrun. The realtime `poll`/`zrun`
+capture loop is deliberately left with no guard of its own — see below — so
+the post-frame decode stage (`pf_symbol`) carries a matching firmware-side
+backstop: on overrun it stops storing, sets `eof_status = 2` (overflow
+abort), and abandons the rest of that frame's octets, rather than walking
+into the stats/control blocks that immediately follow the frame buffer.
+
 `rx_driver.py` drives PRU0 TX → PRU1 RX end to end and exposes:
 
 ```bash
@@ -168,7 +178,15 @@ defect was previously found and fixed in the host-side reference decoder).
 
 Option 1's 7-instruction realtime loop sustains full line rate (`n_tx=2`)
 cleanly in this simulator — no FIFO overflow, no symbol errors, no anchor-risk
-lock-on, across every seed tried. **Rated divider: `RATED_DIVIDER["o1"] = 2`**
+lock-on, across every seed tried. **The `n_tx=2` (125 Mbaud) row passes at
+*zero* headroom**: 7 instructions plus a 1-cycle DRAM write stall exactly
+fills the 8-cycle-per-captured-byte budget, with none of the 4-deep FIFO's
+slack (32 cycles) left unused if that budget grows by even one cycle. That
+result depends on this simulator's modelled timing —
+`config/memory_pif_eth_rx.cfg` sets DRAM1 `write_latency = 1` and `jitter =
+0`; any added jitter or write latency on that path drops this rung. This is a
+simulator measurement of modelled cycle cost, **not a silicon claim**.
+**Rated divider: `RATED_DIVIDER["o1"] = 2`**
 (the smallest `n_tx` measured to pass), pinned by
 `test_o1_clean_at_rated_divider` in `tests/test_pif_eth_rx.py`. Full raw
 output and a harness bug found/fixed during characterization:

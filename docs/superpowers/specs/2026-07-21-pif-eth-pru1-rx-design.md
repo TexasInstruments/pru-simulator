@@ -146,6 +146,22 @@ Capture sizing: a BERT frame is 132 octets → 1320 line bits → 330 captured
 bytes; UDP is 64 octets → 640 line bits → 160 bytes. Six commas (leading, three
 idle, two trailing) add 60 line bits → 15 bytes. Worst case ≈ 345 bytes.
 
+**`payload_len` ceiling: 252 octets.** The post-frame decode stage writes
+each decoded octet into the 256 B reconstructed-frame buffer at `0x0E00`
+(`payload_len + 4`-byte FCS must fit), so `payload_len <= 252`.
+`rx_driver.run_rx`/`build_sim` reject anything larger with `ValueError`
+rather than let the firmware overrun into the stats/control blocks that
+immediately follow. The realtime `poll`/`zero_run` loop above has no room in
+its 8-cycle budget for a bounds check of its own, so `pf_symbol` (the
+post-frame decode routine) carries a matching guard: on reaching the end of
+the frame buffer it stops storing, sets `eof_status = 2` (overflow abort,
+§8), and abandons the rest of that frame's octets rather than corrupting
+what follows. The raw capture buffer (`0x0800`, 1024 B) has no equivalent
+firmware guard for the same reason the realtime loop can't afford one; it is
+sized generously enough (§ above) that the host-side `payload_len` check
+keeps it from overrunning in practice, and `rx_driver` also rejects any
+`payload_len` whose estimated capture size would exceed it.
+
 ### 6.2 Option 2 — `pif_eth_rx_o2_bits.asm`
 
 Realtime work: decimate 2→1 and store packed 10-bit symbols. Each captured byte
@@ -227,6 +243,11 @@ the same storage.
 | `+0x14` | `prng_bit_errors` (BER numerator) |
 | `+0x18` | `total_bits_checked` (BER denominator) |
 | `+0x1C` | `eof_status` (0 = running, 1 = clean EOF, 2 = overflow abort) |
+
+`eof_status = 2` is set by Option 1's `pf_symbol` overrun guard (§6.1) when
+the reconstructed-frame buffer fills before decode finishes -- reachable
+whenever `payload_len` is large enough to overrun it, and exercised directly
+in `tests/test_pif_eth_rx.py::test_o1_overrun_sets_eof_status_2_and_preserves_control_block`.
 
 **Control block** (local `0x0F40` / global `0x2F40`, all u32):
 
@@ -372,9 +393,14 @@ Contrary to §12.2's expectation that `n_tx=2` was "genuinely marginal" and
 "may not reach" full rate, the measured result is that Option 1's 7-instruction
 realtime service loop **does** sustain full line rate (125.00 Mbaud, 8 core
 cycles per captured FIFO byte at 250 MHz) with zero FIFO overflows across
-every seed tried. This is a simulator measurement of the modeled realtime
-loop's cycle cost against the modeled perif timing, not a claim about real
-silicon.
+every seed tried. It does so at **zero headroom**: 7 instructions plus a
+1-cycle DRAM write stall on the `sbbo` exactly fills the 8-cycle budget, with
+none of the 4-deep FIFO's 32 cycles of total slack to spare if that per-byte
+cost grows even by one cycle. The result depends on this simulator's modelled
+timing for DRAM1 -- `config/memory_pif_eth_rx.cfg` sets `write_latency = 1`
+and `jitter = 0`; adding either back would drop this rung to FAIL. This is a
+simulator measurement of the modeled realtime loop's cycle cost against the
+modeled perif timing, not a claim about real silicon.
 
 **Rated divider:** `RATED_DIVIDER["o1"] = 2` — the smallest (fastest) rung on
 the ladder, since it is the smallest `n_tx` measured to pass cleanly. Pinned

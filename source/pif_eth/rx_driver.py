@@ -57,6 +57,40 @@ RXCFG_PRU1 = 0x26100
 
 BERT_PAYLOAD_LEN = 128
 
+# DRAM1 buffer sizes the firmware allocates (see pif_eth_rx_o1_raw.asm header).
+FRAME_BUFFER_SIZE = 256    # 0x0E00-0x0EFF: reconstructed frame (payload + FCS)
+CAPTURE_BUFFER_SIZE = 1024  # 0x0800-0x0BFF: raw oversample capture
+
+# The binding limit is the 256 B frame buffer: payload_len + 4-byte FCS must
+# fit, so payload_len <= 252. pf_symbol in the firmware backstops this with
+# its own overrun guard (eof_status=2 on overflow) since the realtime
+# poll/zrun capture loop cannot afford a guard of its own -- it sits at zero
+# headroom against the 8-cycle-per-captured-byte budget at 125 Mbaud (see
+# docs/superpowers/specs/2026-07-21-pif-eth-pru1-rx-design.md).
+MAX_PAYLOAD_LEN = FRAME_BUFFER_SIZE - 4
+
+
+def _validate_payload_len(payload_len: int) -> None:
+    """Reject a payload_len that would overrun DRAM1's frame or capture buffer.
+
+    Raises ValueError rather than letting the firmware silently corrupt the
+    stats/control blocks that sit immediately after the 256 B frame buffer.
+    """
+    if payload_len > MAX_PAYLOAD_LEN:
+        raise ValueError(
+            f"payload_len={payload_len} exceeds the {FRAME_BUFFER_SIZE} B "
+            f"DRAM1 frame buffer: payload_len + 4-byte FCS must be <= "
+            f"{FRAME_BUFFER_SIZE}, i.e. payload_len <= {MAX_PAYLOAD_LEN}")
+    # Six commas (leading, three idle, two trailing) plus payload+FCS octets,
+    # each octet contributing 10 line bits -> 4 captured bytes at 2x
+    # oversampling (8 samples/byte, 2 samples/bit).
+    cap_bytes = (payload_len + 4 + 6) * 10 // 4
+    if cap_bytes > CAPTURE_BUFFER_SIZE:
+        raise ValueError(
+            f"payload_len={payload_len} needs an estimated {cap_bytes} B "
+            f"raw capture, exceeding the {CAPTURE_BUFFER_SIZE} B capture "
+            f"buffer at 0x0800")
+
 
 def txcfg_word(n_tx: int) -> int:
     """TXCFG for divisor *n_tx*: clk_sel=core, frac=0, div_factor=n_tx-1."""
@@ -94,6 +128,7 @@ def build_sim(n_tx: int, num_frames: int = 1, seed: int = DEFAULT_SEED,
     """Configured simulator: TX loaded and past self-config, loopback live."""
     if n_tx % 2:
         raise ValueError(f"n_tx must be even for exact 2x oversampling: {n_tx}")
+    _validate_payload_len(payload_len)
     sim = Simulator(config_path=CONFIG_PATH)
 
     sim.memory.write(LUT0_ADDR, codec.build_dram0_lut())
@@ -193,6 +228,7 @@ def run_rx(n_tx: int, option: str = "o1", num_frames: int = 1,
            seed: int = DEFAULT_SEED, payload_len: int = BERT_PAYLOAD_LEN,
            max_steps: int = 4_000_000) -> Simulator:
     """Run *num_frames* frames through PRU0 TX -> PRU1 RX firmware."""
+    _validate_payload_len(payload_len)
     sim = build_sim(n_tx, num_frames=num_frames, seed=seed,
                     payload_len=payload_len)
 
