@@ -70,6 +70,22 @@ start:
     assert int.from_bytes(sim.memory_read(0x0100, 4), "little") == 0
 
 
+def test_pru1_sbco_store_is_translated():
+    """SBCO via c24 (core-local 0x0000) must translate to DRAM1 (global 0x2000)."""
+    sim = Simulator()
+    src = """
+start:
+        ldi  r5, 0x4567
+        sbco r5, c24, 0x80, 4
+        halt
+"""
+    assert sim.load("pru1", src) == []
+    sim.step("pru1", 20)
+    # Written at PRU1-local 0x80 (via c24) -> global 0x2080 (DRAM1), not 0x80.
+    assert int.from_bytes(sim.memory_read(0x2080, 4), "little") == 0x4567
+    assert int.from_bytes(sim.memory_read(0x0080, 4), "little") == 0
+
+
 def test_shared_ram_is_not_swapped():
     sim = Simulator()
     src = """
