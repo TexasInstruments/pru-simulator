@@ -222,8 +222,18 @@ DRAM1 spans `0x2000`–`0x3FFF` (8 KB).
 | `+0x18` | `total_bits_checked` (BER denominator) |
 | `+0x1C` | `eof_status` (0 = running, 1 = clean EOF, 2 = overflow abort) |
 
-**Control block** (`0x2F40`, all u32): `mode` (0 = PRNG/BERT, 1 = preloaded),
-`seed`, `payload_len`, `go` flag.
+**Control block** (`0x2F40`, all u32):
+
+| Offset | Field |
+|---|---|
+| `+0x00` | `mode` (0 = PRNG/BERT, 1 = preloaded) |
+| `+0x04` | `seed` |
+| `+0x08` | `payload_len` |
+| `+0x0C` | `go` flag (host→firmware) |
+| `+0x10` | `rxcfg` — the RXCFG word the firmware writes at startup |
+
+`rxcfg` is host-supplied rather than hardcoded because `n_rx` changes at every
+rung of the ladder (§4); the firmware must not need reassembling per rate.
 
 ## 9. Post-frame processing (PRU1 firmware)
 
