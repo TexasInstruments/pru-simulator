@@ -133,6 +133,47 @@ architectural target is reachable, not as a drop-in replacement for
 Full results and root-cause analysis:
 `docs/superpowers/specs/2026-07-21-pif-eth-n2-125mbaud-design.md`.
 
+## PRU1 RX (Option 1 — realtime capture, post-frame decode)
+
+`pif_eth_rx_o1_raw.asm` runs on **PRU1** and receives PRU0's 8b/10b stream
+over the same perif loopback, at exactly **2x oversampling** (`n_rx =
+n_tx/2`). The realtime service loop only drains the 4-deep RX FIFO and
+detects SOF/EOF (2 consecutive zero capture bytes); 8b/10b decode, comma
+alignment, CRC-32 verification and PRNG bit-error counting all happen
+**post-frame**, in firmware, after capture completes. Results are published
+to DRAM1 (`rx_driver.STATS_ADDR`, `rx_driver.FRAME_ADDR`).
+
+`rx_driver.py` drives PRU0 TX → PRU1 RX end to end and exposes:
+
+```bash
+python3 source/pif_eth/rx_driver.py o1
+```
+
+`characterize("o1")` runs every ladder rung and reports which ones stay
+clean (`rx_ovf=0`, `symbol_errors=0`, `prng_bit_errors=0`, `crc_ok=1`, and
+the reconstructed frame matches the expected PRNG+FCS payload). Task 8 swept
+7 seeds per rung to bound a known anchor risk — Option 1 locks its symbol
+grid onto the *first* comma it finds with no scoring, so an unlucky bit
+stream could in principle lock onto a phase-shifted false comma (this exact
+defect was previously found and fixed in the host-side reference decoder).
+
+**Measured (2026-07-21), 7 seeds × 4 rungs, all 28 combinations PASS:**
+
+| n_tx | line rate | cycles/captured byte | result |
+|---|---|---|---|
+| 2 | 125.00 Mbaud | 8 | **PASS** |
+| 4 | 62.50 Mbaud | 16 | **PASS** |
+| 6 | 41.67 Mbaud | 24 | **PASS** |
+| 8 | 31.25 Mbaud | 32 | **PASS** |
+
+Option 1's 7-instruction realtime loop sustains full line rate (`n_tx=2`)
+cleanly in this simulator — no FIFO overflow, no symbol errors, no anchor-risk
+lock-on, across every seed tried. **Rated divider: `RATED_DIVIDER["o1"] = 2`**
+(the smallest `n_tx` measured to pass), pinned by
+`test_o1_clean_at_rated_divider` in `tests/test_pif_eth_rx.py`. Full raw
+output and a harness bug found/fixed during characterization:
+`docs/superpowers/specs/2026-07-21-pif-eth-pru1-rx-design.md` §14.
+
 ## Roadmap
 
 * Broadside CRC accelerator for the FCS (currently firmware bit-serial).

@@ -221,3 +221,120 @@ def run_rx(n_tx: int, option: str = "o1", num_frames: int = 1,
         if ru32(sim, S_FRAMES) != i + 1:
             raise RuntimeError(f"frame {i} did not complete within step budget")
     return sim
+
+
+LADDER = [2, 4, 6, 8]
+
+# At least 3 seeds per rung, per Task 8: Option 1 anchors its symbol grid on
+# the *first* comma it finds with no scoring, so a phase-shifted false comma
+# could in principle win for an unlucky bit stream -- this exact defect was
+# already found and fixed on the host-side reference decoder. A single seed
+# cannot bound that risk; DEFAULT_SEED plus a few small seeds can.
+CHARACTERIZE_SEEDS = (DEFAULT_SEED, 1, 2, 3, 4, 5, 6)
+
+# Smallest n_tx each option is MEASURED to run clean at (Task 8).
+# Filled in from characterize() output -- never from a hand cycle-tally.
+#
+# Measured 2026-07-21: characterize("o1") passes at every ladder rung
+# (n_tx=2,4,6,8), across seeds (DEFAULT_SEED, 1..6), with ovf=sym_err=
+# bit_err=0 and crc_ok=1 -- including the marginal n_tx=2 rung (125.00
+# Mbaud, 8 core cycles/captured byte against Option 1's 7-instruction
+# realtime loop). The smallest n_tx is therefore the rated divider.
+RATED_DIVIDER: dict[str, int] = {"o1": 2}
+
+
+def characterize(option: str = "o1", num_frames: int = 2,
+                  seeds: tuple[int, ...] = CHARACTERIZE_SEEDS) -> list[dict]:
+    """Run *option* at every ladder rung, across several seeds, and report
+    which (n_tx, seed) combinations stay clean.
+
+    One row per (n_tx, seed). A rung only counts as passing overall once
+    every swept seed passes at that rung -- see rated_ok().
+    """
+    from pif_eth.crc32 import fcs_bytes
+    from pif_eth.prng import prng_bytes
+
+    rows = []
+    for n_tx in LADDER:
+        for seed in seeds:
+            row = {"option": option, "n_tx": n_tx, "seed": seed,
+                   "baud_mhz": 250.0 / n_tx, "ok": False, "error": None}
+            try:
+                sim = run_rx(n_tx, option=option, num_frames=num_frames,
+                              seed=seed)
+                # The BERT PRNG runs continuously across a multi-frame burst
+                # (see driver.py's `expected_stream` convention) -- FRAME_ADDR
+                # holds the *last* received frame, so the expected payload is
+                # the final payload_len-byte slice of the whole-burst stream,
+                # not a freshly re-seeded first frame.
+                stream = prng_bytes(BERT_PAYLOAD_LEN * num_frames, seed)
+                payload = stream[(num_frames - 1) * BERT_PAYLOAD_LEN:
+                                 num_frames * BERT_PAYLOAD_LEN]
+                expected = payload + fcs_bytes(payload)
+                # Strip trailing idle-zero bytes before decoding a firmware
+                # capture, exactly as capture_python_rx does. The firmware's
+                # reported length already drops one EOF byte, but that only
+                # avoids a spurious tail symbol by bit-count arithmetic;
+                # rstrip makes it robust by construction (a real symbol
+                # always ends with a '1' sample). Applied here for parity
+                # with capture_python_rx even though this row's own pass/fail
+                # check reads the firmware's already-decoded FRAME_ADDR
+                # rather than re-decoding the raw capture in Python.
+                n_cap = ru32(sim, S_CAPBYTES)
+                raw = sim.memory_read(CAP_ADDR, n_cap).rstrip(b"\x00")
+                row.update(
+                    ovf=ru32(sim, S_OVF),
+                    sym_err=ru32(sim, S_SYMERR),
+                    bit_err=ru32(sim, S_BITERR),
+                    crc_ok=ru32(sim, S_CRCOK),
+                    frames=ru32(sim, S_FRAMES),
+                    cap_len=len(raw),
+                )
+                row["ok"] = (row["ovf"] == 0 and row["sym_err"] == 0
+                             and row["bit_err"] == 0 and row["crc_ok"] == 1
+                             and row["frames"] == num_frames
+                             and sim.memory_read(FRAME_ADDR, len(expected))
+                             == expected)
+                if row["crc_ok"] == 0 and row["sym_err"] == 0:
+                    # The anchor risk materialising: a bad frame with no
+                    # symbol errors reported means the grid locked onto a
+                    # false comma. Flag it loudly rather than dropping it.
+                    row["anchor_risk"] = True
+            except Exception as exc:                       # noqa: BLE001
+                row["error"] = str(exc)
+            rows.append(row)
+    return rows
+
+
+def rated_ok(rows: list[dict], n_tx: int) -> bool:
+    """True if every swept seed passed cleanly at this rung."""
+    at_rung = [r for r in rows if r["n_tx"] == n_tx]
+    return bool(at_rung) and all(r["ok"] for r in at_rung)
+
+
+def main(argv: list[str]) -> int:
+    option = argv[1] if len(argv) > 1 else "o1"
+    rows = characterize(option)
+    print(f"{'opt':>4} {'n_tx':>5} {'seed':>10} {'Mbaud':>8} {'ovf':>5} "
+          f"{'symerr':>7} {'biterr':>7} {'crc':>4}  result")
+    for r in rows:
+        if r["error"]:
+            print(f"{r['option']:>4} {r['n_tx']:>5} {r['seed']:>10} "
+                  f"{r['baud_mhz']:>8.2f} {'-':>5} {'-':>7} {'-':>7} "
+                  f"{'-':>4}  FAIL ({r['error']})")
+        else:
+            flag = "  <-- ANCHOR RISK" if r.get("anchor_risk") else ""
+            print(f"{r['option']:>4} {r['n_tx']:>5} {r['seed']:>10} "
+                  f"{r['baud_mhz']:>8.2f} {r['ovf']:>5} {r['sym_err']:>7} "
+                  f"{r['bit_err']:>7} {r['crc_ok']:>4}  "
+                  f"{'PASS' if r['ok'] else 'FAIL'}{flag}")
+    print()
+    for n_tx in LADDER:
+        n_seeds = len([r for r in rows if r["n_tx"] == n_tx])
+        print(f"n_tx={n_tx}: {'PASS' if rated_ok(rows, n_tx) else 'FAIL'} "
+              f"(all {n_seeds} seeds)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

@@ -318,3 +318,79 @@ that constant. Order of work therefore matters: characterize first, pin second.
 - Striping across perif channels 1 and 2.
 - Broadside CRC accelerator (still a TX-side future item).
 - Replacing `pif_eth_tx.asm` as the production TX firmware.
+
+## 14. Measured results (Task 8, 2026-07-21)
+
+`python3 source/pif_eth/rx_driver.py o1` runs `characterize("o1")`: every
+ladder rung (`n_tx = 2, 4, 6, 8`), each swept over 7 seeds
+(`DEFAULT_SEED, 1, 2, 3, 4, 5, 6`), `num_frames=2` per run. Full raw output:
+
+```
+ opt  n_tx       seed    Mbaud   ovf  symerr  biterr  crc  result
+  o1     2  464371934   125.00     0       0       0    1  PASS
+  o1     2          1   125.00     0       0       0    1  PASS
+  o1     2          2   125.00     0       0       0    1  PASS
+  o1     2          3   125.00     0       0       0    1  PASS
+  o1     2          4   125.00     0       0       0    1  PASS
+  o1     2          5   125.00     0       0       0    1  PASS
+  o1     2          6   125.00     0       0       0    1  PASS
+  o1     4  464371934    62.50     0       0       0    1  PASS
+  o1     4          1    62.50     0       0       0    1  PASS
+  o1     4          2    62.50     0       0       0    1  PASS
+  o1     4          3    62.50     0       0       0    1  PASS
+  o1     4          4    62.50     0       0       0    1  PASS
+  o1     4          5    62.50     0       0       0    1  PASS
+  o1     4          6    62.50     0       0       0    1  PASS
+  o1     6  464371934    41.67     0       0       0    1  PASS
+  o1     6          1    41.67     0       0       0    1  PASS
+  o1     6          2    41.67     0       0       0    1  PASS
+  o1     6          3    41.67     0       0       0    1  PASS
+  o1     6          4    41.67     0       0       0    1  PASS
+  o1     6          5    41.67     0       0       0    1  PASS
+  o1     6          6    41.67     0       0       0    1  PASS
+  o1     8  464371934    31.25     0       0       0    1  PASS
+  o1     8          1    31.25     0       0       0    1  PASS
+  o1     8          2    31.25     0       0       0    1  PASS
+  o1     8          3    31.25     0       0       0    1  PASS
+  o1     8          4    31.25     0       0       0    1  PASS
+  o1     8          5    31.25     0       0       0    1  PASS
+  o1     8          6    31.25     0       0       0    1  PASS
+
+n_tx=2: PASS (all 7 seeds)
+n_tx=4: PASS (all 7 seeds)
+n_tx=6: PASS (all 7 seeds)
+n_tx=8: PASS (all 7 seeds)
+```
+
+All 28 (rung × seed) combinations pass: `rx_ovf=0`, `symbol_errors=0`,
+`prng_bit_errors=0`, `crc_ok=1`, and the reconstructed frame in DRAM1 matches
+the expected PRNG+FCS payload byte-for-byte. No row triggered the anchor-risk
+flag (`crc_ok=0` with `symbol_errors=0`), so no phase-shifted false-comma
+lock-on was observed across any of the 28 runs.
+
+Contrary to §12.2's expectation that `n_tx=2` was "genuinely marginal" and
+"may not reach" full rate, the measured result is that Option 1's 7-instruction
+realtime service loop **does** sustain full line rate (125.00 Mbaud, 8 core
+cycles per captured FIFO byte at 250 MHz) with zero FIFO overflows across
+every seed tried. This is a simulator measurement of the modeled realtime
+loop's cycle cost against the modeled perif timing, not a claim about real
+silicon.
+
+**Rated divider:** `RATED_DIVIDER["o1"] = 2` — the smallest (fastest) rung on
+the ladder, since it is the smallest `n_tx` measured to pass cleanly. Pinned
+by `test_o1_clean_at_rated_divider` in `tests/test_pif_eth_rx.py`.
+
+**Harness bug found and fixed during characterization:** the initial
+`characterize()` draft (matching the plan's literal code) compared the
+firmware's reconstructed frame at every rung against
+`prng_bytes(BERT_PAYLOAD_LEN, seed)` — the payload of *frame 0* of a burst —
+regardless of `num_frames`. With `num_frames=2`, DRAM1's `FRAME_ADDR` holds
+the *last* received frame, and the BERT PRNG runs continuously across a
+multi-frame burst (the same convention already established in
+`driver.py`'s `expected_stream`), so frame 1's payload is
+`prng_bytes(BERT_PAYLOAD_LEN * 2, seed)[128:256]`, not
+`prng_bytes(BERT_PAYLOAD_LEN, seed)`. The unfixed comparison produced a
+uniform FAIL across all four rungs while `ovf/symerr/biterr` were all clean
+and `crc_ok=1` — a harness defect in the oracle, not an RX firmware failure.
+Fixed in `rx_driver.characterize()` by slicing the correct final-frame window
+out of the whole-burst PRNG stream before comparing.

@@ -113,3 +113,13 @@ def test_o1_firmware_validates_crc_and_ber():
     assert rx_driver.ru32(sim, rx_driver.S_SYMERR) == 0
     assert rx_driver.ru32(sim, rx_driver.S_BITERR) == 0
     assert rx_driver.ru32(sim, rx_driver.S_TOTBITS) == 128 * 8
+
+
+def test_o1_clean_at_rated_divider():
+    """Pins the measured rating from Task 8 so a regression is visible."""
+    n_tx = rx_driver.RATED_DIVIDER["o1"]
+    sim = rx_driver.run_rx(n_tx, option="o1", num_frames=2)
+    assert rx_driver.ru32(sim, rx_driver.S_OVF) == 0
+    assert rx_driver.ru32(sim, rx_driver.S_SYMERR) == 0
+    assert rx_driver.ru32(sim, rx_driver.S_BITERR) == 0
+    assert rx_driver.ru32(sim, rx_driver.S_CRCOK) == 1
