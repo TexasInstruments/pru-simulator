@@ -35,6 +35,8 @@
 ;   r29 main->{prng_fill,crc32_compute,send_frame}
 ;   r28 send_frame->{emit_comma,flush_pad,drain_wait}
 ;   r26 ->push_symbol   r27 push_symbol->push_byte
+;   r26 is reused by crc32_compute->crc32_core (pif_eth_crc32.inc); safe because
+;   crc32_compute runs before send_frame, so no push_symbol return is live then.
 ; =============================================================
 
 start:
