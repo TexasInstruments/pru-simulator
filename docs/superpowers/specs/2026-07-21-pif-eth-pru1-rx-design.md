@@ -175,8 +175,17 @@ Entry layout:
 |---|---|
 | `[7:0]` | decoded octet |
 | `[8]` | valid (1 = legal codeword) |
-| `[9]` | running disparity after this symbol (0 = negative, 1 = positive) |
-| `[10]` | is-comma (K28.5) |
+| `[9]` | disparity-neutral (1 = codeword disparity is 0, RD unchanged) |
+| `[10]` | resulting RD when *not* neutral (0 = negative, 1 = positive) |
+| `[11]` | is-comma (K28.5) |
+
+Bit `[9]` is required: a disparity-neutral codeword leaves RD **unchanged**, so
+there is no absolute "RD after this symbol" to store. The firmware updates RD
+only when `[9] == 0`.
+
+RD validation: a non-neutral codeword is legal only if it *flips* RD, so
+`[9] == 0 && [10] == current_rd` is an RD violation and increments
+`symbol_errors`.
 
 Built host-side by a new `codec.build_dram1_decode_lut()`, validated in tests
 against `codec.py`'s existing encoder as a round-trip bijection.
