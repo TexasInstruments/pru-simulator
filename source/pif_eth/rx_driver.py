@@ -111,7 +111,7 @@ def build_sim(n_tx: int, num_frames: int = 1, seed: int = DEFAULT_SEED,
     sim.perif_loopback(0, True, latency_ns=0.0, jitter_ns=0.0, drift_ppm=0.0)
 
     fw = (_HERE / tx_firmware_for(n_tx)).read_text()
-    errors = sim.load("pru0", fw)
+    errors = sim.load("pru0", fw, include_paths=[str(_HERE)])
     if errors:
         raise RuntimeError(f"TX firmware load failed: {errors}")
 
@@ -206,7 +206,7 @@ def run_rx(n_tx: int, option: str = "o1", num_frames: int = 1,
         _wu32(sim, a, 0)
 
     fw = (_HERE / RX_FIRMWARE[option]).read_text()
-    errors = sim.load("pru1", fw)
+    errors = sim.load("pru1", fw, include_paths=[str(_HERE)])
     if errors:
         raise RuntimeError(f"RX firmware load failed: {errors}")
     sim.step("pru1", 20)                  # RX prologue, reach go_wait

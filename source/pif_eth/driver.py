@@ -46,6 +46,7 @@ MODE_PRNG = 0
 MODE_PRELOAD = 1
 
 FIRMWARE = (_HERE / "pif_eth_tx.asm").read_text()
+ASM_DIR = str(_HERE)
 
 
 @dataclass
@@ -140,7 +141,7 @@ def run(kind: str, num_frames: int, *, seed: int = DEFAULT_SEED,
     if preload is not None:
         sim.memory.write(A_COREBUF, preload)
 
-    errors = sim.load("pru0", FIRMWARE)
+    errors = sim.load("pru0", FIRMWARE, include_paths=[ASM_DIR])
     if errors:
         raise RuntimeError(f"firmware load failed: {errors}")
     sim.step("pru0", 60)                       # run self-config, reach hs_wait

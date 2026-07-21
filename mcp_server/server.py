@@ -15,9 +15,10 @@ class PRUSimulatorMCP:
     def __init__(self, config_path: str = "memory.cfg"):
         self.sim = Simulator(config_path)
 
-    def pru_load(self, source: str, core: str = "pru0") -> dict:
+    def pru_load(self, source: str, core: str = "pru0",
+                 include_paths: list[str] | None = None) -> dict:
         """Parse and load assembly source into a PRU core."""
-        errors = self.sim.load(core, source)
+        errors = self.sim.load(core, source, include_paths)
         line_count = len([l for l in source.split('\n') if l.strip()])
         return {"success": len(errors) == 0, "errors": errors, "line_count": line_count}
 

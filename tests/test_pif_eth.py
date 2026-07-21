@@ -151,7 +151,7 @@ def test_firmware_self_configures_perif_ch0():
     """No host register setup: firmware writes GPCFG0/TXCFG/CH0CFG0."""
     from simulator import Simulator
     sim = Simulator()
-    assert sim.load("pru0", driver.FIRMWARE) == []
+    assert sim.load("pru0", driver.FIRMWARE, include_paths=[driver.ASM_DIR]) == []
     sim.step("pru0", 40)
     assert sim.gpcfg_state("pru0")["mux_sel"] == 1
     regs = sim._perif["pru0"].registers
@@ -208,7 +208,8 @@ def test_via_mcp_server():
                       (driver.A_SEED, DEFAULT_SEED), (driver.A_PLEN, 128),
                       (driver.A_FCNT, 0), (driver.A_BURST, 0), (driver.A_GOFLAG, 1)):
         mcp.sim.memory.write(addr, (val & 0xFFFFFFFF).to_bytes(4, "little"))
-    assert mcp.pru_load(driver.FIRMWARE, core="pru0")["success"]
+    assert mcp.pru_load(driver.FIRMWARE, core="pru0",
+                        include_paths=[driver.ASM_DIR])["success"]
     # Step until the frame counter reports completion.
     for _ in range(200):
         mcp.pru_step(core="pru0", count=2000)
@@ -220,6 +221,20 @@ def test_via_mcp_server():
     frame = bytes.fromhex(dump["hex_dump"])
     assert frame[:128] == prng_bytes(128, DEFAULT_SEED)
     assert frame[128:] == fcs_bytes(frame[:128])
+
+
+def test_mcp_pru_load_accepts_include_paths():
+    """The MCP wrapper must be able to load multi-file assembly."""
+    import inspect
+    from mcp_server.server import PRUSimulatorMCP
+    assert "include_paths" in inspect.signature(PRUSimulatorMCP.pru_load).parameters
+
+
+def test_tx_firmware_uses_shared_crc32_include():
+    src = (Path(driver.ASM_DIR) / "pif_eth_tx.asm").read_text()
+    assert ".include" in src and "pif_eth_crc32.inc" in src
+    # The inner loop must live in exactly one place.
+    assert "0xEDB8" not in src
 
 
 # --------------------------------------------------------------------------
