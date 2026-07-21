@@ -167,6 +167,8 @@ pf_bit_next:
 
 pf_done:
         sbbo r15, r3, 12, 4         ; publish symbol_errors
+        jal  r28, rx_crc_check
+        jal  r28, rx_ber_check
         jmp  r29
 
 ; -------------------------------------------------------------
@@ -225,3 +227,74 @@ ps_bad_scan:
 ps_skip:
         sub  r12, r12, 1            ; still scanning -> slide window by 1 bit
         jmp  r28
+
+; -------------------------------------------------------------
+; rx_crc_check: CRC-32 over the reconstructed payload at 0x0E00,
+;   compared against the 4 received FCS octets.  ret r28
+;   The inner loop is the shared crc32_core from pif_eth_crc32.inc.
+;   r26 is free here (post_frame uses r28/r29 for returns).
+; -------------------------------------------------------------
+rx_crc_check:
+        ldi  r21, 0x0E00
+        ldi  r23, 0                 ; crc32_core's LBBO byte-read only strobes
+                                    ; r23's low byte (real PRU byte-write
+                                    ; semantics); pf_symbol leaves stale
+                                    ; LUT-entry garbage in r23's upper bits,
+                                    ; which would otherwise XOR into every
+                                    ; byte of the CRC.  TX's call site never
+                                    ; hits this because r23 is untouched (and
+                                    ; thus already 0) before its own call.
+        jal  r26, crc32_core        ; -> r20 = computed FCS, r21 = end of payload
+        lbbo r25, r21, 0, 4         ; received FCS (little-endian)
+        ldi  r6, 0
+        qbne rc_store, r20, r25
+        ldi  r6, 1                  ; match
+rc_store:
+        sbbo r6, r3, 16, 4          ; crc_ok
+        jmp  r28
+
+; -------------------------------------------------------------
+; rx_ber_check: regenerate the BERT payload with the same xorshift32
+;   seed and count differing bits against the received payload.  ret r28
+;   Skipped (counters zeroed) when mode != 0.
+;   r20 prng state  r21 ptr  r22 i  r23 rx byte  r24 xor  r25 tmp
+;   r17 bit errors
+; -------------------------------------------------------------
+rx_ber_check:
+        ldi  r17, 0
+        ldi  r6, 0
+        qbne rb_publish, r18, 0     ; mode != 0 -> not a BERT frame
+        mov  r20, r13               ; PRNG state = seed
+        ldi  r21, 0x0E00
+        ldi  r22, 0
+rb_byte:
+        qble rb_bits, r22, r8       ; i >= payload_len
+        lsl  r25, r20, 13           ; xorshift32
+        xor  r20, r20, r25
+        lsr  r25, r20, 17
+        xor  r20, r20, r25
+        lsl  r25, r20, 5
+        xor  r20, r20, r25
+        lbbo r23, r21, 0, 1
+        and  r24, r20, 0xFF
+        xor  r24, r24, r23          ; differing bits in this octet
+        ldi  r6, 0
+rb_pop:
+        qbeq rb_popdone, r24, 0
+        and  r25, r24, 1
+        add  r17, r17, r25
+        lsr  r24, r24, 1
+        jmp  rb_pop
+rb_popdone:
+        add  r21, r21, 1
+        add  r22, r22, 1
+        jmp  rb_byte
+rb_bits:
+        mov  r13, r20               ; persist PRNG state -> next frame continues
+        lsl  r6, r8, 3              ; total_bits = payload_len * 8
+rb_publish:
+        sbbo r17, r3, 20, 4         ; prng_bit_errors
+        sbbo r6, r3, 24, 4          ; total_bits_checked
+        jmp  r28
+
+        .include "pif_eth_crc32.inc"

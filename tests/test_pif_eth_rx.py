@@ -104,3 +104,12 @@ def test_o1_firmware_reconstructs_frame_in_dram():
     expected = payload + fcs_bytes(payload)
     got = sim.memory_read(rx_driver.FRAME_ADDR, len(expected))
     assert got == expected
+
+
+def test_o1_firmware_validates_crc_and_ber():
+    sim = rx_driver.run_rx(8, option="o1", num_frames=3)
+    assert rx_driver.ru32(sim, rx_driver.S_FRAMES) == 3
+    assert rx_driver.ru32(sim, rx_driver.S_CRCOK) == 1
+    assert rx_driver.ru32(sim, rx_driver.S_SYMERR) == 0
+    assert rx_driver.ru32(sim, rx_driver.S_BITERR) == 0
+    assert rx_driver.ru32(sim, rx_driver.S_TOTBITS) == 128 * 8
