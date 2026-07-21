@@ -112,6 +112,116 @@ eo_novf:
         sbbo r6, r3, 8, 4           ; rx_ovf
         ldi  r0, 1
         sbbo r0, r3, 28, 4          ; eof_status = 1 (clean EOF)
+        jal  r29, post_frame
         add  r14, r14, 1
-        sbbo r14, r3, 0, 4          ; frame counter
-        jmp  frame_loop
+        ldi  r3, 0x0F00
+        sbbo r14, r3, 0, 4          ; frame counter published LAST, so the
+        jmp  frame_loop             ; host never sees a half-written stats block
+
+; -------------------------------------------------------------
+; post_frame: capture buffer -> decoded octets at 0x0E00.  ret r29
+;
+; Walks the captured bytes as a bit stream, taking every 2nd sample
+; (phase-insensitive at zero drift), assembling 10-bit symbols and
+; decoding them through the LUT.  The symbol grid is anchored on the
+; first comma found; octets before that are discarded as pre-alignment.
+;
+;   r1 cap ptr   r2 cap_bytes   r7 out ptr   r10 rd(0=neg,1=pos)
+;   r11 bit acc  r12 nbits      r15 sym_err  r16 aligned flag
+;   r19 sample toggle           r20 byte     r21 bit index
+;   r22 symbol   r23 LUT entry  r24 LUT offset
+; -------------------------------------------------------------
+post_frame:
+        ldi  r1, 0x0800
+        ldi  r3, 0x0F00
+        lbbo r2, r3, 4, 4           ; captured_bytes
+        ldi  r7, 0x0E00             ; frame output pointer
+        ldi  r10, 0                 ; rd = negative
+        ldi  r11, 0                 ; bit accumulator
+        ldi  r12, 0                 ; nbits held
+        ldi  r15, 0                 ; symbol errors
+        ldi  r16, 0                 ; aligned = false
+        ldi  r19, 0                 ; sample toggle (take every 2nd)
+
+pf_byte:
+        qbeq pf_done, r2, 0
+        lbbo r20, r1, 0, 1          ; one captured byte = 8 samples
+        add  r1, r1, 1
+        sub  r2, r2, 1
+        ldi  r21, 7                 ; MSB = oldest sample
+
+pf_bit:
+        xor  r19, r19, 1            ; toggle; take the sample when it is 1
+        qbeq pf_bit_next, r19, 0
+        lsr  r6, r20, r21
+        and  r6, r6, 1
+        lsl  r11, r11, 1
+        or   r11, r11, r6
+        add  r12, r12, 1
+        qbgt pf_bit_next, r12, 10   ; nbits < 10 -> keep filling
+        jal  r28, pf_symbol
+pf_bit_next:
+        qbeq pf_byte, r21, 0
+        sub  r21, r21, 1
+        jmp  pf_bit
+
+pf_done:
+        sbbo r15, r3, 12, 4         ; publish symbol_errors
+        jmp  r29
+
+; -------------------------------------------------------------
+; pf_symbol: consume the 10 bits in r11 as one symbol.  ret r28
+;
+; Before alignment (r16==0) the last-10-bits window in r11 is a bit-by-bit
+; sliding search: r12 is rewound by 1 (not reset) on every miss, so the very
+; next accepted bit re-triggers a check one bit further along, scanning every
+; candidate phase until the first comma anchors the grid.  Once aligned, r12
+; resets fully to 0 so subsequent symbols tile in clean, non-overlapping
+; 10-bit groups from that anchor.
+; -------------------------------------------------------------
+pf_symbol:
+        ldi  r6, 0x03FF
+        and  r22, r11, r6           ; 10-bit symbol (always the last 10 bits
+                                    ; pushed, regardless of r12 bookkeeping --
+                                    ; r11 is a running shift register)
+        lsl  r24, r22, 1            ; LUT offset = symbol * 2
+        lbco r23, c24, r24, 2       ; decode entry (c24 = own DRAM = DRAM1)
+
+        qbbc ps_bad, r23, 8         ; valid?
+        qbbs ps_comma, r23, 11      ; comma -> alignment anchor
+
+        qbeq ps_skip, r16, 0        ; not aligned yet -> discard octet
+        and  r6, r23, 0xFF
+        sbbo r6, r7, 0, 1           ; store decoded octet
+        add  r7, r7, 1
+
+        qbbs ps_rd_done, r23, 9     ; neutral -> RD unchanged
+        lsr  r6, r23, 10
+        and  r6, r6, 1
+        qbne ps_rd_ok, r6, r10      ; must flip RD, else violation
+        add  r15, r15, 1
+ps_rd_ok:
+        mov  r10, r6
+ps_rd_done:
+        ldi  r12, 0                 ; aligned: tile the next 10 fresh bits
+        jmp  r28
+
+ps_comma:
+        ldi  r16, 1                 ; symbol grid is now anchored
+        lsr  r6, r23, 10
+        and  r6, r6, 1
+        mov  r10, r6                ; comma always flips RD
+        ldi  r12, 0                 ; anchor established: tile from here
+        jmp  r28
+
+ps_bad:
+        qbeq ps_bad_scan, r16, 0    ; pre-alignment garbage is expected
+        add  r15, r15, 1
+        ldi  r12, 0                 ; aligned: tile the next 10 fresh bits
+        jmp  r28
+ps_bad_scan:
+        sub  r12, r12, 1            ; still scanning -> slide window by 1 bit
+        jmp  r28
+ps_skip:
+        sub  r12, r12, 1            ; still scanning -> slide window by 1 bit
+        jmp  r28

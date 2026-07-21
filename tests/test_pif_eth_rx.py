@@ -95,3 +95,12 @@ def test_o1_single_zero_byte_does_not_end_the_frame():
     assert 0 in interior, "capture contained no interior zero byte to test"
     assert rx_driver.ru32(sim, rx_driver.S_EOF) == 1
     assert n > 300                                   # did not stop early
+
+
+def test_o1_firmware_reconstructs_frame_in_dram():
+    sim = rx_driver.run_rx(8, option="o1", num_frames=1)
+    assert rx_driver.ru32(sim, rx_driver.S_SYMERR) == 0
+    payload = prng_bytes(128, DEFAULT_SEED)
+    expected = payload + fcs_bytes(payload)
+    got = sim.memory_read(rx_driver.FRAME_ADDR, len(expected))
+    assert got == expected
