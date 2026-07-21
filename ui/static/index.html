@@ -748,6 +748,11 @@
       font-size: 12px;
       width: 90px;
     }
+    #memory-controls input[type="checkbox"], #memory-controls-2 input[type="checkbox"] {
+      width: auto;
+      padding: 0;
+      vertical-align: middle;
+    }
 
     .mem-btn-group {
       display: flex;
@@ -1383,6 +1388,9 @@ Example:
           <label>Bytes:</label>
           <input type="text" id="mem-len-input" value="1024" style="width:60px" />
           <button id="btn-mem-refresh">Refresh</button>
+          <label title="Keep re-reading this window automatically: on every simulation step/run tick, and at least once per second">
+            <input type="checkbox" id="mem-auto-refresh" /> Auto
+          </label>
           <button id="btn-mem-fill">Fill</button>
           <div class="mem-btn-group" id="mem-fmt-group">
             <button data-fmt="bin">Bin</button>
@@ -1408,6 +1416,9 @@ Example:
           <label>Bytes:</label>
           <input type="text" id="mem-len-input-2" value="1024" style="width:60px" />
           <button id="btn-mem-refresh-2">Refresh</button>
+          <label title="Keep re-reading this window automatically: on every simulation step/run tick, and at least once per second">
+            <input type="checkbox" id="mem-auto-refresh-2" /> Auto
+          </label>
           <button id="btn-mem-fill-2">Fill</button>
           <div class="mem-btn-group" id="mem-fmt-group-2">
             <button data-fmt="bin">Bin</button>
@@ -1807,6 +1818,7 @@ Example:
         <div class="help-heading">Memory Panel</div>
         <table class="help-table">
           <tr><td><b>Refresh</b></td><td>Re-read memory from the simulator</td></tr>
+          <tr><td><b>Auto</b></td><td>Keep this panel live: re-reads on every step/run tick (throttled) and at least once per second, so writes from firmware, Fill, or the other memory panel show up without clicking Refresh</td></tr>
           <tr><td><b>Fill</b></td><td>Fill memory with a pattern, sequence, or waveform</td></tr>
           <tr><td><b>Bin / Byte / 16b / 24b / 32b</b></td><td>Select display format</td></tr>
           <tr><td><b>LSB / MSB</b></td><td>Toggle byte order</td></tr>
@@ -1826,6 +1838,6 @@ Example:
   </div>
 
   <script src="/static/layout.js"></script>
-  <script src="/static/app.js?v=20260710"></script>
+  <script src="/static/app.js?v=20260721"></script>
 </body>
 </html>

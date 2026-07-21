@@ -449,6 +449,8 @@ function updateUI(state) {
   // Signal graph sample
   graphSample(state);
   drawGraph();
+
+  memAutoOnStateChange();
 }
 
 function updateRegisters(regs, carry) {
@@ -2106,6 +2108,7 @@ document.querySelectorAll('#loopback-strip .lb-btn').forEach(btn => {
 const memAddrInput = document.getElementById("mem-addr-input");
 const memLenInput = document.getElementById("mem-len-input");
 const btnMemRefresh = document.getElementById("btn-mem-refresh");
+const memAutoRefreshBox = document.getElementById("mem-auto-refresh");
 const memGrid = document.getElementById("mem-grid");
 
 let prevMemData = [];
@@ -2113,17 +2116,62 @@ let memBaseAddr = 0;
 let memFormat = "32b";
 let memMsbFirst = false;
 let regionMap = {};  // name -> base address
+let memAutoRefresh = false;
+let _memAutoLastFetch = 0;
 
 // ---- Memory panel 2 -------------------------------------------------------
 const memAddrInput2  = document.getElementById("mem-addr-input-2");
 const memLenInput2   = document.getElementById("mem-len-input-2");
 const btnMemRefresh2 = document.getElementById("btn-mem-refresh-2");
+const memAutoRefreshBox2 = document.getElementById("mem-auto-refresh-2");
 const memGrid2       = document.getElementById("mem-grid-2");
 
 let prevMemData2 = [];
 let memBaseAddr2 = 0x00010000;  // default: Shared RAM (C28)
 let memFormat2   = "32b";
 let memMsbFirst2 = false;
+let memAutoRefresh2 = false;
+let _memAutoLastFetch2 = 0;
+
+// Auto-refresh: throttled trigger on every simulation "state" update (near
+// real-time while stepping/running), plus a 1 s floor interval that catches
+// changes with no accompanying state message (Fill, writes from the other
+// panel, config reload, UART/perif injection).
+const MEM_AUTO_THROTTLE_MS = 300;
+
+function memAutoOnStateChange() {
+  const now = Date.now();
+  if (memAutoRefresh && now - _memAutoLastFetch >= MEM_AUTO_THROTTLE_MS) {
+    _memAutoLastFetch = now;
+    refreshMemory();
+  }
+  if (memAutoRefresh2 && now - _memAutoLastFetch2 >= MEM_AUTO_THROTTLE_MS) {
+    _memAutoLastFetch2 = now;
+    refreshMemory2();
+  }
+}
+
+setInterval(() => {
+  const now = Date.now();
+  if (memAutoRefresh && now - _memAutoLastFetch >= 1000) {
+    _memAutoLastFetch = now;
+    refreshMemory();
+  }
+  if (memAutoRefresh2 && now - _memAutoLastFetch2 >= 1000) {
+    _memAutoLastFetch2 = now;
+    refreshMemory2();
+  }
+}, 1000);
+
+memAutoRefreshBox.addEventListener("change", () => {
+  memAutoRefresh = memAutoRefreshBox.checked;
+  if (memAutoRefresh) { _memAutoLastFetch = Date.now(); refreshMemory(); }
+});
+
+memAutoRefreshBox2.addEventListener("change", () => {
+  memAutoRefresh2 = memAutoRefreshBox2.checked;
+  if (memAutoRefresh2) { _memAutoLastFetch2 = Date.now(); refreshMemory2(); }
+});
 
 btnMemRefresh2.addEventListener("click", refreshMemory2);
 memAddrInput2.addEventListener("keydown", (e) => { if (e.key === "Enter") refreshMemory2(); });
@@ -3134,6 +3182,8 @@ function updateMCUI(state) {
     document.getElementById("cnt-rtu-stalls").textContent = state.stall_cycles;
     document.getElementById("cnt-rtu-pc").textContent     = state.pc;
   }
+
+  memAutoOnStateChange();
 }
 
 function updateMCSpad(spad) {
