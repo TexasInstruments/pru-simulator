@@ -17,9 +17,9 @@
 - `RXCFG = ((n_rx - 1) << 16) | 0x1F` (sample_size 7, sb_pol 1, clk_sel core).
 - `TXCFG = ((n_tx - 1) << 16) | 0x10` (clk_sel core, frac 0).
 - EOF is **two or more consecutive all-zero captured bytes**. One zero byte is never sufficient.
-- PRU1 reaches DRAM1 through **`c25`** (global constant table), never `c24`.
+- PRU1 reaches its own DRAM (DRAM1) through **`c24`** at core-local `0x0000`; the simulator translates this per core (`_map_data_addr`). Host-side code uses GLOBAL addresses (DRAM1 base `0x2000`).
 - **No sustained-rate claim may rest on a hand cycle-tally.** Every rate is confirmed by running the simulator and asserting `rx_ovf_count == 0`.
-- DRAM1 map: LUT `0x2000`, capture `0x2800`, symbols `0x2C00`, frame `0x2E00`, stats `0x2F00`, control `0x2F40`.
+- DRAM1 map — firmware/core-local: LUT `0x0000`, capture `0x0800`, symbols `0x0C00`, frame `0x0E00`, stats `0x0F00`, control `0x0F40`. Host/global: add `0x2000` to each.
 
 **Scope note:** Options 2 and 3 are deliberately excluded. Their task detail depends on the service-loop cycle cost this plan *measures* (Task 8); planning them now would be speculation. A second plan follows once Option 1's numbers are in.
 
@@ -723,17 +723,17 @@ Create `source/pif_eth/pif_eth_rx_o1_raw.asm`:
 ; The zero-run check is a second copy of the loop body rather than a counter
 ; reset, to keep the hot path at 7 instructions.
 ;
-; NOTE: this simulator uses a single GLOBAL constant table, so c25 = 0x2000
-; (DRAM1) for every core.  PRU1 reaches its own DRAM through c25, NOT c24 as
-; "own DRAM" would imply on real hardware.
-;
-; DRAM1 map (base 0x2000):
-;   0x2000  8b/10b decode LUT, 1024 x u16 (c25 offset 0)
-;   0x2800  raw oversample capture buffer
-;   0x2E00  reconstructed frame buffer
-;   0x2F00  stats:  +0 frames  +4 cap_bytes  +8 ovf  +12 sym_err
+; NOTE: PRU1 sees its OWN DRAM (DRAM1) at core-local 0x0000 and DRAM0 at
+; 0x2000, so c24 is its own DRAM -- matching AM243x ICSSG silicon.  All
+; addresses below are CORE-LOCAL; the host sees the same bytes at global
+; 0x2000 + offset (DRAM1 base).  See core/pru_core.py _map_data_addr.
+; DRAM1 map (CORE-LOCAL addresses; host adds 0x2000):
+;   0x0000  8b/10b decode LUT, 1024 x u16 (c24 offset 0 = own DRAM)
+;   0x0800  raw oversample capture buffer
+;   0x0E00  reconstructed frame buffer
+;   0x0F00  stats:  +0 frames  +4 cap_bytes  +8 ovf  +12 sym_err
 ;                   +16 crc_ok +20 bit_err   +24 tot_bits +28 eof_status
-;   0x2F40  control: +0 mode  +4 seed  +8 payload_len  +12 go  +16 rxcfg
+;   0x0F40  control: +0 mode  +4 seed  +8 payload_len  +12 go  +16 rxcfg
 ;
 ; Persistent registers:
 ;   r1 capture ptr   r5 FIFO-pop cmd   r8 payload_len   r9 core_len
@@ -747,7 +747,7 @@ start:
         ldi  r1.w2, 0x0002
         sbbo r0, r1, 0, 4
 
-        ldi  r2, 0x2F40             ; control block
+        ldi  r2, 0x0F40             ; control block
         lbbo r0, r2, 16, 4          ; rxcfg (host-supplied, encodes n_rx)
         ldi  r1, 0x6100
         ldi  r1.w2, 0x0002
@@ -763,7 +763,7 @@ start:
         ldi  r14, 0                 ; frame counter
 
 frame_loop:
-        ldi  r2, 0x2F40
+        ldi  r2, 0x0F40
 go_wait:
         lbbo r6, r2, 12, 4          ; go flag
         qbeq go_wait, r6, 0
@@ -771,7 +771,7 @@ go_wait:
         sbbo r0, r2, 12, 4          ; clear go
 
         ldi  r30.b3, 0x01           ; arm RX ch0 -> SOF on first 1 sample
-        ldi  r1, 0x2800             ; capture pointer
+        ldi  r1, 0x0800             ; capture pointer
 
 ; --- realtime capture loop: 7 instructions on the hot path ---
 poll:
@@ -801,8 +801,8 @@ eo_novf:
         ldi  r0.w2, 0x0900          ; clr_val(24) | clr_ovf(27)
         mov  r31, r0
 
-        ldi  r3, 0x2F00             ; stats block
-        ldi  r0, 0x2800
+        ldi  r3, 0x0F00             ; stats block
+        ldi  r0, 0x0800
         sub  r2, r1, r0             ; captured_bytes = ptr - base
         sbbo r2, r3, 4, 4
         sbbo r6, r3, 8, 4           ; rx_ovf
@@ -880,7 +880,7 @@ Adds comma alignment, decimation and LUT decode in PRU1 firmware, producing the 
 - Test: `tests/test_pif_eth_rx.py`
 
 **Interfaces:**
-- Consumes: capture buffer + `S_CAPBYTES` from Task 4; decode LUT at `c25` offset 0
+- Consumes: capture buffer + `S_CAPBYTES` from Task 4; decode LUT at `c24` offset 0 (own DRAM)
 - Produces: reconstructed octets at `FRAME_ADDR` (length `core_len`), `S_SYMERR` populated
 
 - [ ] **Step 1: Write the failing test**
@@ -908,7 +908,7 @@ In `source/pif_eth/pif_eth_rx_o1_raw.asm`, append these routines at the end of t
 
 ```asm
 ; -------------------------------------------------------------
-; post_frame: capture buffer -> decoded octets at 0x2E00.  ret r29
+; post_frame: capture buffer -> decoded octets at 0x0E00.  ret r29
 ;
 ; Walks the captured bytes as a bit stream, taking every 2nd sample
 ; (phase-insensitive at zero drift), assembling 10-bit symbols and
@@ -921,10 +921,10 @@ In `source/pif_eth/pif_eth_rx_o1_raw.asm`, append these routines at the end of t
 ;   r22 symbol   r23 LUT entry  r24 LUT offset
 ; -------------------------------------------------------------
 post_frame:
-        ldi  r1, 0x2800
-        ldi  r3, 0x2F00
+        ldi  r1, 0x0800
+        ldi  r3, 0x0F00
         lbbo r2, r3, 4, 4           ; captured_bytes
-        ldi  r7, 0x2E00             ; frame output pointer
+        ldi  r7, 0x0E00             ; frame output pointer
         ldi  r10, 0                 ; rd = negative
         ldi  r11, 0                 ; bit accumulator
         ldi  r12, 0                 ; nbits held
@@ -966,7 +966,7 @@ pf_symbol:
         and  r22, r11, r6           ; 10-bit symbol
         ldi  r12, 0                 ; reset bit count
         lsl  r24, r22, 1            ; LUT offset = symbol * 2
-        lbco r23, c25, r24, 2       ; decode entry
+        lbco r23, c24, r24, 2       ; decode entry (c24 = own DRAM = DRAM1)
 
         qbbc ps_bad, r23, 8         ; valid?
         qbbs ps_comma, r23, 11      ; comma -> alignment anchor
@@ -1010,7 +1010,7 @@ at the end of the `eo_novf` block with:
         sbbo r0, r3, 28, 4          ; eof_status = 1 (clean EOF)
         jal  r29, post_frame
         add  r14, r14, 1
-        ldi  r3, 0x2F00
+        ldi  r3, 0x0F00
         sbbo r14, r3, 0, 4          ; frame counter published LAST, so the
         jmp  frame_loop             ; host never sees a half-written stats block
 ```
@@ -1258,13 +1258,13 @@ and append:
 
 ```asm
 ; -------------------------------------------------------------
-; rx_crc_check: CRC-32 over the reconstructed payload at 0x2E00,
+; rx_crc_check: CRC-32 over the reconstructed payload at 0x0E00,
 ;   compared against the 4 received FCS octets.  ret r28
 ;   The inner loop is the shared crc32_core from pif_eth_crc32.inc.
 ;   r26 is free here (post_frame uses r28/r29 for returns).
 ; -------------------------------------------------------------
 rx_crc_check:
-        ldi  r21, 0x2E00
+        ldi  r21, 0x0E00
         jal  r26, crc32_core        ; -> r20 = computed FCS, r21 = end of payload
         lbbo r25, r21, 0, 4         ; received FCS (little-endian)
         ldi  r6, 0
@@ -1286,7 +1286,7 @@ rx_ber_check:
         ldi  r6, 0
         qbne rb_publish, r18, 0     ; mode != 0 -> not a BERT frame
         mov  r20, r13               ; PRNG state = seed
-        ldi  r21, 0x2E00
+        ldi  r21, 0x0E00
         ldi  r22, 0
 rb_byte:
         qble rb_bits, r22, r8       ; i >= payload_len

@@ -190,26 +190,32 @@ RD validation: a non-neutral codeword is legal only if it *flips* RD, so
 Built host-side by a new `codec.build_dram1_decode_lut()`, validated in tests
 against `codec.py`'s existing encoder as a round-trip bijection.
 
-**Constant-table note:** this simulator uses a single **global** constant table
-(`config/constants_am243x.cfg`), so `c24 = 0x0000` (DRAM0) and `c25 = 0x2000`
-(DRAM1) for *every* core. PRU1 must therefore reach the LUT through **`c25`**,
-not through `c24` as "own DRAM" would imply on real hardware. This deviation
-must be called out in the firmware header comment.
+**Constant-table note (corrected 2026-07-21):** on AM243x ICSSG each PRU sees
+its **own** DRAM at core-local `0x0000`, so PRU1 reaches DRAM1 through **`c24`**
+at local `0x0000` — the memory mapping is swapped between the cores. The
+simulator originally applied no per-core translation, which made PRU1 firmware
+non-portable; that is fixed in `core/pru_core.py::_map_data_addr`, which swaps
+the two 8 KB DRAM banks for PRU1 (`addr ^ 0x2000` below `0x4000`).
+
+All firmware addresses in §8 are therefore **core-local**; host-side code
+continues to use global addresses, where DRAM1 starts at `0x2000`.
 
 ## 8. DRAM1 memory map
 
-DRAM1 spans `0x2000`–`0x3FFF` (8 KB).
+DRAM1 is 8 KB. PRU1 addresses it at **core-local** `0x0000`–`0x1FFF`; the host
+sees the same bytes at **global** `0x2000`–`0x3FFF`. Both columns below refer to
+the same storage.
 
-| Address | Size | Contents |
-|---|---|---|
-| `0x2000` | 2048 B | 8b/10b decode LUT, 1024 × u16 (c25 offset 0) |
-| `0x2800` | 1024 B | raw oversample capture buffer (Option 1) |
-| `0x2C00` | 512 B | packed symbol buffer (Options 2/3) |
-| `0x2E00` | 256 B | reconstructed frame buffer (payload + FCS) |
-| `0x2F00` | 64 B | stats block (below) |
-| `0x2F40` | 64 B | control block (below) |
+| Local (firmware) | Global (host) | Size | Contents |
+|---|---|---|---|
+| `0x0000` | `0x2000` | 2048 B | 8b/10b decode LUT, 1024 × u16 (`c24` offset 0) |
+| `0x0800` | `0x2800` | 1024 B | raw oversample capture buffer (Option 1) |
+| `0x0C00` | `0x2C00` | 512 B | packed symbol buffer (Options 2/3) |
+| `0x0E00` | `0x2E00` | 256 B | reconstructed frame buffer (payload + FCS) |
+| `0x0F00` | `0x2F00` | 64 B | stats block (below) |
+| `0x0F40` | `0x2F40` | 64 B | control block (below) |
 
-**Stats block** (`0x2F00`, all u32):
+**Stats block** (local `0x0F00` / global `0x2F00`, all u32):
 
 | Offset | Field |
 |---|---|
@@ -222,7 +228,7 @@ DRAM1 spans `0x2000`–`0x3FFF` (8 KB).
 | `+0x18` | `total_bits_checked` (BER denominator) |
 | `+0x1C` | `eof_status` (0 = running, 1 = clean EOF, 2 = overflow abort) |
 
-**Control block** (`0x2F40`, all u32):
+**Control block** (local `0x0F40` / global `0x2F40`, all u32):
 
 | Offset | Field |
 |---|---|
