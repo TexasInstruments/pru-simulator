@@ -346,3 +346,31 @@ def test_decode_capture_recovers_payload_at_any_skew(skew):
 
 def test_find_comma_offset_returns_none_without_comma():
     assert rx_reference.find_comma_offset([0] * 100) is None
+
+
+def _comma_bits(code10):
+    return [(code10 >> i) & 1 for i in range(9, -1, -1)]
+
+
+@pytest.mark.parametrize("pad,expected_offset", [(5, 5), (3, 3), (8, 8)])
+def test_find_comma_offset_prefers_clean_alignment_over_spurious_comma(pad, expected_offset):
+    """A comma at a WRONG phase must not beat the true, error-free grid.
+
+    Prepends a real K28.5 symbol followed by `pad` filler bits, so offset 0
+    genuinely contains a comma (what the old first-match rule locked onto)
+    while the true burst grid begins at offset `pad`. Also pins interior
+    offsets, which the skew tests never reach.
+    """
+    bits = _comma_bits(codec.K28_5_RD_MINUS) + [0] * pad + _encode_burst(bytes(range(32)))
+    assert rx_reference.find_comma_offset(bits) == expected_offset
+
+
+def test_find_comma_offset_true_alignment_has_no_invalid_symbols():
+    """The chosen offset must be the one that decodes cleanly."""
+    from pif_eth.decoder import bits_to_symbols
+    dm = codec.build_decode_map()
+    bits = _encode_burst(bytes(range(64)))
+    off = rx_reference.find_comma_offset(bits)
+    syms = bits_to_symbols(bits[off:])
+    invalid = [s for s in syms if s not in codec.COMMA_SYMBOLS and s not in dm]
+    assert invalid == []
