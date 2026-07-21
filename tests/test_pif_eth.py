@@ -7,7 +7,7 @@ import pytest
 _ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_ROOT / "source"))
 
-from pif_eth import codec, crc32, prng, frames  # noqa: E402
+from pif_eth import codec, crc32, prng, frames, rx_reference  # noqa: E402
 from pif_eth.decoder import decode_symbols       # noqa: E402
 
 
@@ -274,3 +274,75 @@ def test_dram1_decode_lut_commas_and_invalid():
         assert (e >> 11) & 1 == 1               # is-comma
     # All-zeros is not a legal 8b/10b codeword.
     assert (_lut_entry(lut, 0) >> 8) & 1 == 0
+
+
+# --------------------------------------------------------------------------
+# PRU1 RX: host-side capture decoding reference
+# --------------------------------------------------------------------------
+
+def _encode_burst(payload: bytes):
+    """Build the on-wire bit list the TX firmware would produce for payload."""
+    rd = codec.RD_MINUS
+    syms = []
+    for _ in range(4):                       # leading + 3 idle commas
+        sym, rd = codec.encode_comma(rd)
+        syms.append(sym)
+    for b in payload:
+        sym, rd = codec.encode_byte(b, rd)
+        syms.append(sym)
+    for _ in range(2):                       # trailing commas
+        sym, rd = codec.encode_comma(rd)
+        syms.append(sym)
+    bits = []
+    for s in syms:
+        for i in range(9, -1, -1):
+            bits.append((s >> i) & 1)
+    return bits
+
+
+def _bits_to_capture(bits, oversample=2, skew=0):
+    """Oversample bits and pack into captured bytes, MSB-first, 8 samples each.
+
+    *skew* drops leading samples to emulate the hardware start bit landing at
+    an arbitrary sample phase.
+    """
+    samples = []
+    for b in bits:
+        samples.extend([b] * oversample)
+    samples = samples[skew:]
+    samples = samples[:len(samples) // 8 * 8]
+    out = bytearray()
+    for i in range(0, len(samples), 8):
+        v = 0
+        for s in samples[i:i + 8]:
+            v = (v << 1) | s
+        out.append(v)
+    return bytes(out)
+
+
+def test_samples_from_capture_is_msb_first():
+    assert rx_reference.samples_from_capture(bytes([0b10110000])) == [1, 0, 1, 1, 0, 0, 0, 0]
+
+
+@pytest.mark.parametrize("skew", [0, 1])
+def test_decimate_is_phase_insensitive(skew):
+    """At zero drift, decimation from either phase recovers the same bits."""
+    bits = [1, 0, 0, 1, 1, 1, 0, 1, 0, 0, 1, 0]
+    samples = []
+    for b in bits:
+        samples.extend([b, b])
+    got = rx_reference.decimate(samples[skew:], 2)
+    assert got[:len(bits) - 1] == bits[:len(bits) - 1]
+
+
+@pytest.mark.parametrize("skew", [0, 1, 2, 3])
+def test_decode_capture_recovers_payload_at_any_skew(skew):
+    payload = bytes(range(64))
+    raw = _bits_to_capture(_encode_burst(payload), oversample=2, skew=skew)
+    res = rx_reference.decode_capture(raw, oversample=2)
+    assert res.invalid_symbols == 0
+    assert payload in res.frames
+
+
+def test_find_comma_offset_returns_none_without_comma():
+    assert rx_reference.find_comma_offset([0] * 100) is None
