@@ -182,3 +182,42 @@ def capture_python_rx(sim: Simulator, n_tx: int, num_frames: int = 1,
         # invalid (0x000 is not a legal codeword) symbol that never existed.
         captures.append(bytes(raw).rstrip(b"\x00"))
     return captures
+
+
+RX_FIRMWARE = {
+    "o1": "pif_eth_rx_o1_raw.asm",
+}
+
+
+def run_rx(n_tx: int, option: str = "o1", num_frames: int = 1,
+           seed: int = DEFAULT_SEED, payload_len: int = BERT_PAYLOAD_LEN,
+           max_steps: int = 4_000_000) -> Simulator:
+    """Run *num_frames* frames through PRU0 TX -> PRU1 RX firmware."""
+    sim = build_sim(n_tx, num_frames=num_frames, seed=seed,
+                    payload_len=payload_len)
+
+    _wu32(sim, C_MODE, 0)
+    _wu32(sim, C_SEED, seed)
+    _wu32(sim, C_PLEN, payload_len)
+    _wu32(sim, C_GO, 0)
+    _wu32(sim, C_RXCFG, rxcfg_word(n_tx // 2))
+    for a in (S_FRAMES, S_CAPBYTES, S_OVF, S_SYMERR,
+              S_CRCOK, S_BITERR, S_TOTBITS, S_EOF):
+        _wu32(sim, a, 0)
+
+    fw = (_HERE / RX_FIRMWARE[option]).read_text()
+    errors = sim.load("pru1", fw)
+    if errors:
+        raise RuntimeError(f"RX firmware load failed: {errors}")
+    sim.step("pru1", 20)                  # RX prologue, reach go_wait
+
+    for i in range(num_frames):
+        _wu32(sim, C_GO, 1)
+        _wu32(sim, T_GOFLAG, 1)
+        steps = 0
+        while steps < max_steps and ru32(sim, S_FRAMES) != i + 1:
+            sim.step_paced("pru0", "pru1", 500)
+            steps += 500
+        if ru32(sim, S_FRAMES) != i + 1:
+            raise RuntimeError(f"frame {i} did not complete within step budget")
+    return sim
