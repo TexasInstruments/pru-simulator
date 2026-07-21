@@ -69,6 +69,9 @@ keep the 4-deep TX FIFO fed. Because the encoder and the host decoder share the
 configured period, the absolute rate does **not** affect the byte stream or the
 measured BER; **125 Mbaud** remains the documented physical target.
 
+A 2026-07-21 follow-up demonstrates the 125 Mbaud target is reachable at a
+250 MHz core clock (divider n=2) with a rewritten TX loop — see **§8**.
+
 ### 2.4 Frame structure
 
 - **BERT (option 1)** — no preamble, no header. 128 octets from a firmware
@@ -128,6 +131,9 @@ All under `source/pif_eth/` unless noted (≈1,400 lines total).
 | `tests/test_pif_eth.py` | 222 | 18 tests (pure-Python + firmware + MCP) |
 | `docs/superpowers/specs/2026-07-20-pif-eth-8b10b-tx-design.md` | 94 | design spec |
 | `docs/superpowers/plans/2026-07-20-pif-eth-8b10b-tx.md` | 56 | implementation plan / as-built |
+| `pif_eth_tx_n2.asm` | — | 2026-07-21 follow-up: batched/unrolled TX loop, all FIFO checks intact (§8) |
+| `pif_eth_tx_n2_skipchecks.asm` | — | 2026-07-21 follow-up: as above, 2 FIFO checks removed to hit n=2 (§8) |
+| `docs/superpowers/specs/2026-07-21-pif-eth-n2-125mbaud-design.md` | — | design note for the n=2 follow-up |
 
 Also modified: `.gitignore` (ignores the generated `source/pif_eth/traces/`
 pcap artifacts).
@@ -298,3 +304,101 @@ tshark -r source/pif_eth/traces/pif_eth_udp.pcap
 > is ideal for stepping and inspecting one frame at a time. The full 100-frame
 > BER measurement and pcap generation are done by `driver.py`, which also
 > performs the per-frame capture/decode the browser UI does not.
+
+---
+
+## 8. Follow-up: 125 Mbaud (n=2) experimental firmware (2026-07-21)
+
+**Status:** experimental — not integrated into `pif_eth_tx.asm`, `driver.py`,
+or the test suite; standalone reference artifacts.
+
+### 8.1 Goal
+
+§2.3 above documents the production firmware at 25 MHz (TXCFG div=7 @ 200 MHz
+core) because exact 125 MHz isn't integer-divisible from a 200 MHz clock. A
+separate piece of work (the PRU core speed selector, `docs/superpowers/specs/
+2026-07-20-pru-core-speed-selector-design.md`) added selectable core clocks
+up to 333 MHz, which makes the architecture's actual 125 Mbaud target
+reachable: `n = (frac+1)*(div_factor+1)`, `bit_clock = core_clock/n`, so
+divider **n=2 at 250 MHz core** gives exactly 125 MHz. This follow-up tests
+whether the existing firmware design can sustain that rate.
+
+### 8.2 Firmware variants
+
+- **`pif_eth_tx_n2.asm`** — `pif_eth_tx.asm` with TXCFG set to div=1 (n=2)
+  and `send_frame`'s bit-packing rewritten: 4-octet batched `LBBO` loads
+  (frame length is a multiple of 4 for both BERT=132 and UDP=68) and
+  fixed-shift unrolled packing — the bit-remainder cycles 0→2→4→6→0
+  deterministically every 4 pushes, so each push's shift amount is a
+  compile-time constant rather than a runtime `nbits`-tracked value. Applied
+  to **both** the data loop and the leading/trailing K28.5 commas (the
+  commas, still using the old `push_symbol` in an early iteration, were the
+  first thing to underrun). All 5 FIFO-full checks intact.
+- **`pif_eth_tx_n2_skipchecks.asm`** — identical, except the FIFO-full check
+  is removed on the data loop's phase 0 and phase 1 (the two single-byte-emit
+  phases); phase 2 and phase 3 keep their checks.
+
+### 8.3 Results
+
+Measured in-simulator (`Simulator(config_path=...)` with `pru_clock_mhz=250`)
+via the same `codec`/`decoder` golden-reference path used in §4:
+
+| Firmware | n | Bit rate | Result |
+|---|---|---|---|
+| `pif_eth_tx_n2.asm` (all checks) | 2 | 125.00 MHz | **FAIL** — underrun, then deadlock (the FSM goes idle after a premature `_finish_frame()`; later pushes spin forever waiting for a drain that never resumes) |
+| `pif_eth_tx_n2.asm` (all checks) | 3–8 | 83.33–31.25 MHz | **PASS**, BER=0 at every step |
+| `pif_eth_tx_n2_skipchecks.asm` | 2 | 125.00 MHz | **PASS**, BER=0 over 100 BERT + 100 UDP frames |
+| `pif_eth_tx_n2_skipchecks.asm` | 3 | 83.33 MHz | **FAIL** — BER≈0.68, `tx_overrun=True` |
+| `pif_eth_tx_n2_skipchecks.asm` | 4 | 62.50 MHz | **FAIL** — BER≈0.68, `tx_overrun=True` |
+
+### 8.4 Root cause: the n=2 underrun, and why removing 2 checks fixes it
+
+At n=2 the perif channel drains the TX FIFO deterministically every
+`8*n = 16` core cycles/byte (exact integer, no jitter — same-clock sampling,
+`perif/perif_channel.py`). The fully-checked, fully-unrolled loop's
+production cost sits right at that boundary (hand-analysis: ~15.6 avg /
+16.0 worst-case cycles/byte). Single-stepping the simulator shows the actual
+failure is a **2-cycle race**: the FIFO-full check passes (not full), but the
+drain's next bit-edge — landing deterministically in the gap between the
+check and the following `mov r30.b0,r5` — pops the FIFO before the byte
+lands, finds it empty, and ends the burst early. Removing the check on
+phases 0 and 1 saves 2 cycles per push at exactly the two points that
+mattered, closing that gap. This was confirmed by single-stepping the
+simulator, not by the hand cycle-tally alone.
+
+### 8.5 Critical caveat — a single-divider hack, not a general speedup
+
+**The FIFO-full check is not just a safety margin — it is the mechanism that
+makes the firmware's push rate automatically track whatever the configured
+drain rate is.** Removing it fixes the firmware at a constant production
+rate tuned to *just barely* match n=2. The moment the drain is slower (n=3,
+n=4 — both tested), nothing throttles the firmware anymore, and it pushes
+into an already-full FIFO every few bytes: `tx_overrun=True`, ~68% BER,
+frames silently truncated to a fraction of their expected length.
+
+**`pif_eth_tx_n2_skipchecks.asm` must only ever be run with
+`pru_clock_mhz=250` and TXCFG div_factor=1 (n=2).** If `memory.cfg`'s
+`pru_clock_mhz` or the firmware's TXCFG divider ever changes, this firmware
+will not error or hang loudly — it will **silently produce wrong data**
+(overrun, not a crash) unless re-validated at the new clock/divider
+combination first.
+
+### 8.6 Recommendation
+
+- For a **robust** speedup that stays correct across clock/divider changes,
+  use `pif_eth_tx_n2.asm` (all checks) at n≥3 — a genuine ~4x improvement
+  over the original 25 MHz design (83.33 MHz @ n=3), with the same
+  self-adapting safety margin the original design relies on.
+- `pif_eth_tx_n2_skipchecks.asm` is kept as a validated, working example of
+  hitting the full 125 Mbaud architectural target — but it is hard-pinned to
+  n=2 and should be treated as a one-off, not a drop-in replacement for
+  `pif_eth_tx.asm`.
+- Neither file is wired into `driver.py` or `tests/test_pif_eth.py`; both
+  remain standalone artifacts under `source/pif_eth/` for reference/future
+  work. A genuinely robust n=2 firmware would need to cut the bit-packing
+  loop's cycle cost further, or use a hardware-level multi-byte FIFO push —
+  which does not currently exist in the perif model or the documented
+  `references/endat/ENDAT_INTERFACE_SPEC.md`.
+
+Full design note: `docs/superpowers/specs/2026-07-21-pif-eth-n2-125mbaud-design.md`.
+Cross-PC handoff: `docs/handoff/2026-07-21-speed-selector-and-pif-eth-n2.md`.

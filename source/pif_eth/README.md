@@ -9,10 +9,13 @@ renders it to a **Wireshark** trace.
   from a single 256-entry lookup table held in **DRAM0** and read with `LBCO`
   from `c24`.  RD is bounded to ±1 and no run exceeds 5 bits (verified).
 * **Line rate:** target 125 Mbaud → 100 Mbit/s raw Ethernet (8b/10b overhead).
-  The simulator models the bit clock at a scaled, integer-divisible rate
-  (`TXCFG` div = 7 → 25 MHz) so the single core reliably keeps the 4-deep TX
-  FIFO fed; because the encoder and decoder share the configured period this
-  does not affect the byte stream or the measured BER.
+  The production firmware (`pif_eth_tx.asm`) models the bit clock at a scaled,
+  integer-divisible rate (`TXCFG` div = 7 → 25 MHz) so the single core
+  reliably keeps the 4-deep TX FIFO fed; because the encoder and decoder share
+  the configured period this does not affect the byte stream or the measured
+  BER. **Update (2026-07-21):** the full 125 Mbaud target (TXCFG n=2 @
+  250 MHz core) has since been demonstrated experimentally — see
+  [125 Mbaud (n=2) follow-up](#125-mbaud-n2-follow-up-2026-07-21) below.
 * **Frames:**
   * **BERT (option 1)** — no preamble, no header. 128 PRNG payload octets
     (firmware xorshift32) + 4-octet CRC-32 = 132 octets. For bit-error-rate
@@ -51,6 +54,8 @@ which also give the decoder symbol alignment.
 | `decoder.py` | bit/symbol stream → frames |
 | `pcap.py` | minimal classic-pcap writer (Ethernet link type) |
 | `driver.py` | runs the firmware on the simulator, decodes, checks BER, writes pcap |
+| `pif_eth_tx_n2.asm` | experimental: batched/unrolled bit-packing, all FIFO checks intact — validated n=3..8, fails at n=2 |
+| `pif_eth_tx_n2_skipchecks.asm` | experimental: as above, 2 FIFO checks removed — hits full 125 Mbaud (n=2), hard-pinned to it |
 
 ## Run it
 
@@ -90,7 +95,49 @@ server** wrapper.
 | `[25:16]` | 10-bit symbol to send when running disparity is positive |
 | `[26]` | RD after the symbol |
 
+## 125 Mbaud (n=2) follow-up (2026-07-21)
+
+Reaching the architecture's 125 Mbaud target requires TXCFG divider n=2 at a
+250 MHz core clock (`bit_clock = core_clock/n`). Two experimental firmware
+variants explore this (neither wired into `driver.py` or
+`tests/test_pif_eth.py` — both are standalone reference artifacts):
+
+| Firmware | n | Bit rate | Result |
+|---|---|---|---|
+| `pif_eth_tx_n2.asm` (all FIFO checks) | 2 | 125.00 MHz | **FAIL** — underrun, then deadlock |
+| `pif_eth_tx_n2.asm` (all FIFO checks) | 3–8 | 83.33–31.25 MHz | **PASS**, BER=0 — a genuine ~4x speedup over the 25 MHz baseline, self-adapting |
+| `pif_eth_tx_n2_skipchecks.asm` | 2 | 125.00 MHz | **PASS**, BER=0 over 100 BERT + 100 UDP frames — hits the full 125 Mbaud target |
+| `pif_eth_tx_n2_skipchecks.asm` | 3 or 4 | 83.33 / 62.50 MHz | **FAIL** — BER≈0.68, `tx_overrun=True` |
+
+Both variants add batched 4-octet `LBBO` loads and fixed-shift unrolled
+8b/10b bit-packing (compile-time shift amounts instead of a runtime
+`nbits`-tracked value), applied to both the data loop and the K28.5 comma
+emission. The `_skipchecks` variant additionally drops the FIFO-full check on
+the data loop's two single-byte-emit phases, closing a 2-cycle race at n=2
+(confirmed by single-stepping the simulator: the check passes, then the
+drain's next bit-edge pops the FIFO before the byte lands).
+
+**Caveat:** the FIFO-full check is what lets the firmware's push rate track
+whatever drain rate is configured. Removing it (`_skipchecks`) fixes
+production at a constant rate tuned to exactly match n=2 — the same firmware
+silently corrupts data (overrun, not a crash/hang) at any other divider. It
+must only be run with `pru_clock_mhz=250` and TXCFG div_factor=1, and
+re-validated if either ever changes.
+
+**Recommendation:** for a robust speedup that stays correct across
+clock/divider changes, use `pif_eth_tx_n2.asm` at n≥3. Treat
+`pif_eth_tx_n2_skipchecks.asm` as a validated proof that the 125 Mbaud
+architectural target is reachable, not as a drop-in replacement for
+`pif_eth_tx.asm`.
+
+Full results and root-cause analysis:
+`docs/superpowers/specs/2026-07-21-pif-eth-n2-125mbaud-design.md`.
+
 ## Roadmap
 
 * Broadside CRC accelerator for the FCS (currently firmware bit-serial).
 * Striping across all three perif channels for aggregate throughput.
+* A *robust* n=2 (125 Mbaud) firmware would need to cut the bit-packing
+  loop's cycle cost further (or a multi-byte FIFO push, which the perif
+  model/hardware spec does not currently support) rather than removing the
+  FIFO-full check.
