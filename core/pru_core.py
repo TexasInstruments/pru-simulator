@@ -35,7 +35,8 @@ class PRUCore:
     """Simulates a single PRU core executing PRU assembly instructions."""
 
     def __init__(self, name: str, memory: MemoryBus, xfr: XFRBus, io_port: IOPort,
-                 constant_table: ConstantTable | None = None):
+                 constant_table: ConstantTable | None = None,
+                 dram_swap: bool = False):
         self.name = name
         self.registers = RegisterFile()
         self.counters = CycleCounters()
@@ -43,6 +44,9 @@ class PRUCore:
         self.xfr = xfr
         self.io_port = io_port
         self.constant_table: ConstantTable = constant_table if constant_table is not None else ConstantTable()
+        # PRU1 sees its own DRAM (DRAM1) at core-local 0x0000 and DRAM0 at
+        # 0x2000 -- the reverse of PRU0. See _map_data_addr.
+        self.dram_swap = dram_swap
         self.pc: int = 0
         self.halted: bool = False
         self.instructions: list[Instruction] = []
@@ -318,7 +322,7 @@ class PRUCore:
             base = self._read_operand(base_op)
             offset = self._read_operand(offset_op)
             length = self._read_operand(length_op)
-            addr = base + offset
+            addr = self._map_data_addr(base + offset)
             try:
                 data, stalls = self.memory.read(addr, length)
                 start_reg = reg_op.index if isinstance(reg_op, Register) else 0
@@ -335,7 +339,7 @@ class PRUCore:
             base = self._resolve_cn(cn_op)
             offset = self._read_operand(offset_op)
             length = self._read_operand(length_op)
-            addr = base + offset
+            addr = self._map_data_addr(base + offset)
             try:
                 data, stalls = self.memory.read(addr, length)
                 start_reg = reg_op.index if isinstance(reg_op, Register) else 0
@@ -352,7 +356,7 @@ class PRUCore:
             base = self._resolve_cn(cn_op)
             offset = self._read_operand(offset_op)
             length = self._read_operand(length_op)
-            addr = base + offset
+            addr = self._map_data_addr(base + offset)
             start_reg = reg_op.index if isinstance(reg_op, Register) else 0
             start_byte = (reg_op.offset // 8) if isinstance(reg_op, Register) else 0
             data = self._read_registers_to_bytes(start_reg, length, start_byte)
@@ -369,7 +373,7 @@ class PRUCore:
             base = self._read_operand(base_op)
             offset = self._read_operand(offset_op)
             length = self._read_operand(length_op)
-            addr = base + offset
+            addr = self._map_data_addr(base + offset)
             start_reg = reg_op.index if isinstance(reg_op, Register) else 0
             start_byte = (reg_op.offset // 8) if isinstance(reg_op, Register) else 0
             data = self._read_registers_to_bytes(start_reg, length, start_byte)
@@ -503,6 +507,19 @@ class PRUCore:
     # ------------------------------------------------------------------
     # Operand helpers
     # ------------------------------------------------------------------
+
+    def _map_data_addr(self, addr: int) -> int:
+        """Translate a core-local data address into the global address space.
+
+        Each PRU sees its OWN DRAM at local 0x0000 and the other core's DRAM at
+        local 0x2000 (AM243x ICSSG).  The simulator holds DRAM0 at global
+        0x0000 and DRAM1 at global 0x2000, so PRU1's two 8 KB banks are
+        swapped; XOR with 0x2000 does exactly that.  Addresses at or above
+        0x4000 (shared RAM, MS_RAM, ICSS_CFG) are global for both cores.
+        """
+        if self.dram_swap and addr < 0x4000:
+            return addr ^ 0x2000
+        return addr
 
     def _resolve_cn(self, op) -> int:
         """Resolve a constant-table operand ('c0'–'c31') to its base address."""

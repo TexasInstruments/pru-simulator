@@ -5,8 +5,10 @@
 ; FIFO head byte (R31 byte 0) to DRAM1, pop the FIFO (write R31 bit 24),
 ; and maintain a received-byte counter.
 ;
-; Memory map (DRAM1): capture buffer 0x2000.. (grows up, max ~8 KB),
-;                     received-byte count (u32) at 0x3FF8.
+; Memory map (own DRAM = DRAM1, core-local): capture buffer 0x0000.. (max 8 KB),
+;                     received-byte count (u32) at 0x1FF8.
+;   PRU1 addresses its own DRAM at core-local 0x0000; the host sees the same
+;   bytes at global 0x2000 (DRAM1 base).
 ;
 ; Self-configuring: the prologue writes GPCFG1 mux=1 (perif mode) and
 ; RXCFG (0x26100) = 0x0007001F (sample_size=7, sb_pol=1, core clk, div=7).
@@ -29,9 +31,9 @@ start:
         ldi  r1.w2, 0x0002
         sbbo r0, r1, 0, 4
 
-        ldi  r1, 0x2000         ; capture buffer
+        ldi  r1, 0x0000         ; capture buffer (own DRAM = DRAM1)
         ldi  r2, 0              ; byte count
-        ldi  r3, 0x3FF8         ; count address
+        ldi  r3, 0x1FF8         ; count address
         ldi  r5, 0
         ldi  r5.w2, 0x0100      ; R31 bit 24 = clr_val ch0 (FIFO pop)
         ldi  r30.b3, 0x01       ; arm RX ch0 (byte3 strobe, bit 24)
