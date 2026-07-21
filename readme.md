@@ -83,7 +83,7 @@ See [getting_started.md](getting_started.md) for step-by-step walkthroughs of al
 | `mvi_gpio_loopback.asm` | MVIB register-indirect + GPIO loopback (walking-bit pattern) |
 | `sdfm_sinc3_demo/` | Free-running SINC3 filter adapted from AM261x ICSS-M firmware |
 | `perif_duty_cycle_sweep.asm` | Peripheral Interface TX: 125 Mbit 0%→100% duty-cycle pulse sweep on PRU0 ch0 (needs `memory_perif_125mbit_demo.cfg`) |
-| `pif_eth/` | 8b/10b line-coded Ethernet TX over the Peripheral Interface (PRU0 ch0): firmware PRNG/CRC-32, running-disparity 8b/10b via DRAM0 LUT, pcap output. See [PROJECT_REPORT.md](source/pif_eth/PROJECT_REPORT.md) ([PDF](source/pif_eth/PROJECT_REPORT.pdf)) · [handoff note](docs/handoff/2026-07-20-pif-eth.md). Experimental higher-clock variants `pif_eth_tx_n2*.asm` (not wired into the test suite): [design note](docs/superpowers/specs/2026-07-21-pif-eth-n2-125mbaud-design.md) |
+| `pif_eth/` | 8b/10b line-coded Ethernet TX over the Peripheral Interface (PRU0 ch0): firmware PRNG/CRC-32, running-disparity 8b/10b via DRAM0 LUT, pcap output. See [PROJECT_REPORT.md](source/pif_eth/PROJECT_REPORT.md) ([PDF](source/pif_eth/PROJECT_REPORT.pdf)) · [handoff note](docs/handoff/2026-07-20-pif-eth.md). Experimental higher-clock variants `pif_eth_tx_n2*.asm` (not wired into the test suite): [design note](docs/superpowers/specs/2026-07-21-pif-eth-n2-125mbaud-design.md). PRU1 RX over the PRU0→PRU1 loopback (`pif_eth_rx_o1_raw.asm` + `rx_driver.py`), CI-exercised: [design note](docs/superpowers/specs/2026-07-21-pif-eth-pru1-rx-design.md) · [handoff note](docs/handoff/2026-07-22-pif-eth-rx-o1.md) |
 
 ## Running Tests
 
@@ -93,9 +93,13 @@ python -m pytest --tb=short -q
 
 ## Version
 
-v0.2.1 — hover over **PRU SIM** in the dashboard header to confirm.
+v0.2.2 — hover over **PRU SIM** in the dashboard header to confirm.
 
 ### Changelog
+
+**v0.2.2**
+- **pif_eth — PRU1 RX over the PRU0→PRU1 loopback (Option 1)** — new `pif_eth_rx_o1_raw.asm` + `rx_driver.py` receive the 8b/10b line-coded frames PRU0 transmits, at 2x-oversampled RX sample clock (a hardware requirement — the RX shift register doesn't decimate), with SOF from the RX hardware's own start-bit detection and EOF from a 2-consecutive-zero-byte proxy (one zero byte is a legal 5-bit run, not EOF). Post-frame comma-align, 8b/10b decode, CRC-32 and PRNG BER-check happen off the realtime path. Measured **zero BER across the full n_tx ladder (2/4/6/8 → 125.00/62.50/41.67/31.25 Mbaud), 7 seeds each** — including `n_tx=2`, which the design's own risk section expected might not be reachable by the 8-cycle realtime budget; it passes, but at *zero* headroom (7 instructions + a 1-cycle DRAM write stall exactly fill the budget). This also promotes `pif_eth_tx_n2*.asm` from reference-only artifacts (v0.2.1) to firmware `rx_driver.py` actually selects and exercises by divider. Design: [`2026-07-21-pif-eth-pru1-rx-design.md`](docs/superpowers/specs/2026-07-21-pif-eth-pru1-rx-design.md); cross-machine [handoff note](docs/handoff/2026-07-22-pif-eth-rx-o1.md).
+- **fix(pif_eth): bound the RX frame buffer** — the post-frame decode stage wrote decoded octets into the 256 B reconstructed-frame buffer with no bound, so `payload_len > 252` walked writes into the adjacent stats/control blocks, poisoning `go`/`seed`/`payload_len`/`rxcfg` for later frames. Fixed with a firmware-side backstop (`eof_status = 2` on overrun) plus a host-side `ValueError` for oversized `payload_len` in `rx_driver.py`.
 
 **v0.2.1**
 - **PRU core speed selector** — controls-bar dropdown (200/225/250/300/333 MHz) sets `pru_clock_mhz` and `pru1_clock_mhz` together via a new `GET`/`PUT /config/clock_speed` endpoint, which patches `memory.cfg` in place (preserving formatting/comments — no `configparser` round-trip) and reloads the simulator. Always syncs all three cores; the [PRU0→PRU1 perif clock-drift demo](docs/superpowers/specs/2026-07-18-pru1-perif-drift-design.md) remains a separate manual `pru1_clock_mhz` edit, applied *after* picking a base speed from the dropdown. Design: [`2026-07-20-pru-core-speed-selector-design.md`](docs/superpowers/specs/2026-07-20-pru-core-speed-selector-design.md).

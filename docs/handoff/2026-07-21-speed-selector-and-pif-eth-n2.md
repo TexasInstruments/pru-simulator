@@ -4,6 +4,12 @@ Cross-machine snapshot (agent memory is per-PC; this file travels with the
 repo so any PC sees it after `git pull`). Continues from
 [`2026-07-20-pif-eth.md`](2026-07-20-pif-eth.md).
 
+> **Continued in
+> [`2026-07-22-pif-eth-rx-o1.md`](2026-07-22-pif-eth-rx-o1.md)**: the n=2
+> firmware below was promoted from reference-only to CI-exercised firmware
+> (RX driver selects it by divider), and a PRU1 RX path was added on top of
+> it. Also fixes a real frame-buffer overrun bug.
+
 ## Status
 
 **Both complete, committed and pushed to `main`** (`040d4fe` firmware,
