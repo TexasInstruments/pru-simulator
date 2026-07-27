@@ -70,10 +70,12 @@ class TestSDEndToEnd:
         sim = Simulator()
         sd = sim.cores["pru0"].io_port.sd_filter
 
-        # Setup different DC levels on ch0 and ch1
+        # Setup different DC levels on ch0 and ch1. The SD clock is matched to
+        # whatever core clock is configured (1:1) so the accumulators fill in
+        # the same 32 steps regardless of the UI's core-speed selection.
         for i in range(2):
             sd.channels[i].osr = 16
-            sd.modulators[i].sd_clock_mhz = 200.0
+            sd.modulators[i].sd_clock_mhz = sim._pru_clock_mhz
         sd.modulators[0].signal = "dc"
         sd.modulators[0].dc_level = 0.9  # very high
         sd.modulators[1].signal = "dc"

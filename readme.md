@@ -98,6 +98,7 @@ v0.2.3 — hover over **PRU SIM** in the dashboard header to confirm.
 ### Changelog
 
 **v0.2.3**
+- **Tests no longer depend on the UI's core-speed selection** — the speed selector rewrites `memory.cfg` in place, and any test constructing `Simulator()` / `PRUSimulatorMCP()` with no arguments inherits that clock. Picking anything other than 200 MHz in the dashboard therefore broke six cycle-timed tests (bit-bang UART RX ×4, PRU1 clock config, SD channel switching). New `tests/conftest.py` provides a `sim_config` / `nominal_config` fixture that builds a throw-away `memory.cfg` with the clock pinned; the SD test now matches its modulator clock to the configured core clock instead of a hardcoded 200 MHz. Suite verified green at 200, 250 and 333 MHz.
 - **Reset now clears Peripheral Interface state** — the UI's *HW Reset* (and the per-core *Reset*) left the perif's latched status bits standing, so a TX overrun/underrun, `rx_valid`/`rx_ovf`, `busy` or a half-full FIFO from the previous run stayed visible in the Peripheral panel and in R31 after the reset. `PRUCore.reset()` now resets its IO port, which resets the attached `PeripheralInterface`: per-channel TX/RX FIFOs, overrun/underrun, RX valid/overflow/EOF, capture progress, FSM/pins, recorded line history and the ns timeline, plus the R30 channel select and the TXCFG busy bits. Config is deliberately preserved — perif config registers (clock dividers, frame sizes, delays), the GP Mux selection and the loopback parameters all survive a reset, as does GPI (external stimulus, not core state).
 
 **v0.2.2**

@@ -1,9 +1,5 @@
 # tests/test_pru1_core.py
 """PRU1 core instance: own clock, owns the second perif block (TRM: GPCFG1/0x26100)."""
-import configparser
-import os
-
-import simulator
 from simulator import Simulator
 
 
@@ -38,14 +34,12 @@ def test_pru1_clock_defaults_to_pru_clock():
     assert s._pru1_clock_mhz == s._pru_clock_mhz
 
 
-def test_pru1_clock_from_config(tmp_path):
-    cfg = configparser.ConfigParser()
-    cfg.read(os.path.join(os.path.dirname(simulator.__file__), "memory.cfg"))
-    cfg["device"]["pru1_clock_mhz"] = "200.1"
-    path = tmp_path / "memory.cfg"
-    with open(path, "w") as f:
-        cfg.write(f)
-    s = Simulator(str(path))
+def test_pru1_clock_from_config(sim_config):
+    # Both clocks are pinned: the point is that PRU1 diverges from PRU0, which
+    # only holds if PRU0's clock is known (the repo memory.cfg follows the UI's
+    # core-speed selector).
+    path = sim_config(pru_clock_mhz=200.0, pru1_clock_mhz=200.1)
+    s = Simulator(path)
     assert s._pru1_clock_mhz == 200.1
     # PRU1's perif ns-timeline runs off its own clock
     assert abs(s._perif["pru1"]._period_ns - 1000.0 / 200.1) < 1e-9

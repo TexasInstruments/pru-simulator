@@ -188,9 +188,9 @@ class TestUARTRXMultiFrame:
 class TestUARTRXSimulatorIntegration:
     """Test UART RX via Simulator API (the same path MCP will use)."""
 
-    def test_simulator_uart_inject_single_frame(self):
+    def test_simulator_uart_inject_single_frame(self, nominal_config):
         """Simulator.uart_inject() loads assembly and receives one frame."""
-        sim = Simulator()
+        sim = Simulator(nominal_config)
         asm_source = (Path(__file__).parent.parent / "source" / "uart_rx_11frame.asm").read_text()
         sim.load("pru0", asm_source)
 
