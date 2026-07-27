@@ -94,3 +94,50 @@ def test_demo_asm_transmits_via_stepping():
     assert ch0.busy is False             # 8-bit frame finished
     assert ch0.tx_fifo == []             # flushed after frame
     assert len(ch0.tx_transitions) > 1   # serial line was driven
+
+
+def test_hard_reset_clears_perif_status_but_keeps_config():
+    """UI HW Reset: latched status bits (overrun, valid/ovf, busy) go away,
+    while the perif config the user entered survives."""
+    s = _sim()
+    s.gpcfg_write("pru0", 1)
+    s.write_perif_register("pru0", 0x260E8, 8 << 11)   # CH0CFG0: tx_frame_size = 8
+    perif = s._perif["pru0"]
+    for i in range(5):                                 # 5th push → TX overrun
+        perif.channels[0].push_tx(i)
+    perif.channels[0].tx_go(0.0)
+    perif.channels[1].rx_en = True
+    perif.channels[1].rx_valid = True
+    perif.channels[1].rx_ovf = True
+    ch0 = s.perif_state("pru0")["channels"][0]
+    assert ch0["tx_overrun"] is True
+
+    s.hard_reset()
+
+    st = s.perif_state("pru0")
+    ch0, ch1 = st["channels"][0], st["channels"][1]
+    assert ch0["tx_overrun"] is False
+    assert ch0["tx_underrun"] is False
+    assert ch0["tx_fifo"] == []
+    assert ch0["busy"] is False
+    assert ch0["fsm"] == "IDLE"
+    assert ch1["rx_valid"] is False
+    assert ch1["rx_ovf"] is False
+    assert ch1["rx_en"] is False
+    assert s.cores["pru0"].io_port.read_r31() == 0
+    # Config kept: still in peripheral mode with the frame size we programmed.
+    assert st["enabled"] is True
+    assert ch0["config"]["tx_frame_size"] == 8
+
+
+def test_core_reset_clears_perif_status():
+    """The per-core Reset button clears that core's peripheral state too."""
+    s = _sim()
+    s.gpcfg_write("pru0", 1)
+    perif = s._perif["pru0"]
+    for i in range(5):
+        perif.channels[0].push_tx(i)
+    assert perif.channels[0].tx_overrun is True
+    s.reset("pru0")
+    assert perif.channels[0].tx_overrun is False
+    assert perif.channels[0].tx_fifo == []

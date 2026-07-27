@@ -382,7 +382,13 @@ class Simulator:
         self._get_core(core).reset()
 
     def hard_reset(self) -> None:
-        """Full hardware reset: reset all cores, clear all SPAD banks, and reset XFR config."""
+        """Full hardware reset: reset all cores, clear all SPAD banks, and reset XFR config.
+
+        Each core's reset also clears its IO port and Peripheral Interface state
+        (TX/RX FIFOs, overrun/underrun, RX valid/overflow, busy, line history),
+        so the UI's status bits start clean.  Configuration entered in the UI --
+        perif config registers, GPCFG mux, loopback parameters -- is kept.
+        """
         for core in self.cores.values():
             core.reset()
         self.xfr.reset()

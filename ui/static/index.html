@@ -1259,7 +1259,7 @@
 
   <!-- Controls bar -->
   <div id="controls">
-    <span class="logo" title="PRU Simulator v0.2.2">PRU SIM</span>
+    <span class="logo" title="PRU Simulator v0.2.3">PRU SIM</span>
 
     <select id="core-select">
       <option value="pru0">PRU0</option>
@@ -1287,7 +1287,7 @@
     <input id="sim-interval" type="text" value="1.0" placeholder="1.0" title="SIM step interval in seconds (e.g. 0.01)" />
     <span style="font-size:11px;color:var(--text-dim)">s</span>
     <button id="btn-reset" class="btn-reset">Reset</button>
-    <button id="btn-hard-reset" class="btn-reset" title="Hardware reset: clears all SPAD banks, XFR config, and all cores">HW Reset</button>
+    <button id="btn-hard-reset" class="btn-reset" title="Hardware reset: clears all SPAD banks, XFR config, all cores, and Peripheral Interface state (FIFOs, overrun/underrun, RX valid/overflow, busy) — perif config registers are kept">HW Reset</button>
     <button id="btn-config">Config</button>
     <button id="btn-reset-layout" title="Reset panel layout to default">⊞ Reset Layout</button>
     <button id="btn-help" title="Keyboard shortcuts and feature reference">? Help</button>
@@ -1771,8 +1771,8 @@ Example:
           <tr><td><b>Step Back</b></td><td>Reverse the last instruction — full machine state (registers, memory, SD filter) restored</td></tr>
           <tr><td><b>Run</b></td><td>Toggle continuous execution</td></tr>
           <tr><td><b>SIM</b></td><td>Toggle timed simulation mode</td></tr>
-          <tr><td><b>Reset</b></td><td>Soft reset — registers and PC to 0</td></tr>
-          <tr><td><b>HW Reset</b></td><td>Hard reset — clears SPAD and XFR config</td></tr>
+          <tr><td><b>Reset</b></td><td>Soft reset — registers and PC to 0, plus this core's Peripheral Interface status/FIFOs</td></tr>
+          <tr><td><b>HW Reset</b></td><td>Hard reset — clears SPAD, XFR config, and every core's Peripheral Interface state (FIFOs, overrun/underrun, RX valid/overflow, busy); perif config registers, GP Mux and loopback settings are kept</td></tr>
           <tr><td><b>Multi-core</b></td><td>Toggle dual-core (PRU0 + RTU0) debug view</td></tr>
           <tr><td><b>Config</b></td><td>Edit simulator configuration (JSON)</td></tr>
           <tr><td><b>⊞ Reset Layout</b></td><td>Restore default panel layout</td></tr>

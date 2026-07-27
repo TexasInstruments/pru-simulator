@@ -426,3 +426,83 @@ class TestTopLevel:
         p.channels[0].rx_fifo = [1, 2, 3]
         p.process_r31_command(1 << 24)  # clr_val ch0 — one pop
         assert p.channels[0].rx_fifo == [2, 3]
+
+
+# ---------------------------------------------------------------------------
+class TestHardwareReset:
+    """`reset()` — what the UI's HW Reset / per-core Reset must clear."""
+
+    def _mk(self):
+        p = PeripheralInterface(pru_clock_mhz=200.0)
+        p.registers = mk_regs()
+        p.build_channels()
+        return p
+
+    def test_channel_reset_clears_tx_and_rx_status(self):
+        r = mk_regs()
+        set_ch_cfg0(r, 0, tx_frame=8)
+        ch = PerifChannel(0, r)
+        for i in range(5):
+            ch.push_tx(i)              # 5th push → overrun
+        ch.tx_go(0.0)
+        ch.rx_en = True
+        ch.rx_fifo = [0x11, 0x22]
+        ch.rx_valid = True
+        ch.rx_ovf = True
+        ch.rx_eof = True
+        assert ch.tx_overrun is True
+
+        ch.reset()
+
+        assert ch.tx_overrun is False
+        assert ch.tx_underrun is False
+        assert ch.tx_fifo == []
+        assert ch.busy is False
+        assert ch.fsm == IDLE
+        assert ch.tx_status_byte() == 0
+        assert ch.rx_en is False
+        assert ch.rx_fifo == []
+        assert ch.rx_valid is False
+        assert ch.rx_ovf is False
+        assert ch.rx_eof is False
+        assert ch.tx_transitions == [(0.0, 0)]
+        assert ch._last_ns == 0.0
+
+    def test_channel_reset_keeps_loopback_wiring(self):
+        r = mk_regs()
+        ch = PerifChannel(0, r)
+        ch.rx_line_source = lambda t: 1
+        ch.reset()
+        assert ch.rx_line_source is not None
+
+    def test_reset_clears_r31_status_and_busy(self):
+        p = self._mk()
+        set_ch_cfg0(p.registers, 0, tx_frame=8)
+        p.process_r30((1 << 16), wstrb=0x0)      # ch_sel = 1
+        for i in range(5):
+            p.channels[0].push_tx(i)             # overrun on ch0
+        p.channels[0].tx_go(0.0)
+        p.channels[2].rx_en = True
+        p.channels[2].rx_valid = True
+        p.channels[2].rx_ovf = True
+        p.advance(1000.0)
+        assert p.get_r31_status() != 0
+
+        p.reset()
+
+        assert p.get_r31_status() == 0
+        assert p.ch_sel == 0
+        # TXCFG busy bits [7:5] follow the now-idle channels.
+        txcfg = int.from_bytes(p.registers.read(_BASE + 0x04, 4), "little")
+        assert (txcfg >> 5) & 0x7 == 0
+
+    def test_reset_keeps_config_registers(self):
+        p = self._mk()
+        set_txcfg(p.registers, clk_sel=1, div=39, frac=1)
+        set_ch_cfg0(p.registers, 1, wire=100, tx_frame=6, rx_frame=4)
+        p.reset()
+        assert p.registers.get_tx_div_factor() == 39
+        assert p.registers.get_tx_div_factor_frac() == 1
+        assert p.registers.get_tx_wire_delay(1) == 100
+        assert p.registers.get_tx_frame_size(1) == 6
+        assert p.registers.get_rx_frame_size(1) == 4

@@ -101,6 +101,27 @@ class PeripheralInterface:
                 self.channels[i].clr_ovf()
 
     # ==================================================================
+    # Reset
+    # ==================================================================
+
+    def reset(self) -> None:
+        """Hardware reset: clear every channel's state and the R30 decode.
+
+        Called from `PRUCore.reset()`, so both the per-core Reset and the UI's
+        HW Reset drop stale status bits (TX overrun/underrun, RX valid/overflow,
+        busy) instead of leaving them latched from the previous run.  The config
+        registers hold the setup entered in the UI (clock dividers, frame sizes,
+        delays) and deliberately survive a reset; only the hardware-owned busy
+        bits are cleared to follow the now-idle channels.
+        """
+        self.ch_sel = 0
+        self._now_ns = 0.0
+        for ch in self.channels:
+            ch.reset()
+            if self.registers is not None:
+                self.registers.set_busy(ch.index, False)
+
+    # ==================================================================
     # Timeline
     # ==================================================================
 

@@ -255,6 +255,36 @@ class PerifChannel:
         self.tx_out_en = 0
         self.clk_mode = 1
 
+    def reset(self) -> None:
+        """Hardware reset of the channel — clears all volatile TX and RX state.
+
+        Wider than `tx_reinit()` (the R31 bit19 soft reset, which is TX-only):
+        this also drops the RX FIFO and its valid/overflow/EOF flags, the
+        capture progress, the recorded line history and the ns timeline, so a
+        reset channel behaves like one that has never been driven.  The config
+        registers live in PerifRegisters and are not touched here, and
+        `rx_line_source` (the loopback wiring) is left connected.
+        """
+        self.tx_reinit()
+        self.tx_data_pin = 0
+        self._bit_index = 0
+        self._phase_end_ns = 0.0
+        self._go_ns = 0.0
+        self.tx_transitions = [(0.0, 0)]
+
+        self.rx_en = False
+        self.rx_fifo = []
+        self.rx_valid = False
+        self.rx_ovf = False
+        self.rx_eof = False
+        self._rx_shift = 0
+        self._rx_started = False
+        self._rx_sample_cnt = 0
+        self._rx_byte_cnt = 0
+        self._rx_next_edge_ns = None
+
+        self._last_ns = 0.0
+
     def tx_bit_edge(self) -> int:
         """Advance the serializer by one TX sample-clock bit. Returns the data bit.
 

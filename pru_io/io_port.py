@@ -101,6 +101,23 @@ class IOPort:
         self.gpi = value & _MASK_20
 
     # ------------------------------------------------------------------
+    # Reset
+    # ------------------------------------------------------------------
+
+    def reset(self) -> None:
+        """Clear driven-output state and reset the attached Peripheral Interface.
+
+        Called from `PRUCore.reset()`: R30 is zeroed by the register-file reset,
+        so GPO follows it, and the peripheral drops its latched status bits
+        (overrun/underrun, RX valid/overflow, busy) and FIFOs.  GPI is left
+        untouched — it models external stimulus (UI input pins, injected
+        frames), not core state.
+        """
+        self.gpo = 0
+        if self.perif is not None:
+            self.perif.reset()
+
+    # ------------------------------------------------------------------
     # Pin-list helpers
     # ------------------------------------------------------------------
 

@@ -104,6 +104,7 @@ class PRUCore:
         self.loop_state = None
         for acc in self.accelerators.values():
             acc.reset()
+        self.io_port.reset()
 
     def step(self) -> None:
         """Execute one instruction."""

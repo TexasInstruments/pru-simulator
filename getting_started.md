@@ -43,8 +43,8 @@ The dashboard is divided into resizable panels. You can drag panel title bars to
 | Step | Execute one instruction |
 | Step Back | Reverse the last instruction (full machine state restored) |
 | Run | Execute continuously at the configured interval |
-| Reset | Reset PC and registers to 0 |
-| HW Reset | Full hardware reset — clears all SPAD banks and cores |
+| Reset | Reset PC and registers to 0, and clear this core's Peripheral Interface status/FIFOs |
+| HW Reset | Full hardware reset — clears all SPAD banks, all cores, and every core's Peripheral Interface state (TX/RX FIFOs, overrun/underrun, RX valid/overflow, busy). Perif config registers, GP Mux and loopback settings are kept |
 | Multi-core | Toggle dual-core (PRU0 + RTU0) debug view |
 
 ---
