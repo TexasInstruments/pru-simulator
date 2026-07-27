@@ -211,3 +211,42 @@ def test_run_multicore_stops_at_lead_breakpoint():
         for core in ("pru0", "pru1"):
             ws.send_json({"action": "reset", "core": core})
             ws.receive_json()
+
+
+def test_state_carries_tx_clk_pin_for_graph_lanes():
+    """The Signal Graph's `perifN_clk` lanes read `tx_clk_pin` off each state
+    push (app.js graphSample) — guard that key, and that it actually toggles
+    while transmitting so the lane isn't filtered out as inactive."""
+    from pathlib import Path
+    src = Path(__file__).parent.parent / "source"
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "reset", "core": "pru0"})
+        ws.receive_json()
+        ws.send_json({"action": "gpcfg_write", "core": "pru0", "mux_sel": 1})
+        state = ws.receive_json()
+        ch0 = state["io"]["perif"]["channels"][0]
+        assert "tx_clk_pin" in ch0 and "tx_line" in ch0
+
+        ws.send_json({"action": "write_perif_register", "core": "pru0",
+                      "addr": 0x260E4, "value": 0x00070010})
+        ws.receive_json()
+        ws.send_json({"action": "write_perif_register", "core": "pru0",
+                      "addr": 0x260E8, "value": 0})      # continuous mode
+        ws.receive_json()
+        ws.send_json({"action": "load", "core": "pru0",
+                      "source": (src / "perif_tx_pattern.asm").read_text()})
+        ws.receive_json()
+
+        clk_seen, data_seen = set(), set()
+        for _ in range(300):                              # 1 instruction/sample
+            ws.send_json({"action": "step", "core": "pru0", "count": 1})
+            st = ws.receive_json()
+            c = st["io"]["perif"]["channels"][0]
+            clk_seen.add(1 if c["tx_clk_pin"] else 0)
+            data_seen.add(1 if c["tx_line"] else 0)
+
+        assert clk_seen == {0, 1}, "clock lane never toggled"
+        assert data_seen == {0, 1}, "data lane never toggled"
+
+        ws.send_json({"action": "gpcfg_write", "core": "pru0", "mux_sel": 0})
+        ws.receive_json()

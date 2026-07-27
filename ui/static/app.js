@@ -55,6 +55,8 @@ const GRAPH_MEM_COLORS = [
   '#d7ba7d','#b5cea8','#ce9178','#f48771',
 ];
 const GRAPH_PERIF_COLORS = ['#ffb74d', '#ff8a65', '#ffd54f'];
+// Muted same-hue variants: each perif clock lane pairs with its data lane.
+const GRAPH_PERIF_CLK_COLORS = ['#c9924a', '#c97a5c', '#c9a84a'];
 
 const GRAPH_HEIGHT_STEPS = [80, 140, 200, 280, 400, 560, 720, 960, 1200];
 
@@ -901,7 +903,8 @@ function updatePerifPanel(io) {
 
 /**
  * Push one sample into the circular buffer.
- * sample = { step, gpo: [20], gpi: [20], perif: [3], mem: [number|null, ...] }
+ * sample = { step, gpo: [20], gpi: [20], perif: [3], perifClk: [3],
+ *            mem: [number|null, ...] }
  */
 function graphPushSample(sample) {
   signalGraph.buf[signalGraph.head] = sample;
@@ -1063,6 +1066,9 @@ function graphSample(state) {
     gpo: (state.io.gpo_pins || []).slice(0, 20),
     gpi: (state.io.gpi_pins || []).slice(0, 20),
     perif: perifChannels.map(ch => ch.tx_line ? 1 : 0),
+    // Bit clock alongside the data line: the perif serializer has no framing
+    // of its own, so the clock is the only reference for where bits start.
+    perifClk: perifChannels.map(ch => ch.tx_clk_pin ? 1 : 0),
   };
   graphPushSample(sample);
 }
@@ -1153,9 +1159,14 @@ function drawDigitalGraph() {
       }
     }
     for (let i = 0; i < 3; i++) {
+      // Data lane first, then its bit clock, so the pair reads together.
       const vals = samples.map(s => (s.perif && s.perif[i]) || 0);
       if (vals.some(v => v !== vals[0])) {
         activeDig.push({ label: `perif${i}_out`, color: GRAPH_PERIF_COLORS[i], data: vals });
+      }
+      const clk = samples.map(s => (s.perifClk && s.perifClk[i]) || 0);
+      if (clk.some(v => v !== clk[0])) {
+        activeDig.push({ label: `perif${i}_clk`, color: GRAPH_PERIF_CLK_COLORS[i], data: clk });
       }
     }
   }
@@ -1426,13 +1437,16 @@ function exportGraphCSV() {
   const gpoHeaders = Array.from({ length: 20 }, (_, i) => `gpo${i}`);
   const gpiHeaders = Array.from({ length: 20 }, (_, i) => `gpi${i}`);
   const perifHeaders = Array.from({ length: 3 }, (_, i) => `perif${i}_out`);
-  const header = ["step", ...gpoHeaders, ...gpiHeaders, ...perifHeaders].join(",");
+  const perifClkHeaders = Array.from({ length: 3 }, (_, i) => `perif${i}_clk`);
+  const header = ["step", ...gpoHeaders, ...gpiHeaders,
+                  ...perifHeaders, ...perifClkHeaders].join(",");
 
   const rows = samples.map(s => {
     const gpo = Array.from({ length: 20 }, (_, i) => s.gpo[i] ?? 0);
     const gpi = Array.from({ length: 20 }, (_, i) => s.gpi[i] ?? 0);
     const perif = Array.from({ length: 3 }, (_, i) => (s.perif && s.perif[i]) ?? 0);
-    return [s.step, ...gpo, ...gpi, ...perif].join(",");
+    const perifClk = Array.from({ length: 3 }, (_, i) => (s.perifClk && s.perifClk[i]) ?? 0);
+    return [s.step, ...gpo, ...gpi, ...perif, ...perifClk].join(",");
   });
 
   // Append memory channel snapshots as separate blocks after the signal rows
