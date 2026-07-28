@@ -32,7 +32,7 @@ The dashboard is divided into resizable panels. You can drag panel title bars to
 | **Registers** | R0–R31 live values; double-click any value to edit inline |
 | **Memory** | Hex dump of DRAM0/DRAM1/ICSS_SHARED; double-click a cell to edit |
 | **IO** | GPO (R30) and GPI (R31) pin controls; loopback strip; UART decoder; SD filter panel |
-| **Signal Graph** | Logic analyzer + analog scope; records GPO/GPI, Peripheral Interface data/clock lanes, and memory channels |
+| **Signal Graph** | Logic analyzer + analog scope; records GPO/GPI (GP mode), Peripheral Interface out/out_en/clock lanes (perif mode), and memory channels |
 | **Memory Graph** | Analog waveform view for memory buffer channels |
 | **Counters** | Cycle count, instruction count, stall cycles, IPC |
 
@@ -314,13 +314,19 @@ The Signal Graph panel records GPO/GPI pin states and optional memory addresses 
 
 **To read a Peripheral Interface trace:**
 
-In peripheral mode each channel contributes two lanes: `perifN_out` (the serial
-data line) and `perifN_clk` (its bit clock). A lane only appears once it has
-toggled at least once. The perif serializer sends raw MSB-first bits with no
-framing of its own, so use the clock lane to find bit boundaries — there is one
-clock edge per bit, and the data line is stable across each half-period. At the
-usual `TXCFG` divider (`div=7` → core/8) one bit is 8 samples wide, since the
-graph takes one sample per instruction.
+In peripheral mode the GPO/GPI lanes are **not** drawn: the GP Mux has handed
+those pads to the Peripheral Interface, so R30/R31 bits no longer describe
+anything on the wire. The graph shows three lanes per active channel instead —
+`perifN_out` (the serial data line), `perifN_out_en` (asserted while the channel
+is actually driving the pad) and `perifN_clk` (its bit clock). A channel appears
+as soon as any one of its three signals toggles, and then all three lanes are
+drawn, so a steady `out_en` stays visible next to the data it qualifies.
+
+The perif serializer sends raw MSB-first bits with no framing of its own, so use
+the clock lane to find bit boundaries — there is one clock edge per bit, and the
+data line is stable across each half-period. At the usual `TXCFG` divider
+(`div=7` → core/8) one bit is 8 samples wide, since the graph takes one sample
+per instruction.
 
 Firmware that prefixes a start bit (see `source/perif_tx_pattern.asm`) shifts
 the whole payload right by one bit, so byte boundaries on the wire sit one bit

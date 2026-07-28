@@ -57,6 +57,8 @@ const GRAPH_MEM_COLORS = [
 const GRAPH_PERIF_COLORS = ['#ffb74d', '#ff8a65', '#ffd54f'];
 // Muted same-hue variants: each perif clock lane pairs with its data lane.
 const GRAPH_PERIF_CLK_COLORS = ['#c9924a', '#c97a5c', '#c9a84a'];
+// Darkest of the three: out_en frames the data/clock pair it belongs to.
+const GRAPH_PERIF_OE_COLORS = ['#8f6a36', '#8f5844', '#8f7736'];
 
 const GRAPH_HEIGHT_STEPS = [80, 140, 200, 280, 400, 560, 720, 960, 1200];
 
@@ -903,8 +905,8 @@ function updatePerifPanel(io) {
 
 /**
  * Push one sample into the circular buffer.
- * sample = { step, gpo: [20], gpi: [20], perif: [3], perifClk: [3],
- *            mem: [number|null, ...] }
+ * sample = { step, mode, gpo: [20], gpi: [20], perif: [3], perifOe: [3],
+ *            perifClk: [3], mem: [number|null, ...] }
  */
 function graphPushSample(sample) {
   signalGraph.buf[signalGraph.head] = sample;
@@ -1063,12 +1065,17 @@ function graphSample(state) {
   const perifChannels = (state.io.perif && state.io.perif.channels) || [];
   const sample = {
     step: state.instruction_count,
+    // IO mux mode at capture time: in perif mode the GPO/GPI pins are owned by
+    // the Peripheral Interface, so R30/R31 must not be plotted as pin state.
+    mode: state.io.mode || "gpio",
     gpo: (state.io.gpo_pins || []).slice(0, 20),
     gpi: (state.io.gpi_pins || []).slice(0, 20),
     perif: perifChannels.map(ch => ch.tx_line ? 1 : 0),
     // Bit clock alongside the data line: the perif serializer has no framing
     // of its own, so the clock is the only reference for where bits start.
     perifClk: perifChannels.map(ch => ch.tx_clk_pin ? 1 : 0),
+    // Output enable: shows when the channel actually drives the pad.
+    perifOe: perifChannels.map(ch => ch.tx_out_en ? 1 : 0),
   };
   graphPushSample(sample);
 }
@@ -1144,30 +1151,42 @@ function drawDigitalGraph() {
   }
 
   // ---- Determine active digital channels (pin transitioned at least once) ----
+  // In Peripheral mode the GPO/GPI pads belong to the Peripheral Interface, so
+  // plotting R30/R31 bits there would show pins that do not exist on the wire.
+  // Only the perif lanes (out / out_en / tx_clk) are drawn in that mode.
+  const perifMode = samples.length > 0 &&
+                    samples[samples.length - 1].mode === "perif";
   const activeDig = [];
   if (samples.length >= 2) {
-    for (let i = 0; i < 20; i++) {
-      const vals = samples.map(s => s.gpo[i] || 0);
-      if (vals.some(v => v !== vals[0])) {
-        activeDig.push({ label: `GPO ${i}`, color: GRAPH_GPO_COLORS[i], data: vals });
+    if (!perifMode) {
+      for (let i = 0; i < 20; i++) {
+        const vals = samples.map(s => s.gpo[i] || 0);
+        if (vals.some(v => v !== vals[0])) {
+          activeDig.push({ label: `GPO ${i}`, color: GRAPH_GPO_COLORS[i], data: vals });
+        }
       }
-    }
-    for (let i = 0; i < 20; i++) {
-      const vals = samples.map(s => s.gpi[i] || 0);
-      if (vals.some(v => v !== vals[0])) {
-        activeDig.push({ label: `GPI ${i}`, color: GRAPH_GPI_COLORS[i], data: vals });
+      for (let i = 0; i < 20; i++) {
+        const vals = samples.map(s => s.gpi[i] || 0);
+        if (vals.some(v => v !== vals[0])) {
+          activeDig.push({ label: `GPI ${i}`, color: GRAPH_GPI_COLORS[i], data: vals });
+        }
       }
     }
     for (let i = 0; i < 3; i++) {
-      // Data lane first, then its bit clock, so the pair reads together.
-      const vals = samples.map(s => (s.perif && s.perif[i]) || 0);
-      if (vals.some(v => v !== vals[0])) {
-        activeDig.push({ label: `perif${i}_out`, color: GRAPH_PERIF_COLORS[i], data: vals });
-      }
+      // Data lane first, then out_en and the bit clock, so the group reads
+      // together: out_en says when the pad is driven, the clock says where the
+      // bits start (the perif serializer has no framing of its own).
+      const out = samples.map(s => (s.perif && s.perif[i]) || 0);
+      const oe  = samples.map(s => (s.perifOe && s.perifOe[i]) || 0);
       const clk = samples.map(s => (s.perifClk && s.perifClk[i]) || 0);
-      if (clk.some(v => v !== clk[0])) {
-        activeDig.push({ label: `perif${i}_clk`, color: GRAPH_PERIF_CLK_COLORS[i], data: clk });
-      }
+      const moved = a => a.some(v => v !== a[0]);
+      // A channel that moved at all shows its full group, so a steady out_en
+      // stays visible next to the data it qualifies.
+      const chActive = moved(out) || moved(oe) || moved(clk);
+      if (!chActive) continue;
+      activeDig.push({ label: `perif${i}_out`,    color: GRAPH_PERIF_COLORS[i],     data: out });
+      activeDig.push({ label: `perif${i}_out_en`, color: GRAPH_PERIF_OE_COLORS[i],  data: oe  });
+      activeDig.push({ label: `perif${i}_clk`,    color: GRAPH_PERIF_CLK_COLORS[i], data: clk });
     }
   }
 
@@ -1437,16 +1456,19 @@ function exportGraphCSV() {
   const gpoHeaders = Array.from({ length: 20 }, (_, i) => `gpo${i}`);
   const gpiHeaders = Array.from({ length: 20 }, (_, i) => `gpi${i}`);
   const perifHeaders = Array.from({ length: 3 }, (_, i) => `perif${i}_out`);
+  const perifOeHeaders = Array.from({ length: 3 }, (_, i) => `perif${i}_out_en`);
   const perifClkHeaders = Array.from({ length: 3 }, (_, i) => `perif${i}_clk`);
-  const header = ["step", ...gpoHeaders, ...gpiHeaders,
-                  ...perifHeaders, ...perifClkHeaders].join(",");
+  const header = ["step", "mode", ...gpoHeaders, ...gpiHeaders,
+                  ...perifHeaders, ...perifOeHeaders, ...perifClkHeaders].join(",");
 
   const rows = samples.map(s => {
     const gpo = Array.from({ length: 20 }, (_, i) => s.gpo[i] ?? 0);
     const gpi = Array.from({ length: 20 }, (_, i) => s.gpi[i] ?? 0);
     const perif = Array.from({ length: 3 }, (_, i) => (s.perif && s.perif[i]) ?? 0);
+    const perifOe = Array.from({ length: 3 }, (_, i) => (s.perifOe && s.perifOe[i]) ?? 0);
     const perifClk = Array.from({ length: 3 }, (_, i) => (s.perifClk && s.perifClk[i]) ?? 0);
-    return [s.step, ...gpo, ...gpi, ...perif, ...perifClk].join(",");
+    return [s.step, s.mode ?? "gpio", ...gpo, ...gpi,
+            ...perif, ...perifOe, ...perifClk].join(",");
   });
 
   // Append memory channel snapshots as separate blocks after the signal rows

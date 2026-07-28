@@ -250,3 +250,41 @@ def test_state_carries_tx_clk_pin_for_graph_lanes():
 
         ws.send_json({"action": "gpcfg_write", "core": "pru0", "mux_sel": 0})
         ws.receive_json()
+
+
+def test_state_carries_out_en_and_mode_for_perif_graph_lanes():
+    """In Peripheral mode the Signal Graph hides the GPO/GPI lanes (the pads
+    belong to the perif) and draws out / out_en / tx_clk instead. That filter
+    keys off `io.mode`, and the out_en lane reads `tx_out_en` — guard both, and
+    that out_en actually asserts while transmitting."""
+    from pathlib import Path
+    src = Path(__file__).parent.parent / "source"
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "reset", "core": "pru0"})
+        ws.receive_json()
+        ws.send_json({"action": "gpcfg_write", "core": "pru0", "mux_sel": 1})
+        state = ws.receive_json()
+        assert state["io"]["mode"] == "perif"
+        assert "tx_out_en" in state["io"]["perif"]["channels"][0]
+
+        ws.send_json({"action": "write_perif_register", "core": "pru0",
+                      "addr": 0x260E4, "value": 0x00070010})
+        ws.receive_json()
+        ws.send_json({"action": "write_perif_register", "core": "pru0",
+                      "addr": 0x260E8, "value": 0})      # continuous mode
+        ws.receive_json()
+        ws.send_json({"action": "load", "core": "pru0",
+                      "source": (src / "perif_tx_pattern.asm").read_text()})
+        ws.receive_json()
+
+        oe_seen = set()
+        for _ in range(300):
+            ws.send_json({"action": "step", "core": "pru0", "count": 1})
+            st = ws.receive_json()
+            assert st["io"]["mode"] == "perif"
+            oe_seen.add(1 if st["io"]["perif"]["channels"][0]["tx_out_en"] else 0)
+
+        assert 1 in oe_seen, "out_en never asserted while transmitting"
+
+        ws.send_json({"action": "gpcfg_write", "core": "pru0", "mux_sel": 0})
+        ws.receive_json()

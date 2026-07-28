@@ -93,9 +93,12 @@ python -m pytest --tb=short -q
 
 ## Version
 
-v0.2.3 — hover over **PRU SIM** in the dashboard header to confirm.
+v0.2.4 — hover over **PRU SIM** in the dashboard header to confirm.
 
 ### Changelog
+
+**v0.2.4**
+- **Signal Graph: peripheral mode no longer plots GPO/GPI** — in perif mode the GP Mux hands the pads to the Peripheral Interface, so the `GPO n` / `GPI n` lanes the graph kept drawing from R30/R31 showed pins that do not exist on the wire, next to the perif lanes that do. The digital graph now keys off `io.mode` (recorded per sample): in perif mode only the peripheral lanes are drawn, and each active channel contributes three of them — the new `perifN_out_en` joins `perifN_out` and `perifN_clk`, so it is visible when the channel actually drives the pad. A channel qualifies as active if *any* of its three signals toggles, and then all three lanes are drawn, so a steady `out_en` still appears beside the data it qualifies. GP mode is unchanged. CSV export gains `mode` and `perifN_out_en` columns. Cross-machine [handoff note](docs/handoff/2026-07-28-perif-mode-graph-lanes.md).
 
 **v0.2.3**
 - **Signal Graph: Peripheral Interface clock lanes** — the graph recorded `perifN_out` (the serial data line) but not its bit clock, so a correct capture was unreadable: the perif serializer sends raw MSB-first bits with no framing, leaving no reference for where a bit starts. New `perifN_clk` lanes (one clock edge per bit, paired with the data lane and included in the CSV export) make the bit grid visible. Note that firmware prefixing a start bit — e.g. `source/perif_tx_pattern.asm` — shifts the payload right by one bit, so wire octets begin one bit after the first rising edge.
