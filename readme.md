@@ -93,9 +93,12 @@ python -m pytest --tb=short -q
 
 ## Version
 
-v0.2.5 — hover over **PRU SIM** in the dashboard header to confirm.
+v0.2.6 — hover over **PRU SIM** in the dashboard header to confirm.
 
 ### Changelog
+
+**v0.2.6**
+- **Peripheral Interface TX test patterns** (`source/perif_tx_patterns.asm`) — the existing `perif_tx_pattern.asm` streams an 8-bit counter, which is ~90% zeros MSB-first and reads as sparse noise on the Signal Graph. New self-configuring firmware transmits the classic bit patterns instead, selected by a `PATTERN .set` at the top of the file: `0x00`, `0xFF`, `0xAA`, `0x55`, walking 1, walking 0, counter-only, or (the default) one byte of each followed by the counter — `00 FF AA 55 | 01 02 04 08 10 20 40 80 | FE FD FB F7 EF DF BF 7F | 00 01 02 …`. Twenty bytes, about 1280 graph samples, so the 2048 window catches the whole sequence in one single-shot capture. Patterns come from a table the prologue writes to DRAM at `0x1F00`, so changing them is five `ldi` pairs. Keeps the same pre-shifted start-bit framing, so the receiver still byte-aligns; every `PATTERN` value is checked end-to-end over the ch0 loopback in `tests/test_perif_tx_patterns.py`. `perif_tx_pattern.asm` is untouched — the drift experiment and `tools/perif_drift_report.py` depend on its exact counter output. Cross-machine [handoff note](docs/handoff/2026-07-28-perif-tx-test-patterns.md).
 
 **v0.2.5**
 - **Signal Graph: Run now captures at the signal's own rate** — the graph was fed only by the state push at the *end* of each Run chunk, so it sampled once per 100+ instructions. That is orders of magnitude coarser than a Peripheral Interface bit (2 core cycles at the channel-0 `N=2` divider), so a Run capture of `perif_duty_cycle_sweep.asm` aliased away to nothing while the same firmware traced correctly under SIM, which steps one instruction per message. The server now samples inside its run loop and ships the batch as a `capture` message: every instruction while peripheral mode is active, every 100th otherwise — GP traces are firmware-paced (a 115200-baud bit-bang bit is ~1736 cycles) and the UART decoder's bit-period detection depends on the wider time span. The stride is decided per instruction, since firmware enables peripheral mode from inside the run. Peripheral captures are single-shot — at full rate a run fills the window in milliseconds, so it fills once and REC switches itself off, the way a logic analyzer does; GP captures keep rolling as before. Cross-machine [handoff note](docs/handoff/2026-07-28-run-mode-graph-capture.md).

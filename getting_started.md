@@ -300,6 +300,41 @@ See `source/sdfm_sinc3_demo/README.md` for full setup instructions, expected reg
 
 ---
 
+## Example 9 — Peripheral Interface TX Test Patterns (`perif_tx_patterns.asm`)
+
+**What it does:** Streams the classic bit patterns out of Peripheral Interface channel 0 so the Signal Graph shows a waveform you can check by eye. Self-configuring — it writes the GP Mux, `TXCFG` and `CH0CFG0` itself.
+
+Edit `PATTERN` at the top of the file and reload to pick one:
+
+| `PATTERN` | transmits |
+|---|---|
+| `0` (default) | the sequence below, then the counter forever |
+| `1` / `2` | `0x00` / `0xFF` — line held low / high |
+| `3` / `4` | `0xAA` / `0x55` — alternating bits, opposite phases |
+| `5` / `6` | walking 1 (`01 02 04 … 80`) / walking 0 (`FE FD FB … 7F`) |
+| `7` | counter only, same stream as `perif_tx_pattern.asm` |
+
+The `PATTERN = 0` sequence is one byte of each, twenty bytes total:
+
+```
+00 FF AA 55 | 01 02 04 08 10 20 40 80 | FE FD FB F7 EF DF BF 7F | 00 01 02 ...
+```
+
+**Steps:**
+
+1. Open `source/perif_tx_patterns.asm` and click **Load & Assemble**.
+2. Set the Signal Graph window to **2048** — the sequence spans about 1280 samples.
+3. Click **● REC**, then **Run**. The capture is single-shot in peripheral mode: it fills the window once and REC switches itself off.
+
+**What to observe:**
+- Three lanes: `perif0_out`, `perif0_out_en` and `perif0_clk`. The GPO/GPI lanes are hidden — those pads belong to the Peripheral Interface now.
+- `0xAA` and `0x55` toggle the data line on every bit, so `perif0_out` runs at half the `perif0_clk` rate. `0x00` and `0xFF` are flat — the widest low and high runs the link will ever see.
+- Walking 1 and walking 0 sweep a single edge across the byte, one bit later each time.
+- Byte boundaries sit **one bit after** the first rising edge: the firmware pre-shifts the payload behind a start bit that the RX consumes (same framing as `perif_tx_pattern.asm`). The clock toggles once per bit, so *every* clock edge is a bit boundary, not just the rising ones.
+- To receive it, enable the ch0 loopback and run `perif_rx_capture.asm` on PRU1.
+
+---
+
 ## Signal Graph
 
 The Signal Graph panel records GPO/GPI pin states and optional memory addresses over time.
