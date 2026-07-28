@@ -103,6 +103,97 @@ def _receive_states(ws, cores):
     return out
 
 
+def test_run_capture_samples_every_instruction_for_the_graph():
+    """The Run button executes up to `max_steps` instructions per websocket
+    round-trip. A Signal Graph fed only by the closing state push therefore
+    samples once per chunk — hopelessly coarse for a perif bit (2 core cycles
+    at the channel-0 N=2 divider), which is why a Run capture of
+    `perif_duty_cycle_sweep.asm` looked empty while SIM (one instruction per
+    push) traced it fine. With `capture: true` the server must emit a
+    per-instruction batch instead, and flag the state push so the client does
+    not sample it a second time."""
+    from pathlib import Path
+    src = Path(__file__).parent.parent / "source"
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "reset", "core": "pru0"})
+        ws.receive_json()
+        # CH0CFG0 = 0 (continuous mode) is a documented host prerequisite of the
+        # sweep firmware — set explicitly, earlier tests may have changed it.
+        ws.send_json({"action": "write_perif_register", "core": "pru0",
+                      "addr": 0x260E8, "value": 0})
+        ws.receive_json()
+        ws.send_json({"action": "load", "core": "pru0",
+                      "source": (src / "perif_duty_cycle_sweep.asm").read_text()})
+        ws.receive_json()
+
+        ws.send_json({"action": "run", "core": "pru0",
+                      "max_steps": 400, "capture": True})
+        cap = ws.receive_json()
+        assert cap["type"] == "capture"
+        assert cap["core"] == "pru0"
+        # The firmware writes GPCFG itself, so the run ends in Peripheral mode.
+        assert cap["mode"] == "perif"
+
+        # One sample per instruction, in order, no gaps — from the instruction
+        # that enables peripheral mode onward (the handful of GP-mode setup
+        # instructions before the firmware's GPCFG write are decimated away).
+        steps = [s[0] for s in cap["samples"]]
+        assert steps[0] < 20, "perif mode should be entered early in the setup"
+        assert steps == list(range(steps[0], steps[0] + len(steps)))
+        assert len(steps) > 100, "run ended too early to trace the sweep"
+
+        # Channel 0's three graph lanes all toggle inside a single batch — the
+        # whole point of capturing here rather than once per round-trip.
+        out = {s[3] & 1 for s in cap["samples"]}
+        oe = {s[4] & 1 for s in cap["samples"]}
+        clk = {s[5] & 1 for s in cap["samples"]}
+        assert out == {0, 1}, "data lane never toggled within one run chunk"
+        assert oe == {0, 1}, "out_en never asserted within one run chunk"
+        assert clk == {0, 1}, "clock lane never toggled within one run chunk"
+
+        st = ws.receive_json()
+        assert st["type"] == "state"
+        assert st["captured"] is True
+
+        # Without capture the batch is absent and the flag is clear, so the
+        # client falls back to sampling the state push itself (SIM behavior).
+        ws.send_json({"action": "run", "core": "pru0", "max_steps": 10})
+        st = ws.receive_json()
+        assert st["type"] == "state"
+        assert st["captured"] is False
+
+
+def test_run_capture_decimates_in_gp_mode():
+    """GP-mode traces are firmware-paced, so capture keeps the old 100:1 stride
+    there. Sampling every instruction would shrink the window's time span 100x
+    and break the UART decoder's bit-period detection (Example 5 records a
+    115200-baud frame, ~1736 core cycles per bit, over a Run)."""
+    from pathlib import Path
+    src = Path(__file__).parent.parent / "source"
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "gpcfg_write", "core": "pru0", "mux_sel": 0})
+        ws.receive_json()
+        ws.send_json({"action": "reset", "core": "pru0"})
+        ws.receive_json()
+        ws.send_json({"action": "load", "core": "pru0",
+                      "source": (src / "uart_tx.asm").read_text()})
+        ws.receive_json()
+
+        ws.send_json({"action": "run", "core": "pru0",
+                      "max_steps": 1000, "capture": True})
+        cap = ws.receive_json()
+        assert cap["type"] == "capture"
+        assert cap["mode"] == "gpio"
+        assert len(cap["samples"]) == 10, "expected 1000 instructions / stride 100"
+        assert [s[0] for s in cap["samples"]] == [100 * i for i in range(1, 11)]
+        ws.receive_json()   # closing state push
+
+        ws.send_json({"action": "gpcfg_write", "core": "pru0", "mux_sel": 0})
+        ws.receive_json()
+        ws.send_json({"action": "reset", "core": "pru0"})
+        ws.receive_json()
+
+
 def test_run_multicore_paces_perif_demo():
     """Regression: the drift demo must capture the clean counter pattern
     when driven through the multicore run action."""

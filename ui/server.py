@@ -452,31 +452,42 @@ async def websocket_endpoint(websocket: WebSocket):
                 await _send_state(websocket, core)
             elif action == "run":
                 max_steps = int(msg.get("max_steps", 1000))
+                capture = bool(msg.get("capture", False))
                 pru = sim.cores[core]
                 at_breakpoint = False
+                samples = []
                 try:
                     steps = 0
                     while steps < max_steps and not pru.halted and pru.pc < len(pru.instructions):
                         pru.step()
                         steps += 1
+                        if capture and _capture_due(pru, steps):
+                            samples.append(_capture_sample(pru))
                         if pru.pc in pru.breakpoints:
                             at_breakpoint = True
                             break
                 except ValueError as ve:
                     await websocket.send_json({"type": "error", "errors": [str(ve)]})
-                await _send_state(websocket, core, at_breakpoint=at_breakpoint)
+                if samples:
+                    await _send_capture(websocket, core, samples)
+                await _send_state(websocket, core, at_breakpoint=at_breakpoint,
+                                  captured=capture)
             elif action == "run_multicore":
                 max_steps = int(msg.get("max_steps", 1000))
+                capture = bool(msg.get("capture", False))
                 partner = msg.get("partner", "pru1")
                 lead_pru = sim.cores[core]
                 partner_pru = sim.cores[partner]
                 lead_bp = partner_bp = False
+                samples = []
                 try:
                     steps = 0
                     while (steps < max_steps and not lead_pru.halted
                            and lead_pru.pc < len(lead_pru.instructions)):
                         sim.step_paced(core, partner, 1)
                         steps += 1
+                        if capture and _capture_due(lead_pru, steps):
+                            samples.append(_capture_sample(lead_pru))
                         if lead_pru.pc in lead_pru.breakpoints:
                             lead_bp = True
                             break
@@ -485,8 +496,12 @@ async def websocket_endpoint(websocket: WebSocket):
                             break
                 except ValueError as ve:
                     await websocket.send_json({"type": "error", "errors": [str(ve)]})
-                await _send_state(websocket, core, at_breakpoint=lead_bp)
-                await _send_state(websocket, partner, at_breakpoint=partner_bp)
+                if samples:
+                    await _send_capture(websocket, core, samples)
+                await _send_state(websocket, core, at_breakpoint=lead_bp,
+                                  captured=capture)
+                await _send_state(websocket, partner, at_breakpoint=partner_bp,
+                                  captured=capture)
             elif action == "set_sd_modulator":
                 ch = int(msg.get("channel", 0))
                 params = msg.get("params", {})
@@ -575,7 +590,92 @@ def _read_spad(sim_obj) -> dict:
     return result
 
 
-async def _send_state(ws, core, at_breakpoint=False):
+def _io_mode(core, sd_data=None, perif_data=None, mux_sel=None) -> str:
+    """Which IO view owns the pads: "perif", "sd" or "gpio".
+
+    The SD view switches on the GPCFG mux select (same as Peripheral mode) so
+    the IO window shows Sigma-Delta as soon as the mode is configured, not only
+    once firmware asserts sd_en (R30 bit 25).
+    """
+    if sd_data is None:
+        sd_data = sim.sd_state(core)
+    if perif_data is None:
+        perif_data = sim.perif_state(core)
+    if mux_sel is None:
+        mux_sel = sim.gpcfg_state(core)["mux_sel"]
+    if bool(perif_data and perif_data.get("enabled")):
+        return "perif"
+    if mux_sel == MUX_SD or bool(sd_data and sd_data.get("sd_en")):
+        return "sd"
+    return "gpio"
+
+
+# One Signal Graph sample per this many instructions, outside peripheral mode.
+# GP-mode traces are firmware-paced — a bit-banged 115200-baud UART bit is ~1736
+# core cycles — so sampling every instruction would buy nothing and shrink the
+# window's time span 100x, which is what the UART decoder's auto-detected bit
+# period needs. In peripheral mode the signals are hardware-paced instead (a
+# channel-0 bit at the N=2 divider is 2 core cycles), so that mode samples every
+# instruction; see the stride decision in the run loop.
+CAPTURE_STRIDE_GP = 100
+
+
+def _capture_due(c, steps: int) -> bool:
+    """Whether to take a graph sample after instruction `steps` of this chunk.
+
+    Decided per instruction rather than once per chunk because firmware enables
+    peripheral mode from inside the run — `perif_duty_cycle_sweep.asm` writes
+    GPCFG about 11 instructions in and is only ~160 instructions long, so a
+    stride fixed before the loop would decimate away the whole transmission.
+    """
+    perif = c.io_port.perif
+    if perif is not None and perif.enabled:
+        return True
+    return steps % CAPTURE_STRIDE_GP == 0
+
+
+def _capture_sample(c) -> list[int]:
+    """One Signal Graph sample, taken inside the run loop.
+
+    Run executes up to `max_steps` instructions per websocket round-trip, so a
+    graph fed only by the state push at the end of that loop samples once per
+    chunk. For perif signals that is far too coarse and the waveform aliases
+    away entirely — the reported symptom being a Run capture of
+    `perif_duty_cycle_sweep.asm` that draws nothing while SIM (one instruction
+    per push) traces it fine.
+
+    Packed into ints (bitmask per lane group) to keep the batch small.
+    """
+    perif = c.io_port.perif
+    gpi = c.io_port.get_gpi_pins()
+    gpi_bits = 0
+    for i, v in enumerate(gpi[:20]):
+        if v:
+            gpi_bits |= 1 << i
+    out_bits = oe_bits = clk_bits = 0
+    if perif is not None:
+        for i, ch in enumerate(perif.channels[:3]):
+            if ch.tx_line_value():
+                out_bits |= 1 << i
+            if ch.tx_out_en:
+                oe_bits |= 1 << i
+            if ch.tx_clk_pin:
+                clk_bits |= 1 << i
+    return [c.counters.instruction_count, c.registers.read_full(30) & 0xFFFFF,
+            gpi_bits, out_bits, oe_bits, clk_bits]
+
+
+async def _send_capture(ws, core, samples):
+    """Ship a run loop's per-instruction Signal Graph samples in one message."""
+    await ws.send_json({
+        "type": "capture",
+        "core": core,
+        "mode": _io_mode(core),
+        "samples": samples,
+    })
+
+
+async def _send_state(ws, core, at_breakpoint=False, captured=False):
     c = sim.cores[core]
     # R31 display reflects live GPI state (registers.regs[31] is never updated by set_gpi_pin)
     regs = list(c.registers.regs)
@@ -586,17 +686,7 @@ async def _send_state(ws, core, at_breakpoint=False):
     sd_data = sim.sd_state(core)
     perif_data = sim.perif_state(core)
     mux_sel = sim.gpcfg_state(core)["mux_sel"]
-    perif_on = bool(perif_data and perif_data.get("enabled"))
-    # SD view switches on the GPCFG mux select (same as Peripheral mode) so the
-    # IO window shows Sigma-Delta as soon as the mode is configured, not only
-    # once firmware asserts sd_en (R30 bit 25).
-    sd_on = mux_sel == MUX_SD or bool(sd_data and sd_data.get("sd_en"))
-    if perif_on:
-        mode = "perif"
-    elif sd_on:
-        mode = "sd"
-    else:
-        mode = "gpio"
+    mode = _io_mode(core, sd_data=sd_data, perif_data=perif_data, mux_sel=mux_sel)
     io_section = {
         "mode": mode,
         "mux_sel": mux_sel,
@@ -614,6 +704,9 @@ async def _send_state(ws, core, at_breakpoint=False):
         "pc": c.pc,
         "halted": c.halted,
         "at_breakpoint": at_breakpoint,
+        # True when a "capture" message already carried this chunk's graph
+        # samples, so the client must not sample this state push as well.
+        "captured": captured,
         "breakpoints": sorted(c.breakpoints),
         "registers": [f"0x{r:08X}" for r in regs],
         "carry": c.registers.carry,

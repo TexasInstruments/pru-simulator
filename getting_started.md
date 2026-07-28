@@ -328,6 +328,22 @@ data line is stable across each half-period. At the usual `TXCFG` divider
 (`div=7` → core/8) one bit is 8 samples wide, since the graph takes one sample
 per instruction.
 
+**Sample rate.** SIM steps one instruction per message, so it always records at
+full rate. **Run** executes a chunk of instructions per message, and the server
+samples the graph inside that loop:
+
+| mode | rate | buffer |
+|---|---|---|
+| Peripheral | every instruction — a channel-0 bit at the `N=2` divider is only 2 core cycles wide | single-shot: fills the window once, then REC switches itself off |
+| GP / SD | every 100th instruction — GP traces are firmware-paced (a 115200-baud bit-bang bit is ~1736 cycles) | rolling |
+
+So for a peripheral capture: arm **REC**, click **Run**, and the trace freezes
+when the window is full. Pick the window size (128…8192) to set how many
+instructions the capture covers. `perif_duty_cycle_sweep.asm` transmits its
+whole nine-byte sweep in about 160 instructions, well inside the smallest
+window — note it needs `CH0CFG0 = 0` (continuous mode) set from the host before
+loading, or the FIFO transmits one fixed-size frame and the sweep never appears.
+
 Firmware that prefixes a start bit (see `source/perif_tx_pattern.asm`) shifts
 the whole payload right by one bit, so byte boundaries on the wire sit one bit
 after the first rising edge — drop that first bit before grouping into octets.

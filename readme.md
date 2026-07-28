@@ -93,9 +93,12 @@ python -m pytest --tb=short -q
 
 ## Version
 
-v0.2.4 — hover over **PRU SIM** in the dashboard header to confirm.
+v0.2.5 — hover over **PRU SIM** in the dashboard header to confirm.
 
 ### Changelog
+
+**v0.2.5**
+- **Signal Graph: Run now captures at the signal's own rate** — the graph was fed only by the state push at the *end* of each Run chunk, so it sampled once per 100+ instructions. That is orders of magnitude coarser than a Peripheral Interface bit (2 core cycles at the channel-0 `N=2` divider), so a Run capture of `perif_duty_cycle_sweep.asm` aliased away to nothing while the same firmware traced correctly under SIM, which steps one instruction per message. The server now samples inside its run loop and ships the batch as a `capture` message: every instruction while peripheral mode is active, every 100th otherwise — GP traces are firmware-paced (a 115200-baud bit-bang bit is ~1736 cycles) and the UART decoder's bit-period detection depends on the wider time span. The stride is decided per instruction, since firmware enables peripheral mode from inside the run. Peripheral captures are single-shot — at full rate a run fills the window in milliseconds, so it fills once and REC switches itself off, the way a logic analyzer does; GP captures keep rolling as before. Cross-machine [handoff note](docs/handoff/2026-07-28-run-mode-graph-capture.md).
 
 **v0.2.4**
 - **Signal Graph: peripheral mode no longer plots GPO/GPI** — in perif mode the GP Mux hands the pads to the Peripheral Interface, so the `GPO n` / `GPI n` lanes the graph kept drawing from R30/R31 showed pins that do not exist on the wire, next to the perif lanes that do. The digital graph now keys off `io.mode` (recorded per sample): in perif mode only the peripheral lanes are drawn, and each active channel contributes three of them — the new `perifN_out_en` joins `perifN_out` and `perifN_clk`, so it is visible when the channel actually drives the pad. A channel qualifies as active if *any* of its three signals toggles, and then all three lanes are drawn, so a steady `out_en` still appears beside the data it qualifies. GP mode is unchanged. CSV export gains `mode` and `perifN_out_en` columns. Cross-machine [handoff note](docs/handoff/2026-07-28-perif-mode-graph-lanes.md).

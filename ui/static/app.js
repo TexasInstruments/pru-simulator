@@ -363,6 +363,9 @@ function connect() {
         } else if (!msg.core || msg.core === currentCore) {
           updateUI(msg);
         }
+      } else if (msg.type === "capture") {
+        graphHandleCapture(msg);
+        drawGraph();
       } else if (msg.type === "memory") {
         if (msg.tag === "mem2") renderMemory2(msg);
         else if (msg.tag && msg.tag.startsWith("graph-")) { graphHandleMemory(msg); drawGraph(); }
@@ -1061,7 +1064,9 @@ function graphSample(state) {
     });
   });
 
-  if (!signalGraph.recording) return;
+  // A run loop's samples already arrived in a "capture" message; sampling this
+  // closing state push too would append a duplicate of its last sample.
+  if (!signalGraph.recording || state.captured) return;
   const perifChannels = (state.io.perif && state.io.perif.channels) || [];
   const sample = {
     step: state.instruction_count,
@@ -1078,6 +1083,44 @@ function graphSample(state) {
     perifOe: perifChannels.map(ch => ch.tx_out_en ? 1 : 0),
   };
   graphPushSample(sample);
+}
+
+/**
+ * Called when a "capture" message arrives — the per-instruction samples the
+ * server took inside a run loop. Run executes up to `max_steps` instructions
+ * per round-trip, so sampling only its closing state push gives one sample per
+ * 100+ instructions: far too coarse for a perif bit (2 core cycles at the
+ * channel-0 N=2 divider), which is why a Run-mode capture looked empty while
+ * the same firmware traced fine under SIM (one instruction per push).
+ *
+ * Wire format is packed ints, see _capture_sample() in ui/server.py:
+ *   [step, r30(20 bits), gpi bits, perif out bits, out_en bits, clk bits]
+ */
+function graphHandleCapture(msg) {
+  if (!signalGraph.recording) return;
+  const mode = msg.mode || "gpio";
+  // Single-shot, perif captures only: those sample every instruction, so a run
+  // fills the whole window within a few ms of wall clock and a rolling buffer
+  // would just blur — evicting the transmission before anyone could look at it.
+  // Fill once, then stop recording, the way a logic analyzer does. GP-mode
+  // captures are decimated 100:1 and keep rolling as before.
+  const singleShot = mode === "perif";
+  for (const s of (msg.samples || [])) {
+    if (singleShot && signalGraph.fill >= signalGraph.windowSize) {
+      graphSetRecording(false);
+      break;
+    }
+    const [step, r30, gpiBits, outBits, oeBits, clkBits] = s;
+    graphPushSample({
+      step,
+      mode,
+      gpo: Array.from({ length: 20 }, (_, i) => (r30 >> i) & 1),
+      gpi: Array.from({ length: 20 }, (_, i) => (gpiBits >> i) & 1),
+      perif: [0, 1, 2].map(i => (outBits >> i) & 1),
+      perifOe: [0, 1, 2].map(i => (oeBits >> i) & 1),
+      perifClk: [0, 1, 2].map(i => (clkBits >> i) & 1),
+    });
+  }
 }
 
 /**
@@ -1620,12 +1663,16 @@ btnLoad.addEventListener("click", async () => {
 
 // ---- Signal graph controls -------------------------------------------------
 
-document.getElementById("graph-rec-btn").addEventListener("click", () => {
-  signalGraph.recording = !signalGraph.recording;
+function graphSetRecording(on) {
+  signalGraph.recording = on;
   const btn = document.getElementById("graph-rec-btn");
   const dot = document.getElementById("graph-rec-dot");
-  btn.classList.toggle("rec-on", signalGraph.recording);
-  dot.classList.toggle("active", signalGraph.recording);
+  if (btn) btn.classList.toggle("rec-on", on);
+  if (dot) dot.classList.toggle("active", on);
+}
+
+document.getElementById("graph-rec-btn").addEventListener("click", () => {
+  graphSetRecording(!signalGraph.recording);
 });
 
 document.getElementById("graph-clear-btn").addEventListener("click", () => {
@@ -2059,14 +2106,17 @@ function startRun() {
   btnRun.classList.add("btn-reset");
   btnRun.classList.remove("btn-run");
   runInterval = setInterval(() => {
-    // Use fine-grained steps when recording so the signal graph has enough
-    // samples per UART bit for the decoder to detect the correct bit period.
-    const max_steps = signalGraph.recording ? 100 : 1000;
+    // While recording, the server samples the graph inside its run loop and
+    // ships the batch as a "capture" message (per instruction in perif mode,
+    // 100:1 otherwise). The chunk size no longer sets the sample rate, so it
+    // stays at the fast 1000.
+    const capture = signalGraph.recording;
+    const max_steps = 1000;
     if (multiCoreMode) {
       sendAction({ action: "run_multicore", core: "pru0",
-                   partner: mcPartner, max_steps });
+                   partner: mcPartner, max_steps, capture });
     } else {
-      sendAction({ action: "run", core: currentCore, max_steps });
+      sendAction({ action: "run", core: currentCore, max_steps, capture });
     }
   }, 10);
 }
