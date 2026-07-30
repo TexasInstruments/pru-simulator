@@ -233,6 +233,70 @@
     #source-list li .src,
     .source-list li .src { flex: 1; white-space: pre; overflow: hidden; }
 
+    /* ---- Breakpoints bar -------------------------------------------------- */
+    .bp-bar {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 4px;
+      padding: 4px 6px;
+      border-bottom: 1px solid var(--border);
+      background: #232323;
+      flex-shrink: 0;
+    }
+    .bp-bar .bp-bar-label {
+      color: var(--text-dim);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .bp-bar .bp-chip-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      flex: 1;
+    }
+    .bp-bar .bp-empty {
+      color: var(--text-dim);
+      font-size: 11px;
+      font-style: italic;
+    }
+    .bp-bar .bp-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      background: #4a2020;
+      color: #e88;
+      border: 1px solid #7a3030;
+      border-radius: 10px;
+      padding: 1px 4px 1px 8px;
+      font-size: 11px;
+      cursor: default;
+    }
+    .bp-bar .bp-chip button {
+      background: none;
+      border: none;
+      color: inherit;
+      padding: 0 3px;
+      font-size: 12px;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .bp-bar .bp-chip button:hover { color: #fff; }
+    .bp-bar input[type="text"] {
+      width: 70px;
+      background: var(--btn);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 2px 4px;
+      font-family: inherit;
+      font-size: 11px;
+    }
+    .bp-bar button.bp-action {
+      padding: 2px 8px;
+      font-size: 11px;
+    }
+
     /* ---- ASM syntax highlight colours ------------------------------------ */
     .hl-op  { color: #569cd6; }   /* opcode   – blue   */
     .hl-reg { color: #4ec9b0; }   /* register – teal   */
@@ -1323,6 +1387,13 @@
       <!-- Source panel -->
       <div class="panel" id="source-panel">
         <div class="panel-title" data-panel-id="source">Source / Disassembly</div>
+        <div class="bp-bar" id="bp-bar">
+          <span class="bp-bar-label">Breakpoints:</span>
+          <span class="bp-chip-list" id="bp-chip-list"></span>
+          <input type="text" id="bp-addr-input" placeholder="addr" title="Set a breakpoint at an address (hex 0x.. or decimal)">
+          <button class="bp-action" id="bp-add-btn" title="Set breakpoint at address">Set</button>
+          <button class="bp-action" id="bp-clear-btn" title="Clear all breakpoints on this core">Clear all</button>
+        </div>
         <div class="panel-body">
           <ul id="source-list"></ul>
         </div>
@@ -1607,6 +1678,13 @@ Example:
           <span>PRU0 Source</span>
           <span class="mc-pc-badge" id="mc-pru0-pc">PC: 0</span>
         </div>
+        <div class="bp-bar" id="mc-pru0-bp-bar">
+          <span class="bp-bar-label">Breakpoints:</span>
+          <span class="bp-chip-list" id="mc-pru0-bp-chip-list"></span>
+          <input type="text" id="mc-pru0-bp-addr-input" placeholder="addr" title="Set a breakpoint at an address (hex 0x.. or decimal)">
+          <button class="bp-action" id="mc-pru0-bp-add-btn" title="Set breakpoint at address">Set</button>
+          <button class="bp-action" id="mc-pru0-bp-clear-btn" title="Clear all breakpoints on this core">Clear all</button>
+        </div>
         <div class="panel-body">
           <ul class="source-list" id="mc-pru0-source-list"></ul>
         </div>
@@ -1634,6 +1712,13 @@ Example:
         <div class="panel-title" data-panel-id="mc-rtu0-source" style="display:flex;align-items:center;">
           <span id="mc-partner-source-title">RTU0 Source</span>
           <span class="mc-pc-badge" id="mc-rtu0-pc">PC: 0</span>
+        </div>
+        <div class="bp-bar" id="mc-rtu0-bp-bar">
+          <span class="bp-bar-label">Breakpoints:</span>
+          <span class="bp-chip-list" id="mc-rtu0-bp-chip-list"></span>
+          <input type="text" id="mc-rtu0-bp-addr-input" placeholder="addr" title="Set a breakpoint at an address (hex 0x.. or decimal)">
+          <button class="bp-action" id="mc-rtu0-bp-add-btn" title="Set breakpoint at address">Set</button>
+          <button class="bp-action" id="mc-rtu0-bp-clear-btn" title="Clear all breakpoints on this core">Clear all</button>
         </div>
         <div class="panel-body">
           <ul class="source-list" id="mc-rtu0-source-list"></ul>
@@ -1758,7 +1843,7 @@ Example:
         <table class="help-table">
           <tr><td><kbd>→</kbd></td><td>Step — execute one instruction</td></tr>
           <tr><td><kbd>←</kbd></td><td>Step Back — reverse one instruction</td></tr>
-          <tr><td><kbd>Space</kbd></td><td>Toggle breakpoint at current PC</td></tr>
+          <tr><td><kbd>Space</kbd></td><td>Toggle breakpoint at current PC (both cores in Multi-core mode)</td></tr>
           <tr><td><kbd>?</kbd></td><td>Open / close this help window</td></tr>
           <tr><td><kbd>Esc</kbd></td><td>Close open modal (help, config)</td></tr>
         </table>
@@ -1838,6 +1923,6 @@ Example:
   </div>
 
   <script src="/static/layout.js"></script>
-  <script src="/static/app.js?v=20260721"></script>
+  <script src="/static/app.js?v=20260729"></script>
 </body>
 </html>

@@ -53,7 +53,9 @@ which also give the decoder symbol alignment.
 | `frames.py` | BERT and UDP frame builders |
 | `decoder.py` | bit/symbol stream → frames |
 | `pcap.py` | minimal classic-pcap writer (Ethernet link type) |
-| `driver.py` | runs the firmware on the simulator, decodes, checks BER, writes pcap |
+| `driver.py` | runs the TX firmware on the simulator, decodes, checks BER, writes pcap |
+| `rx_driver.py` | drives PRU0 TX → PRU1 RX over the perif loopback, characterizes the clock ladder |
+| `seed_ui.py` | seeds the browser UI's shared simulator (WebSocket) to run TX (and TX+RX) demos interactively |
 | `pif_eth_tx_n2.asm` | experimental: batched/unrolled bit-packing, all FIFO checks intact — validated n=3..8, fails at n=2 |
 | `pif_eth_tx_n2_skipchecks.asm` | experimental: as above, 2 FIFO checks removed — hits full 125 Mbaud (n=2), hard-pinned to it |
 
@@ -191,6 +193,82 @@ simulator measurement of modelled cycle cost, **not a silicon claim**.
 `test_o1_clean_at_rated_divider` in `tests/test_pif_eth_rx.py`. Full raw
 output and a harness bug found/fixed during characterization:
 `docs/superpowers/specs/2026-07-21-pif-eth-pru1-rx-design.md` §14.
+
+## Run the 125 Mbaud TX+RX demo in the browser UI
+
+This runs the full loopback demo interactively — `pif_eth_tx_n2_skipchecks.asm`
+(PRU0, n=2/250 MHz, the full 125 Mbaud rung) transmitting into
+`pif_eth_rx_o1_raw.asm` (PRU1, Option 1 realtime capture) — inside `ui/server.py`'s
+browser UI, instead of via `rx_driver.py`. Same firmware, same DRAM1 addresses;
+only the driver changes.
+
+1. **Config.** The server always loads the project-root `memory.cfg`. This
+   demo needs both cores at 250 MHz and a DRAM1 region, i.e. the same config
+   `rx_driver.py` uses — copy it in before starting the server:
+   ```bash
+   cp config/memory_pif_eth_rx.cfg memory.cfg
+   python ui/server.py
+   ```
+   (If the server is already running, paste `memory_pif_eth_rx.cfg`'s contents
+   into the browser's Config editor and apply instead of restarting.)
+2. **Open the UI** at `http://localhost:8080` and turn on **Multi-core mode**.
+3. **Load PRU0** with `pif_eth_tx_n2_skipchecks.asm`. This firmware
+   hardcodes `TXCFG` for n=2 at boot — no register poke needed for the 125
+   Mbaud rung specifically.
+4. **Load PRU1** with `pif_eth_rx_o1_raw.asm`.
+5. **Enable loopback.** Open the Peripheral Interface panel's Loopback card,
+   check channel 0 enabled (0 ns latency/jitter/drift for an ideal wire), and
+   Apply. This is required — the simulator does not wire TX to RX by default,
+   and without it PRU1's RX line source is `None`.
+6. **Seed DRAM before the first Run/Step on PRU1** — its control-block reads
+   (mode/seed/payload_len/rxcfg) happen once at boot:
+   ```bash
+   python3 source/pif_eth/seed_ui.py bert125
+   ```
+   This writes PRU0's TX control block (DRAM0), PRU1's RX control block and
+   decode LUT (DRAM1 @0x2000, per the map below), zeroes the RX stats block,
+   and arms one frame on both cores.
+7. **Click Run.** Multi-core Run steps PRU0 (lead) and paces PRU1 (follow) to
+   stay within the perif clock, so both cores advance together; Stop halts
+   both. A single BERT frame at n=2 finishes in a few thousand instructions.
+8. **Read results** in a Memory panel pointed at DRAM1's stats block
+   (addresses below) or the reconstructed frame at `0x2E00`. Re-run
+   `seed_ui.py bert125` to arm the next frame.
+
+Note: the Signal Graph traces only the multi-core *lead* (PRU0) during a
+paced Run; to watch RX FIFO/valid/overflow live, switch the current-core
+selector to PRU1 and read its Peripheral Interface channel card, or just read
+the DRAM1 stats after the run completes.
+
+### DRAM1 (PRU1 RX) memory map
+
+| Address | Contents |
+|---------|----------|
+| `0x2000` | 8b/10b decode LUT, 1024 × u16 |
+| `0x2800` | raw oversample capture buffer (1024 B) |
+| `0x2E00` | reconstructed frame (payload + 4-byte FCS), 256 B |
+| `0x2F00` | stats: `frames` (u32) |
+| `0x2F04` | stats: `cap_bytes` (u32) |
+| `0x2F08` | stats: `rx_ovf` (u32) — nonzero = FIFO overflowed |
+| `0x2F0C` | stats: `symbol_errors` (u32) |
+| `0x2F10` | stats: `crc_ok` (u32) — 1 = FCS matched |
+| `0x2F14` | stats: `prng_bit_errors` (u32) |
+| `0x2F18` | stats: `tot_bits` (u32) |
+| `0x2F1C` | stats: `eof_status` (u32) — 1 = clean EOF, 2 = frame-buffer overflow abort |
+| `0x2F40` | control: `mode` (u32) — RX only implements BERT (0); no UDP path |
+| `0x2F44` | control: `seed` (u32) — must match PRU0's TX seed |
+| `0x2F48` | control: `payload_len` (u32) — must match PRU0's TX `payload_len` |
+| `0x2F4C` | control: `go` (u32, host→firmware handshake, re-armed per frame) |
+| `0x2F50` | control: `rxcfg` (u32) — `((n_rx-1)<<16) \| 0x1F`; n_rx = n_tx/2 = 1 at the 125 Mbaud rung |
+
+Only BERT (mode=0) is supported end-to-end through RX — reconstruction and
+bit-error counting both depend on the PRNG stream, which the UDP frame
+doesn't have. To try other ladder rungs (n_tx=4/6/8) in the UI, load
+`pif_eth_tx_n2.asm` on PRU0 instead (has all FIFO checks, not hard-pinned to
+n=2) and pass a different `rxcfg_word(n_tx//2)` — `seed_ui.py bert125` only
+wires up the n=2/125 Mbaud rung; see [125 Mbaud (n=2) follow-up](#125-mbaud-n2-follow-up-2026-07-21)
+and [PRU1 RX](#pru1-rx-option-1--realtime-capture-post-frame-decode) above for
+the full ladder and its results.
 
 ## Roadmap
 

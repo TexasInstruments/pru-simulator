@@ -501,6 +501,58 @@ function updateSpad(spad) {
   }
 }
 
+// ---- Breakpoints bar -------------------------------------------------------
+// Renders the chip list for a core's breakpoint set, independent of whether
+// any of those addresses currently have a rendered source line (e.g. after a
+// reload changed the instruction set) so a "stuck" breakpoint always has a
+// visible way to remove it.
+function renderBpBar(prefix, core, breakpoints) {
+  const listEl = document.getElementById(`${prefix}bp-chip-list`);
+  if (!listEl) return;
+  listEl.innerHTML = "";
+  const addrs = [...breakpoints].sort((a, b) => a - b);
+  if (addrs.length === 0) {
+    const empty = document.createElement("span");
+    empty.className = "bp-empty";
+    empty.textContent = "none";
+    listEl.appendChild(empty);
+    return;
+  }
+  addrs.forEach(addr => {
+    const chip = document.createElement("span");
+    chip.className = "bp-chip";
+    const label = document.createElement("span");
+    label.textContent = addr;
+    const btn = document.createElement("button");
+    btn.textContent = "×";
+    btn.title = `Clear breakpoint at ${addr}`;
+    btn.addEventListener("click", () => sendAction({ action: "toggle_breakpoint", core, addr }));
+    chip.appendChild(label);
+    chip.appendChild(btn);
+    listEl.appendChild(chip);
+  });
+}
+
+function _parseBpAddr(text) {
+  const v = text.trim();
+  if (!v) return NaN;
+  return v.toLowerCase().startsWith("0x") ? parseInt(v, 16) : parseInt(v, 10);
+}
+
+function wireBpBar(prefix, coreOf) {
+  const input   = document.getElementById(`${prefix}bp-addr-input`);
+  const addBtn  = document.getElementById(`${prefix}bp-add-btn`);
+  const clrBtn  = document.getElementById(`${prefix}bp-clear-btn`);
+  const doAdd = () => {
+    const addr = _parseBpAddr(input.value);
+    if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: coreOf(), addr });
+    input.value = "";
+  };
+  if (addBtn) addBtn.addEventListener("click", doAdd);
+  if (input) input.addEventListener("keydown", (e) => { if (e.key === "Enter") doAdd(); });
+  if (clrBtn) clrBtn.addEventListener("click", () => sendAction({ action: "clear_breakpoints", core: coreOf() }));
+}
+
 function updateSource(instructions, pc, labels) {
   // Build addr -> [sorted label names] map
   const addrToLabels = {};
@@ -572,6 +624,8 @@ function updateSource(instructions, pc, labels) {
     currentLine.classList.add("current-pc");
     currentLine.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }
+
+  renderBpBar("", currentCore, clientBreakpoints);
 }
 
 function updatePins(io) {
@@ -3386,6 +3440,11 @@ function updateMCSource(core, instructions, pc, labels) {
     currentLine.classList.add("current-pc");
     currentLine.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }
+
+  // "rtu0" is this panel's fixed DOM slot; the core actually loaded into it
+  // (RTU0 or PRU1) is whatever mcPartner currently points at.
+  const realCore = core === "pru0" ? "pru0" : mcPartner;
+  renderBpBar(`mc-${core}-`, realCore, mcBreakpoints[core]);
 }
 
 // Breakpoint toggle via dblclick on MC source panels
@@ -3404,6 +3463,10 @@ document.getElementById("mc-rtu0-source-panel").addEventListener("dblclick", (e)
 });
 
 // ---- Init -----------------------------------------------------------------
+
+wireBpBar("", () => currentCore);
+wireBpBar("mc-pru0-", () => "pru0");
+wireBpBar("mc-rtu0-", () => mcPartner);
 
 initUI();
 connect();
@@ -3424,11 +3487,24 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (e.key === " ") {
-    const pcLine = sourceList.querySelector("li.current-pc");
-    if (!pcLine) return;
     e.preventDefault();
-    const addr = parseInt(pcLine.id.replace("src-line-", ""), 10);
-    if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: currentCore, addr });
+    if (multiCoreMode) {
+      const pru0Line = document.querySelector("#mc-pru0-source-list li.current-pc");
+      if (pru0Line) {
+        const addr = parseInt(pru0Line.id.replace("mc-pru0-src-line-", ""), 10);
+        if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: "pru0", addr });
+      }
+      const partnerLine = document.querySelector("#mc-rtu0-source-list li.current-pc");
+      if (partnerLine) {
+        const addr = parseInt(partnerLine.id.replace("mc-rtu0-src-line-", ""), 10);
+        if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: mcPartner, addr });
+      }
+    } else {
+      const pcLine = sourceList.querySelector("li.current-pc");
+      if (!pcLine) return;
+      const addr = parseInt(pcLine.id.replace("src-line-", ""), 10);
+      if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: currentCore, addr });
+    }
   } else if (e.key === "ArrowRight") {
     e.preventDefault();
     stopRun(); stopSim();

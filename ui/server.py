@@ -23,6 +23,8 @@ from xfr.xfr_bus import SPAD_BANK0, SPAD_BANK1, SPAD_BANK2, IPC_SPAD
 
 app = FastAPI(title="PRU Simulator Dashboard")
 
+MAX_BREAKPOINTS = 64
+
 # Use project root for config resolution
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 config_path = os.path.join(PROJECT_ROOT, "memory.cfg")
@@ -375,8 +377,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 pru = sim.cores[core]
                 if addr in pru.breakpoints:
                     pru.breakpoints.discard(addr)
-                elif len(pru.breakpoints) < 10:
+                elif len(pru.breakpoints) < MAX_BREAKPOINTS:
                     pru.breakpoints.add(addr)
+                await _send_state(websocket, core)
+            elif action == "clear_breakpoints":
+                sim.cores[core].breakpoints.clear()
                 await _send_state(websocket, core)
             elif action == "fill_memory":
                 addr      = int(msg.get("addr", 0))
