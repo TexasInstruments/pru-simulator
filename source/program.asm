@@ -1,4 +1,4 @@
-  ldi32 r2, 0xabcd1234
+    ldi32 r2, 0xabcd1234
 
 
 

@@ -33,11 +33,11 @@
 ;   CN5 = CN5 & MASK_REG   ; 28-bit output limit
 
 .macro  M_ACC3_PROCESS  DN1, DN3, DN5
-        RSB     CN3, DN1, DN0
-        MOV     DN1, DN0
-        RSB     CN4, DN3, CN3
-        MOV     DN3, CN3
-        RSB     CN5, DN5, CN4
-        MOV     DN5, CN4
-        AND     CN5, CN5, MASK_REG
+    RSB     CN3, DN1, DN0
+    MOV     DN1, DN0
+    RSB     CN4, DN3, CN3
+    MOV     DN3, CN3
+    RSB     CN5, DN5, CN4
+    MOV     DN5, CN4
+    AND     CN5, CN5, MASK_REG
 .endm

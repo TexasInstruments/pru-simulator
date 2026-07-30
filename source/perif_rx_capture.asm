@@ -20,30 +20,30 @@
 ; =============================================================
 
 start:
-        ldi  r0, 0x0000         ; GPCFG1: mux_sel=1 (bits 29:26)
-        ldi  r0.w2, 0x0400
-        ldi  r1, 0x600C
-        ldi  r1.w2, 0x0002
-        sbbo &r0, r1, 0, 4
-        ldi  r0, 0x001F         ; RXCFG = 0x0007001F
-        ldi  r0.w2, 0x0007
-        ldi  r1, 0x6100
-        ldi  r1.w2, 0x0002
-        sbbo &r0, r1, 0, 4
+    ldi  r0, 0x0000         ; GPCFG1: mux_sel=1 (bits 29:26)
+    ldi  r0.w2, 0x0400
+    ldi  r1, 0x600C
+    ldi  r1.w2, 0x0002
+    sbbo &r0, r1, 0, 4
+    ldi  r0, 0x001F         ; RXCFG = 0x0007001F
+    ldi  r0.w2, 0x0007
+    ldi  r1, 0x6100
+    ldi  r1.w2, 0x0002
+    sbbo &r0, r1, 0, 4
 
-        ldi  r1, 0x0000         ; capture buffer (own DRAM = DRAM1)
-        ldi  r2, 0              ; byte count
-        ldi  r3, 0x1FF8         ; count address
-        ldi  r5, 0
-        ldi  r5.w2, 0x0100      ; R31 bit 24 = clr_val ch0 (FIFO pop)
-        ldi  r30.b3, 0x01       ; arm RX ch0 (byte3 strobe, bit 24)
+    ldi  r1, 0x0000         ; capture buffer (own DRAM = DRAM1)
+    ldi  r2, 0              ; byte count
+    ldi  r3, 0x1FF8         ; count address
+    ldi  r5, 0
+    ldi  r5.w2, 0x0100      ; R31 bit 24 = clr_val ch0 (FIFO pop)
+    ldi  r30.b3, 0x01       ; arm RX ch0 (byte3 strobe, bit 24)
 
 poll:
-        qbbc poll, r31, 24      ; wait for ch0 rx_valid
-        and  r4, r31, 0xFF      ; byte 0 = ch0 RX FIFO head
-        sbbo &r4, r1, 0, 1      ; store to buffer
-        add  r1, r1, 1
-        add  r2, r2, 1
-        sbbo &r2, r3, 0, 4      ; publish count
-        mov  r31, r5            ; pop FIFO
-        jmp  poll
+    qbbc poll, r31, 24      ; wait for ch0 rx_valid
+    and  r4, r31, 0xFF      ; byte 0 = ch0 RX FIFO head
+    sbbo &r4, r1, 0, 1      ; store to buffer
+    add  r1, r1, 1
+    add  r2, r2, 1
+    sbbo &r2, r3, 0, 4      ; publish count
+    mov  r31, r5            ; pop FIFO
+    jmp  poll

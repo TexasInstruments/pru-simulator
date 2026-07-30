@@ -87,49 +87,49 @@ PAT_END   .set 0x1F00
 .endif
 
 start:
-        ldi  r0, 0x0000         ; GPCFG0: mux_sel=1 (bits 29:26)
-        ldi  r0.w2, 0x0400
-        ldi  r1, 0x6008
-        ldi  r1.w2, 0x0002
-        sbbo &r0, r1, 0, 4
-        ldi  r0, 0x0010         ; TXCFG = 0x00070010
-        ldi  r0.w2, 0x0007
-        ldi  r1, 0x60E4
-        ldi  r1.w2, 0x0002
-        sbbo &r0, r1, 0, 4
-        ldi  r0, 0              ; CH0CFG0 = 0 (continuous mode)
-        ldi  r0.w2, 0
-        sbbo &r0, r1, 4, 4      ; 0x260E8, full 32-bit clear
+    ldi  r0, 0x0000         ; GPCFG0: mux_sel=1 (bits 29:26)
+    ldi  r0.w2, 0x0400
+    ldi  r1, 0x6008
+    ldi  r1.w2, 0x0002
+    sbbo &r0, r1, 0, 4
+    ldi  r0, 0x0010         ; TXCFG = 0x00070010
+    ldi  r0.w2, 0x0007
+    ldi  r1, 0x60E4
+    ldi  r1.w2, 0x0002
+    sbbo &r0, r1, 0, 4
+    ldi  r0, 0              ; CH0CFG0 = 0 (continuous mode)
+    ldi  r0.w2, 0
+    sbbo &r0, r1, 4, 4      ; 0x260E8, full 32-bit clear
 
 ; ---- build the pattern table in DRAM (little-endian words) ----
-        ldi  r1, 0x1F00         ; table base
-        ldi  r0, 0xFF00         ; 0x1F00: 00 FF AA 55
-        ldi  r0.w2, 0x55AA
-        sbbo &r0, r1, 0, 4
-        ldi  r0, 0x0201         ; 0x1F04: 01 02 04 08  (walking 1, low half)
-        ldi  r0.w2, 0x0804
-        sbbo &r0, r1, 4, 4
-        ldi  r0, 0x2010         ; 0x1F08: 10 20 40 80  (walking 1, high half)
-        ldi  r0.w2, 0x8040
-        sbbo &r0, r1, 8, 4
-        ldi  r0, 0xFDFE         ; 0x1F0C: FE FD FB F7  (walking 0, low half)
-        ldi  r0.w2, 0xF7FB
-        sbbo &r0, r1, 12, 4
-        ldi  r0, 0xDFEF         ; 0x1F10: EF DF BF 7F  (walking 0, high half)
-        ldi  r0.w2, 0x7FBF
-        sbbo &r0, r1, 16, 4
+    ldi  r1, 0x1F00         ; table base
+    ldi  r0, 0xFF00         ; 0x1F00: 00 FF AA 55
+    ldi  r0.w2, 0x55AA
+    sbbo &r0, r1, 0, 4
+    ldi  r0, 0x0201         ; 0x1F04: 01 02 04 08  (walking 1, low half)
+    ldi  r0.w2, 0x0804
+    sbbo &r0, r1, 4, 4
+    ldi  r0, 0x2010         ; 0x1F08: 10 20 40 80  (walking 1, high half)
+    ldi  r0.w2, 0x8040
+    sbbo &r0, r1, 8, 4
+    ldi  r0, 0xFDFE         ; 0x1F0C: FE FD FB F7  (walking 0, low half)
+    ldi  r0.w2, 0xF7FB
+    sbbo &r0, r1, 12, 4
+    ldi  r0, 0xDFEF         ; 0x1F10: EF DF BF 7F  (walking 0, high half)
+    ldi  r0.w2, 0x7FBF
+    sbbo &r0, r1, 16, 4
 
-        ldi  r30.b2, 0x00       ; select ch0 (byte2 strobe; clk_mode 0)
-        ldi  r2, 0              ; p = 0
-        ldi  r3, 0x80           ; carry = start bit
-        ldi  r6, 0              ; bytes pushed, saturates at 4 (FIFO depth)
-        ldi  r7, PAT_START      ; table read pointer
-        ldi  r8, PAT_END        ; one past the last table byte
-        ldi  r10, 0             ; counter value
+    ldi  r30.b2, 0x00       ; select ch0 (byte2 strobe; clk_mode 0)
+    ldi  r2, 0              ; p = 0
+    ldi  r3, 0x80           ; carry = start bit
+    ldi  r6, 0              ; bytes pushed, saturates at 4 (FIFO depth)
+    ldi  r7, PAT_START      ; table read pointer
+    ldi  r8, PAT_END        ; one past the last table byte
+    ldi  r10, 0             ; counter value
 .if PATTERN == 7
-        ldi  r9, 1              ; counter only — never read the table
+    ldi  r9, 1              ; counter only — never read the table
 .else
-        ldi  r9, 0              ; table first
+    ldi  r9, 0              ; table first
 .endif
 
 ; The FIFO is 4 deep and must be primed before the TX go strobe, so the
@@ -137,38 +137,38 @@ start:
 ; pass waits for the FIFO to drop below full. One loop body either way,
 ; which keeps the pattern generator in exactly one place.
 loop:
-        qbeq gen_counter, r9, 1
-        lbbo &r2, r7, 0, 1      ; p = table[ptr]  (1-byte load: low byte only)
-        and  r2, r2, 0xFF
-        add  r7, r7, 1
-        qbne gen_done, r7, r8   ; still inside the table window
+    qbeq gen_counter, r9, 1
+    lbbo &r2, r7, 0, 1      ; p = table[ptr]  (1-byte load: low byte only)
+    and  r2, r2, 0xFF
+    add  r7, r7, 1
+    qbne gen_done, r7, r8   ; still inside the table window
 .if PATTERN == 0
-        ldi  r9, 1              ; sequence finished -> counter from here on
+    ldi  r9, 1              ; sequence finished -> counter from here on
 .else
-        ldi  r7, PAT_START      ; repeat this pattern forever
+    ldi  r7, PAT_START      ; repeat this pattern forever
 .endif
-        jmp  gen_done
+    jmp  gen_done
 gen_counter:
-        mov  r2, r10
-        add  r10, r10, 1
-        and  r10, r10, 0xFF
+    mov  r2, r10
+    add  r10, r10, 1
+    and  r10, r10, 0xFF
 gen_done:
-        lsr  r4, r2, 1          ; frame: push = carry | (p >> 1)
-        or   r4, r4, r3
-        and  r3, r2, 1          ; carry_next = (p & 1) << 7
-        lsl  r3, r3, 7
-        qbgt push, r6, 4        ; r6 < 4: still priming, push unconditionally
+    lsr  r4, r2, 1          ; frame: push = carry | (p >> 1)
+    or   r4, r4, r3
+    and  r3, r2, 1          ; carry_next = (p & 1) << 7
+    lsl  r3, r3, 7
+    qbgt push, r6, 4        ; r6 < 4: still priming, push unconditionally
 wait_room:
-        and  r5, r31, 0x1C      ; ch0 tx_fifo count, bits [4:2]
-        qbeq wait_room, r5, 0x10 ; spin while FIFO full (count == 4)
+    and  r5, r31, 0x1C      ; ch0 tx_fifo count, bits [4:2]
+    qbeq wait_room, r5, 0x10 ; spin while FIFO full (count == 4)
 push:
-        mov  r30.b0, r4         ; push (byte0 strobe)
-        qbgt prime, r6, 4       ; count the priming pushes, then go
-        jmp  loop
+    mov  r30.b0, r4         ; push (byte0 strobe)
+    qbgt prime, r6, 4       ; count the priming pushes, then go
+    jmp  loop
 prime:
-        add  r6, r6, 1
-        qbne loop, r6, 4        ; FIFO not primed yet
-        ldi  r0, 0              ; TX go: R31 bit 18
-        ldi  r0.w2, 0x0004
-        mov  r31, r0
-        jmp  loop
+    add  r6, r6, 1
+    qbne loop, r6, 4        ; FIFO not primed yet
+    ldi  r0, 0              ; TX go: R31 bit 18
+    ldi  r0.w2, 0x0004
+    mov  r31, r0
+    jmp  loop

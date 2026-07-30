@@ -56,143 +56,143 @@ NEXT_DELAY  .set 34
 GPI0_MASK   .set 1
 ERR_ADDR    .set 0x0FFE
 
-        ; Initialize
-        ldi  r1, 0
-        ldi  r16, 0
-        ldi  r19, 0
-        ldi  r20, 0
-        ldi  r2, 0
-        ldi  r3, 0
-        ldi  r4, 0
+    ; Initialize
+    ldi  r1, 0
+    ldi  r16, 0
+    ldi  r19, 0
+    ldi  r20, 0
+    ldi  r2, 0
+    ldi  r3, 0
+    ldi  r4, 0
 
 wait_start:
-        ; Poll GPI0 for LOW (start bit)
-        and  r15, r31, GPI0_MASK
-        qbne wait_start, r15, 0
+    ; Poll GPI0 for LOW (start bit)
+    and  r15, r31, GPI0_MASK
+    qbne wait_start, r15, 0
 
-        ; Start bit detected! Delay to sample mid-first-data-bit
-        ldi  r18, START_DELAY
+    ; Start bit detected! Delay to sample mid-first-data-bit
+    ldi  r18, START_DELAY
 delay_start:
-        sub  r18, r18, 1
-        qbne delay_start, r18, 0
+    sub  r18, r18, 1
+    qbne delay_start, r18, 0
 
-        ; Now at center of first data bit — begin byte reception
-        ldi  r16, 0
-        jmp  receive_byte
+    ; Now at center of first data bit — begin byte reception
+    ldi  r16, 0
+    jmp  receive_byte
 
 receive_byte:
-        ; Receive 8 data bits for current byte (LSB first)
-        ldi  r13, 0
-        ldi  r14, 1
-        ldi  r17, 0
+    ; Receive 8 data bits for current byte (LSB first)
+    ldi  r13, 0
+    ldi  r14, 1
+    ldi  r17, 0
 
 sample_bit:
-        ; Sample GPI0
-        and  r15, r31, GPI0_MASK
-        qbeq bit_is_zero, r15, 0
-        ; Bit is 1: set bit in accumulator
-        or   r13, r13, r14
+    ; Sample GPI0
+    and  r15, r31, GPI0_MASK
+    qbeq bit_is_zero, r15, 0
+    ; Bit is 1: set bit in accumulator
+    or   r13, r13, r14
 bit_is_zero:
-        ; Advance bit mask
-        lsl  r14, r14, 1
-        add  r17, r17, 1
+    ; Advance bit mask
+    lsl  r14, r14, 1
+    add  r17, r17, 1
 
-        ; Delay one bit period (compensates for overhead)
-        ldi  r18, BIT_TIME
+    ; Delay one bit period (compensates for overhead)
+    ldi  r18, BIT_TIME
 delay_bit:
-        sub  r18, r18, 1
-        qbne delay_bit, r18, 0
+    sub  r18, r18, 1
+    qbne delay_bit, r18, 0
 
-        ; Check if all 8 bits received
-        qbne sample_bit, r17, 8
+    ; Check if all 8 bits received
+    qbne sample_bit, r17, 8
 
-        ; All 8 bits received — store byte into packed register buffer
-        qbeq store_b0,  r16, 0
-        qbeq store_b1,  r16, 1
-        qbeq store_b2,  r16, 2
-        qbeq store_b3,  r16, 3
-        qbeq store_b4,  r16, 4
-        qbeq store_b5,  r16, 5
-        qbeq store_b6,  r16, 6
-        qbeq store_b7,  r16, 7
-        qbeq store_b8,  r16, 8
-        qbeq store_b9,  r16, 9
-        qbeq store_b10, r16, 10
+    ; All 8 bits received — store byte into packed register buffer
+    qbeq store_b0,  r16, 0
+    qbeq store_b1,  r16, 1
+    qbeq store_b2,  r16, 2
+    qbeq store_b3,  r16, 3
+    qbeq store_b4,  r16, 4
+    qbeq store_b5,  r16, 5
+    qbeq store_b6,  r16, 6
+    qbeq store_b7,  r16, 7
+    qbeq store_b8,  r16, 8
+    qbeq store_b9,  r16, 9
+    qbeq store_b10, r16, 10
 
 store_b0:  mov r2.b0, r13.b0
-        jmp check_stop
+    jmp check_stop
 store_b1:  mov r2.b1, r13.b0
-        jmp check_stop
+    jmp check_stop
 store_b2:  mov r2.b2, r13.b0
-        jmp check_stop
+    jmp check_stop
 store_b3:  mov r2.b3, r13.b0
-        jmp check_stop
+    jmp check_stop
 store_b4:  mov r3.b0, r13.b0
-        jmp check_stop
+    jmp check_stop
 store_b5:  mov r3.b1, r13.b0
-        jmp check_stop
+    jmp check_stop
 store_b6:  mov r3.b2, r13.b0
-        jmp check_stop
+    jmp check_stop
 store_b7:  mov r3.b3, r13.b0
-        jmp check_stop
+    jmp check_stop
 store_b8:  mov r4.b0, r13.b0
-        jmp check_stop
+    jmp check_stop
 store_b9:  mov r4.b1, r13.b0
-        jmp check_stop
+    jmp check_stop
 store_b10: mov r4.b2, r13.b0
-        jmp check_stop
+    jmp check_stop
 
 check_stop:
-        ; The last bit delay positions us near the stop bit.
-        ; Verify STOP bit (should be HIGH)
-        and  r15, r31, GPI0_MASK
-        qbeq framing_error, r15, 0
+    ; The last bit delay positions us near the stop bit.
+    ; Verify STOP bit (should be HIGH)
+    and  r15, r31, GPI0_MASK
+    qbeq framing_error, r15, 0
 
-        ; STOP bit valid — advance to next byte
-        add  r16, r16, 1
+    ; STOP bit valid — advance to next byte
+    add  r16, r16, 1
 
-        ; Check if all 11 bytes received
-        qbeq store_frame, r16, 11
+    ; Check if all 11 bytes received
+    qbeq store_frame, r16, 11
 
-        ; Wait for next start bit (falling edge) to resynchronize
+    ; Wait for next start bit (falling edge) to resynchronize
 wait_next_start:
-        and  r15, r31, GPI0_MASK
-        qbne wait_next_start, r15, 0
+    and  r15, r31, GPI0_MASK
+    qbne wait_next_start, r15, 0
 
-        ; Next start bit detected — delay to center of first data bit
-        ldi  r18, NEXT_DELAY
+    ; Next start bit detected — delay to center of first data bit
+    ldi  r18, NEXT_DELAY
 delay_next:
-        sub  r18, r18, 1
-        qbne delay_next, r18, 0
-        jmp  receive_byte
+    sub  r18, r18, 1
+    qbne delay_next, r18, 0
+    jmp  receive_byte
 
 store_frame:
-        ; All 11 bytes packed in R2-R4 — store to DRAM0 via single SBCO
-        sbco &r2, c24, r1, 11
+    ; All 11 bytes packed in R2-R4 — store to DRAM0 via single SBCO
+    sbco &r2, c24, r1, 11
 
-        ; Advance storage offset for next frame
-        add  r1, r1, 11
-        add  r20, r20, 1
+    ; Advance storage offset for next frame
+    add  r1, r1, 11
+    add  r20, r20, 1
 
-        ; Clear frame buffer for next frame
-        ldi  r2, 0
-        ldi  r3, 0
-        ldi  r4, 0
+    ; Clear frame buffer for next frame
+    ldi  r2, 0
+    ldi  r3, 0
+    ldi  r4, 0
 
-        ; Go back to waiting for next frame's start bit
-        jmp  wait_start
+    ; Go back to waiting for next frame's start bit
+    jmp  wait_start
 
 framing_error:
-        ; Set sticky error flag
-        ldi  r19, 1
+    ; Set sticky error flag
+    ldi  r19, 1
 
-        ; Write error flag to DRAM0+0x0FFE
-        ldi  r18, ERR_ADDR
-        sbco &r19, c24, r18, 1
+    ; Write error flag to DRAM0+0x0FFE
+    ldi  r18, ERR_ADDR
+    sbco &r19, c24, r18, 1
 
-        ; Reset byte index and clear buffer
-        ldi  r16, 0
-        ldi  r2, 0
-        ldi  r3, 0
-        ldi  r4, 0
-        jmp  wait_start
+    ; Reset byte index and clear buffer
+    ldi  r16, 0
+    ldi  r2, 0
+    ldi  r3, 0
+    ldi  r4, 0
+    jmp  wait_start
