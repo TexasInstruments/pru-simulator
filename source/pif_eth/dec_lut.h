@@ -25,8 +25,8 @@
  * disparity, so one flat table suffices; RD is carried only to validate the
  * stream.  See pif_eth_rx_o1_raw.asm:
  *
- *     lsl  r24, r22, 1          ; LUT offset = symbol * 2
- *     lbco r23, c24, r24, 2     ; decode entry (c24 = own DRAM = DRAM1)
+ *     lsl  r24, r22, 1           ; LUT offset = symbol * 2
+ *     lbco &r23, c24, r24, 2     ; decode entry (c24 = own DRAM = DRAM1)
  *
  * Load it with:
  *

@@ -24,15 +24,15 @@ start:
         ldi  r0.w2, 0x0400
         ldi  r1, 0x6008
         ldi  r1.w2, 0x0002
-        sbbo r0, r1, 0, 4
+        sbbo &r0, r1, 0, 4
         ldi  r0, 0x0010         ; TXCFG = 0x00070010
         ldi  r0.w2, 0x0007
         ldi  r1, 0x60E4
         ldi  r1.w2, 0x0002
-        sbbo r0, r1, 0, 4
+        sbbo &r0, r1, 0, 4
         ldi  r0, 0              ; CH0CFG0 = 0 (continuous mode)
         ldi  r0.w2, 0
-        sbbo r0, r1, 4, 4       ; 0x260E8, full 32-bit clear
+        sbbo &r0, r1, 4, 4      ; 0x260E8, full 32-bit clear
 
         ldi  r30.b2, 0x00       ; select ch0 (byte2 strobe; clk_mode 0)
         ldi  r2, 0              ; p = 0

@@ -25,22 +25,22 @@ start:
         ldi  r0.w2, 0x0400
         ldi  r1, 0x6008
         ldi  r1.w2, 0x0002
-        sbbo r0, r1, 0, 4
+        sbbo &r0, r1, 0, 4
         ldi  r0, 0x0010            ; TXCFG = 0x00010010 (core clk, div=1 -> n=2)
         ldi  r0.w2, 0x0001
         ldi  r1, 0x60E4
         ldi  r1.w2, 0x0002
-        sbbo r0, r1, 0, 4
+        sbbo &r0, r1, 0, 4
         ldi  r0, 0                 ; CH0CFG0 = 0 (continuous mode)
-        sbbo r0, r1, 4, 4          ; 0x260E8
+        sbbo &r0, r1, 4, 4         ; 0x260E8
         ldi  r30.b2, 0             ; select ch0 via byte2 strobe (no FIFO push)
 
         ; --- load control block ---
         ldi  r1, 0x0400
-        lbbo r15, r1, 0, 4         ; num_frames
-        lbbo r18, r1, 4, 4         ; mode
-        lbbo r13, r1, 8, 4         ; prng seed/state
-        lbbo r8,  r1, 12, 4        ; payload_len
+        lbbo &r15, r1, 0, 4        ; num_frames
+        lbbo &r18, r1, 4, 4        ; mode
+        lbbo &r13, r1, 8, 4        ; prng seed/state
+        lbbo &r8,  r1, 12, 4       ; payload_len
         add  r9, r8, 4             ; core_len = payload_len + 4
 
         ldi  r3, 0x03FF            ; 10-bit code mask (constant)
@@ -53,10 +53,10 @@ start:
 frame_loop:
         ldi  r1, 0x0418            ; wait for host go flag
 hs_wait:
-        lbbo r6, r1, 0, 4
+        lbbo &r6, r1, 0, 4
         qbeq hs_wait, r6, 0        ; spin while flag == 0
         ldi  r0, 0
-        sbbo r0, r1, 0, 4          ; clear flag
+        sbbo &r0, r1, 0, 4         ; clear flag
 
         qble all_done, r14, r15    ; frame_idx >= num_frames -> finished
         qbne skip_prng, r18, 0     ; mode != 0 -> payload preloaded
@@ -67,12 +67,12 @@ skip_prng:
 
         add  r14, r14, 1
         ldi  r1, 0x0410
-        sbbo r14, r1, 0, 4         ; publish frame counter
+        sbbo &r14, r1, 0, 4        ; publish frame counter
         jmp  frame_loop
 
 all_done:
         ldi  r1, 0x0410
-        sbbo r14, r1, 0, 4
+        sbbo &r14, r1, 0, 4
 spin:
         jmp  spin
 
@@ -90,7 +90,7 @@ pf_loop:
         xor  r13, r13, r25
         lsl  r25, r13, 5
         xor  r13, r13, r25
-        sbbo r13, r21, 0, 1        ; store low byte
+        sbbo &r13, r21, 0, 1       ; store low byte
         add  r21, r21, 1
         add  r22, r22, 1
         jmp  pf_loop
@@ -109,7 +109,7 @@ crc32_compute:
         ldi  r22, 0
 cc_byte:
         qble cc_done, r22, r8      ; i >= payload_len
-        lbbo r23, r21, 0, 1
+        lbbo &r23, r21, 0, 1
         xor  r20, r20, r23         ; crc ^= byte
         ldi  r24, 0
 cc_bit:
@@ -132,7 +132,7 @@ cc_bitend:
         jmp  cc_byte
 cc_done:
         not  r20, r20              ; final XOR 0xFFFFFFFF
-        sbbo r20, r21, 0, 4        ; append FCS (little-endian)
+        sbbo &r20, r21, 0, 4       ; append FCS (little-endian)
         jmp  r29
 
 ; -------------------------------------------------------------
@@ -217,12 +217,12 @@ c4b:
         ldi  r22, 0
 grp_loop:
         qble sf_tail, r22, r9      ; i >= core_len -> done
-        lbbo r19, r21, 0, 4        ; load 4 pre-computed... raw octets
+        lbbo &r19, r21, 0, 4       ; load 4 pre-computed... raw octets
         add  r21, r21, 4
 
         ; ---- octet r19.b0 ----
         lsl  r24, r19.b0, 2
-        lbco r7, c24, r24, 4
+        lbco &r7, c24, r24, 4
         qbeq k0, r10, 0
         lsr  r7, r7, 16
 k0:
@@ -243,7 +243,7 @@ p0:
 
         ; ---- octet r19.b1 ----
         lsl  r24, r19.b1, 2
-        lbco r7, c24, r24, 4
+        lbco &r7, c24, r24, 4
         qbeq k1, r10, 0
         lsr  r7, r7, 16
 k1:
@@ -264,7 +264,7 @@ p1:
 
         ; ---- octet r19.b2 ----
         lsl  r24, r19.b2, 2
-        lbco r7, c24, r24, 4
+        lbco &r7, c24, r24, 4
         qbeq k2, r10, 0
         lsr  r7, r7, 16
 k2:
@@ -285,7 +285,7 @@ p2:
 
         ; ---- octet r19.b3 ----
         lsl  r24, r19.b3, 2
-        lbco r7, c24, r24, 4
+        lbco &r7, c24, r24, 4
         qbeq k3, r10, 0
         lsr  r7, r7, 16
 k3:
@@ -359,7 +359,7 @@ tc2:
         jal  r28, flush_pad        ; pad remaining bits to a byte
         jal  r28, drain_wait       ; let the burst fully serialize
         ldi  r1, 0x0414
-        sbbo r17, r1, 0, 4         ; publish burst pushed count
+        sbbo &r17, r1, 0, 4        ; publish burst pushed count
         jmp  r29
 
 ; -------------------------------------------------------------

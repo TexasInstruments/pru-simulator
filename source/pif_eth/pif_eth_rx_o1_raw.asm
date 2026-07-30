@@ -35,17 +35,17 @@ start:
         ldi  r0.w2, 0x0400
         ldi  r1, 0x600C
         ldi  r1.w2, 0x0002
-        sbbo r0, r1, 0, 4
+        sbbo &r0, r1, 0, 4
 
         ldi  r2, 0x0F40             ; control block
-        lbbo r0, r2, 16, 4          ; rxcfg (host-supplied, encodes n_rx)
+        lbbo &r0, r2, 16, 4         ; rxcfg (host-supplied, encodes n_rx)
         ldi  r1, 0x6100
         ldi  r1.w2, 0x0002
-        sbbo r0, r1, 0, 4           ; RXCFG @ 0x26100
+        sbbo &r0, r1, 0, 4          ; RXCFG @ 0x26100
 
-        lbbo r18, r2, 0, 4          ; mode
-        lbbo r13, r2, 4, 4          ; seed
-        lbbo r8,  r2, 8, 4          ; payload_len
+        lbbo &r18, r2, 0, 4         ; mode
+        lbbo &r13, r2, 4, 4         ; seed
+        lbbo &r8,  r2, 8, 4         ; payload_len
 
         ldi  r5, 0                  ; R31 bit24 = clr_val ch0 (FIFO pop)
         ldi  r5.w2, 0x0100
@@ -54,10 +54,10 @@ start:
 frame_loop:
         ldi  r2, 0x0F40
 go_wait:
-        lbbo r6, r2, 12, 4          ; go flag
+        lbbo &r6, r2, 12, 4         ; go flag
         qbeq go_wait, r6, 0
         ldi  r0, 0
-        sbbo r0, r2, 12, 4          ; clear go
+        sbbo &r0, r2, 12, 4         ; clear go
 
         ldi  r30.b3, 0x01           ; arm RX ch0 -> SOF on first 1 sample
         ldi  r1, 0x0800             ; capture pointer
@@ -67,7 +67,7 @@ poll:
         qbbc poll, r31, 24          ; wait ch0 rx_valid
         and  r4, r31, 0xFF          ; FIFO head byte
         mov  r31, r5                ; pop FIFO
-        sbbo r4, r1, 0, 1           ; store raw oversample byte
+        sbbo &r4, r1, 0, 1          ; store raw oversample byte
         add  r1, r1, 1
         qbeq zrun, r4, 0            ; zero byte -> candidate EOF
         jmp  poll
@@ -75,7 +75,7 @@ zrun:
         qbbc zrun, r31, 24          ; second byte, same body
         and  r4, r31, 0xFF
         mov  r31, r5
-        sbbo r4, r1, 0, 1
+        sbbo &r4, r1, 0, 1
         add  r1, r1, 1
         qbeq eof, r4, 0             ; two zero bytes in a row -> EOF
         jmp  poll
@@ -111,14 +111,14 @@ eo_novf:
                                     ; frame content. Not verified beyond that
                                     ; range.
         sub  r2, r1, r0             ; captured_bytes = ptr - (base+1)
-        sbbo r2, r3, 4, 4
-        sbbo r6, r3, 8, 4           ; rx_ovf
+        sbbo &r2, r3, 4, 4
+        sbbo &r6, r3, 8, 4          ; rx_ovf
         ldi  r0, 1
-        sbbo r0, r3, 28, 4          ; eof_status = 1 (clean EOF)
+        sbbo &r0, r3, 28, 4         ; eof_status = 1 (clean EOF)
         jal  r29, post_frame
         add  r14, r14, 1
         ldi  r3, 0x0F00
-        sbbo r14, r3, 0, 4          ; frame counter published LAST, so the
+        sbbo &r14, r3, 0, 4         ; frame counter published LAST, so the
         jmp  frame_loop             ; host never sees a half-written stats block
 
 ; -------------------------------------------------------------
@@ -137,7 +137,7 @@ eo_novf:
 post_frame:
         ldi  r1, 0x0800
         ldi  r3, 0x0F00
-        lbbo r2, r3, 4, 4           ; captured_bytes
+        lbbo &r2, r3, 4, 4          ; captured_bytes
         ldi  r7, 0x0E00             ; frame output pointer
         ldi  r9, 0                  ; overrun flag: frame buffer not yet full
         ldi  r10, 0                 ; rd = negative
@@ -149,7 +149,7 @@ post_frame:
 
 pf_byte:
         qbeq pf_done, r2, 0
-        lbbo r20, r1, 0, 1          ; one captured byte = 8 samples
+        lbbo &r20, r1, 0, 1         ; one captured byte = 8 samples
         add  r1, r1, 1
         sub  r2, r2, 1
         ldi  r21, 7                 ; MSB = oldest sample
@@ -170,7 +170,7 @@ pf_bit_next:
         jmp  pf_bit
 
 pf_done:
-        sbbo r15, r3, 12, 4         ; publish symbol_errors
+        sbbo &r15, r3, 12, 4        ; publish symbol_errors
         jal  r28, rx_crc_check
         jal  r28, rx_ber_check
         jmp  r29
@@ -196,7 +196,7 @@ ps_go:
                                     ; pushed, regardless of r12 bookkeeping --
                                     ; r11 is a running shift register)
         lsl  r24, r22, 1            ; LUT offset = symbol * 2
-        lbco r23, c24, r24, 2       ; decode entry (c24 = own DRAM = DRAM1)
+        lbco &r23, c24, r24, 2      ; decode entry (c24 = own DRAM = DRAM1)
                                     ; NOTE: this is a 2-byte load, so it only
                                     ; strobes r23 bits 0-15; bits 16-31 are
                                     ; left stale from whatever wrote r23 last.
@@ -217,7 +217,7 @@ ps_go:
                                     ; still room to store this octet
 ps_full:
         ldi  r6, 2
-        sbbo r6, r3, 28, 4          ; eof_status = 2 (overflow abort): the
+        sbbo &r6, r3, 28, 4         ; eof_status = 2 (overflow abort): the
                                     ; 256 B frame buffer (0x0E00-0x0EFF) is
                                     ; full. The realtime poll/zrun loop has no
                                     ; room in its 8-cycle budget for a guard
@@ -229,7 +229,7 @@ ps_full:
         jmp  r28
 ps_store:
         and  r6, r23, 0xFF
-        sbbo r6, r7, 0, 1           ; store decoded octet
+        sbbo &r6, r7, 0, 1          ; store decoded octet
         add  r7, r7, 1
 
         qbbs ps_rd_done, r23, 9     ; neutral -> RD unchanged
@@ -272,12 +272,12 @@ ps_skip:
 rx_crc_check:
         ldi  r21, 0x0E00
         jal  r26, crc32_core        ; -> r20 = computed FCS, r21 = end of payload
-        lbbo r25, r21, 0, 4         ; received FCS (little-endian)
+        lbbo &r25, r21, 0, 4        ; received FCS (little-endian)
         ldi  r6, 0
         qbne rc_store, r20, r25
         ldi  r6, 1                  ; match
 rc_store:
-        sbbo r6, r3, 16, 4          ; crc_ok
+        sbbo &r6, r3, 16, 4         ; crc_ok
         jmp  r28
 
 ; -------------------------------------------------------------
@@ -311,7 +311,7 @@ rb_byte:
         xor  r20, r20, r25
         lsl  r25, r20, 5
         xor  r20, r20, r25
-        lbbo r23, r21, 0, 1
+        lbbo &r23, r21, 0, 1
         and  r24, r20, 0xFF
         xor  r24, r24, r23          ; differing bits in this octet
         ldi  r6, 0
@@ -329,8 +329,8 @@ rb_bits:
         mov  r13, r20               ; persist PRNG state -> next frame continues
         lsl  r6, r8, 3              ; total_bits = payload_len * 8
 rb_publish:
-        sbbo r17, r3, 20, 4         ; prng_bit_errors
-        sbbo r6, r3, 24, 4          ; total_bits_checked
+        sbbo &r17, r3, 20, 4        ; prng_bit_errors
+        sbbo &r6, r3, 24, 4         ; total_bits_checked
         jmp  r28
 
         .include "pif_eth_crc32.inc"

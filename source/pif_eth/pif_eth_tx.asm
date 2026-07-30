@@ -45,22 +45,22 @@ start:
         ldi  r0.w2, 0x0400
         ldi  r1, 0x6008
         ldi  r1.w2, 0x0002
-        sbbo r0, r1, 0, 4
+        sbbo &r0, r1, 0, 4
         ldi  r0, 0x0010            ; TXCFG = 0x00070010 (core clk, div=7 -> 25 MHz)
         ldi  r0.w2, 0x0007
         ldi  r1, 0x60E4
         ldi  r1.w2, 0x0002
-        sbbo r0, r1, 0, 4
+        sbbo &r0, r1, 0, 4
         ldi  r0, 0                 ; CH0CFG0 = 0 (continuous mode)
-        sbbo r0, r1, 4, 4          ; 0x260E8
+        sbbo &r0, r1, 4, 4         ; 0x260E8
         ldi  r30.b2, 0             ; select ch0 via byte2 strobe (no FIFO push)
 
         ; --- load control block ---
         ldi  r1, 0x0400
-        lbbo r15, r1, 0, 4         ; num_frames
-        lbbo r18, r1, 4, 4         ; mode
-        lbbo r13, r1, 8, 4         ; prng seed/state
-        lbbo r8,  r1, 12, 4        ; payload_len
+        lbbo &r15, r1, 0, 4        ; num_frames
+        lbbo &r18, r1, 4, 4        ; mode
+        lbbo &r13, r1, 8, 4        ; prng seed/state
+        lbbo &r8,  r1, 12, 4       ; payload_len
         add  r9, r8, 4             ; core_len = payload_len + 4
 
         ldi  r3, 0x03FF            ; 10-bit code mask (constant)
@@ -73,10 +73,10 @@ start:
 frame_loop:
         ldi  r1, 0x0418            ; wait for host go flag
 hs_wait:
-        lbbo r6, r1, 0, 4
+        lbbo &r6, r1, 0, 4
         qbeq hs_wait, r6, 0        ; spin while flag == 0
         ldi  r0, 0
-        sbbo r0, r1, 0, 4          ; clear flag
+        sbbo &r0, r1, 0, 4         ; clear flag
 
         qble all_done, r14, r15    ; frame_idx >= num_frames -> finished
         qbne skip_prng, r18, 0     ; mode != 0 -> payload preloaded
@@ -87,12 +87,12 @@ skip_prng:
 
         add  r14, r14, 1
         ldi  r1, 0x0410
-        sbbo r14, r1, 0, 4         ; publish frame counter
+        sbbo &r14, r1, 0, 4        ; publish frame counter
         jmp  frame_loop
 
 all_done:
         ldi  r1, 0x0410
-        sbbo r14, r1, 0, 4
+        sbbo &r14, r1, 0, 4
 spin:
         jmp  spin
 
@@ -110,7 +110,7 @@ pf_loop:
         xor  r13, r13, r25
         lsl  r25, r13, 5
         xor  r13, r13, r25
-        sbbo r13, r21, 0, 1        ; store low byte
+        sbbo &r13, r21, 0, 1       ; store low byte
         add  r21, r21, 1
         add  r22, r22, 1
         jmp  pf_loop
@@ -127,7 +127,7 @@ pf_done:
 crc32_compute:
         ldi  r21, 0x0500
         jal  r26, crc32_core       ; -> r20 = FCS, r21 = 0x0500+payload_len
-        sbbo r20, r21, 0, 4        ; append FCS (little-endian)
+        sbbo &r20, r21, 0, 4       ; append FCS (little-endian)
         jmp  r29
 
 ; -------------------------------------------------------------
@@ -147,9 +147,9 @@ send_frame:
         ldi  r22, 0
 sf_loop:
         qble sf_tail, r22, r9      ; i >= core_len
-        lbbo r23, r21, 0, 1        ; octet
+        lbbo &r23, r21, 0, 1       ; octet
         lsl  r24, r23, 2           ; LUT offset = octet * 4
-        lbco r7, c24, r24, 4       ; r7 = LUT word
+        lbco &r7, c24, r24, 4      ; r7 = LUT word
         qbeq sf_keep, r10, 0       ; rd == 0 -> low half
         lsr  r7, r7, 16            ; rd == 1 -> high half
 sf_keep:
@@ -166,7 +166,7 @@ sf_tail:
         jal  r28, flush_pad        ; pad remaining bits to a byte
         jal  r28, drain_wait       ; let the burst fully serialize
         ldi  r1, 0x0414
-        sbbo r17, r1, 0, 4         ; publish burst pushed count
+        sbbo &r17, r1, 0, 4        ; publish burst pushed count
         jmp  r29
 
 ; -------------------------------------------------------------

@@ -91,33 +91,33 @@ start:
         ldi  r0.w2, 0x0400
         ldi  r1, 0x6008
         ldi  r1.w2, 0x0002
-        sbbo r0, r1, 0, 4
+        sbbo &r0, r1, 0, 4
         ldi  r0, 0x0010         ; TXCFG = 0x00070010
         ldi  r0.w2, 0x0007
         ldi  r1, 0x60E4
         ldi  r1.w2, 0x0002
-        sbbo r0, r1, 0, 4
+        sbbo &r0, r1, 0, 4
         ldi  r0, 0              ; CH0CFG0 = 0 (continuous mode)
         ldi  r0.w2, 0
-        sbbo r0, r1, 4, 4       ; 0x260E8, full 32-bit clear
+        sbbo &r0, r1, 4, 4      ; 0x260E8, full 32-bit clear
 
 ; ---- build the pattern table in DRAM (little-endian words) ----
         ldi  r1, 0x1F00         ; table base
         ldi  r0, 0xFF00         ; 0x1F00: 00 FF AA 55
         ldi  r0.w2, 0x55AA
-        sbbo r0, r1, 0, 4
+        sbbo &r0, r1, 0, 4
         ldi  r0, 0x0201         ; 0x1F04: 01 02 04 08  (walking 1, low half)
         ldi  r0.w2, 0x0804
-        sbbo r0, r1, 4, 4
+        sbbo &r0, r1, 4, 4
         ldi  r0, 0x2010         ; 0x1F08: 10 20 40 80  (walking 1, high half)
         ldi  r0.w2, 0x8040
-        sbbo r0, r1, 8, 4
+        sbbo &r0, r1, 8, 4
         ldi  r0, 0xFDFE         ; 0x1F0C: FE FD FB F7  (walking 0, low half)
         ldi  r0.w2, 0xF7FB
-        sbbo r0, r1, 12, 4
+        sbbo &r0, r1, 12, 4
         ldi  r0, 0xDFEF         ; 0x1F10: EF DF BF 7F  (walking 0, high half)
         ldi  r0.w2, 0x7FBF
-        sbbo r0, r1, 16, 4
+        sbbo &r0, r1, 16, 4
 
         ldi  r30.b2, 0x00       ; select ch0 (byte2 strobe; clk_mode 0)
         ldi  r2, 0              ; p = 0
@@ -138,7 +138,7 @@ start:
 ; which keeps the pattern generator in exactly one place.
 loop:
         qbeq gen_counter, r9, 1
-        lbbo r2, r7, 0, 1       ; p = table[ptr]  (1-byte load: low byte only)
+        lbbo &r2, r7, 0, 1      ; p = table[ptr]  (1-byte load: low byte only)
         and  r2, r2, 0xFF
         add  r7, r7, 1
         qbne gen_done, r7, r8   ; still inside the table window

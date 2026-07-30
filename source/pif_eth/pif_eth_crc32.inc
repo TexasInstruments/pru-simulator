@@ -22,7 +22,7 @@ crc32_core:
                                     ; data XORs into every CRC byte
 c3_byte:
         qble c3_done, r22, r8      ; i >= count
-        lbbo r23, r21, 0, 1
+        lbbo &r23, r21, 0, 1
         xor  r20, r20, r23         ; crc ^= byte
         ldi  r24, 0
 c3_bit:
