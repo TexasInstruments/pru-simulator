@@ -11,9 +11,9 @@ repo so any PC sees it after `git pull`). Continues from
 
 | Commit | What |
 |---|---|
-| `1c257b9` | `fix(perif): clear Peripheral Interface state on reset` |
-| `d9d5732` | `test: stop inheriting the UI's core-speed selection` |
-| `91e1954` | `feat(ui): add perif clock lanes to the Signal Graph` |
+| `307fbec` | `fix(perif): clear Peripheral Interface state on reset` |
+| `c4bef7b` | `test: stop inheriting the UI's core-speed selection` |
+| `e093dce` | `feat(ui): add perif clock lanes to the Signal Graph` |
 
 Suite green: 1198 passed, 2 xfailed.
 

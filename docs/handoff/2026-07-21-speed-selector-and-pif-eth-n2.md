@@ -12,8 +12,8 @@ repo so any PC sees it after `git pull`). Continues from
 
 ## Status
 
-**Both complete, committed and pushed to `main`** (`040d4fe` firmware,
-`c996dbd` version bump). UI version bumped **v0.2.0 → v0.2.1** (hover
+**Both complete, committed and pushed to `main`** (`fba9914` firmware,
+`0e60f99` version bump). UI version bumped **v0.2.0 → v0.2.1** (hover
 "PRU SIM" in the dashboard header to confirm).
 
 ## 1. PRU core speed selector

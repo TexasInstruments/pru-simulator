@@ -6,7 +6,7 @@ repo so any PC sees it after `git pull`). Continues from
 
 ## Status
 
-**Complete and pushed** — `main` at `14d7d5e`. Suite green throughout:
+**Complete and pushed** — `main` at `0c77347`. Suite green throughout:
 1221 passed, 2 xfailed. Version tooltip still reads **v0.2.6** — not bumped
 this session (see Open items).
 
@@ -26,16 +26,16 @@ remote moved.
 
 ## What landed
 
-Three commits on top of `914c068` (an incoming "Update files" commit pulled
+Three commits on top of `5d048ff` (an incoming "Update files" commit pulled
 at the start of the session — UI server/app/index, `seed_ui.py`, its README,
 and `memory.cfg` going to `pru_clock_mhz = 250` plus a new
 `pru1_clock_mhz = 250`; **not reviewed here**, just pulled).
 
 | Commit | What |
 |---|---|
-| `db69dc4` | `feat(pif_eth)`: `dec_lut.h` + `gen_dec_lut.py` |
-| `1ccc221` | `fix(asm)`: `&` on burst-instruction first operands, 98 sites |
-| `14d7d5e` | `style(asm)`: 4-space indent, 1226 lines |
+| `ae08527` | `feat(pif_eth)`: `dec_lut.h` + `gen_dec_lut.py` |
+| `e11141a` | `fix(asm)`: `&` on burst-instruction first operands, 98 sites |
+| `0c77347` | `style(asm)`: 4-space indent, 1226 lines |
 
 ### 1. `dec_lut.h` — the 8b/10b decode table as a C header
 
