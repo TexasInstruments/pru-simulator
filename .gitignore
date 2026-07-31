@@ -7,3 +7,7 @@ __pycache__/
 
 # pif_eth generated Wireshark traces (regenerate via driver.py)
 source/pif_eth/traces/
+
+# Verilog references kept local only
+references/**/*.v
+references/endat.gtar
