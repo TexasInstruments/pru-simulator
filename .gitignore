@@ -11,3 +11,8 @@ source/pif_eth/traces/
 # Verilog references kept local only
 references/**/*.v
 references/endat.gtar
+
+# Internal TI reference docs kept local only
+references/pdsp_v2p4p8.docx
+references/icss_g_scu_sd_functional_spec.md
+references/endat/ENDAT_INTERFACE_SPEC.md
