@@ -130,3 +130,50 @@ class TCA9538Device:
                 "data": self._shift, "ack": True,
             }
             self.state = "ACK_DATA"
+
+    # ------------------------------------------------------------------
+    def get_state(self) -> dict:
+        """UI-facing snapshot — deliberately excludes bit-level shift
+        register / edge-tracking internals."""
+        return {
+            "address": self.address,
+            "output_reg": self.output_reg,
+            "config_reg": self.config_reg,
+            "polarity_reg": self.polarity_reg,
+            "saw_start": self.saw_start,
+            "last_transaction": dict(self.last_transaction) if self.last_transaction else None,
+        }
+
+    def snapshot(self) -> dict:
+        """Full internal state, for step-back (see ui/server.py's
+        `_snapshot`/`_restore`, matching SigmaDeltaFilter's convention)."""
+        return {
+            "output_reg": self.output_reg,
+            "config_reg": self.config_reg,
+            "polarity_reg": self.polarity_reg,
+            "state": self.state,
+            "saw_start": self.saw_start,
+            "last_transaction": dict(self.last_transaction) if self.last_transaction else None,
+            "prev_scl": self._prev_scl,
+            "prev_sda": self._prev_sda,
+            "prev_sda_master": self._prev_sda_master,
+            "shift": self._shift,
+            "bit_count": self._bit_count,
+            "reg_ptr": self._reg_ptr,
+            "match": self._match,
+        }
+
+    def restore(self, snap: dict) -> None:
+        self.output_reg = snap["output_reg"]
+        self.config_reg = snap["config_reg"]
+        self.polarity_reg = snap["polarity_reg"]
+        self.state = snap["state"]
+        self.saw_start = snap["saw_start"]
+        self.last_transaction = dict(snap["last_transaction"]) if snap["last_transaction"] else None
+        self._prev_scl = snap["prev_scl"]
+        self._prev_sda = snap["prev_sda"]
+        self._prev_sda_master = snap["prev_sda_master"]
+        self._shift = snap["shift"]
+        self._bit_count = snap["bit_count"]
+        self._reg_ptr = snap["reg_ptr"]
+        self._match = snap["match"]

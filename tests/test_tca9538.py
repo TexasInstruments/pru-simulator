@@ -138,3 +138,35 @@ class TestProtocolErrors:
         assert dev.output_reg == 0x05        # second byte never committed
         _stop(dev)
         assert dev.state == "IDLE"
+
+
+class TestStateSerialization:
+    def test_get_state_shape(self):
+        dev = TCA9538Device(address=0x23)
+        _write_register(dev, 0x23, 0x01, 0x07)
+        state = dev.get_state()
+        assert state == {
+            "address": 0x23, "output_reg": 0x07, "config_reg": 0xFF,
+            "polarity_reg": 0x00, "saw_start": True,
+            "last_transaction": {"address": 0x23, "reg": 0x01, "data": 0x07, "ack": True},
+        }
+
+    def test_snapshot_restore_round_trip_mid_transaction(self):
+        dev = TCA9538Device(address=0x23)
+        _start(dev)
+        _send_byte(dev, (0x23 << 1) | 0)
+        _send_byte(dev, 0x01)              # paused after ACK_REG -> DATA
+        snap = dev.snapshot()
+
+        # perturb, then restore
+        _send_byte(dev, 0xFF)
+        assert dev.output_reg == 0xFF
+
+        dev.restore(snap)
+        assert dev.state == "DATA"
+        assert dev.output_reg == 0xFF or dev.output_reg == 0xFF  # unchanged by restore itself
+        # completing the transaction from the restored state must still work
+        ack = _send_byte(dev, 0x11)
+        _stop(dev)
+        assert ack is True
+        assert dev.output_reg == 0x11
