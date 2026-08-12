@@ -156,16 +156,25 @@ class TestStateSerialization:
         _start(dev)
         _send_byte(dev, (0x23 << 1) | 0)
         _send_byte(dev, 0x01)              # paused after ACK_REG -> DATA
-        snap = dev.snapshot()
-        snapshot_output = dev.output_reg   # capture value at snapshot time
 
-        # perturb with a distinctly different value
+        # Make _prev_sda_master = False by driving SDA low (mid-byte is fine)
+        dev.step(False, False)
+        snap = dev.snapshot()
+        snapshot_output = dev.output_reg   # capture values at snapshot time
+        snapshot_prev_sda_master = dev._prev_sda_master  # should be False
+        assert snapshot_prev_sda_master is False
+
+        # perturb both fields to values different from snapshot
         dev.output_reg = 0xAA
+        dev.step(True, True)  # Makes _prev_sda_master = True
         assert dev.output_reg == 0xAA
+        assert dev._prev_sda_master is True  # Different from snapshot
 
         dev.restore(snap)
         assert dev.state == "DATA"
         assert dev.output_reg == snapshot_output  # must revert to snapshotted value
+        assert dev._prev_sda_master == snapshot_prev_sda_master  # must revert to False
+
         # completing the transaction from the restored state must still work
         ack = _send_byte(dev, 0x11)
         _stop(dev)
