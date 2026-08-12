@@ -362,6 +362,11 @@ register forever — a running LED across the expander's 8 physical pins.
 - Detaching the toggle hides the section and restores bits 0/1 to plain
   GPIO — safe to then load `spi_master_tx.asm` or `mvi_gpio_loopback.asm`,
   which use those same bits for SCLK/MOSI and loopback respectively.
+- DRAM0 offset `0x0FFE` (visible in the Memory panel) is a soft error flag:
+  the firmware sets it to 1 whenever a `run_loop` write gets NACKed. It's
+  sticky — once set it stays 1 even after a later successful transaction —
+  so it only tells you a NACK happened at some point, not whether the bus
+  is currently healthy.
 
 ---
 

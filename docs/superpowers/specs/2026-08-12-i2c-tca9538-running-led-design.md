@@ -116,8 +116,10 @@ DATA --8th bit--> ACK_DATA (slave drives low; commit the byte here —
 ACK_DATA --ack edge--> DONE (this edge is the byte's own ACK
                               completing, not a new clock — must not
                               be confused with a second-byte violation)
-DONE --further SCL rising edge (no STOP first)--> IDLE, protocol
-      error: last_transaction["ack"] = False, no register write
+DONE --further SCL rising edge--> IDLE (last_transaction left as-is;
+      a conformant STOP itself contains an SCL rising edge, so this
+      edge is structurally indistinguishable from a real second-byte
+      violation and must not overwrite a just-recorded successful ack)
 any state --STOP--> IDLE
 any state --repeated START--> ADDR (transaction abandoned/restarted)
 ```
@@ -125,11 +127,17 @@ any state --repeated START--> ADDR (transaction abandoned/restarted)
 Only single-byte register writes are supported (STOP must follow the
 first data byte's ACK). The `DONE` state exists specifically to
 distinguish "the byte we just wrote is being ACKed" (normal, on the
-`ACK_DATA` rising edge) from "firmware kept clocking instead of
-stopping" (the real protocol error, on `DONE`'s rising edge) — collapsing
-these into one state was an early design bug (caught during plan
-self-review) that would have marked every successful write's own ACK as
-a failure.
+`ACK_DATA` rising edge) from the following edge, which returns to
+`IDLE` without touching `last_transaction` — collapsing these into one
+state was an early design bug (caught during plan self-review) that
+would have marked every successful write's own ACK as a failure. Note
+that `DONE`'s rising-edge transition deliberately does *not* set
+`last_transaction["ack"] = False`, even though a firmware that kept
+clocking instead of issuing STOP would land here too: a legitimate
+STOP condition (SDA low → SCL high → SDA high) itself produces this
+same SCL rising edge, so the two cases are indistinguishable at this
+point and the transaction record is simply left as the (successful)
+write already committed in `ACK_DATA`.
 
 `_drive_bit()` returns `False` (drive low) only during the ACK cycle
 of a matched, in-progress transaction; `True` (released) otherwise —

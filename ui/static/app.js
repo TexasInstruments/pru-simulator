@@ -657,7 +657,7 @@ function updateSDPanel(io) {
   if (!sdSection) return;
 
   const gpioSections = document.querySelectorAll(
-    '#io-panel .io-section:not(.sd-interface):not(.perif-interface):not(.io-mux-row)'
+    '#io-panel .io-section:not(.sd-interface):not(.perif-interface):not(.io-mux-row):not(.i2c-interface)'
   );
 
   if (!io || io.mode !== 'sd') {
@@ -964,6 +964,8 @@ function updatePerifPanel(io) {
 function updateI2CPanel(io) {
   const section = document.getElementById('i2c-interface');
   if (!section) return;
+
+  document.getElementById('i2c-attach-btn')?.classList.toggle('active', !!(io && io.i2c));
 
   const i2c = io && io.i2c;
   if (!i2c || !i2c.saw_start) {
@@ -1643,6 +1645,9 @@ coreSelect.addEventListener("change", () => {
   for (let g = 0; g < 5; g++) {
     sendAction({ action: 'set_loopback', core: currentCore, group: g, enabled: false });
   }
+  // Detach any I2C device left attached on the core we're leaving
+  sendAction({ action: 'i2c_attach', core: currentCore, enabled: false });
+  document.getElementById('i2c-attach-btn')?.classList.remove('active');
   currentCore = coreSelect.value;
   prevRegisters = new Array(32).fill("0x00000000");
   document.querySelectorAll('#loopback-strip .lb-btn').forEach(b => b.classList.remove('active'));
