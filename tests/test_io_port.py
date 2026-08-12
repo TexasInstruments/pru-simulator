@@ -2,6 +2,7 @@
 
 import pytest
 from pru_io.io_port import IOPort
+from pru_io.tca9538 import TCA9538Device
 
 
 # ---------------------------------------------------------------------------
@@ -158,3 +159,68 @@ def test_get_gpi_pins_all_set():
     port = IOPort()
     port.set_gpi_word(0xFFFFF)
     assert port.get_gpi_pins() == [1] * 20
+
+
+# ---------------------------------------------------------------------------
+# I2C wiring (opt-in TCA9538Device on SCL=bit0/SDA=bit1)
+# ---------------------------------------------------------------------------
+
+class TestI2CWiring:
+    def test_attach_sets_device(self):
+        port = IOPort()
+        dev = TCA9538Device(address=0x23)
+        port.attach_i2c_device(dev)
+        assert port.i2c_device is dev
+
+    def test_detach_clears_device(self):
+        port = IOPort()
+        port.attach_i2c_device(TCA9538Device())
+        port.attach_i2c_device(None)
+        assert port.i2c_device is None
+
+    def test_both_released_bus_reads_high(self):
+        port = IOPort()
+        port.attach_i2c_device(TCA9538Device(address=0x23))
+        port.write_r30(0b11)          # SCL=1, SDA=1 (both released)
+        assert port.read_r31() & 0b10 == 0b10
+
+    def test_master_drives_sda_low_bus_reads_low(self):
+        port = IOPort()
+        port.attach_i2c_device(TCA9538Device(address=0x23))
+        port.write_r30(0b11)
+        port.write_r30(0b01)          # SCL=1, SDA=0 (master drives low)
+        assert port.read_r31() & 0b10 == 0
+
+    def test_slave_ack_pulls_sda_low_even_though_master_released(self):
+        port = IOPort()
+        port.attach_i2c_device(TCA9538Device(address=0x23))
+        # Drive a full START + matching address byte to reach ACK_ADDR,
+        # where the slave itself pulls SDA low even though bit1 of the
+        # written R30 value keeps SDA released.
+        port.write_r30(0b11)                  # idle
+        port.write_r30(0b01)                  # SDA falls (SCL still 1) -> START
+        port.write_r30(0b00)                  # SCL falls
+        addr_byte = (0x23 << 1) | 0
+        for i in range(7, -1, -1):
+            bit = (addr_byte >> i) & 1
+            sda = bit                          # 1=released bit high, 0=drive low
+            port.write_r30(0b00 | (sda << 1))  # SCL low, SDA=bit
+            port.write_r30(0b01 | (sda << 1))  # SCL high -> sampled
+            port.write_r30(0b00 | (sda << 1))  # SCL low again
+        # 9th clock: master releases SDA (bit=1) for the ACK
+        port.write_r30(0b10)                   # SCL low, SDA released
+        port.write_r30(0b11)                   # SCL high -> slave should ACK (drive low)
+        assert port.read_r31() & 0b10 == 0     # bus is low despite master's bit1=1
+
+    def test_detach_restores_plain_gpio_on_bits_0_1(self):
+        port = IOPort()
+        port.attach_i2c_device(TCA9538Device(address=0x23))
+        port.write_r30(0b11)          # idle, both released -> device forces bus high
+        assert port.read_r31() & 0b10 == 0b10
+        port.attach_i2c_device(None)
+        port.write_r30(0b00)          # would pull SDA low if still attached
+        # Detached: write_r30 no longer touches gpi at all (plain GPIO has
+        # no GPO->GPI path without an explicit loopback group), so bit1
+        # still reflects the device's last output rather than this new
+        # write — proving the device's grip on gpi is fully released.
+        assert port.read_r31() & 0b10 == 0b10

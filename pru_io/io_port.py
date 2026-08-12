@@ -10,8 +10,11 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from pru_io.sd_filter import SigmaDeltaFilter
+    from pru_io.tca9538 import TCA9538Device
 
 _MASK_20 = 0x000FFFFF
+_I2C_SCL_BIT = 0
+_I2C_SDA_BIT = 1
 
 
 class IOPort:
@@ -24,6 +27,7 @@ class IOPort:
         self.perif = None             # type: PeripheralInterface | None
         self.loopback_mask: int = 0   # which GPO bits feed back to GPI (5 groups × 4 bits)
         self.uart_generator = None  # type: UARTFrameGenerator | None
+        self.i2c_device = None        # type: TCA9538Device | None
 
     # ------------------------------------------------------------------
     # R30 / GPO
@@ -46,6 +50,22 @@ class IOPort:
             self.sd_filter.process_r30(value)
         if not (value & (1 << 25)) and self.loopback_mask:
             self.gpi = (self.gpi & ~self.loopback_mask) | (self.gpo & self.loopback_mask)
+        if self.i2c_device is not None:
+            scl = bool(value & (1 << _I2C_SCL_BIT))
+            sda_master = bool(value & (1 << _I2C_SDA_BIT))
+            bus_sda = self.i2c_device.step(scl, sda_master)
+            if bus_sda:
+                self.gpi |= (1 << _I2C_SDA_BIT)
+            else:
+                self.gpi &= ~(1 << _I2C_SDA_BIT)
+
+    def attach_i2c_device(self, device: "TCA9538Device | None") -> None:
+        """Attach (or detach with None) an I2C slave model on SCL=bit0/SDA=bit1.
+
+        Opt-in: bits 0/1 already mean SCLK/MOSI to spi_master_tx.asm, so an
+        attached device must never be on by default.
+        """
+        self.i2c_device = device
 
     def set_loopback_group(self, group: int, enabled: bool) -> None:
         """Enable/disable GPO→GPI loopback for a 4-bit group (0–4).
