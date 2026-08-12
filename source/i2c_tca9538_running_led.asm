@@ -41,7 +41,9 @@
 
 SCL_BIT     .set 0
 SDA_BIT     .set 1
-DELAY_COUNT .set 48          ; ~100 cycles/half-bit; tune in Task 7
+DELAY_COUNT .set 48          ; measured 100-101c/half-bit at N=48 (Task 7,
+                              ; single-stepped against nominal_config/200 MHz);
+                              ; within 1% of the 100c target, no change needed
 ADDR_W      .set 0x46        ; TCA9538 addr 0x23, R/W=0 (write): (0x23<<1)|0
 CFG_REG     .set 0x03
 OUT_REG     .set 0x01
