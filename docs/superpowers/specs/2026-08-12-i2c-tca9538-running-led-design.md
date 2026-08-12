@@ -104,22 +104,32 @@ SCL=1):
 
 ```
 IDLE --START--> ADDR (shift in 7 addr bits + R/W, MSB first)
-ADDR --8th bit--> if addr matches & R/W==0: drive SDA low next cycle (ACK), else NACK (stay released, return to IDLE on STOP)
-  --> ACK_ADDR --> REGPTR (shift in 8 bits: register pointer)
-REGPTR --8th bit--> ACK_REG (slave drives low) --> DATA (shift in 8 bits)
-DATA --8th bit--> ACK_DATA (slave drives low; on the *release* edge
-                             after driving ACK, commit the byte:
-                             config_reg or output_reg per _reg_ptr)
-ACK_DATA --STOP--> IDLE
-ACK_DATA --repeated START--> ADDR (transaction abandoned/restarted)
-any state --STOP or malformed--> IDLE (no partial register writes)
+ADDR --8th bit--> commit match=(addr==self.address & R/W==0) --> ACK_ADDR
+ACK_ADDR --ack edge, match--> REGPTR (shift in 8 bits: register pointer)
+ACK_ADDR --ack edge, no match--> IDLE (NACK: stayed released, no drive)
+REGPTR --8th bit--> ACK_REG (slave drives low)
+ACK_REG --ack edge--> DATA (shift in 8 bits)
+DATA --8th bit--> ACK_DATA (slave drives low; commit the byte here —
+                             config_reg or output_reg per _reg_ptr —
+                             *before* the ack edge, since we already
+                             know we'll ack once the address matched)
+ACK_DATA --ack edge--> DONE (this edge is the byte's own ACK
+                              completing, not a new clock — must not
+                              be confused with a second-byte violation)
+DONE --further SCL rising edge (no STOP first)--> IDLE, protocol
+      error: last_transaction["ack"] = False, no register write
+any state --STOP--> IDLE
+any state --repeated START--> ADDR (transaction abandoned/restarted)
 ```
 
 Only single-byte register writes are supported (STOP must follow the
-first data ACK) — matches the firmware's design (one CONFIG write,
-then repeated OUTPUT writes, each its own transaction). A second DATA
-byte before STOP is treated as a protocol error: reset to IDLE,
-`last_transaction["ack"] = False`, no register write.
+first data byte's ACK). The `DONE` state exists specifically to
+distinguish "the byte we just wrote is being ACKed" (normal, on the
+`ACK_DATA` rising edge) from "firmware kept clocking instead of
+stopping" (the real protocol error, on `DONE`'s rising edge) — collapsing
+these into one state was an early design bug (caught during plan
+self-review) that would have marked every successful write's own ACK as
+a failure.
 
 `_drive_bit()` returns `False` (drive low) only during the ACK cycle
 of a matched, in-progress transaction; `True` (released) otherwise —
