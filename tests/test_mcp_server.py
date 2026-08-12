@@ -69,3 +69,15 @@ class TestMCPTools:
     def test_pru_breakpoint(self):
         result = self.mcp.pru_breakpoint(core="pru0", address=5)
         assert "id" in result
+
+    def test_pru_i2c_attach(self):
+        result = self.mcp.pru_i2c_attach(core="pru0", enabled=True, address=0x23)
+        assert result["success"] is True
+        assert result["address"] == 0x23
+        io_state = self.mcp.sim.i2c_state("pru0")
+        assert io_state["address"] == 0x23
+        assert io_state["config_reg"] == 0xFF
+
+        detach = self.mcp.pru_i2c_attach(core="pru0", enabled=False)
+        assert detach["success"] is True
+        assert self.mcp.sim.i2c_state("pru0") is None

@@ -70,6 +70,11 @@ class PRUSimulatorMCP:
         self.sim.set_input(core, pin, value)
         return {"ok": True}
 
+    def pru_i2c_attach(self, core: str = "pru0", enabled: bool = True, address: int = 0x23) -> dict:
+        """Attach or detach a TCA9538 I2C device model on SCL=bit0/SDA=bit1 of the specified core."""
+        self.sim.i2c_attach(core, enabled, address)
+        return {"success": True, "core": core, "enabled": enabled, "address": address}
+
     def pru_reset(self, core: str = "pru0") -> dict:
         """Reset the specified core to its initial state."""
         self.sim.reset(core)

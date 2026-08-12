@@ -16,6 +16,7 @@ from xfr.xfr_bus import XFRBus
 from pru_io.io_port import IOPort
 from pru_io.sd_filter import SigmaDeltaFilter
 from pru_io.sd_registers import SDRegisters
+from pru_io.tca9538 import TCA9538Device
 from perif.peripheral_interface import PeripheralInterface
 from perif.perif_registers import PerifRegisters
 from perif.gpcfg import GpcfgRegisters, MUX_PERIF
@@ -337,6 +338,17 @@ class Simulator:
         """Return Peripheral Interface state for *core*, or None if not attached."""
         perif = self._get_core(core).io_port.perif
         return perif.get_state() if perif is not None else None
+
+    def i2c_attach(self, core: str, enabled: bool, address: int = 0x23) -> None:
+        """Attach or detach a TCA9538 device model on *core*'s SCL/SDA
+        (R30/R31 bits 0/1)."""
+        pru = self._get_core(core)
+        pru.io_port.attach_i2c_device(TCA9538Device(address) if enabled else None)
+
+    def i2c_state(self, core: str) -> dict | None:
+        """Return TCA9538 device state for *core*, or None if not attached."""
+        dev = self._get_core(core).io_port.i2c_device
+        return dev.get_state() if dev is not None else None
 
     def gpcfg_write(self, core: str, mux_sel: int) -> None:
         """Set the GPCFG PRU_GP_MUX_SEL for *core* (0=GP, 1=Perif, 3=SD)."""
