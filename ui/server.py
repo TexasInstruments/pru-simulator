@@ -59,6 +59,7 @@ def _snapshot(core: str) -> dict:
     ls = c.loop_state
     sd = c.io_port.sd_filter
     perif = c.io_port.perif
+    i2c = c.io_port.i2c_device
     return {
         "pc": c.pc,
         "halted": c.halted,
@@ -74,6 +75,7 @@ def _snapshot(core: str) -> dict:
         "mem": [bytes(r._data) for r in sim.memory.regions],
         "sd": sd.snapshot() if sd is not None else None,
         "perif": perif.snapshot() if perif is not None else None,
+        "i2c": i2c.snapshot() if i2c is not None else None,
     }
 
 
@@ -97,6 +99,8 @@ def _restore(core: str, snap: dict) -> None:
         c.io_port.sd_filter.restore(snap["sd"])
     if snap.get("perif") is not None and c.io_port.perif is not None:
         c.io_port.perif.restore(snap["perif"])
+    if snap.get("i2c") is not None and c.io_port.i2c_device is not None:
+        c.io_port.i2c_device.restore(snap["i2c"])
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -541,6 +545,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     "enabled": bool(msg.get("enabled", False)),
                 }))
                 await _send_state(websocket, core)
+            elif action == "i2c_attach":
+                sim.i2c_attach(core, bool(msg.get("enabled", False)), int(msg.get("address", 0x23)))
+                await _send_state(websocket, core)
             elif action == "uart_inject":
                 pin = int(msg.get("pin", 0))
                 payload = msg.get("payload", [])
@@ -690,6 +697,7 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False):
     gpo_pins = [(r30 >> i) & 1 for i in range(20)]
     sd_data = sim.sd_state(core)
     perif_data = sim.perif_state(core)
+    i2c_data = sim.i2c_state(core)
     mux_sel = sim.gpcfg_state(core)["mux_sel"]
     mode = _io_mode(core, sd_data=sd_data, perif_data=perif_data, mux_sel=mux_sel)
     io_section = {
@@ -703,6 +711,8 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False):
     if perif_data is not None:
         io_section["perif"] = perif_data
         io_section["loopback"] = sim.loopback_state()
+    if i2c_data is not None:
+        io_section["i2c"] = i2c_data
     state = {
         "type": "state",
         "core": core,
