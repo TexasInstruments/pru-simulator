@@ -335,6 +335,36 @@ The `PATTERN = 0` sequence is one byte of each, twenty bytes total:
 
 ---
 
+## Example 10 — I2C Master + TCA9538 Running LED (`i2c_tca9538_running_led.asm`)
+
+**What it does:** Bit-bangs I2C at 1 Mbit/s on SCL=R30/R31 bit0, SDA=bit1
+(open-drain: writing 1 releases the line, writing 0 drives it low) against
+a simulated TCA9538 8-bit IO expander at address 0x23. Configures all 8
+ports as outputs, then walks a single bit 0x01→0x80 into the Output Port
+register forever — a running LED across the expander's 8 physical pins.
+
+**Steps:**
+
+1. Open `source/i2c_tca9538_running_led.asm` and click **Load & Assemble**.
+2. In the IO panel, click **Attach TCA9538 @ 0x23 (SCL=bit0, SDA=bit1)**.
+3. Set the SIM step interval to `0.01` (seconds) and click **Run**.
+4. The **I2C · TCA9538** section appears once the firmware issues its
+   first START condition.
+
+**What to observe:**
+- `CONFIG=0x00` in the I2C section's mode bar once the init transaction
+  (address, Configuration register 0x03, data 0x00) completes.
+- The 8 LED indicators show one lit LED walking left to right, wrapping
+  from P7 back to P0, in step with each completed Output Port write.
+- The transaction log line under the LEDs shows the address, register
+  pointer, data byte and ACK/NACK of the most recently completed
+  transaction.
+- Detaching the toggle hides the section and restores bits 0/1 to plain
+  GPIO — safe to then load `spi_master_tx.asm` or `mvi_gpio_loopback.asm`,
+  which use those same bits for SCLK/MOSI and loopback respectively.
+
+---
+
 ## Signal Graph
 
 The Signal Graph panel records GPO/GPI pin states and optional memory addresses over time.
