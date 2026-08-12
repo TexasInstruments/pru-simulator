@@ -452,6 +452,7 @@ function updateUI(state) {
   updatePins(state.io);
   updateSDPanel(state.io);
   updatePerifPanel(state.io);
+  updateI2CPanel(state.io);
 
   // Signal graph sample
   graphSample(state);
@@ -955,6 +956,46 @@ function updatePerifPanel(io) {
         });
       });
     });
+  }
+}
+
+// ---- TCA9538 I2C IO expander panel -----------------------------------------
+
+function updateI2CPanel(io) {
+  const section = document.getElementById('i2c-interface');
+  if (!section) return;
+
+  const i2c = io && io.i2c;
+  if (!i2c || !i2c.saw_start) {
+    section.style.display = 'none';
+    return;
+  }
+  section.style.display = '';
+
+  const infoEl = document.getElementById('i2c-mode-info');
+  if (infoEl) {
+    infoEl.textContent = `addr=0x${i2c.address.toString(16).toUpperCase()} ` +
+      `CONFIG=0x${i2c.config_reg.toString(16).toUpperCase().padStart(2, '0')}`;
+  }
+
+  const ledContainer = document.getElementById('i2c-leds');
+  if (ledContainer) {
+    ledContainer.innerHTML = '';
+    const driven = i2c.output_reg & (~i2c.config_reg & 0xFF);
+    for (let i = 0; i < 8; i++) {
+      const led = document.createElement('div');
+      led.className = 'i2c-led' + (((driven >> i) & 1) ? ' on' : '');
+      led.title = `P${i}`;
+      ledContainer.appendChild(led);
+    }
+  }
+
+  const logEl = document.getElementById('i2c-log');
+  if (logEl && i2c.last_transaction) {
+    const t = i2c.last_transaction;
+    const regStr = t.reg === null || t.reg === undefined ? '--' : `0x${t.reg.toString(16).toUpperCase().padStart(2, '0')}`;
+    const dataStr = t.data === null || t.data === undefined ? '--' : `0x${t.data.toString(16).toUpperCase().padStart(2, '0')}`;
+    logEl.textContent = `addr=0x${t.address.toString(16).toUpperCase()} reg=${regStr} data=${dataStr} ${t.ack ? 'ACK' : 'NACK'}`;
   }
 }
 
@@ -2243,6 +2284,23 @@ document.querySelectorAll('#loopback-strip .lb-btn').forEach(btn => {
   btn.addEventListener('click', () => onLoopbackToggle(btn));
 });
 
+// ---- I2C attach toggle (TCA9538) -------------------------------------------
+
+function onI2CAttachToggle(btn) {
+  const enabled = !btn.classList.contains('active');
+  btn.classList.toggle('active', enabled);
+  sendAction({ action: 'i2c_attach', core: currentCore, enabled, address: 0x23 });
+  if (!enabled) {
+    const section = document.getElementById('i2c-interface');
+    if (section) section.style.display = 'none';
+  }
+}
+
+const _i2cAttachBtn = document.getElementById('i2c-attach-btn');
+if (_i2cAttachBtn) {
+  _i2cAttachBtn.addEventListener('click', () => onI2CAttachToggle(_i2cAttachBtn));
+}
+
 // ---- Memory panel ---------------------------------------------------------
 
 const memAddrInput = document.getElementById("mem-addr-input");
@@ -3315,6 +3373,7 @@ function updateMCUI(state) {
     cntPc.textContent     = state.pc;
     updatePins(state.io);
     updateSDPanel(state.io);
+    updateI2CPanel(state.io);
     // Update SPAD columns in PRU0 MC reg panel
     if (mcSpadVisible.size > 0) updateMCSpad(state.spad);
   } else if (core === "rtu0") {

@@ -1317,6 +1317,16 @@
     .perif-lb-btn { background: #2d4a2d; color: #a5d6a7; border: 1px solid #3a5a3a; border-radius: 3px; padding: 2px 10px; font-size: 10px; cursor: pointer; font-family: monospace; }
     .perif-lb-btn:hover { background: #3a5a3a; }
     .perif-lb-status { font-size: 10px; color: #6a9955; margin-top: 4px; }
+
+    /* TCA9538 I2C IO expander */
+    .i2c-interface { font-family: monospace; font-size: 11px; color: #e0e0e0; }
+    .i2c-mode-bar { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px solid #333; margin-bottom: 8px; }
+    .i2c-mode-badge { background: #2a3a4a; color: #4fc3f7; padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: bold; }
+    .i2c-mode-info { color: #888; font-size: 10px; }
+    .i2c-leds { display: flex; gap: 6px; margin: 6px 0; }
+    .i2c-led { width: 18px; height: 18px; border-radius: 3px; background: #333; border: 1px solid #555; }
+    .i2c-led.on { background: #66bb6a; border-color: #66bb6a; }
+    .i2c-log { font-family: monospace; font-size: 11px; color: #bbb; white-space: pre-wrap; }
   </style>
 </head>
 <body>
@@ -1531,6 +1541,10 @@ Example:
             <button class="lb-btn" data-group="3">15:12</button>
             <button class="lb-btn" data-group="4">19:16</button>
           </div>
+          <div class="lb-strip" id="i2c-attach-strip">
+            <span class="lb-label">I2C</span>
+            <button class="lb-btn" id="i2c-attach-btn">Attach TCA9538 @ 0x23 (SCL=bit0, SDA=bit1)</button>
+          </div>
           <div class="io-section">
             <div class="io-section-title">GPI (R31) — Input (click to toggle)</div>
             <div class="pin-grid" id="gpi-grid"></div>
@@ -1565,6 +1579,16 @@ Example:
             <div class="perif-section-title">Loopback → PRU1 RX (jitter / latency / drift)</div>
             <div class="perif-lb-card" id="perif-loopback"></div>
             <div class="perif-lb-status" id="perif-lb-status"></div>
+          </div>
+
+          <!-- TCA9538 I2C IO expander (shown once a valid START is seen; coexists with plain GPIO since SCL/SDA are just bits 0/1) -->
+          <div class="io-section i2c-interface" id="i2c-interface" style="display:none;">
+            <div class="i2c-mode-bar">
+              <span class="i2c-mode-badge">I2C · TCA9538</span>
+              <span class="i2c-mode-info" id="i2c-mode-info"></span>
+            </div>
+            <div class="i2c-leds" id="i2c-leds"></div>
+            <div class="i2c-log" id="i2c-log"></div>
           </div>
 
           <hr class="uart-divider" />
