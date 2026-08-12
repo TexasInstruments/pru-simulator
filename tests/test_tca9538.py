@@ -85,3 +85,56 @@ class TestValidTransactions:
         assert dev.last_transaction == {
             "address": 0x23, "reg": 0x01, "data": 0x42, "ack": True,
         }
+
+
+class TestProtocolErrors:
+    def test_wrong_address_nacks_and_does_not_write(self):
+        dev = TCA9538Device(address=0x23)
+        acks = _write_register(dev, 0x24, 0x03, 0x00)
+        assert acks[0] is False
+        assert dev.config_reg == 0xFF          # untouched
+        assert dev.last_transaction["ack"] is False
+
+    def test_read_request_nacks_even_with_correct_address(self):
+        dev = TCA9538Device(address=0x23)
+        _start(dev)
+        ack = _send_byte(dev, (0x23 << 1) | 1)   # R/W=1 (read)
+        assert ack is False
+        _stop(dev)
+        assert dev.output_reg == 0xFF
+        assert dev.config_reg == 0xFF
+
+    def test_stop_mid_address_byte_aborts_cleanly(self):
+        dev = TCA9538Device(address=0x23)
+        _start(dev)
+        dev.step(False, True)
+        dev.step(False, False)          # 1 data bit clocked, byte incomplete
+        dev.step(True, False)
+        _stop(dev)
+        assert dev.state == "IDLE"
+        assert dev.config_reg == 0xFF
+        assert dev.output_reg == 0xFF
+
+    def test_stop_after_ack_reg_before_data_aborts_with_no_write(self):
+        dev = TCA9538Device(address=0x23)
+        _start(dev)
+        _send_byte(dev, (0x23 << 1) | 0)
+        _send_byte(dev, 0x01)            # register pointer only
+        _stop(dev)                        # no data byte sent
+        assert dev.state == "IDLE"
+        assert dev.output_reg == 0xFF     # unchanged — no data was written
+
+    def test_second_data_byte_before_stop_is_rejected(self):
+        dev = TCA9538Device(address=0x23)
+        _start(dev)
+        _send_byte(dev, (0x23 << 1) | 0)
+        _send_byte(dev, 0x01)
+        first_ack = _send_byte(dev, 0x05)   # first data byte commits 0x05
+        assert first_ack is True
+        assert dev.output_reg == 0x05
+        # keep clocking a second byte instead of stopping
+        second_ack = _send_byte(dev, 0xAA)
+        assert second_ack is False
+        assert dev.output_reg == 0x05        # second byte never committed
+        _stop(dev)
+        assert dev.state == "IDLE"
