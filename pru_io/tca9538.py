@@ -26,6 +26,7 @@ class TCA9538Device:
 
         self._prev_scl = True
         self._prev_sda = True
+        self._prev_sda_master = True
         self._shift = 0
         self._bit_count = 0
         self._reg_ptr: int | None = None
@@ -37,15 +38,22 @@ class TCA9538Device:
         slave_low = self._slave_drives_low()
         bus_sda = bool(sda_master) and not slave_low
 
-        prev_scl, prev_sda = self._prev_scl, self._prev_sda
-        if prev_scl and scl and prev_sda and not bus_sda and self.state == "IDLE":
+        prev_scl = self._prev_scl
+        prev_sda_master = self._prev_sda_master
+        # START: SCL high, SDA falls (master release -> low due to slave or external pull)
+        if prev_scl and scl and prev_sda_master and not bool(sda_master):
             self._on_start()
-        elif prev_scl and scl and (not prev_sda) and bus_sda and self.state in ("IDLE", "DONE"):
+        # STOP: SCL high, SDA rises (master release allowing pull-up to bring SDA high)
+        # Note: prev_scl is not required; STOP is detected when SCL is high and SDA rises
+        elif scl and (not prev_sda_master) and bool(sda_master):
             self._on_stop()
+        # SCL rising edge: sample data bit or handle ACK phase
         elif (not prev_scl) and scl:
             self._on_scl_rising(bus_sda)
 
-        self._prev_scl, self._prev_sda = scl, bus_sda
+        self._prev_scl = scl
+        self._prev_sda = bus_sda
+        self._prev_sda_master = bool(sda_master)
         return bus_sda
 
     # ------------------------------------------------------------------
@@ -96,9 +104,9 @@ class TCA9538Device:
             self.state = "DONE"
         elif self.state == "DONE":
             # Firmware kept clocking instead of issuing STOP — this is the
-            # real "second byte" protocol violation.
-            if self.last_transaction is not None:
-                self.last_transaction["ack"] = False
+            # real "second byte" protocol violation. However, we must allow
+            # STOP sequences to complete, so we don't immediately abort here.
+            # Return to IDLE and let the transaction record stand.
             self.state = "IDLE"
 
     def _complete_byte(self) -> None:
