@@ -1,4 +1,6 @@
 """Tests for MCP Server tool implementations."""
+from pathlib import Path
+
 import pytest
 from mcp_server.server import PRUSimulatorMCP
 
@@ -69,6 +71,20 @@ class TestMCPTools:
     def test_pru_breakpoint(self):
         result = self.mcp.pru_breakpoint(core="pru0", address=5)
         assert "id" in result
+
+    def test_pru_ssi_inject(self):
+        reader = (
+            Path(__file__).parent.parent
+            / "source"
+            / "ssi_reader_4mhz_12bit"
+            / "ssi_reader_4mhz_12bit.asm"
+        ).read_text()
+        result = self.mcp.pru_ssi_inject(
+            source=reader, value=0xABC, bits=12, max_steps=20_000
+        )
+        assert result["match"] is True
+        assert result["captured"] == 0xABC
+        assert result["frames_captured"] >= 1
 
     def test_pru_i2c_attach(self):
         result = self.mcp.pru_i2c_attach(core="pru0", enabled=True, address=0x23)

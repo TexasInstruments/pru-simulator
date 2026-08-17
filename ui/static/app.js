@@ -10,6 +10,8 @@ let prevRegisters = new Array(32).fill("0x00000000");
 let currentCore = "pru0";
 let running = false;
 let runInterval = null;
+let runRequestInFlight = false;
+let nextRunRequestId = 1;
 let simRunning = false;
 let simTimer = null;
 let _flashTimer = null;
@@ -71,6 +73,8 @@ const signalGraph = {
   memChannels: [], // [{addr, length, color, label}], up to 8
   heightIdx: 1,   // index into GRAPH_HEIGHT_STEPS (default 140px)
   memHeightIdx: 1, // separate height index for memory graph canvas
+  view: null,      // null = full range; { minStep, maxStep } = zoomed
+  _dragStart: null, // { clientX, fracX, view } for pan tracking
 };
 
 // ---- DOM references -------------------------------------------------------
@@ -339,11 +343,13 @@ function connect() {
     refreshMemory();
     refreshMemory2();
     loadRegions();
+    sendAction({ action: "get_wires" });
   };
 
   ws.onclose = () => {
     wsStatus.textContent = "Disconnected";
     wsStatus.className = "error";
+    runRequestInFlight = false;
     stopRun();
     // Attempt reconnect after 2 s
     setTimeout(connect, 2000);
@@ -358,6 +364,7 @@ function connect() {
     try {
       const msg = JSON.parse(event.data);
       if (msg.type === "state") {
+        if (msg.wires !== undefined) renderWires(msg.wires);
         if (multiCoreMode) {
           updateMCUI(msg);
         } else if (!msg.core || msg.core === currentCore) {
@@ -365,17 +372,28 @@ function connect() {
         }
       } else if (msg.type === "capture") {
         graphHandleCapture(msg);
-        drawGraph();
+        requestGraphDraw();
       } else if (msg.type === "memory") {
         if (msg.tag === "mem2") renderMemory2(msg);
-        else if (msg.tag && msg.tag.startsWith("graph-")) { graphHandleMemory(msg); drawGraph(); }
+        else if (msg.tag && msg.tag.startsWith("graph-")) { graphHandleMemory(msg); requestGraphDraw(); }
         else renderMemory(msg);
+      } else if (msg.type === "run_done") {
+        runRequestInFlight = false;
       } else if (msg.type === "uart_inject_ok") {
         const st = document.getElementById("uart-inj-status");
         if (st) {
           st.textContent = "\u2713 Armed: " + msg.payload_len + " bytes \u00D7 " +
             msg.frames + " frame" + (msg.frames > 1 ? "s" : "") +
             " \u00B7 trigger cycle " + msg.trigger_cycle + " \u00B7 run to receive";
+          st.style.color = "#6a9955";
+          st.style.display = "";
+        }
+      } else if (msg.type === "ssi_inject_ok") {
+        const st = document.getElementById("ssi-inj-status");
+        if (st) {
+          st.textContent = "\u2713 Armed: position " + msg.value_hex +
+            " (" + msg.bits + "-bit) \u00B7 CLK=GPO" + msg.clk_pin +
+            " DATA=GPI" + msg.data_pin + " \u00B7 run to capture";
           st.style.color = "#6a9955";
           st.style.display = "";
         }
@@ -386,9 +404,18 @@ function connect() {
             (msg.enabled ? "enabled" : "disabled");
           st.style.display = "";
         }
+      } else if (msg.type === "wires") {
+        renderWires(msg.wires);
       } else if (msg.type === "error") {
         if (msg.tag && msg.tag.startsWith("graph-")) graphMarkChannelError(msg.tag);
-        else showErrors(msg.errors);
+        else {
+          if (msg.request_id !== undefined) runRequestInFlight = false;
+          if (msg.code === "multicore_sync") {
+            stopRun();
+            graphSetRecording(false);
+          }
+          showErrors(msg.errors);
+        }
       }
     } catch (e) {
       console.error("Failed to parse message", e);
@@ -399,7 +426,13 @@ function connect() {
 function sendAction(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(obj));
+    return true;
   }
+  return false;
+}
+
+function canStartRunRequest(inFlight) {
+  return !inFlight;
 }
 
 // ---- UI update ------------------------------------------------------------
@@ -456,7 +489,7 @@ function updateUI(state) {
 
   // Signal graph sample
   graphSample(state);
-  drawGraph();
+  requestGraphDraw();
 
   memAutoOnStateChange();
 }
@@ -1132,14 +1165,74 @@ function renderUARTBytes(bytes) {
  * Resize the circular buffer to newSize, keeping the most recent samples.
  */
 function graphResizeWindow(newSize) {
-  const samples = graphGetSamples(); // oldest → newest
+  const samples = graphGetSamples(); // oldest → newest, chronological
   signalGraph.windowSize = newSize;
   signalGraph.buf = new Array(newSize);
   signalGraph.head = 0;
   signalGraph.fill = 0;
-  // Re-insert keeping at most the last newSize samples
-  const keep = samples.slice(-newSize);
-  keep.forEach(s => graphPushSample(s));
+
+  // Split by core so each core keeps proportional history, then merge
+  const cores = [...new Set(samples.map(s => s.core || "pru0"))];
+  if (cores.length <= 1) {
+    // Single-core path: simple slice
+    samples.slice(-newSize).forEach(s => graphPushSample(s));
+    return;
+  }
+  // Multi-core: allocate slots evenly per core, keep newest
+  const perCore = Math.max(1, Math.floor(newSize / cores.length));
+  const kept = [];
+  for (const c of cores) {
+    const cs = samples.filter(s => (s.core || "pru0") === c);
+    kept.push(...cs.slice(-perCore));
+  }
+  // Sort by runStep (shared axis) so the circular buffer is in order
+  kept.sort((a, b) => (a.runStep ?? a.step) - (b.runStep ?? b.step));
+  kept.forEach(s => graphPushSample(s));
+}
+
+// ---- Signal graph — zoom / pan -------------------------------------------
+
+/** Update canvas cursor to reflect zoom state (crosshair = full view, grab = zoomed). */
+function _graphSetCursor() {
+  const canvas = document.getElementById("signal-graph-canvas");
+  if (!canvas) return;
+  canvas.style.cursor = signalGraph.view ? "grab" : "crosshair";
+}
+
+function graphViewReset() {
+  signalGraph.view = null;
+  _graphSetCursor();
+  drawDigitalGraph();
+}
+
+/**
+ * Zoom the view by `factor` centered on `fracX` (0..1 position across canvas).
+ * factor < 1 zooms in; factor > 1 zooms out.
+ */
+function graphViewZoom(factor, fracX) {
+  const samples = graphGetSamples();
+  if (samples.length < 2) return;
+  const allSteps = samples.map(s => s.runStep ?? s.step);
+  const dataMin = Math.min(...allSteps);
+  const dataMax = Math.max(...allSteps);
+  const v = signalGraph.view || { minStep: dataMin, maxStep: dataMax };
+  const range = v.maxStep - v.minStep;
+  const pivot = v.minStep + fracX * range;
+  const newRange = Math.max(20, Math.min(range * factor, dataMax - dataMin));
+  let newMin = pivot - fracX * newRange;
+  let newMax = newMin + newRange;
+  // Clamp to data bounds
+  if (newMin < dataMin) { newMin = dataMin; newMax = newMin + newRange; }
+  if (newMax > dataMax) { newMax = dataMax; newMin = newMax - newRange; }
+  if (newMin < dataMin) newMin = dataMin;
+  // If view covers full range, clear zoom state
+  if (newMin <= dataMin && newMax >= dataMax) {
+    signalGraph.view = null;
+  } else {
+    signalGraph.view = { minStep: newMin, maxStep: newMax };
+  }
+  _graphSetCursor();
+  drawDigitalGraph();
 }
 
 // ---- Signal graph — sampling -----------------------------------------------
@@ -1167,9 +1260,11 @@ function graphSample(state) {
   const perifChannels = (state.io.perif && state.io.perif.channels) || [];
   const sample = {
     step: state.instruction_count,
+    runStep: state.instruction_count,
     // IO mux mode at capture time: in perif mode the GPO/GPI pins are owned by
     // the Peripheral Interface, so R30/R31 must not be plotted as pin state.
     mode: state.io.mode || "gpio",
+    core: state.core || "pru0",
     gpo: (state.io.gpo_pins || []).slice(0, 20),
     gpi: (state.io.gpi_pins || []).slice(0, 20),
     perif: perifChannels.map(ch => ch.tx_line ? 1 : 0),
@@ -1191,11 +1286,12 @@ function graphSample(state) {
  * the same firmware traced fine under SIM (one instruction per push).
  *
  * Wire format is packed ints, see _capture_sample() in ui/server.py:
- *   [step, r30(20 bits), gpi bits, perif out bits, out_en bits, clk bits]
+ *   [step, r30(20 bits), gpi bits, perif out bits, out_en bits, clk bits, run_step]
  */
 function graphHandleCapture(msg) {
   if (!signalGraph.recording) return;
   const mode = msg.mode || "gpio";
+  const core = msg.core || "pru0";
   // Single-shot, perif captures only: those sample every instruction, so a run
   // fills the whole window within a few ms of wall clock and a rolling buffer
   // would just blur — evicting the transmission before anyone could look at it.
@@ -1207,10 +1303,12 @@ function graphHandleCapture(msg) {
       graphSetRecording(false);
       break;
     }
-    const [step, r30, gpiBits, outBits, oeBits, clkBits] = s;
+    const [step, r30, gpiBits, outBits, oeBits, clkBits, runStep] = s;
     graphPushSample({
       step,
+      runStep: runStep ?? step,
       mode,
+      core,
       gpo: Array.from({ length: 20 }, (_, i) => (r30 >> i) & 1),
       gpi: Array.from({ length: 20 }, (_, i) => (gpiBits >> i) & 1),
       perif: [0, 1, 2].map(i => (outBits >> i) & 1),
@@ -1266,6 +1364,154 @@ function drawGraph() {
   drawMemGraph();
 }
 
+let graphDrawPending = false;
+
+function requestGraphDraw() {
+  if (graphDrawPending) return;
+  graphDrawPending = true;
+  const schedule = typeof requestAnimationFrame === "function"
+    ? requestAnimationFrame
+    : (callback) => setTimeout(callback, 0);
+  schedule(() => {
+    graphDrawPending = false;
+    drawGraph();
+  });
+}
+
+function graphFindNewestSsiFrame(samples, preferredCore = "pru0", clockPin = 0) {
+  if (!Array.isArray(samples) || samples.length < 2) return null;
+
+  const cores = [...new Set(samples.map(s => s.core || "pru0"))];
+  const core = cores.includes(preferredCore) ? preferredCore : cores[0];
+  if (!core) return null;
+
+  const lane = samples
+    .filter(s => (s.core || "pru0") === core)
+    .map(s => ({ step: s.runStep ?? s.step, value: (s.gpo && s.gpo[clockPin]) ? 1 : 0 }))
+    .filter(s => Number.isFinite(s.step))
+    .sort((a, b) => a.step - b.step);
+  if (lane.length < 2) return null;
+
+  const transitions = [];
+  for (let i = 1; i < lane.length; i++) {
+    if (lane[i].value !== lane[i - 1].value) transitions.push(lane[i].step);
+  }
+  if (transitions.length < 24) return null;
+
+  const gaps = [];
+  for (let i = 1; i < transitions.length; i++) {
+    const gap = transitions[i] - transitions[i - 1];
+    if (gap > 0) gaps.push(gap);
+  }
+  if (gaps.length === 0) return null;
+  const sortedGaps = [...gaps].sort((a, b) => a - b);
+  const halfPeriod = sortedGaps[Math.floor((sortedGaps.length - 1) / 2)];
+  const idleThreshold = Math.max(20, halfPeriod * 5);
+
+  const groups = [[]];
+  for (const transition of transitions) {
+    const group = groups[groups.length - 1];
+    if (group.length && transition - group[group.length - 1] > idleThreshold) {
+      groups.push([]);
+    }
+    groups[groups.length - 1].push(transition);
+  }
+  const group = [...groups].reverse().find(candidate => candidate.length >= 24);
+  if (!group) return null;
+
+  const dataMin = lane[0].step;
+  const dataMax = lane[lane.length - 1].step;
+  const minStep = Math.max(dataMin, group[0] - halfPeriod);
+  const end = group.length > 24 ? group[24] : group[23] + halfPeriod;
+  return { minStep, maxStep: Math.min(dataMax, end) };
+}
+
+function graphBuildDigitalBuckets(samples, data, visMin, visMax, width) {
+  const pixelWidth = Math.floor(width);
+  const visibleRange = visMax - visMin;
+  const count = Math.min(samples.length, data.length);
+  if (count === 0 || pixelWidth <= 0 || !Number.isFinite(visibleRange) || visibleRange <= 0) {
+    return [];
+  }
+
+  const times = new Array(count);
+  const values = new Array(count);
+  for (let i = 0; i < count; i++) {
+    times[i] = samples[i].runStep ?? samples[i].step;
+    values[i] = data[i] ? 1 : 0;
+    if (!Number.isFinite(times[i])) return [];
+  }
+
+  const bucketMap = new Map();
+  const getBucket = x => {
+    let bucket = bucketMap.get(x);
+    if (!bucket) {
+      bucket = { x, enter: null, exit: null, sawHigh: false, sawLow: false };
+      bucketMap.set(x, bucket);
+    }
+    return bucket;
+  };
+
+  const markSegment = (start, end, value) => {
+    if (end <= start || end < visMin || start > visMax) return;
+    const clippedStart = Math.max(start, visMin);
+    const clippedEnd = Math.min(end, visMax);
+    if (clippedEnd <= clippedStart) return;
+
+    const startX = (clippedStart - visMin) / visibleRange * pixelWidth;
+    const endX = (clippedEnd - visMin) / visibleRange * pixelWidth;
+    const firstPixel = Math.max(0, Math.min(pixelWidth - 1, Math.floor(startX)));
+    const lastPixel = Math.max(0, Math.min(pixelWidth - 1, Math.ceil(endX) - 1));
+    for (let x = firstPixel; x <= lastPixel; x++) {
+      const bucket = getBucket(x);
+      if (bucket.enter === null) bucket.enter = value;
+      bucket.exit = value;
+      if (value) bucket.sawHigh = true;
+      else bucket.sawLow = true;
+    }
+  };
+
+  let segmentStart = times[0];
+  let segmentValue = values[0];
+  for (let i = 1; i < count; i++) {
+    if (values[i] === values[i - 1]) continue;
+    const transition = (times[i - 1] + times[i]) / 2;
+    markSegment(segmentStart, transition, segmentValue);
+    segmentStart = transition;
+    segmentValue = values[i];
+  }
+  markSegment(segmentStart, times[count - 1], segmentValue);
+
+  if (bucketMap.size === 0 && times[0] >= visMin && times[0] <= visMax) {
+    const x = Math.max(0, Math.min(pixelWidth - 1,
+      Math.floor((times[0] - visMin) / visibleRange * pixelWidth)));
+    const bucket = getBucket(x);
+    bucket.enter = values[0];
+    bucket.exit = values[0];
+    if (values[0]) bucket.sawHigh = true;
+    else bucket.sawLow = true;
+  }
+
+  return [...bucketMap.values()].sort((a, b) => a.x - b.x);
+}
+
+function graphResolutionInfo(channels, visMin, visMax, width) {
+  const cyclesPerPixel = width > 0 ? Math.max(0, visMax - visMin) / width : 0;
+  if (cyclesPerPixel <= 0) return { cyclesPerPixel, subPixel: false };
+
+  const subPixel = channels.some(channel => {
+    let runStart = null;
+    for (let i = 1; i < channel.data.length; i++) {
+      if (channel.data[i] === channel.data[i - 1]) continue;
+      const step = channel.samples[i].runStep ?? channel.samples[i].step;
+      if (runStart !== null && step > runStart && step - runStart < cyclesPerPixel) return true;
+      runStart = step;
+    }
+    return false;
+  });
+  return { cyclesPerPixel, subPixel };
+}
+
 function drawDigitalGraph() {
   const canvas = document.getElementById("signal-graph-canvas");
   if (!canvas) return;
@@ -1297,36 +1543,49 @@ function drawDigitalGraph() {
   const perifMode = samples.length > 0 &&
                     samples[samples.length - 1].mode === "perif";
   const activeDig = [];
+
+  // Collect the set of cores that appear in the buffer. In single-core mode
+  // this is just ["pru0"]. In multi-core mode it may be ["pru0","pru1"].
+  const coresInBuf = [...new Set(samples.map(s => s.core || "pru0"))].sort();
+  // Prefix labels with core name only when multiple cores are present.
+  const multiCoreBuf = coresInBuf.length > 1;
+
   if (samples.length >= 2) {
-    if (!perifMode) {
-      for (let i = 0; i < 20; i++) {
-        const vals = samples.map(s => s.gpo[i] || 0);
-        if (vals.some(v => v !== vals[0])) {
-          activeDig.push({ label: `GPO ${i}`, color: GRAPH_GPO_COLORS[i], data: vals });
+    for (const coreName of coresInBuf) {
+      // Work only on this core's own samples — no interleaving with other cores.
+      // Each core's channels are drawn independently at their own sample positions.
+      const coreSamples = samples.filter(s => (s.core || "pru0") === coreName);
+      if (coreSamples.length < 2) continue;
+
+      const prefix = multiCoreBuf ? coreName.toUpperCase() + ":" : "";
+
+      if (!perifMode) {
+        for (let i = 0; i < 20; i++) {
+          const vals = coreSamples.map(s => s.gpo[i] || 0);
+          if (vals.some(v => v !== vals[0])) {
+            activeDig.push({ label: `${prefix}GPO ${i}`, color: GRAPH_GPO_COLORS[i],
+                             data: vals, samples: coreSamples });
+          }
+        }
+        for (let i = 0; i < 20; i++) {
+          const vals = coreSamples.map(s => s.gpi[i] || 0);
+          if (vals.some(v => v !== vals[0])) {
+            activeDig.push({ label: `${prefix}GPI ${i}`, color: GRAPH_GPI_COLORS[i],
+                             data: vals, samples: coreSamples });
+          }
         }
       }
-      for (let i = 0; i < 20; i++) {
-        const vals = samples.map(s => s.gpi[i] || 0);
-        if (vals.some(v => v !== vals[0])) {
-          activeDig.push({ label: `GPI ${i}`, color: GRAPH_GPI_COLORS[i], data: vals });
-        }
+      for (let i = 0; i < 3; i++) {
+        const out = coreSamples.map(s => (s.perif && s.perif[i]) || 0);
+        const oe  = coreSamples.map(s => (s.perifOe && s.perifOe[i]) || 0);
+        const clk = coreSamples.map(s => (s.perifClk && s.perifClk[i]) || 0);
+        const moved = a => a.some(v => v !== a[0]);
+        const chActive = moved(out) || moved(oe) || moved(clk);
+        if (!chActive) continue;
+        activeDig.push({ label: `${prefix}perif${i}_out`,    color: GRAPH_PERIF_COLORS[i],     data: out, samples: coreSamples });
+        activeDig.push({ label: `${prefix}perif${i}_out_en`, color: GRAPH_PERIF_OE_COLORS[i],  data: oe,  samples: coreSamples });
+        activeDig.push({ label: `${prefix}perif${i}_clk`,    color: GRAPH_PERIF_CLK_COLORS[i], data: clk, samples: coreSamples });
       }
-    }
-    for (let i = 0; i < 3; i++) {
-      // Data lane first, then out_en and the bit clock, so the group reads
-      // together: out_en says when the pad is driven, the clock says where the
-      // bits start (the perif serializer has no framing of its own).
-      const out = samples.map(s => (s.perif && s.perif[i]) || 0);
-      const oe  = samples.map(s => (s.perifOe && s.perifOe[i]) || 0);
-      const clk = samples.map(s => (s.perifClk && s.perifClk[i]) || 0);
-      const moved = a => a.some(v => v !== a[0]);
-      // A channel that moved at all shows its full group, so a steady out_en
-      // stays visible next to the data it qualifies.
-      const chActive = moved(out) || moved(oe) || moved(clk);
-      if (!chActive) continue;
-      activeDig.push({ label: `perif${i}_out`,    color: GRAPH_PERIF_COLORS[i],     data: out });
-      activeDig.push({ label: `perif${i}_out_en`, color: GRAPH_PERIF_OE_COLORS[i],  data: oe  });
-      activeDig.push({ label: `perif${i}_clk`,    color: GRAPH_PERIF_CLK_COLORS[i], data: clk });
     }
   }
 
@@ -1336,10 +1595,24 @@ function drawDigitalGraph() {
     return;
   }
 
-  const N = samples.length;
-
   // ---- Draw digital lanes --------------------------------------------------
+  // All channels share a common time axis based on step numbers so that
+  // signals from different cores align correctly on screen.
+  let resolutionInfo = null;
   if (activeDig.length > 0) {
+    // Compute global step range across all samples in the buffer.
+    const allSteps = samples.map(s => s.runStep ?? s.step);
+    const stepMin = Math.min(...allSteps);
+    const stepMax = Math.max(...allSteps);
+    const stepRange = stepMax - stepMin || 1;
+
+    // Apply zoom view if set
+    const view = signalGraph.view;
+    const visMin = view ? view.minStep : stepMin;
+    const visMax = view ? view.maxStep : stepMax;
+    const visRange = visMax - visMin || 1;
+    resolutionInfo = graphResolutionInfo(activeDig, visMin, visMax, W);
+
     const rowH = H / activeDig.length;
     activeDig.forEach((ch, ri) => {
       const yBase = ri * rowH;
@@ -1348,25 +1621,46 @@ function drawDigitalGraph() {
       ctx.strokeStyle = ch.color;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ch.data.forEach((v, i) => {
-        const x = (i / (N - 1)) * W;
-        const y = v ? yHigh : yLow;
-        if (i === 0) { ctx.moveTo(x, y); return; }
-        if (v !== ch.data[i - 1]) {
-          const xm = ((i - 0.5) / (N - 1)) * W;
-          ctx.lineTo(xm, ch.data[i - 1] ? yHigh : yLow);
-          ctx.lineTo(xm, y);
+      const buckets = graphBuildDigitalBuckets(ch.samples, ch.data, visMin, visMax, W);
+      let previousBucket = null;
+      const yFor = value => value ? yHigh : yLow;
+      buckets.forEach(bucket => {
+        const x = bucket.x + 0.5;
+        if (previousBucket === null) {
+          ctx.moveTo(x, yFor(bucket.enter));
+        } else {
+          ctx.lineTo(x, yFor(previousBucket.exit));
+          if (previousBucket.exit !== bucket.enter) {
+            ctx.lineTo(x, yFor(bucket.enter));
+          }
         }
-        ctx.lineTo(x, y);
+        if (bucket.sawHigh && bucket.sawLow) {
+          ctx.lineTo(x, yHigh);
+          ctx.lineTo(x, yLow);
+          ctx.lineTo(x, yFor(bucket.exit));
+        } else {
+          ctx.lineTo(x, yFor(bucket.exit));
+        }
+        previousBucket = bucket;
       });
       ctx.stroke();
       ctx.fillStyle = ch.color;
       ctx.font = "8px Consolas, monospace";
       ctx.fillText(ch.label, 3, yBase + 9);
     });
+
+    // Zoom indicator overlay
+    if (signalGraph.view) {
+      ctx.fillStyle = "rgba(255,255,255,0.15)";
+      ctx.fillRect(W - 60, H - 12, 58, 10);
+      ctx.fillStyle = "#aaa";
+      ctx.font = "8px Consolas, monospace";
+      const zoomPct = Math.round((visRange / (stepMax - stepMin || 1)) * 100);
+      ctx.fillText(`zoom ${zoomPct}%`, W - 58, H - 4);
+    }
   }
 
-  _graphUpdateStepLabel(samples);
+  _graphUpdateStepLabel(samples, resolutionInfo);
   _graphUpdateLegend(activeDig, "graph-legend");
 }
 
@@ -1462,11 +1756,14 @@ function drawMemGraph() {
   _graphUpdateLegend(activeAna, "mgraph-legend");
 }
 
-function _graphUpdateStepLabel(samples) {
+function _graphUpdateStepLabel(samples, resolutionInfo = null) {
   const el = document.getElementById("graph-step-label");
   if (!el) return;
   if (samples.length === 0) { el.textContent = ""; return; }
-  el.textContent = `step ${samples[samples.length - 1].step} / ${signalGraph.windowSize}`;
+  const resolution = resolutionInfo
+    ? ` · ${resolutionInfo.cyclesPerPixel.toFixed(2)} cycles/pixel${resolutionInfo.subPixel ? " · sub-pixel transitions" : ""}`
+    : "";
+  el.textContent = `step ${samples[samples.length - 1].step} / ${signalGraph.windowSize}${resolution}`;
 }
 
 function _graphUpdateLegend(channels, containerId) {
@@ -1598,7 +1895,7 @@ function exportGraphCSV() {
   const perifHeaders = Array.from({ length: 3 }, (_, i) => `perif${i}_out`);
   const perifOeHeaders = Array.from({ length: 3 }, (_, i) => `perif${i}_out_en`);
   const perifClkHeaders = Array.from({ length: 3 }, (_, i) => `perif${i}_clk`);
-  const header = ["step", "mode", ...gpoHeaders, ...gpiHeaders,
+  const header = ["step", "core", "mode", ...gpoHeaders, ...gpiHeaders,
                   ...perifHeaders, ...perifOeHeaders, ...perifClkHeaders].join(",");
 
   const rows = samples.map(s => {
@@ -1607,7 +1904,7 @@ function exportGraphCSV() {
     const perif = Array.from({ length: 3 }, (_, i) => (s.perif && s.perif[i]) ?? 0);
     const perifOe = Array.from({ length: 3 }, (_, i) => (s.perifOe && s.perifOe[i]) ?? 0);
     const perifClk = Array.from({ length: 3 }, (_, i) => (s.perifClk && s.perifClk[i]) ?? 0);
-    return [s.step, s.mode ?? "gpio", ...gpo, ...gpi,
+    return [s.step, s.core ?? "pru0", s.mode ?? "gpio", ...gpo, ...gpi,
             ...perif, ...perifOe, ...perifClk].join(",");
   });
 
@@ -1641,6 +1938,7 @@ function exportGraphCSV() {
 
 coreSelect.addEventListener("change", () => {
   stopRun(); stopSim();
+  graphClear();
   // Reset loopback state on the core we're leaving
   for (let g = 0; g < 5; g++) {
     sendAction({ action: 'set_loopback', core: currentCore, group: g, enabled: false });
@@ -1678,6 +1976,7 @@ btnRun.addEventListener("click", () => {
 
 btnReset.addEventListener("click", () => {
   stopRun(); stopSim();
+  graphClear();
   clearErrors();
   prevRegisters = new Array(32).fill("0x00000000");
   if (multiCoreMode) {
@@ -1691,6 +1990,7 @@ btnReset.addEventListener("click", () => {
 
 btnHardReset.addEventListener("click", () => {
   stopRun(); stopSim();
+  graphClear();
   clearErrors();
   prevRegisters = new Array(32).fill("0x00000000");
   if (multiCoreMode) {
@@ -1704,6 +2004,7 @@ btnHardReset.addEventListener("click", () => {
 
 btnLoad.addEventListener("click", async () => {
   stopRun(); stopSim();
+  graphClear();
   clearErrors();
 
   // Sync active textarea content into tab buffer
@@ -1771,23 +2072,95 @@ function graphSetRecording(on) {
   if (dot) dot.classList.toggle("active", on);
 }
 
+function graphClear() {
+  signalGraph.buf = new Array(signalGraph.windowSize);
+  signalGraph.head = 0;
+  signalGraph.fill = 0;
+  signalGraph.view = null;
+  const exportRow = document.getElementById("graph-export-row");
+  if (exportRow) exportRow.style.display = "none";
+}
+
 document.getElementById("graph-rec-btn").addEventListener("click", () => {
   graphSetRecording(!signalGraph.recording);
 });
 
 document.getElementById("graph-clear-btn").addEventListener("click", () => {
-  signalGraph.buf = new Array(signalGraph.windowSize);
-  signalGraph.head = 0;
-  signalGraph.fill = 0;
-  const exportRow = document.getElementById("graph-export-row");
-  if (exportRow) exportRow.style.display = "none";
+  graphClear();
   drawGraph();
+});
+
+document.getElementById("graph-fit-frame-btn").addEventListener("click", () => {
+  const frame = graphFindNewestSsiFrame(graphGetSamples(), "pru0", 0);
+  if (!frame) {
+    const label = document.getElementById("graph-step-label");
+    if (label) label.textContent = "No complete SSI frame in capture";
+    return;
+  }
+  signalGraph.view = frame;
+  _graphSetCursor();
+  drawDigitalGraph();
 });
 
 document.getElementById("graph-win-sel").addEventListener("change", (e) => {
   graphResizeWindow(parseInt(e.target.value, 10));
   drawGraph();
 });
+
+// ---- Signal graph — zoom / pan event listeners ---------------------------
+(function() {
+  const canvas = document.getElementById("signal-graph-canvas");
+  if (!canvas) return;
+
+  // Mouse wheel: zoom
+  canvas.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const fracX = (e.clientX - rect.left) / rect.width;
+    const factor = e.deltaY > 0 ? 1.3 : (1 / 1.3);
+    graphViewZoom(factor, fracX);
+  }, { passive: false });
+
+  // Double-click: reset zoom
+  canvas.addEventListener("dblclick", () => {
+    graphViewReset();
+  });
+
+  // Drag to pan
+  canvas.addEventListener("mousedown", (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const v = signalGraph.view;
+    if (!v) return; // can't pan when not zoomed (view is null)
+    signalGraph._dragStart = { clientX: e.clientX, view: { ...v } };
+    canvas.style.cursor = "grabbing";
+  });
+
+  window.addEventListener("mousemove", (e) => {
+    const ds = signalGraph._dragStart;
+    if (!ds) return;
+    const rect = canvas.getBoundingClientRect();
+    const dFrac = (ds.clientX - e.clientX) / rect.width;
+    const range = ds.view.maxStep - ds.view.minStep;
+    const samples = graphGetSamples();
+    if (samples.length < 2) return;
+    const allSteps = samples.map(s => s.runStep ?? s.step);
+    const dataMin = Math.min(...allSteps);
+    const dataMax = Math.max(...allSteps);
+    let newMin = ds.view.minStep + dFrac * range;
+    let newMax = ds.view.maxStep + dFrac * range;
+    if (newMin < dataMin) { newMin = dataMin; newMax = newMin + range; }
+    if (newMax > dataMax) { newMax = dataMax; newMin = newMax - range; }
+    signalGraph.view = { minStep: newMin, maxStep: newMax };
+    drawDigitalGraph();
+  });
+
+  window.addEventListener("mouseup", () => {
+    if (signalGraph._dragStart) {
+      signalGraph._dragStart = null;
+      _graphSetCursor();
+    }
+  });
+})();
 
 document.getElementById("graph-mem-refresh-btn").addEventListener("click", () => {
   graphRequestSnapshots();
@@ -1996,6 +2369,7 @@ fileInput.addEventListener("change", (e) => {
       const core = multiCoreMode
         ? document.getElementById("mc-load-core").value
         : currentCore;
+      graphClear();
       sendAction({ action: "load_elf", core, data: b64 });
       // Show loaded filename in source panel title
       const srcTitle = document.querySelector('#source-panel .panel-title');
@@ -2212,12 +2586,18 @@ function startRun() {
     // stays at the fast 1000.
     const capture = signalGraph.recording;
     const max_steps = 1000;
+    if (!canStartRunRequest(runRequestInFlight)) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const request_id = nextRunRequestId++;
+    let sent;
     if (multiCoreMode) {
-      sendAction({ action: "run_multicore", core: "pru0",
-                   partner: mcPartner, max_steps, capture });
+      sent = sendAction({ action: "run_multicore", core: "pru0",
+                          partner: mcPartner, max_steps, capture, request_id });
     } else {
-      sendAction({ action: "run", core: currentCore, max_steps, capture });
+      sent = sendAction({ action: "run", core: currentCore, max_steps, capture,
+                          request_id });
     }
+    runRequestInFlight = sent;
   }, 10);
 }
 
@@ -2275,6 +2655,124 @@ function handleGpiClick(pinIndex, pinEl) {
   const targetCore = multiCoreMode ? "pru0" : currentCore;
   sendAction({ action: "set_input", core: targetCore, pin: pinIndex, value: newVal });
 }
+
+// ---- GPIO Wires -----------------------------------------------------------
+
+const WIRE_CORES = ["pru0", "rtu0", "pru1"];
+
+function buildPinSelect(selectedPin, type) {
+  // type: "gpo" (0-19) or "gpi" (0-19)
+  const sel = document.createElement("select");
+  for (let i = 0; i < 20; i++) {
+    const opt = document.createElement("option");
+    opt.value = i;
+    opt.textContent = (type === "gpo" ? "GPO" : "GPI") + i;
+    if (i === selectedPin) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  return sel;
+}
+
+function buildCoreSelect(selectedCore) {
+  const sel = document.createElement("select");
+  WIRE_CORES.forEach(c => {
+    const opt = document.createElement("option");
+    opt.value = c;
+    opt.textContent = c.toUpperCase();
+    if (c === selectedCore) opt.selected = true;
+    sel.appendChild(opt);
+  });
+  return sel;
+}
+
+function renderWires(wires) {
+  const tbody = document.getElementById("wire-tbody");
+  const empty = document.getElementById("wire-empty");
+  if (!tbody) return;
+  tbody.innerHTML = "";
+  if (empty) empty.style.display = wires.length === 0 ? "" : "none";
+
+  wires.forEach(w => {
+    const tr = document.createElement("tr");
+    tr.className = "wire-row";
+
+    const srcCoreSel = buildCoreSelect(w.src_core);
+    const srcPinSel  = buildPinSelect(w.src_pin, "gpo");
+    const dstCoreSel = buildCoreSelect(w.dst_core);
+    const dstPinSel  = buildPinSelect(w.dst_pin, "gpi");
+    const rmBtn      = document.createElement("button");
+    rmBtn.className  = "wire-rm";
+    rmBtn.textContent = "×";
+
+    const onRemove = () =>
+      sendAction({ action: "remove_wire",
+        src_core: w.src_core, src_pin: w.src_pin,
+        dst_core: w.dst_core, dst_pin: w.dst_pin });
+
+    const onChangeWire = () => {
+      // Remove old wire, add new wire with updated selects
+      sendAction({ action: "remove_wire",
+        src_core: w.src_core, src_pin: w.src_pin,
+        dst_core: w.dst_core, dst_pin: w.dst_pin });
+      w.src_core = srcCoreSel.value;
+      w.src_pin  = parseInt(srcPinSel.value, 10);
+      w.dst_core = dstCoreSel.value;
+      w.dst_pin  = parseInt(dstPinSel.value, 10);
+      sendAction({ action: "add_wire",
+        src_core: w.src_core, src_pin: w.src_pin,
+        dst_core: w.dst_core, dst_pin: w.dst_pin });
+    };
+
+    srcCoreSel.addEventListener("change", onChangeWire);
+    srcPinSel.addEventListener("change", onChangeWire);
+    dstCoreSel.addEventListener("change", onChangeWire);
+    dstPinSel.addEventListener("change", onChangeWire);
+    rmBtn.addEventListener("click", onRemove);
+
+    [srcCoreSel, srcPinSel].forEach(el => {
+      const td = document.createElement("td"); td.appendChild(el); tr.appendChild(td);
+    });
+    const arrowTd = document.createElement("td");
+    arrowTd.className = "wire-arrow"; arrowTd.textContent = "→"; tr.appendChild(arrowTd);
+    [dstCoreSel, dstPinSel].forEach(el => {
+      const td = document.createElement("td"); td.appendChild(el); tr.appendChild(td);
+    });
+    const rmTd = document.createElement("td"); rmTd.appendChild(rmBtn); tr.appendChild(rmTd);
+    tbody.appendChild(tr);
+  });
+}
+
+document.getElementById("btn-add-wire").addEventListener("click", () => {
+  // Read existing wires directly from the rendered DOM rows — reliable regardless of async timing
+  const existingWires = [];
+  document.querySelectorAll("#wire-tbody .wire-row").forEach(tr => {
+    const sels = tr.querySelectorAll("select");
+    if (sels.length >= 4) {
+      existingWires.push({
+        src_core: sels[0].value,
+        src_pin:  parseInt(sels[1].value, 10),
+        dst_core: sels[2].value,
+        dst_pin:  parseInt(sels[3].value, 10),
+      });
+    }
+  });
+
+  const hasDup = (sc, sp, dc, dp) =>
+    existingWires.some(w => w.src_core === sc && w.src_pin === sp && w.dst_core === dc && w.dst_pin === dp);
+
+  // Try SSI defaults first, then scan for any non-duplicate
+  const preferred = [
+    { src_core: "pru0", src_pin: 0,  dst_core: "pru1", dst_pin: 16 },
+    { src_core: "pru1", src_pin: 0,  dst_core: "pru0", dst_pin: 8  },
+  ];
+  let wire = preferred.find(w => !hasDup(w.src_core, w.src_pin, w.dst_core, w.dst_pin));
+  if (!wire) {
+    for (let pin = 0; pin < 20 && !wire; pin++) {
+      if (!hasDup("pru0", pin, "pru1", pin)) wire = { src_core: "pru0", src_pin: pin, dst_core: "pru1", dst_pin: pin };
+    }
+  }
+  if (wire) sendAction({ action: "add_wire", ...wire });
+});
 
 // ---- Loopback strip -------------------------------------------------------
 
@@ -2379,6 +2877,20 @@ memAutoRefreshBox2.addEventListener("change", () => {
 btnMemRefresh2.addEventListener("click", refreshMemory2);
 memAddrInput2.addEventListener("keydown", (e) => { if (e.key === "Enter") refreshMemory2(); });
 memAddrInput2.addEventListener("change", refreshMemory2);
+
+// Region quick-jump selectors — set address and refresh
+document.getElementById("mem-region-sel").addEventListener("change", (e) => {
+  if (!e.target.value) return;
+  memAddrInput.value = e.target.value;
+  e.target.value = "";
+  refreshMemory();
+});
+document.getElementById("mem-region-sel-2").addEventListener("change", (e) => {
+  if (!e.target.value) return;
+  memAddrInput2.value = e.target.value;
+  e.target.value = "";
+  refreshMemory2();
+});
 
 document.getElementById("mem-fmt-group-2").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-fmt]");
@@ -3193,6 +3705,8 @@ function applyMCPartnerLabels() {
 
 mcPartnerSelect.addEventListener("change", () => {
   stopRun(); stopSim();
+  graphSetRecording(false);
+  graphClear();
   mcPartner = mcPartnerSelect.value;
   applyMCPartnerLabels();
   if (multiCoreMode) {
@@ -3211,6 +3725,8 @@ mcPartnerSelect.addEventListener("change", () => {
 function toggleMultiCore() {
   multiCoreMode = !multiCoreMode;
   stopRun(); stopSim();
+  graphSetRecording(false);
+  graphClear();
 
   if (multiCoreMode) {
     coreSelect.style.display = "none";
@@ -3386,6 +3902,10 @@ function updateMCUI(state) {
     document.getElementById("cnt-rtu-stalls").textContent = state.stall_cycles;
     document.getElementById("cnt-rtu-pc").textContent     = state.pc;
   }
+
+  // Signal graph: sample both cores in MC mode (covers SIM and step modes)
+  graphSample(state);
+  requestGraphDraw();
 
   memAutoOnStateChange();
 }
@@ -3756,6 +4276,66 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     });
 
     statusEl.textContent = "\u231B Arming...";
+    statusEl.style.color = "#888";
+    statusEl.style.display = "";
+  });
+})();
+
+// ---- SSI Encoder Inject panel -----------------------------------------------
+(function () {
+  const injBtn = document.getElementById("ssi-inj-btn");
+  if (!injBtn) { console.warn("SSI Inject: btn not found"); return; }
+
+  // Hex / Dec mode toggle
+  const modeHex = document.getElementById("ssi-inj-mode-hex");
+  const modeDec = document.getElementById("ssi-inj-mode-dec");
+  let ssiMode = "hex";
+  if (modeHex && modeDec) {
+    modeHex.addEventListener("click", () => {
+      ssiMode = "hex";
+      modeHex.classList.add("active");
+      modeDec.classList.remove("active");
+      document.getElementById("ssi-inj-value").placeholder = "Position (0-FFF)";
+    });
+    modeDec.addEventListener("click", () => {
+      ssiMode = "dec";
+      modeDec.classList.add("active");
+      modeHex.classList.remove("active");
+      document.getElementById("ssi-inj-value").placeholder = "Position (0-4095)";
+    });
+  }
+
+  injBtn.addEventListener("click", () => {
+    const statusEl = document.getElementById("ssi-inj-status");
+    const rawVal = document.getElementById("ssi-inj-value").value.trim();
+    const bits = parseInt(document.getElementById("ssi-inj-bits").value, 10) || 12;
+    const maxVal = (1 << bits) - 1;
+
+    let value;
+    try {
+      value = ssiMode === "hex" ? parseInt(rawVal, 16) : parseInt(rawVal, 10);
+    } catch (e) { value = NaN; }
+
+    if (isNaN(value) || value < 0 || value > maxVal) {
+      statusEl.textContent = "✗ Value must be 0–" + (ssiMode === "hex" ? maxVal.toString(16).toUpperCase() : maxVal) + " (" + bits + " bits)";
+      statusEl.style.color = "#f38ba8";
+      statusEl.style.display = "";
+      return;
+    }
+
+    const clkPin = parseInt(document.getElementById("ssi-inj-clk-pin").value, 10);
+    const dataPin = parseInt(document.getElementById("ssi-inj-data-pin").value, 10);
+
+    sendAction({
+      action: "ssi_inject",
+      core: currentCore,
+      clk_pin: clkPin,
+      data_pin: dataPin,
+      value: value,
+      bits: bits,
+    });
+
+    statusEl.textContent = "⏳ Arming...";
     statusEl.style.color = "#888";
     statusEl.style.display = "";
   });

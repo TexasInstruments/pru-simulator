@@ -164,8 +164,8 @@ def test_run_capture_samples_every_instruction_for_the_graph():
 
 
 def test_run_capture_decimates_in_gp_mode():
-    """GP-mode traces are firmware-paced, so capture keeps the old 100:1 stride
-    there. Sampling every instruction would shrink the window's time span 100x
+    """GP-mode traces are firmware-paced at a 10:1 stride.
+    Sampling every instruction would shrink the window's time span 10x
     and break the UART decoder's bit-period detection (Example 5 records a
     115200-baud frame, ~1736 core cycles per bit, over a Run)."""
     from pathlib import Path
@@ -184,8 +184,8 @@ def test_run_capture_decimates_in_gp_mode():
         cap = ws.receive_json()
         assert cap["type"] == "capture"
         assert cap["mode"] == "gpio"
-        assert len(cap["samples"]) == 10, "expected 1000 instructions / stride 100"
-        assert [s[0] for s in cap["samples"]] == [100 * i for i in range(1, 11)]
+        assert len(cap["samples"]) == 100, "expected 1000 instructions / stride 10"
+        assert [s[0] for s in cap["samples"]] == [10 * i for i in range(1, 101)]
         ws.receive_json()   # closing state push
 
         ws.send_json({"action": "gpcfg_write", "core": "pru0", "mux_sel": 0})

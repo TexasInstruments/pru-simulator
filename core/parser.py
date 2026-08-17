@@ -41,7 +41,7 @@ _EXPECTED_OPS: dict[str, int | tuple[int, ...]] = {
     "LOOP": 2,
     # Misc
     "ZERO": 2, "FILL": 2,
-    "WBS":  1, "WBC":  1, "SLP": 1,
+    "WBS":  2, "WBC":  2, "SLP": 1,
     "HALT": 0, "NOP":  0,
     # Register file indirect
     "MVIB": 2, "MVIW": 2, "MVID": 2,

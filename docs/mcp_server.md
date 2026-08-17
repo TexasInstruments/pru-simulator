@@ -69,6 +69,8 @@ print(mcp.pru_registers())           # {'r0': '0x0000002a', 'r1': '0x00000000', 
 | `pru_set_input` | `core="pru0"`, `pin: int`, `value: bool` | `{ok}` | Drive a GPI pin |
 | `pru_reset` | `core="pru0"` | `{ok}` | Reset core (PC=0, regs=0) |
 | `pru_breakpoint` | `core="pru0"`, `address: int` | `{id}` | Add a breakpoint |
+| `pru_uart_inject` | `source`, `payload`, `baudrate=4M`, `frames=1`, `core`, `pin`, `dram0_offset`, `max_steps` | `{status, frames_received, received_data, match}` | UART RX end-to-end test |
+| `pru_ssi_inject` | `source`, `value=0`, `bits=12`, `clk_pin=0`, `data_pin=8`, `core`, `dram0_offset=16`, `max_steps` | `{status, expected, captured, match, frames_captured, cycles}` | SSI encoder end-to-end test |
 | `pru_status` | — | `{cores: {name: {pc, cycles, halted}}}` | Snapshot all cores |
 
 ---

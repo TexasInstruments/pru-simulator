@@ -115,6 +115,11 @@ class PRUCore:
         if self.io_port.uart_generator is not None:
             self.io_port.uart_generator.tick(self.counters.cycles)
 
+        # Pre-tick: advance SSI encoder generator (edge-driven off the clock GPO)
+        # before instruction reads R31, so a same-instruction data sample is fresh
+        if self.io_port.ssi_generator is not None:
+            self.io_port.ssi_generator.tick(self.counters.cycles)
+
         instr = self.instructions[self.pc]
         branch_taken = False
 
@@ -463,9 +468,22 @@ class PRUCore:
             fill_data = bytes([0xFF] * length)
             self._write_registers_from_bytes(start_reg, fill_data, start_byte)
 
-        elif op in ("WBS", "WBC", "NOP"):
-            # Simplified: no-op
+        elif op == "NOP":
             pass
+
+        elif op in ("WBS", "WBC"):
+            # WBS/WBC are QBBS/QBBC with offset=0 (branch to self until bit changes).
+            # Real hardware: PRU sleeps until the pin matches. We model this by
+            # re-executing the same instruction (branch_taken=True, PC stays) until
+            # the bit condition is satisfied.
+            reg, bit = instr.operands
+            reg_val = self._read_operand(reg)
+            bit_val = self._read_operand(bit)
+            # WBS waits until bit is SET  (keep spinning while bit is CLEAR)
+            # WBC waits until bit is CLEAR (keep spinning while bit is SET)
+            should_spin = self._branch.qbbc(reg_val, bit_val) if op == "WBS" else self._branch.qbbs(reg_val, bit_val)
+            if should_spin:
+                branch_taken = True  # PC does not advance — re-execute next cycle
 
         # Unknown opcodes are silently ignored (or could raise)
         # else: pass

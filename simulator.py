@@ -94,6 +94,7 @@ class Simulator:
             "pru1": PRUCore("PRU1", self.memory, self.xfr, io_pru1, self.constant_table,
                             dram_swap=True),
         }
+        self._gpio_wires: list[dict] = []
 
         # Wire SD filters to each core's IOPort (PRU1 runs on its own clock)
         dev = self._get_device_config(config_path)
@@ -267,28 +268,41 @@ class Simulator:
         After each lead instruction, *follow* is stepped until its perif
         clock trails lead's by at most *guard_ns* — follow never leads, so
         an RX on follow only samples line history a TX on lead has already
-        recorded. Falls back to 1:1 instruction interleave when either
-        core has no perif block (e.g. rtu0).
+        recorded.
+
+        When perif is not active on either core (GPIO/SSI mode), falls back
+        to instruction-count pacing: after each lead step, follow is stepped
+        until its total instruction count equals the lead's. This keeps the
+        two cores in approximate lockstep so GPIO edge polling sees changes.
         """
         lead_pru = self._get_core(lead)
         follow_pru = self._get_core(follow)
         lead_perif = self._perif.get(lead)
         follow_perif = self._perif.get(follow)
-        paced = lead_perif is not None and follow_perif is not None
+        perif_active = (
+            lead_perif is not None and follow_perif is not None
+            and lead_perif.enabled and follow_perif.enabled
+        )
         for _ in range(count):
             if not lead_pru.halted and lead_pru.pc < len(lead_pru.instructions):
                 lead_pru.step()
-            if not paced:
-                if not follow_pru.halted and follow_pru.pc < len(follow_pru.instructions):
+            if perif_active:
+                target = lead_perif._now_ns - guard_ns
+                safety = 1000
+                while (follow_perif._now_ns < target and safety > 0
+                       and not follow_pru.halted
+                       and follow_pru.pc < len(follow_pru.instructions)):
                     follow_pru.step()
-                continue
-            target = lead_perif._now_ns - guard_ns
-            safety = 1000
-            while (follow_perif._now_ns < target and safety > 0
-                   and not follow_pru.halted
-                   and follow_pru.pc < len(follow_pru.instructions)):
-                follow_pru.step()
-                safety -= 1
+                    safety -= 1
+            else:
+                target_ic = lead_pru.counters.instruction_count
+                safety = 1000
+                while (follow_pru.counters.instruction_count < target_ic
+                       and safety > 0
+                       and not follow_pru.halted
+                       and follow_pru.pc < len(follow_pru.instructions)):
+                    follow_pru.step()
+                    safety -= 1
 
     def registers(self, core: str) -> list[int]:
         """Return the 32 general-purpose register values for *core*."""
@@ -320,6 +334,49 @@ class Simulator:
     def set_loopback(self, core: str, group: int, enabled: bool) -> None:
         """Enable/disable GPO→GPI loopback for a 4-bit *group* (0–4) on *core*."""
         self._get_core(core).io_port.set_loopback_group(group, enabled)
+
+    def add_gpio_wire(self, src_core: str, src_pin: int,
+                      dst_core: str, dst_pin: int) -> None:
+        """Add a GPIO wire from a source GPO pin to a destination GPI pin."""
+        for wire in self._gpio_wires:
+            if (wire["src_core"] == src_core and wire["src_pin"] == src_pin
+                    and wire["dst_core"] == dst_core and wire["dst_pin"] == dst_pin):
+                return
+        dst_io = self._get_core(dst_core).io_port
+        callback = lambda gpo, sp=src_pin, dp=dst_pin, d=dst_io: d.set_gpi_pin(
+            dp, (gpo >> sp) & 1
+        )
+        self._get_core(src_core).io_port.add_wire_callback(callback)
+        callback(self._get_core(src_core).io_port.gpo)
+        self._gpio_wires.append({
+            "src_core": src_core,
+            "src_pin": src_pin,
+            "dst_core": dst_core,
+            "dst_pin": dst_pin,
+            "_cb": callback,
+        })
+
+    def remove_gpio_wire(self, src_core: str, src_pin: int,
+                         dst_core: str, dst_pin: int) -> None:
+        """Remove a previously registered GPIO wire."""
+        for index, wire in enumerate(self._gpio_wires):
+            if (wire["src_core"] == src_core and wire["src_pin"] == src_pin
+                    and wire["dst_core"] == dst_core and wire["dst_pin"] == dst_pin):
+                self._get_core(src_core).io_port.remove_wire_callback(wire["_cb"])
+                del self._gpio_wires[index]
+                return
+
+    def list_gpio_wires(self) -> list[dict]:
+        """Return GPIO wires without their internal callback objects."""
+        return [
+            {
+                "src_core": wire["src_core"],
+                "src_pin": wire["src_pin"],
+                "dst_core": wire["dst_core"],
+                "dst_pin": wire["dst_pin"],
+            }
+            for wire in self._gpio_wires
+        ]
 
     def sd_state(self, core: str) -> dict | None:
         """Return SD filter state for *core*, or None if no SD filter attached."""
@@ -435,6 +492,29 @@ class Simulator:
         gen.start(trigger_cycle=trigger_cycle)
         pru.io_port.uart_generator = gen
         pru.io_port.set_gpi_pin(pin, True)  # Set idle HIGH
+
+    def ssi_inject(
+        self,
+        core: str = "pru0",
+        clk_pin: int = 0,
+        data_pin: int = 8,
+        value: int = 0,
+        bits: int = 12,
+        msb_first: bool = True,
+    ) -> None:
+        """Attach an edge-driven SSI encoder generator to a PRU input."""
+        from pru_io.ssi_encoder_generator import SSIEncoderGenerator
+
+        pru = self._get_core(core)
+        generator = SSIEncoderGenerator(
+            clk_pin=clk_pin,
+            data_pin=data_pin,
+            value=value,
+            bits=bits,
+            msb_first=msb_first,
+        )
+        generator.attach(pru.io_port)
+        pru.io_port.ssi_generator = generator
 
     def status(self) -> dict:
         """Return a status snapshot for all cores.

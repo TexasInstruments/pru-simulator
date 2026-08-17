@@ -255,7 +255,59 @@ The result is read back via XIN into R26 (low 32 bits) and R27 (high 32 bits).
 
 ---
 
-## Example 7 — MVI GPIO Loopback (`mvi_gpio_loopback.asm`)
+## Example 7 — SSI Absolute Encoder Reader (`source/ssi_reader_4mhz_12bit/ssi_reader_4mhz_12bit.asm`)
+
+**What it does:** Clocks a 12-bit absolute encoder at 4 MHz using the SSI
+(Synchronous Serial Interface) protocol and captures the position word to
+DRAM0 offset 16. The IO panel's **SSI Encoder Inject** section provides the
+encoder stimulus — type a position and inject it, exactly like the UART RX
+inject feature.
+
+**Protocol**: CLK idles HIGH; first falling edge = frame start; 12 rising
+edges shift the encoder's data out MSB-first; master samples DATA during the
+high phase; CLK returns HIGH for the inter-frame monoflop timeout.
+
+**Steps:**
+
+1. Open **Project** in the Editor panel and select `source/ssi_reader_4mhz_12bit/`.
+2. Click **Load & Assemble**. 19 instructions appear in the Source panel.
+3. Open the **IO** panel. Scroll down to **SSI Encoder Inject**.
+4. Enter a hex position value (e.g. `ABC`). Verify CLK = GPO0, DATA = GPI8, Bits = 12.
+5. Click **▶ Inject**. Status shows: `✓ Armed: position 0xabc (12-bit) · CLK=GPO0 DATA=GPI8 · run to capture`.
+6. Click **Run** in the toolbar.
+7. Open the **Memory** panel. Set address to `0x0010` (DRAM0 offset 16). The
+   captured word `0x00000ABC` appears and updates on each new frame.
+
+**What to observe:**
+- R30 bit 0 in the Registers panel shows the SSI clock toggling.
+- R31 bit 8 shows the data line driven by the injector.
+- R2 accumulates the captured bits during the frame; R20 increments per frame.
+- With the Signal Graph armed, the CLK and DATA waveforms show the SSI frame.
+
+**To change the injected position:**
+- Click **Reset**, enter a new value in the **SSI Encoder Inject** panel, click **Inject**, then **Run**.
+- You can also call `sim.ssi_generator.set_value(new_value)` from Python to update the position mid-run.
+
+**MCP tool for automated testing:**
+```python
+from mcp_server.server import PRUSimulatorMCP
+mcp = PRUSimulatorMCP()
+with open("source/ssi_reader_4mhz_12bit/ssi_reader_4mhz_12bit.asm") as f:
+    asm = f.read()
+result = mcp.pru_ssi_inject(source=asm, value=0xABC, bits=12, dram0_offset=16)
+print(result)  # {"match": True, "captured_hex": "0xabc", "cycles": 834, ...}
+```
+
+**Timing at 300 MHz:** each bit takes ~75 cycles (250 ns) → **4.0 MHz SSI clock**.
+One 12-bit data portion takes about 900 cycles (~3.0 µs), followed by the
+inter-frame monoflop pause.
+
+See `docs/handoff/2026-08-17-encoder-ssi-testing.md` for simulator-side
+validation notes and the parent-workspace integration boundary.
+
+---
+
+## Example 8 — MVI GPIO Loopback (`mvi_gpio_loopback.asm`)
 
 **What it does:** Drives a walking-bit pattern on GPO (R30.b0) via MVIB register-file indirect, then reads the looped-back value from GPI (R31.b0) into a capture buffer. Demonstrates MVIB addressing and the IO panel's loopback feature.
 
@@ -374,6 +426,14 @@ register forever — a running LED across the expander's 8 physical pins.
 
 The Signal Graph panel records GPO/GPI pin states and optional memory addresses over time.
 
+The initial view shows the full buffered capture. Digital lanes use
+transition-preserving rendering, so narrow SSI clock/data activity remains
+visible even when several transitions fall within one pixel. The graph reports
+cycles per pixel and warns when an active run is narrower than the current
+resolution. Use **Fit frame** to frame the newest complete SSI frame manually;
+the view is never changed automatically. Mouse-wheel zoom, drag pan, and
+double-click reset remain available.
+
 **To record a running_led trace:**
 
 1. Load `running_led.asm` and click Reset.
@@ -405,7 +465,7 @@ samples the graph inside that loop:
 | mode | rate | buffer |
 |---|---|---|
 | Peripheral | every instruction — a channel-0 bit at the `N=2` divider is only 2 core cycles wide | single-shot: fills the window once, then REC switches itself off |
-| GP / SD | every 100th instruction — GP traces are firmware-paced (a 115200-baud bit-bang bit is ~1736 cycles) | rolling |
+| GP / SD | every 10th instruction — enough resolution for 4 MHz SSI while preserving a useful time span | rolling |
 
 So for a peripheral capture: arm **REC**, click **Run**, and the trace freezes
 when the window is full. Pick the window size (128…8192) to set how many

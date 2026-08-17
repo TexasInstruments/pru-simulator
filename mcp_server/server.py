@@ -143,6 +143,58 @@ class PRUSimulatorMCP:
             "error_flag": err_data[0],
         }
 
+    def pru_ssi_inject(
+        self,
+        source: str,
+        value: int = 0,
+        bits: int = 12,
+        clk_pin: int = 0,
+        data_pin: int = 8,
+        core: str = "pru0",
+        dram0_offset: int = 16,
+        max_steps: int = 20_000,
+    ) -> dict:
+        """Inject an SSI encoder reading into a PRU reader and verify capture.
+
+        Loads assembly source, attaches an SSIEncoderGenerator that emulates an
+        absolute encoder (straight binary, MSB-first) on the reader's data-in
+        pin, runs the reader, and reads back the captured word.
+
+        The reader firmware convention stores the captured word to DRAM0 offset
+        16 (4 bytes, little-endian) and keeps a frame counter in R20. *value*
+        is the position the encoder presents; *bits* its width.
+        """
+        self.sim.reset(core)
+        errors = self.sim.load(core, source)
+        if errors:
+            return {"status": "error", "errors": errors}
+
+        self.sim.memory.write(dram0_offset, bytes(4))
+        self.sim.ssi_inject(
+            core=core,
+            clk_pin=clk_pin,
+            data_pin=data_pin,
+            value=value,
+            bits=bits,
+        )
+        self.sim.step(core, count=max_steps)
+
+        raw = self.sim.memory_read(dram0_offset, 4)
+        captured = int.from_bytes(raw, "little") & ((1 << bits) - 1)
+        pru = self.sim.cores[core]
+        frames_captured = pru.registers.read_full(20)
+        expected = value & ((1 << bits) - 1)
+        return {
+            "status": "success",
+            "expected": expected,
+            "expected_hex": f"0x{expected:03x}",
+            "captured": captured,
+            "captured_hex": f"0x{captured:03x}",
+            "match": captured == expected,
+            "frames_captured": frames_captured,
+            "cycles": pru.counters.cycles,
+        }
+
     def pru_status(self) -> dict:
         """Return a status snapshot for all cores."""
         return {"cores": self.sim.status()}
@@ -204,7 +256,13 @@ def run_stdio_server():
             method = getattr(mcp_wrapper, name, None)
             if method is None:
                 raise ValueError(f"Unknown tool: {name}")
-            result = method(**arguments)
+            # Claude Code may wrap arguments as {"kwargs": "<json-string>"}.
+            # Unwrap that form so individual parameters reach the method.
+            if list(arguments.keys()) == ["kwargs"]:
+                real_args = json.loads(arguments["kwargs"])
+            else:
+                real_args = arguments
+            result = method(**real_args)
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         async def main():

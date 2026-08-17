@@ -462,6 +462,7 @@ async def websocket_endpoint(websocket: WebSocket):
             elif action == "run":
                 max_steps = int(msg.get("max_steps", 1000))
                 capture = bool(msg.get("capture", False))
+                request_id = msg.get("request_id")
                 pru = sim.cores[core]
                 at_breakpoint = False
                 samples = []
@@ -471,7 +472,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         pru.step()
                         steps += 1
                         if capture and _capture_due(pru, steps):
-                            samples.append(_capture_sample(pru))
+                            samples.append(_capture_sample(pru, run_step=pru.counters.instruction_count))
                         if pru.pc in pru.breakpoints:
                             at_breakpoint = True
                             break
@@ -481,22 +482,56 @@ async def websocket_endpoint(websocket: WebSocket):
                     await _send_capture(websocket, core, samples)
                 await _send_state(websocket, core, at_breakpoint=at_breakpoint,
                                   captured=capture)
+                if request_id is not None:
+                    await websocket.send_json({"type": "run_done", "request_id": request_id})
             elif action == "run_multicore":
                 max_steps = int(msg.get("max_steps", 1000))
                 capture = bool(msg.get("capture", False))
+                request_id = msg.get("request_id")
                 partner = msg.get("partner", "pru1")
                 lead_pru = sim.cores[core]
                 partner_pru = sim.cores[partner]
                 lead_bp = partner_bp = False
                 samples = []
+                partner_samples = []
+                sync_error = _multicore_sync_error(core, partner)
+                if sync_error:
+                    error = {
+                        "type": "error",
+                        "code": "multicore_sync",
+                        "errors": [sync_error],
+                    }
+                    if request_id is not None:
+                        error["request_id"] = request_id
+                    await websocket.send_json(error)
+                    if request_id is not None:
+                        await websocket.send_json({"type": "run_done", "request_id": request_id})
+                    continue
                 try:
                     steps = 0
                     while (steps < max_steps and not lead_pru.halted
                            and lead_pru.pc < len(lead_pru.instructions)):
                         sim.step_paced(core, partner, 1)
                         steps += 1
+                        sync_error = _multicore_step_sync_error(core, partner)
+                        if sync_error:
+                            error = {
+                                "type": "error",
+                                "code": "multicore_sync",
+                                "errors": [sync_error],
+                            }
+                            if request_id is not None:
+                                error["request_id"] = request_id
+                            await websocket.send_json(error)
+                            break
+                        # ``steps`` is local to this websocket request.  Use the
+                        # lead's absolute instruction count so the browser's
+                        # horizontal axis remains monotonic across Run chunks.
+                        run_step = lead_pru.counters.instruction_count
                         if capture and _capture_due(lead_pru, steps):
-                            samples.append(_capture_sample(lead_pru))
+                            samples.append(_capture_sample(lead_pru, run_step=run_step))
+                        if capture and _capture_due(partner_pru, steps):
+                            partner_samples.append(_capture_sample(partner_pru, run_step=run_step))
                         if lead_pru.pc in lead_pru.breakpoints:
                             lead_bp = True
                             break
@@ -505,12 +540,20 @@ async def websocket_endpoint(websocket: WebSocket):
                             break
                 except ValueError as ve:
                     await websocket.send_json({"type": "error", "errors": [str(ve)]})
+                if sync_error:
+                    if request_id is not None:
+                        await websocket.send_json({"type": "run_done", "request_id": request_id})
+                    continue
                 if samples:
                     await _send_capture(websocket, core, samples)
+                if partner_samples:
+                    await _send_capture(websocket, partner, partner_samples)
                 await _send_state(websocket, core, at_breakpoint=lead_bp,
                                   captured=capture)
                 await _send_state(websocket, partner, at_breakpoint=partner_bp,
                                   captured=capture)
+                if request_id is not None:
+                    await websocket.send_json({"type": "run_done", "request_id": request_id})
             elif action == "set_sd_modulator":
                 ch = int(msg.get("channel", 0))
                 params = msg.get("params", {})
@@ -523,6 +566,16 @@ async def websocket_endpoint(websocket: WebSocket):
                 await _send_state(websocket, core)
             elif action == "set_loopback":
                 sim.set_loopback(core, int(msg["group"]), bool(msg["enabled"]))
+            elif action == "add_wire":
+                sim.add_gpio_wire(msg["src_core"], int(msg["src_pin"]),
+                                  msg["dst_core"], int(msg["dst_pin"]))
+                await websocket.send_text(json.dumps({"type": "wires", "wires": sim.list_gpio_wires()}))
+            elif action == "remove_wire":
+                sim.remove_gpio_wire(msg["src_core"], int(msg["src_pin"]),
+                                     msg["dst_core"], int(msg["dst_pin"]))
+                await websocket.send_text(json.dumps({"type": "wires", "wires": sim.list_gpio_wires()}))
+            elif action == "get_wires":
+                await websocket.send_text(json.dumps({"type": "wires", "wires": sim.list_gpio_wires()}))
             elif action == "gpcfg_write":
                 sim.gpcfg_write(core, int(msg.get("mux_sel", 0)))
                 await _send_state(websocket, core)
@@ -568,6 +621,26 @@ async def websocket_endpoint(websocket: WebSocket):
                     "trigger_cycle": trigger_cycle,
                     "payload_len": len(payload),
                     "frames": frames,
+                }))
+            elif action == "ssi_inject":
+                clk_pin = int(msg.get("clk_pin", 0))
+                data_pin = int(msg.get("data_pin", 8))
+                value = int(msg.get("value", 0), 16) if isinstance(msg.get("value", 0), str) else int(msg.get("value", 0))
+                bits = int(msg.get("bits", 12))
+                sim.ssi_inject(
+                    core=core,
+                    clk_pin=clk_pin,
+                    data_pin=data_pin,
+                    value=value,
+                    bits=bits,
+                )
+                await websocket.send_text(json.dumps({
+                    "type": "ssi_inject_ok",
+                    "value": value,
+                    "value_hex": f"0x{value:03x}",
+                    "bits": bits,
+                    "clk_pin": clk_pin,
+                    "data_pin": data_pin,
                 }))
     except Exception as e:
         import traceback
@@ -622,14 +695,72 @@ def _io_mode(core, sd_data=None, perif_data=None, mux_sel=None) -> str:
     return "gpio"
 
 
+# ``step_paced`` permits a small peripheral-clock lead/lag while it catches the
+# follower up.  Larger differences mean one core can remain frozen while the
+# other continues, which produces a misleading multi-core graph.
+MULTICORE_PERIF_SYNC_TOLERANCE_NS = 20.0
+
+
+def _multicore_sync_error(core: str, partner: str) -> str | None:
+    """Return a clear preflight error when the two run timelines are unsafe."""
+    lead = sim.cores[core]
+    follow = sim.cores[partner]
+    if lead.halted != follow.halted:
+        return f"Multi-core run stopped: {core} and {partner} have different halt states; reset both cores."
+
+    lead_mode = _io_mode(core)
+    follow_mode = _io_mode(partner)
+    if lead_mode == "perif" or follow_mode == "perif":
+        if lead_mode != follow_mode:
+            return f"Multi-core run stopped: {core}={lead_mode} and {partner}={follow_mode}; both cores must use the same peripheral mode."
+        lead_time = sim._perif[core]._now_ns
+        follow_time = sim._perif[partner]._now_ns
+        if abs(lead_time - follow_time) > MULTICORE_PERIF_SYNC_TOLERANCE_NS:
+            return f"Multi-core run stopped: peripheral clocks differ by {abs(lead_time - follow_time):.1f} ns; reset both cores."
+        return None
+
+    if lead.counters.instruction_count != follow.counters.instruction_count:
+        return f"Multi-core run stopped: instruction counts differ ({core}={lead.counters.instruction_count}, {partner}={follow.counters.instruction_count}); reset both cores."
+    return None
+
+
+def _multicore_step_sync_error(core: str, partner: str) -> str | None:
+    """Check synchronization using only state that can change during a step.
+
+    The full preflight helper serializes SD/peripheral state and is useful at
+    request boundaries, but doing that for every instruction makes a run
+    unnecessarily expensive.  Peripheral enablement and virtual time are the
+    only mode-specific values needed while stepping; GPIO/SSI only needs the
+    cheap counter check.
+    """
+    lead = sim.cores[core]
+    follow = sim.cores[partner]
+    if lead.halted != follow.halted:
+        return f"Multi-core run stopped: {core} and {partner} have different halt states; reset both cores."
+
+    lead_perif = sim._perif.get(core)
+    follow_perif = sim._perif.get(partner)
+    lead_enabled = bool(lead_perif and lead_perif.enabled)
+    follow_enabled = bool(follow_perif and follow_perif.enabled)
+    if lead_enabled or follow_enabled:
+        if lead_enabled != follow_enabled:
+            return f"Multi-core run stopped: {core} and {partner} have different peripheral enable states; both cores must use the same peripheral mode."
+        delta = abs(lead_perif._now_ns - follow_perif._now_ns)
+        if delta > MULTICORE_PERIF_SYNC_TOLERANCE_NS:
+            return f"Multi-core run stopped: peripheral clocks differ by {delta:.1f} ns; reset both cores."
+        return None
+
+    if lead.counters.instruction_count != follow.counters.instruction_count:
+        return f"Multi-core run stopped: instruction counts differ ({core}={lead.counters.instruction_count}, {partner}={follow.counters.instruction_count}); reset both cores."
+    return None
+
+
 # One Signal Graph sample per this many instructions, outside peripheral mode.
-# GP-mode traces are firmware-paced — a bit-banged 115200-baud UART bit is ~1736
-# core cycles — so sampling every instruction would buy nothing and shrink the
-# window's time span 100x, which is what the UART decoder's auto-detected bit
-# period needs. In peripheral mode the signals are hardware-paced instead (a
-# channel-0 bit at the N=2 divider is 2 core cycles), so that mode samples every
-# instruction; see the stride decision in the run loop.
-CAPTURE_STRIDE_GP = 100
+# SSI at 4 MHz / 300 MHz PRU = 75 cycles per half-bit.  With stride 10 we get
+# ~7-8 samples per half-bit — enough to see rising/falling edges clearly.
+# UART at 4 Mb/s = 75 cycles/bit so the bit period is still resolvable (7+ pts).
+# The previous value of 100 missed most SSI data transitions entirely.
+CAPTURE_STRIDE_GP = 10
 
 
 def _capture_due(c, steps: int) -> bool:
@@ -646,7 +777,7 @@ def _capture_due(c, steps: int) -> bool:
     return steps % CAPTURE_STRIDE_GP == 0
 
 
-def _capture_sample(c) -> list[int]:
+def _capture_sample(c, run_step: int = 0) -> list[int]:
     """One Signal Graph sample, taken inside the run loop.
 
     Run executes up to `max_steps` instructions per websocket round-trip, so a
@@ -674,7 +805,7 @@ def _capture_sample(c) -> list[int]:
             if ch.tx_clk_pin:
                 clk_bits |= 1 << i
     return [c.counters.instruction_count, c.registers.read_full(30) & 0xFFFFF,
-            gpi_bits, out_bits, oe_bits, clk_bits]
+            gpi_bits, out_bits, oe_bits, clk_bits, run_step]
 
 
 async def _send_capture(ws, core, samples):
@@ -735,6 +866,7 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False):
         "spad": _read_spad(sim),
         "xfr_shift_en": sim.xfr.xfr_shift_en,
         "mac": _read_mac(c),
+        "wires": sim.list_gpio_wires(),
     }
     await ws.send_json(state)
 

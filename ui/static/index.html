@@ -439,6 +439,11 @@
       background: #252535;
       border-radius: 4px;
     }
+    .wire-row td { padding: 2px 3px; }
+    .wire-row select { font-size: 10px; background: #252535; color: #ccc; border: 1px solid #444; border-radius: 3px; padding: 1px 2px; }
+    .wire-row .wire-arrow { color: #888; text-align: center; }
+    .wire-row .wire-rm { background: #3a2020; color: #f88; border: 1px solid #5a3030; border-radius: 3px; font-size: 10px; padding: 1px 6px; cursor: pointer; }
+    .wire-row .wire-rm:hover { background: #5a2020; }
     .lb-label {
       font-size: 10px;
       color: #888;
@@ -742,7 +747,7 @@
 
     .graph-resize-handle:hover { background: linear-gradient(to bottom, transparent, #555); }
 
-    #signal-graph-canvas { width: 100%; height: 100%; display: block; }
+    #signal-graph-canvas { width: 100%; height: 100%; display: block; cursor: crosshair; }
 
     .graph-rec-dot {
       position: absolute;
@@ -1463,6 +1468,12 @@ Example:
       <!-- Memory panel 1 -->
       <div class="panel" id="memory-panel">
         <div id="memory-controls" data-panel-id="memory1">
+          <select id="mem-region-sel" title="Jump to a known memory region" style="background:var(--btn);color:var(--text);border:1px solid var(--border);padding:2px 4px;border-radius:3px;font-family:inherit;font-size:11px;">
+            <option value="">Region…</option>
+            <option value="0x00000000">PRU0 DRAM</option>
+            <option value="0x00002000">PRU1 DRAM</option>
+            <option value="0x00010000">Shared RAM</option>
+          </select>
           <label>Address:</label>
           <input type="text" id="mem-addr-input" list="mem-region-list" value="0x00000000" />
           <datalist id="mem-region-list"></datalist>
@@ -1491,6 +1502,12 @@ Example:
       <!-- Memory panel 2 (defaults to Shared RAM 0x00010000) -->
       <div class="panel" id="memory-panel-2">
         <div id="memory-controls-2" data-panel-id="memory2">
+          <select id="mem-region-sel-2" title="Jump to a known memory region" style="background:var(--btn);color:var(--text);border:1px solid var(--border);padding:2px 4px;border-radius:3px;font-family:inherit;font-size:11px;">
+            <option value="">Region…</option>
+            <option value="0x00000000">PRU0 DRAM</option>
+            <option value="0x00002000">PRU1 DRAM</option>
+            <option value="0x00010000">Shared RAM</option>
+          </select>
           <label>Address:</label>
           <input type="text" id="mem-addr-input-2" list="mem-region-list-2" value="0x00010000" />
           <datalist id="mem-region-list-2"></datalist>
@@ -1637,6 +1654,38 @@ Example:
             <div id="uart-inj-status" class="uart-hint" style="display:none;"></div>
           </div>
 
+          <hr class="uart-divider" />
+          <div class="io-section" id="ssi-inject">
+            <div class="io-section-title">SSI Encoder Inject</div>
+            <!-- Row 1: Mode toggle + value input -->
+            <div class="uart-controls" style="margin-bottom:5px;">
+              <div class="uart-inject-mode-toggle">
+                <button id="ssi-inj-mode-hex" class="uart-inj-mode active">Hex</button>
+                <button id="ssi-inj-mode-dec" class="uart-inj-mode">Dec</button>
+              </div>
+              <input type="text" id="ssi-inj-value" class="uart-inj-input" value="000" spellcheck="false" placeholder="Position (0-FFF)" />
+            </div>
+            <!-- Row 2: CLK pin, DATA pin, Bits, Inject button -->
+            <div class="uart-controls">
+              <span class="uart-label">CLK:</span>
+              <select id="ssi-inj-clk-pin" class="uart-inj-select">
+                <option value="0">GPO0</option>
+                <option value="1">GPO1</option>
+              </select>
+              <span class="uart-label">DATA:</span>
+              <select id="ssi-inj-data-pin" class="uart-inj-select">
+                <option value="8" selected>GPI8</option>
+                <option value="9">GPI9</option>
+                <option value="0">GPI0</option>
+              </select>
+              <span class="uart-label">Bits:</span>
+              <input type="text" id="ssi-inj-bits" class="uart-inj-num" style="width:28px;text-align:center;" value="12" />
+              <button id="ssi-inj-btn" class="graph-btn" style="color:var(--accent);border-color:#3a5a8a;margin-left:auto;">&#9654; Inject</button>
+            </div>
+            <!-- Status line -->
+            <div id="ssi-inj-status" class="uart-hint" style="display:none;"></div>
+          </div>
+
         </div>
       </div>
 
@@ -1657,6 +1706,7 @@ Example:
             </select>
             <button id="graph-rec-btn" class="graph-btn">● REC</button>
             <button id="graph-clear-btn" class="graph-btn">Clear</button>
+            <button id="graph-fit-frame-btn" class="graph-btn" title="Fit newest complete SSI frame">Fit frame</button>
             <button id="graph-taller-btn" class="graph-btn" title="Taller">▲</button>
             <button id="graph-shorter-btn" class="graph-btn" title="Shorter">▼</button>
           </div>
@@ -1947,6 +1997,6 @@ Example:
   </div>
 
   <script src="/static/layout.js"></script>
-  <script src="/static/app.js?v=20260729"></script>
+  <script src="/static/app.js?v=20260816"></script>
 </body>
 </html>
