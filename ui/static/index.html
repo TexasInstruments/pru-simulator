@@ -444,6 +444,10 @@
     .wire-row .wire-arrow { color: #888; text-align: center; }
     .wire-row .wire-rm { background: #3a2020; color: #f88; border: 1px solid #5a3030; border-radius: 3px; font-size: 10px; padding: 1px 6px; cursor: pointer; }
     .wire-row .wire-rm:hover { background: #5a2020; }
+    .wire-table { width: 100%; border-collapse: collapse; }
+    .wire-empty { font-size: 10px; color: var(--text-dim); margin-top: 3px; }
+    .wire-title-row { display: flex; align-items: center; justify-content: space-between; }
+    .wire-add-btn { padding: 1px 6px; font-size: 10px; }
     .lb-label {
       font-size: 10px;
       color: #888;
@@ -1561,6 +1565,14 @@ Example:
           <div class="lb-strip" id="i2c-attach-strip">
             <span class="lb-label">I2C</span>
             <button class="lb-btn" id="i2c-attach-btn">Attach TCA9538 @ 0x23 (SCL=bit0, SDA=bit1)</button>
+          </div>
+          <div class="io-section" id="gpio-wires">
+            <div class="io-section-title wire-title-row">
+              <span>GPIO Wires (cross-core)</span>
+              <button id="btn-add-wire" class="graph-btn wire-add-btn">+ Add</button>
+            </div>
+            <div id="wire-empty" class="wire-empty">No cross-core wires configured</div>
+            <table class="wire-table"><tbody id="wire-tbody"></tbody></table>
           </div>
           <div class="io-section">
             <div class="io-section-title">GPI (R31) — Input (click to toggle)</div>
