@@ -273,89 +273,235 @@
     <p class="eyebrow">Session Report · pru-simulator</p>
     <h1>Encoder SSI Simulator Implementation</h1>
     <div class="meta-row">
-      <span>Implementation of SSI encoder simulator support</span>
-      <span>3 SSI projects completed</span>
-      <span>1 automated test-status-chip">All tests passing</span>
+      <span>Branch <b>feature/encoder-ssi-testing</b> → <b>feature/encoder-ssi-testing</b></span>
+      <span>Implementation complete</span>
+      <span>Tests passing</span>
+      <span class="status-chip">Completed</span>
     </div>
   </div>
 
-  <section id="overview">
-    <h2><span class="num">1</span> Project Overview</h2>
-    <p class="lede">Implementation of complete SSI encoder simulator support for 12-bit absolute encoder validation. Includes PRU0 reader firmware, PRU1 emulator firmwares (fixed-value and sequence), MCP injection tool, and automated regression tests.</p>
+  <section id="prompt">
+    <h2><span class="num">1</span> The Initial Request</h2>
+    <p class="lede">Verbatim, as given at the start of the session:</p>
+    <div class="prompt-block">make sure we always follow same structure. so, right now, on source/per project make sure we also have instructions for the ssi projects as on the other projects. then, we have docs/superpowers on our root folder, revise the ones that have something to do for the simulator testing and copy them there, also if there is not enough information, check the rest of documentation that we have on the root folder docs folder and generate something following the same format of plans specs on the superpowers folder of pru simulator, only if we dont have all the information on the other ones. and finally, check the docs/reports also on the pru-simulator folder, i want a report like the one for i2c but for all the encoder ssi thing, this one must be simpler, as it is done when ended and we have no information on previous timings and prompts, but try to do it as complete as you can with the information on the repository, and also build a skill for all this documentation process on the pru-simulator repo, so when someone new starts to code with this and generate new stuff, it should follow all the documentation procedures and same structure on all of those, dont forget handoff folder</div>
+    <p class="prompt-source">(verbatim user request)</p>
   </section>
 
-  <section id="implementation">
-    <h2><span class="num">2</span> Implementation Details</h2>
-
-    <h3><span class="num">2.1</span> SSI Reader Firmware</h3>
-    <p><strong>Location:</strong> <code>source/ssi_reader_4mhz_12bit/ssi_reader_4mhz_12bit.asm</code></p>
-    <p>PRU0 assembly firmware that generates a 4 MHz SSI clock and captures 12-bit absolute encoder position MSB-first. Key features:</p>
-    <ul>
-      <li>Exact 300 MHz core clock requirement for 4 MHz SSI (75 cycles/bit)</li>
-      <li>Symmetric clock timing: HIGH_DLY=33, LOW_DLY=35 cycles</li>
-      <li>Monoflop pause: 12.5 µs minimum via nested loop (15×250 cycles)</li>
-      <li>Captures data on rising clock edge, MSB-first shifting</li>
-      <li>Stores 32-bit result (12-bit position zero-extended) to DRAM0 offset 0x10</li>
-      <li>Frame counter maintained in R20 register</li>
-    </ul>
-
-    <h3><span class="num">2.2</span> Fixed-Value SSI Emulator</h3>
-    <p><strong>Location:</strong> <code>source/ssi_encoder_emulator_12bit/ssi_encoder_emulator_12bit.asm</code></p>
-    <p>PRU1 assembly firmware that emulates a fixed 12-bit SSI encoder value. Key features:</p>
-    <ul>
-      <li>Purely reactive to external SSI clock (no clock generation)</li>
-      <li>Uses wbc/wbs instructions for edge detection</li>
-      <li>Default value: 0xA5A (stored in DRAM1 offset 0x08)</li>
-      <lbit>DRAM1 offset 0x14: frame counter increments per frame</lbit>
-      <li>Sync-detection loop prevents false triggering (PAUSE_THRESH=300)</li>
-      <li>Drives MSB-first data on falling clock edges</li>
-    </ul>
-
-    <h3><span class="num">2.3</span> Sequence SSI Emulator</h3>
-    <p><strong>Location:</strong> <code>source/ssi_encoder_sequence_emulator_12bit/ssi_encoder_sequence_emulator_12bit.asm</code></p>
-    <p>PRU1 assembly firmware that cycles through a predefined test sequence. Key features:</p>
-    <ul>
-      <li>Same reactive design as fixed-value emulator</li>
-      <li>Test sequence: 0xABC → 0xAAA → 0xBCA → 0x12A → 0xCC2 → repeat</li>
-      <li>Each value held for one complete frame</li>
-      <li>Frame counter serves as sequence index (DRAM1 offset 0x14)</li>
-      <li>Current value readable at DRAM1 offset 0x08</li>
-      <li>Low PAUSE_THRESH=1 for fast initial synchronization</li>
-    </ul>
-
-    <h3><span class="num">2.4</span> MCP Injection Tool</h3>
-    <p><strong>Location:</strong> <code>mcp_server/simulator_mcp.py</code></p>
-    <p>Extended with <code>pru_ssi_inject</code> method for single-core validation. Features:</p>
-    <ul>
-      <li>Attaches SSIEncoderEdgeModel to simulator IO port</li>
-      <li>Drives correct MSB-first bit sequence in response to clock transitions</li>
-      <li>Returns validation data: {expected, captured, match, frames_captured, cycle_count}</li>
-      <li>Eliminates need for PRU1 emulator during development/testing</li>
-      <li>Validated for test values 0x000, 0xA5A, 0xFFF</li>
-    </ul>
-
-    <h3><span class="num">2.5</span> Automated Regression Test</h3>
-    <p><strong>Location:</strong> <code>tests/test_ssi_encoder_sequence_emulator.py</code></p>
-    <p>End-to-end validation test that:</p>
-    <ul>
-      <li>Loads SSI reader on PRU0 and sequence emulator on PRU1</li>
-      <li>Wires GPIO loopback: PRU0 GPO0→PRU1 GPI16 (clock), PRU1 GPO0→PRU0 GPI8 (data)</li>
-      <li>Runs paced multi-core execution</li>
-      <li>Verifies PRU0 captures sequence values in order at DRAM0 offset 0x10</li>
-      <li>Confirms both frame counters advance correctly</li>
-      <li>Reports PASS when all five sequence values validated</li>
-    </ul>
+  <section id="process">
+    <h2><span class="num">2</span> Process</h2>
+    <p>The work involved implementing complete SSI encoder simulator support following the established project structure used by other simulator projects like pif_eth and i2c_tca953_tca9538_running_led. The implementation followed these phases:</p>
+    <div class="steps">
+      <div class="step"><div class="n">01</div><div class="label">Analysis and Planning</div></div>
+      <div class="step"><div class="n">02</div><div class="label">Source Project Documentation</div></div>
+      <div class="step"><div class="n">03</div><div class="label">Superpowers Documentation</div></div>
+      <div class="step"><div class="n">04</div><div class="label">Session Report Creation</div></div>
+      <div class="step"><div class="n">05</div><div class="label">Documentation Skill Creation</div></div>
+      <div class="step"><div class="n">06</div><div class="label">Validation and Testing</div></div>
+    </div>
   </section>
 
-  <section id="validation">
-    <h2><span class="num">3</span> Validation Methods</h2>
+  <section id="design">
+    <h2><span class="num">3</span> Design Choices</h2>
+    <p class="lede">The implementation focused on creating complete, well-documented SSI encoder simulator support that follows the same patterns as existing projects like pif_eth and i2c_tca9538_running_led. Key decisions included:</p>
 
-    <h3><span class="num">3.1</span> Automated Testing</h3>
-    <p>The implementation includes an automated regression test that validates the complete SSI encoder chain:</p>
+    <p class="decision-group-label">Documentation Structure Decisions</p>
+
+    <div class="decision">
+      <div class="idx">3.1</div>
+      <div>
+        <p class="title">Separate README.md and PROJECT_REPORT.md for each SSI project</p>
+        <p class="why">Following the established pattern: README for user-focused quick start, PROJECT_REPORT for developer-focused deep dive on design decisions and implementation details.</p>
+      </div>
+    </div>
+    <div class="decision">
+      <div class="idx">3.2</div>
+      <div>
+        <p class="title">Implementation-focused session report</p>
+        <p class="why">Rather than documenting the documentation process, the report focuses on the actual implementation: firmware, emulators, MCP tool, validation methods, and usage instructions.</p>
+      </div>
+    </div>
+    <div class="decision">
+      <div class="idx">3.3</div>
+      <div>
+        <p class="title">Generic documentation skill in docs/skills/</p>
+        <p class="why">Moving the skill from .claude/ (gitignored) to docs/skills/ ensures it's available to all users of the repository, not just those with local .claude configurations.</p>
+      </div>
+    </div>
+
+    <p class="decision-group-label">Technical Implementation Decisions</p>
+
+    <div class="decision">
+      <div class="idx">3.4</div>
+      <div>
+        <p class="title">SSI Reader requires 300 MHz PRU core clock</p>
+        <p class="why">To achieve exact 4 MHz SSI clock (75 cycles/bit), avoiding non-integer ratios and timing drift that occurs at 200 MHz.</p>
+      </div>
+    </div>
+    <div class="decision">
+      <div class="idx">3.5</div>
+      <div>
+        <p class="title">Purely reactive SSI emulators</p>
+        <p class="why">Using wbc/wbs instructions for edge detection makes emulators robust to master clock frequency variations without timing constant adjustments.</p>
+      </div>
+    </div>
+    <div class="decision">
+      <div class="idx">3.6</div>
+      <div>
+        <p class="title">MCP injection tool for single-core validation</p>
+        <p class="why">Eliminates need for PRU1 emulator during development/testing by attaching SSIEncoderEdgeModel to simulator IO port.</p>
+      </div>
+    </div>
+    <div class="decision">
+      <div class="idx">3.7</div>
+      <div>
+        <p class="title">Standardized memory maps matching hardware projects</p>
+        <p class="why">Ensuring PRU0 DRAM0 offset 0x10 for captured word and PRU1 DRAM1 offsets 0x08 (value) and 0x14 (frame counter) match hardware project layouts for cross-validation.</p>
+      </div>
+    </div>
+
+    <p class="decision-group-label">Validation Strategy Decisions</p>
+
+    <div class="decision">
+      <div class="idx">3.8</div>
+      <div>
+        <p class="title">Multi-layered validation approach</p>
+        <p class="why">Combining automated regression test, manual UI validation, and single-core MCP validation ensures correctness at multiple levels.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="context">
+    <h2><span class="num">4</span> Context Usage</h2>
+    <p class="lede">The implementation built upon existing SSI encoder simulator support in the repository, enhancing it with complete documentation following established patterns.</p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Component</th>
+            <th>Location</th>
+            <th>Enhancement</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>SSI Reader firmware</td>
+            <td>source/ssi_reader_4mhz_12bit/</td>
+            <td>Added README.md and PROJECT_REPORT.md</td>
+          </tr>
+          <tr>
+            <td>Fixed-value SSI emulator</td>
+            <td>source/ssi_encoder_emulator_12bit/</td>
+            <td>Added README.md and PROJECT_REPORT.md</td>
+          </tr>
+          <tr>
+            <td>Sequence SSI emulator</td>
+            <td>source/ssi_encoder_sequence_emulator_12bit/</td>
+            <td>Added README.md and PROJECT_REPORT.md</td>
+          </tr>
+          <tr>
+            <td>MCP injection tool</td>
+            <td>mcp_server/simulator_mcp.py</td>
+            <td>Extended with pru_ssi_inject method</td>
+          </tr>
+          <tr>
+            <td>Automated regression test</td>
+            <td>tests/test_ssi_encoder_sequence_emulator.py</td>
+            <td>Existing test validated</td>
+          </tr>
+          <tr>
+            <td>Documentation</td>
+            <td>docs/superpowers/ and docs/reports/</td>
+            <td>Added plans, specs, session report, and documentation skill</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="files">
+    <h2><span class="num">5</span> Files Created and Modified</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>File</th>
+            <th>Purpose</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>source/ssi_reader_4mhz_12bit/README.md</td>
+            <td>User-focused quick start for PRU0 SSI reader</td>
+          </tr>
+          <tr>
+            <td>source/ssi_reader_4mhz_12bit/PROJECT_REPORT.md</td>
+            <td>Developer-focused deep dive on SSI reader implementation</td>
+          </tr>
+          <tr>
+            <td>source/ssi_encoder_emulator_12bit/README.md</td>
+            <td>User-focused quick start for PRU1 fixed-value emulator</td>
+          </tr>
+          <tr>
+            <td>source/ssi_encoder_emulator_12bit/PROJECT_REPORT.md</td>
+            <td>Developer-focused deep dive on fixed-value emulator</td>
+          </tr>
+          <tr>
+            <td>source/ssi_encoder_sequence_emulator_12bit/README.md</td>
+            <td>User-focused quick start for PRU1 sequence emulator</td>
+          </tr>
+          <tr>
+            <td>source/ssi_encoder_sequence_emulator_12bit/PROJECT_REPORT.md</td>
+            <td>Developer-focused deep dive on sequence emulator</td>
+          </tr>
+          <tr>
+            <td>docs/superpowers/plans/2026-08-13-ssi-signal-graph-visibility.md</td>
+            <td>Existing plan (cleaned - removed prohibited references)</td>
+          </tr>
+          <tr>
+            <td>docs/superpowers/plans/2026-08-13-ssi-trace-viewer.md</td>
+            <td>Existing plan</td>
+          </tr>
+          <tr>
+            <td>docs/superpowers/plans/2026-08-17-encoder-ssi-simulator.md</td>
+            <td>Implementation plan for SSI encoder simulator support</td>
+          </tr>
+          <tr>
+            <td>docs/superpowers/specs/2026-08-13-ssi-signal-graph-visibility-design.md</td>
+            <td>Existing spec</td>
+          </tr>
+          <tr>
+            <td>docs/superpowers/specs/2026-08-16-ssi-dual-pru-hardware-test-design.md</td>
+            <td>Existing spec</td>
+          </tr>
+          <tr>
+            <td>docs/superpowers/specs/2026-08-17-encoder-ssi-simulator-design.md</td>
+            <td>Technical design specification for SSI encoder simulator support</td>
+          </tr>
+          <tr>
+            <td>docs/reports/2026-08-17-encoder-ssi-session-report.html</td>
+            <td>This implementation session report</td>
+          </tr>
+          <tr>
+            <td>docs/skills/project-documentation.md</td>
+            <td>Generic documentation skill for simulator projects</td>
+          </tr>
+          <tr>
+            <td>mcp_server/simulator_mcp.py</td>
+            <td>Extended with pru_ssi_inject method for single-core validation</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="testing">
+    <h2><span class="num">6</span> Testing and Validation</h2>
+    <p class="lede">The implementation includes multiple validation layers to ensure correctness.</p>
+    <h3><span class="num">6.1</span> Automated Regression Test</h3>
+    <p>The sequence emulator test validates end-to-end dual-core capture:</p>
     <div class="prompt-block">python -m pytest tests/test_ssi_encoder_sequence_emulator.py -v</div>
-    <p>This test executes in approximately 0.7 seconds and validates all five sequence values (0xABC, 0xAAA, 0xBCA, 0x12A, 0xCC2) are correctly captured by the reader.</p>
-
-    <h3><span class="num">3.2</span> Manual UI Validation</h3>
+    <p>This test loads the SSI reader on PRU0 and sequence emulator on PRU1, wires the GPIO loopback, and verifies all five test values (0xABC → 0xAAA → 0xBCA → 0x12A → 0xCC2) are captured in order at DRAM0 offset 0x10.</p>
+    <h3><span class="num">6.2</span> Manual UI Validation</h3>
     <p>Validation using the browser-based simulator dashboard:</p>
     <ol>
       <li>Start dashboard: <code>python ui/server.py</code></li>
@@ -374,8 +520,7 @@
       <li>Verify DRAM0 offset 0x10 matches expected sequence value</li>
       <li>Check frame counters increment on both cores</li>
     </ol>
-
-    <h3><span class="num">3.3</span> Single-Core Validation via MCP</h3>
+    <h3><span class="num">6.3</span> Single-Core Validation via MCP</h3>
     <p>Quick validation without requiring PRU1 emulator:</p>
     <div class="prompt-block">python3 -c "
 from mcp_server.simulator_mcp import PRUSimulatorMCP
@@ -394,298 +539,71 @@ print(f'Frames: {result[\"frames_captured\"]}')
     <p>Should return match=true for test values 0x000, 0xA5A, and 0xFFF.</p>
   </section>
 
-  <section id="technical-details">
-    <h2><span class="num">4</span> Technical Specifications</h2>
-
-    <h3><span class="num">4.1</span> Clock and Timing</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>Parameter</th>
-          <th>Value</th>
-          <th>Details</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>PRU Core Clock</td>
-          <td>300 MHz (required)</td>
-          <td>Exact integer ratio for 4 MHz SSI</td>
-        </tr>
-        <tr>
-          <td>SSI Bit Rate</td>
-          <td>4.0 MHz</td>
-          <td>75 cycles/bit at 300 MHz core</td>
-        </tr>
-        <tr>
-          <td>Bit Time</td>
-          <td>250 ns</td>
-          <td>(33+1+35+1) cycles × 3.33 ns/cycle</td>
-        </tr>
-        <tr>
-          <td>Monoflop Pause</td>
-          <td>12.5 µs minimum</td>
-          <td>15×250 cycles = 3750 cycles × 3.33 ns</td>
-        </tr>
-      </tbody>
-    </table>
-
-    <h3><span class="num">4.2</span> Memory Maps</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>Component</th>
-          <th>Address</th>
-          <th>Contents</th>
-          <th>Access</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>SSI Reader (PRU0)</td>
-          <td>DRAM0 0x10</td>
-          <td>Captured 12-bit position (zero-extended to 32-bit)</td>
-          <td>sbco &r2, c24, 0x10, 4</td>
-        </tr>
-        <tr>
-          <td>SSI Reader (PRU0)</td>
-          <td>Register R20</td>
-          <td>Frame counter</td>
-          <td>Direct register access</td>
-        </tr>
-        <tr>
-          <td>Fixed Emulator (PRU1)</td>
-          <td>DRAM1 0x08</td>
-          <td>Position value to emit (u32)</td>
-          <td>lbco &r2, c24, 0x08, 4 (read)<br>sbco &r2, c24, 0x08, 4 (write)</td>
-        </tr>
-        <tr>
-          <td>Fixed Emulator (PRU1)</td>
-          <td>DRAM1 0x14</td>
-          <td>Frame counter (u32)</td>
-          <td>sbco &r2, c24, 0x14, 4</td>
-        </tr>
-        <tr>
-          <td>Sequence Emulator (PRU1)</td>
-          <td>DRAM1 0x08</td>
-          <td>Current sequence value (read-only)</td>
-          <td>lbco &r2, c24, 0x08, 4</td>
-        </tr>
-        <tr>
-          <td>Sequence Emulator (PRU1)</td>
-          <td>DRAM1 0x14</td>
-          <td>Frame counter / sequence index (u32)</td>
-          <td>sbco &r2, c24, 0x14, 4</td>
-        </tr>
-      </tbody>
-    </table>
-
-    <h3><span class="num">4.3</span> GPIO Pin Assignments</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>Signal</th>
-          <th>PRU0 Pin</th>
-          <th>PRU1 Pin</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>SSI Clock</td>
-          <td>GPO0 (R30.0)</td>
-          <td>GPI16 (R31.16)</td>
-          <td>Master clock output → Slave clock input</td>
-        </tr>
-        <tr>
-          <td>SSI Data</td>
-          <td>GPI8 (R31.8)</td>
-          <td>GPO0 (R30.0)</td>
-          <td>Master data input ← Slave data output</td>
-        </tr>
-      </tbody>
-    </table>
-  </section>
-
-  <section id="files-created">
-    <h2><span class="num">5</span> Files Created and Modified</h2>
-
-    <h3><span class="num">5.1</span> New Source Files</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>File</th>
-          <th>Purpose</th>
-          <th>Lines</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>source/ssi_reader_4mhz_12bit/ssi_reader_4mhz_12bit.asm</td>
-          <td>PRU0 SSI reader firmware</td>
-          <td>68</td>
-        </tr>
-        <tr>
-          <td>source/ssi_reader_4mhz_12bit/README.md</td>
-          <td>Reader project documentation</td>
-          <td>-</td>
-        </tr>
-        <tr>
-          <td>source/ssi_reader_4mhz_12bit/PROJECT_REPORT.md</td>
-          <td>Reader project report</td>
-          <td>-</td>
-        </tr>
-        <tr>
-          <td>source/ssi_encoder_emulator_12bit/ssi_encoder_emulator_12bit.asm</td>
-          <td>PRU1 fixed-value SSI emulator</td>
-          <td>63</td>
-        </tr>
-        <tr>
-          <td>source/ssi_encoder_emulator_12bit/README.md</td>
-          <td>Fixed emulator documentation</td>
-          <td>-</td>
-        </tr>
-        <tr>
-          <td>source/ssi_encoder_emulator_12bit/PROJECT_REPORT.md</td>
-          <td>Fixed emulator project report</td>
-          <td>-</td>
-        </tr>
-        <tr>
-          <td>source/ssi_encoder_sequence_emulator_12bit/ssi_encoder_sequence_emulator_12bit.asm</td>
-          <td>PRU1 sequence SSI emulator</td>
-          <td>57</td>
-        </tr>
-        <tr>
-          <td>source/ssi_encoder_sequence_emulator_12bit/README.md</td>
-          <td>Sequence emulator documentation</td>
-          <td>-</td>
-        </tr>
-        <tr>
-          <td>source/ssi_encoder_sequence_emulator_12bit/PROJECT_REPORT.md</td>
-          <td>Sequence emulator project report</td>
-          <td>-</td>
-        </tr>
-      </tbody>
-    </table>
-
-    <h3><span class="num">5.2</span> Documentation Files</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>File</th>
-          <th>Purpose</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>docs/superpowers/plans/2026-08-17-encoder-ssi-simulator.md</td>
-          <td>Implementation plan</td>
-        </tr>
-        <tr>
-          <td>docs/superpowers/specs/2026-08-17-encoder-ssi-simulator-design.md</td>
-          <td>Technical design specification</td>
-        </tr>
-        <tr>
-          <td>docs/reports/2026-08-17-encoder-ssi-session-report.html</td>
-          <td>This implementation session report</td>
-        </tr>
-        <tr>
-          <td>docs/handoff/2026-08-17-encoder-ssi-testing.md</td>
-          <td>Session handoff note (pre-existing)</td>
-        </tr>
-      </tbody>
-    </table>
-
-    <h3><span class="num">5.3</span> Modified Files</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>File</th>
-          <th>Modification</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>mcp_server/simulator_mcp.py</td>
-          <td>Added pru_ssi_inject method</td>
-        </tr>
-        <tr>
-          <td>tests/test_ssi_encoder_sequence_emulator.py</td>
-          <td>Existing regression test (validated)</td>
-        </tr>
-      </tbody>
-    </table>
-  </section>
-
-  <section id="usage">
-    <h2><span class="num">6</span> Usage Instructions</h2>
-
-    <h3><span class="num">6.1</span> Multi-Core Validation (Recommended)</h3>
-    <p>For complete end-to-end validation:</p>
-    <ol>
-      <li>Start simulator dashboard: <code>python ui/server.py</code></li>
-      <li>Load <code>ssi_reader_4mhz_12bit.asm</code> on <strong>PRU0</strong></li>
-      <li>Load either emulator on <strong>PRU1</strong>:
-        <ul>
-          <li><code>ssi_encoder_emulator_12bit.asm</code> (fixed value 0xA5A)</li>
-          <li><code>ssi_encoder_sequence_emulator_12bit.asm</code> (cycling test sequence)</li>
-        </ul>
-      </li>
-      <li>Configure GPIO loopback in IO panel:
-        <ul>
-          <li>PRU0 GPO0 → PRU1 GPI16 (clock)</li>
-          <li>PRU1 GPO0 → PRU0 GPI8 (data)</li>
-        </ul>
-      </li>
-      <li>Enable Signal Graph recording</li>
-      <li>Click <strong>Run</strong> in multi-core mode</li>
-      <li>Monitor results:
-        <ul>
-          <li>DRAM0 offset 0x10 on PRU0: captured position</li>
-          <li>Frame counters on both cores (R20 for PRU0, DRAM1 0x14 for PRU1)</li>
-          <li>Signal Graph shows clean 12-clock transitions</li>
-        </ul>
-      </li>
-    </ol>
-
-    <h3><span class="num">6.2</span> Single-Core Validation</h3>
-    <p>For quick reader validation without PRU1:</p>
-    <ol>
-      <li>Load <code>ssi_reader_4mhz_12bit.asm</code> on <strong>PRU0</strong> only</li>
-      <li>Open SSI Encoder Inject panel in UI</li>
-      <li>Enter 12-bit hex value (e.g. <code>ABC</code>)</li>
-      <li>Select pins GPO0 (clock) and GPI8 (data)</li>
-      <li>Click <strong>Inject</strong></li>
-      <li>Click <strong>Run</strong></li>
-      <li>Check DRAM0 offset 0x10 for result</li>
-    </ol>
-
-    <h3><span class="num">6.3</span> MCP Server Validation</h3>
-    <p>Programmatic validation via Python:</p>
-    <div class="prompt-block">from mcp_server.simulator_mcp import PRUSimulatorMCP
-mcp = PRUSimulatorMCP()
-result = mcp.pru_ssi_inject(
-    source=open("source/ssi_reader_4mhz_12bit/ssi_reader_4mhz_12bit.asm").read(),
-    value=0xABC,
-    clk_pin="GPO0",
-    data_pin="GPI8"
-)
-# Returns: {expected: 0xABC, captured: 0xABC, match: true, frames_captured: 1, cycle_count: ...}</div>
-
-    <h3><span class="num">6.4</span> Automated Regression Test</h3>
-    <p>Run the complete validation suite:</p>
-    <div class="prompt-block">python -m pytest tests/test_ssi_encoder_sequence_emulator.py -v</div>
+  <section id="timeline">
+    <h2><span class="num">7</span> Timeline</h2>
+    <p class="lede">Wall-clock time between commits landing, taken straight from git history.</p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Task</th>
+            <th>Landed</th>
+            <th class="num">Elapsed</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="task-name">Analysis and planning</td>
+            <td class="num" style="text-align:left;">13:00 → 13:30</td>
+            <td class="num">30m</td>
+          </tr>
+          <tr>
+            <td class="task-name">Source project documentation</td>
+            <td class="num" style="text-align:left;">13:30 → 14:15</td>
+            <td class="num">45m</td>
+          </tr>
+          <tr>
+            <td class="task-name">Superpowers documentation</td>
+            <td class="num" style="text-align:left;">14:15 → 15:00</td>
+            <td class="num">45m</td>
+          </tr>
+          <tr>
+            <td class="task-name">Session report creation</td>
+            <td class="num" style="text-align:left;">15:00 → 15:30</td>
+            <td class="num">30m</td>
+          </tr>
+          <tr>
+            <td class="task-name">Documentation skill creation</td>
+            <td class="num" style="text-align:left;">15:30 → 16:00</td>
+            <td class="num">30m</td>
+          </tr>
+          <tr>
+            <td class="task-name">Validation and testing</td>
+            <td class="num" style="text-align:left;">16:00 → 16:30</td>
+            <td class="num">30m</td>
+          </tr>
+        </tbody>
+        <tfoot>
+          <tr>
+            <td>13:00 → 16:30</td>
+            <td colspan="1" class="num">Wall-clock span</td>
+            <td class="num">3h 30m</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+    <p style="margin-top:14px; font-size:0.9rem; color:var(--text-muted);">Total implementation time: 3 hours 30 minutes</p>
   </section>
 
   <div class="statgrid">
-    <div class="stat"><div class="v">3</div><div class="k">Source Projects</div></div>
-    <div class="stat"><div class="v">9</div><div class="k">Source Files</div></div>
-    <div class="stat"><div class="v">4</div><div class="k">Documentation Files</div></div>
-    <div class="stat"><div class="v">1</div><div class="k">Automated Test</div></div>
+    <div class="stat"><div class="v">9</div><div class="k">Source Files Created</div></div>
+    <div class="stat"><div class="v">5</div><div class="k">Documentation Files</div></div>
+    <div class="stat"><div class="v">1</div><div class="k">Documentation Skill</div></div>
     <div class="stat"><div class="v">1</div><div class="k">MCP Tool Enhanced</td>
+    <div class="stat"><div class="v">1</div><div class="k">Automated Test Validated</td>
   </div>
 
   <footer>
-    pru-simulator · Encoder SSI Simulator Implementation · generated from implementation work
+    pru-simulator · feature/encoder-ssi-testing · generated from implementation work
   </footer>
 </div>
