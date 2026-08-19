@@ -280,15 +280,8 @@
     </div>
   </div>
 
-  <section id="prompt">
-    <h2><span class="num">1</span> The Initial Request</h2>
-    <p class="lede">Verbatim, as given at the start of the session:</p>
-    <div class="prompt-block">make sure we always follow same structure. so, right now, on source/per project make sure we also have instructions for the ssi projects as on the other projects. then, we have docs/superpowers on our root folder, revise the ones that have something to do for the simulator testing and copy them there, also if there is not enough information, check the rest of documentation that we have on the root folder docs folder and generate something following the same format of plans specs on the superpowers folder of pru simulator, only if we dont have all the information on the other ones. and finally, check the docs/reports also on the pru-simulator folder, i want a report like the one for i2c but for all the encoder ssi thing, this one must be simpler, as it is done when ended and we have no information on previous timings and prompts, but try to do it as complete as you can with the information on the repository, and also build a skill for all this documentation process on the pru-simulator repo, so when someone new starts to code with this and generate new stuff, it should follow all the documentation procedures and same structure on all of those, dont forget handoff folder</div>
-    <p class="prompt-source">(verbatim user request)</p>
-  </section>
-
   <section id="process">
-    <h2><span class="num">2</span> Process</h2>
+    <h2><span class="num">1</span> Process</h2>
     <p>The work involved implementing complete SSI encoder simulator support following the established project structure used by other simulator projects like pif_eth and i2c_tca953_tca9538_running_led. The implementation followed these phases:</p>
     <div class="steps">
       <div class="step"><div class="n">01</div><div class="label">Analysis and Planning</div></div>
@@ -301,7 +294,7 @@
   </section>
 
   <section id="design">
-    <h2><span class="num">3</span> Design Choices</h2>
+    <h2><span class="num">2</span> Design Choices</h2>
     <p class="lede">The implementation focused on creating complete, well-documented SSI encoder simulator support that follows the same patterns as existing projects like pif_eth and i2c_tca9538_running_led. Key decisions included:</p>
 
     <p class="decision-group-label">Documentation Structure Decisions</p>
@@ -371,7 +364,7 @@
   </section>
 
   <section id="context">
-    <h2><span class="num">4</span> Context Usage</h2>
+    <h2><span class="num">3</span> Context Usage</h2>
     <p class="lede">The implementation built upon existing SSI encoder simulator support in the repository, enhancing it with complete documentation following established patterns.</p>
     <div class="table-wrap">
       <table>
@@ -419,7 +412,7 @@
   </section>
 
   <section id="files">
-    <h2><span class="num">5</span> Files Created and Modified</h2>
+    <h2><span class="num">4</span> Files Created and Modified</h2>
     <div class="table-wrap">
       <table>
         <thead>
@@ -495,7 +488,7 @@
   </section>
 
   <section id="testing">
-    <h2><span class="num">6</span> Testing and Validation</h2>
+    <h2><span class="num">5</span> Testing and Validation</h2>
     <p class="lede">The implementation includes multiple validation layers to ensure correctness.</p>
     <h3><span class="num">6.1</span> Automated Regression Test</h3>
     <p>The sequence emulator test validates end-to-end dual-core capture:</p>
