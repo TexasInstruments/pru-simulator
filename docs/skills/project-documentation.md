@@ -75,6 +75,9 @@ Technical design specifications with:
 HTML reports following the CSS-styled format used by other projects, containing:
 - Header with project title and metadata
 - Sections for Project Overview, Process, Design Choices, Files Created, Testing, Validation
+- Context Usage section (when applicable): 
+  * For implementation work: tracking implementer/reviewer effort, fix rounds, timeline, and token metrics (like in I2C report)
+  * For documentation-only work: describing what components were enhanced (READMEs, PROJECT_REPORTs, superpowers docs, etc.)
 - Statistics grid
 - Footer with generation info
 
