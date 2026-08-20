@@ -1,0 +1,659 @@
+"""SSIRuntime -- the Python stand-in for real R5 firmware.
+
+Real R5 firmware will eventually own: a table of named SICK SSI encoder
+profiles, staged-then-validated configuration changes, an atomic commit into
+the shared-memory config block described by ``ssi_config_abi.py`` /
+``ssi_config_abi.inc``, and semantic decode of what the PRU1 reader publishes
+into the mailbox. This module plays that role for the simulator. Neither
+``ssi_generic_emulator.asm`` (PRU0) nor ``ssi_generic_reader.asm`` (PRU1) can
+tell the difference between this module and real R5 firmware -- both PRU
+programs only ever read/write the shared-memory config block, frame slots,
+and mailbox; they have no idea who is on the other end.
+
+Precondition on ``SSIRuntime(sim)``: Tasks 3/4's PRU programs have no
+power-on-reset default of their own -- they just read whatever is in shared
+memory, and a fresh ``sim.hard_reset()`` zeroes it (a degenerate, not-12-bit
+config: e.g. ``frame_width_bits=0``). So the "default profile is 12-bit/
+4 MHz" guarantee is this module's responsibility: the constructor immediately
+stages and applies ``CUSTOM_LEGACY_12BIT_4MHZ``, which means it *blocks*
+(via ``wait_for_apply``) until the loaded PRU core(s) ack it. Whichever PRU
+core(s) the caller intends to use must already be loaded (``sim.load(...)``),
+wired (``sim.add_gpio_wire(...)``), and ``sim.hard_reset()``-ed *before*
+constructing ``SSIRuntime`` -- exactly the same order every existing
+Tasks 3/4 test already uses before poking config bytes directly. Constructing
+on a `sim` with no PRU core loaded at all raises ``TimeoutError`` from inside
+``__init__`` (nothing will ever ack), the same way ``apply()`` would.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from pru_io import ssi_config_abi as abi
+
+
+# Real (non-header, non-handshake) config-block fields a Profile describes.
+# Excludes abi_version/struct_size/requested_generation/pru0_ack_generation/
+# pru1_ack_generation -- those are ABI metadata and generation-handshake
+# fields owned by apply()/the PRU programs, not part of an encoder "shape".
+_REAL_CONFIG_FIELD_NAMES = (
+    "topology",
+    "encoding_type",
+    "alignment",
+    "formation_mode",
+    "frame_width_bits",
+    "position_offset_bits",
+    "position_width_bits",
+    "singleturn_width_bits",
+    "multiturn_width_bits",
+    "error_offset_bits",
+    "error_width_bits",
+    "padding_width_bits",
+    "clock_high_cycles",
+    "clock_low_cycles",
+    "sample_delay_cycles",
+    "tv_cycles",
+    "tm_pause_outer_iters",
+    "tp_pause_outer_iters",
+    "formation_pause_outer_iters",
+    "sequence_hold_mode",
+    "fault_mode",
+    "capture_mode",
+    "sequence_hold_count",
+    "fault_argument",
+    "fault_repeat_count",
+)
+
+# Sentinel for "no error field" (matches SSI_CONFIG_ABI's error_offset_bits
+# documentation: 0xFFFF if none).
+NO_ERROR_FIELD = 0xFFFF
+
+# Single-loop hardware ceiling (LOOP instruction caps at 256 iterations);
+# see the design doc's "Units convention".
+_SINGLE_LOOP_MAX = 256
+
+
+@dataclass(frozen=True)
+class Profile:
+    """One named SICK SSI encoder family's config-block field values.
+
+    ``max_clock_hz`` is not a config-block field -- it is this profile's
+    informational validation ceiling, enforced by ``SSIRuntime.stage()``.
+    """
+
+    name: str
+    # Bit-width/offset fields: no shared default across families, always
+    # given an explicit value per profile.
+    frame_width_bits: int
+    position_offset_bits: int
+    position_width_bits: int
+    singleturn_width_bits: int
+    multiturn_width_bits: int
+    error_offset_bits: int
+    error_width_bits: int
+    padding_width_bits: int
+    # Timing/mode fields: shared defaults per the task brief, overridden per
+    # profile where the family's docs (or lack thereof) call for it.
+    topology: int = 0
+    encoding_type: int = 0
+    alignment: int = 0
+    formation_mode: int = 0
+    clock_high_cycles: int = 100
+    clock_low_cycles: int = 100
+    sample_delay_cycles: int = 50
+    tv_cycles: int = 20
+    tm_pause_outer_iters: int = 15
+    tp_pause_outer_iters: int = 20
+    formation_pause_outer_iters: int = 15
+    sequence_hold_mode: int = 0
+    fault_mode: int = 0
+    capture_mode: int = 0
+    sequence_hold_count: int = 1
+    fault_argument: int = 0
+    fault_repeat_count: int = 0
+    max_clock_hz: int = 1_500_000
+
+    def as_dict(self) -> dict[str, int]:
+        """This profile's real config-block fields as a plain dict."""
+        return {name: getattr(self, name) for name in _REAL_CONFIG_FIELD_NAMES}
+
+
+# ---------------------------------------------------------------------------
+# Named profiles (SICK SSI interface families).
+#
+# Bit-width/error-bit-count values come directly from the SICK SSI interface
+# datasheet sections reviewed earlier in this project and must not be
+# changed. Timing values (clock_high/low_cycles, pause-outer counts) are
+# this task's own reasonable choices within the ABI's [1,256] single-loop
+# ceiling, since the datasheet excerpts available here did not give literal
+# PRU-cycle timing for every family.
+#
+# NOTE on CUSTOM_LEGACY_12BIT_4MHZ: two of this profile's values were
+# adjusted from the brief's literal numbers because the *unmodified* values
+# fail this module's own stage() validation, and stage()ing this exact
+# profile is what SSIRuntime.__init__ does unconditionally on every
+# construction -- see the report for the full justification:
+#   - clock_high_cycles=33/clock_low_cycles=35 (pinned exactly to match the
+#     existing fixed ssi_reader_4mhz_12bit.asm/ssi_encoder_emulator_12bit.asm
+#     programs) yield a derived clock of 300_000_000/68 ~= 4,411,765 Hz, a
+#     few percent over a literal 4_000_000 Hz ceiling. max_clock_hz is raised
+#     to 4_500_000 (still "~4 MHz", now actually covering the pinned cycle
+#     counts) rather than touching the pinned clock_high/low_cycles values.
+#   - tp_pause_outer_iters is raised from 15 to 16 so it is strictly greater
+#     than tm_pause_outer_iters=15, per stage()'s own validation rule; the
+#     fixed reference programs use 15/15 (equal), which the brief's table
+#     copies, but stage()'s "tp > tm" rule (also specified by the same
+#     brief) rejects equal values. 16*250=4000 cycles vs 15*250=3750 is a
+#     ~6.7% timing change, negligible next to the frame's own ~4 MHz bit
+#     timing and well within "moderate, clearly-documented default" territory.
+# ---------------------------------------------------------------------------
+
+AHS_AHM36_SINGLETURN = Profile(
+    name="AHS_AHM36_SINGLETURN",
+    frame_width_bits=15,
+    position_offset_bits=0,
+    position_width_bits=14,
+    singleturn_width_bits=14,
+    multiturn_width_bits=0,
+    error_offset_bits=14,
+    error_width_bits=1,
+    padding_width_bits=0,
+)
+
+AHS_AHM36_MULTITURN = Profile(
+    name="AHS_AHM36_MULTITURN",
+    frame_width_bits=27,
+    position_offset_bits=0,
+    position_width_bits=26,
+    singleturn_width_bits=14,
+    multiturn_width_bits=12,
+    error_offset_bits=26,
+    error_width_bits=1,
+    padding_width_bits=0,
+)
+
+AFS_AFM60_SINGLETURN = Profile(
+    name="AFS_AFM60_SINGLETURN",
+    frame_width_bits=21,
+    position_offset_bits=0,
+    position_width_bits=18,
+    singleturn_width_bits=18,
+    multiturn_width_bits=0,
+    error_offset_bits=18,
+    error_width_bits=3,
+    padding_width_bits=0,
+)
+
+AFS_AFM60_MULTITURN_30BIT = Profile(
+    name="AFS_AFM60_MULTITURN_30BIT",
+    frame_width_bits=33,
+    position_offset_bits=0,
+    position_width_bits=30,
+    singleturn_width_bits=18,
+    multiturn_width_bits=12,
+    error_offset_bits=30,
+    error_width_bits=3,
+    padding_width_bits=0,
+)
+
+AFS_AFM60_MULTITURN_27BIT = Profile(
+    name="AFS_AFM60_MULTITURN_27BIT",
+    frame_width_bits=30,
+    position_offset_bits=0,
+    position_width_bits=27,
+    singleturn_width_bits=15,
+    multiturn_width_bits=12,
+    error_offset_bits=27,
+    error_width_bits=3,
+    padding_width_bits=0,
+)
+
+AFS_AFM60S_PRO_SINGLETURN = Profile(
+    name="AFS_AFM60S_PRO_SINGLETURN",
+    frame_width_bits=21,
+    position_offset_bits=0,
+    position_width_bits=18,
+    singleturn_width_bits=18,
+    multiturn_width_bits=0,
+    error_offset_bits=18,
+    error_width_bits=3,
+    padding_width_bits=0,
+)
+
+AFS_AFM60S_PRO_MULTITURN = Profile(
+    name="AFS_AFM60S_PRO_MULTITURN",
+    frame_width_bits=28,
+    position_offset_bits=0,
+    position_width_bits=25,
+    singleturn_width_bits=13,
+    multiturn_width_bits=12,
+    error_offset_bits=25,
+    error_width_bits=3,
+    padding_width_bits=0,
+)
+
+ATM60_90 = Profile(
+    name="ATM60_90",
+    frame_width_bits=26,
+    position_offset_bits=0,
+    position_width_bits=25,
+    singleturn_width_bits=12,
+    multiturn_width_bits=13,
+    error_offset_bits=25,
+    error_width_bits=1,
+    padding_width_bits=0,
+    encoding_type=3,  # tannenbaum
+    formation_mode=1,  # synchronous
+    tm_pause_outer_iters=180,  # ~150 us sync monoflop
+    tp_pause_outer_iters=200,
+    formation_pause_outer_iters=180,
+    max_clock_hz=1_500_000,  # documented sync-mode ceiling; clock_high/low
+                             # stay at the 100/100 common default, already
+                             # exactly at this ceiling
+)
+
+ARS60_SHORT = Profile(
+    name="ARS60_SHORT",
+    frame_width_bits=13,
+    position_offset_bits=0,
+    position_width_bits=13,
+    singleturn_width_bits=13,
+    multiturn_width_bits=0,
+    error_offset_bits=NO_ERROR_FIELD,  # no error field in this family
+    error_width_bits=0,
+    padding_width_bits=0,
+)
+
+ARS60_LONG = Profile(
+    name="ARS60_LONG",
+    frame_width_bits=17,
+    position_offset_bits=0,
+    position_width_bits=15,
+    singleturn_width_bits=15,
+    multiturn_width_bits=0,
+    error_offset_bits=15,
+    error_width_bits=2,
+    padding_width_bits=0,
+)
+
+TTK70 = Profile(
+    name="TTK70",
+    frame_width_bits=26,
+    position_offset_bits=0,
+    position_width_bits=24,
+    singleturn_width_bits=24,
+    multiturn_width_bits=0,
+    error_offset_bits=24,
+    error_width_bits=2,
+    padding_width_bits=0,
+)
+
+KH53 = Profile(
+    name="KH53",
+    frame_width_bits=24,
+    position_offset_bits=0,
+    position_width_bits=24,
+    singleturn_width_bits=24,
+    multiturn_width_bits=0,
+    error_offset_bits=NO_ERROR_FIELD,  # no error field in this family
+    error_width_bits=0,
+    padding_width_bits=0,
+)
+
+CUSTOM_LEGACY_12BIT_4MHZ = Profile(
+    name="CUSTOM_LEGACY_12BIT_4MHZ",
+    frame_width_bits=12,
+    position_offset_bits=0,
+    position_width_bits=12,
+    singleturn_width_bits=12,
+    multiturn_width_bits=0,
+    error_offset_bits=12,
+    error_width_bits=0,
+    padding_width_bits=0,
+    clock_high_cycles=33,
+    clock_low_cycles=35,  # matches the existing fixed programs exactly
+    sample_delay_cycles=15,
+    tv_cycles=10,
+    tm_pause_outer_iters=15,
+    tp_pause_outer_iters=16,  # see module-level NOTE above (brief says 15)
+    max_clock_hz=4_500_000,  # see module-level NOTE above (brief says 4_000_000)
+)
+
+
+PROFILES: dict[str, Profile] = {
+    p.name: p
+    for p in (
+        AHS_AHM36_SINGLETURN,
+        AHS_AHM36_MULTITURN,
+        AFS_AFM60_SINGLETURN,
+        AFS_AFM60_MULTITURN_30BIT,
+        AFS_AFM60_MULTITURN_27BIT,
+        AFS_AFM60S_PRO_SINGLETURN,
+        AFS_AFM60S_PRO_MULTITURN,
+        ATM60_90,
+        ARS60_SHORT,
+        ARS60_LONG,
+        TTK70,
+        KH53,
+        CUSTOM_LEGACY_12BIT_4MHZ,
+    )
+}
+
+
+class SSIRuntime:
+    """Plays the role real R5 firmware will eventually play: profiles,
+    staged-then-validated configuration, atomic apply, and position decode.
+    """
+
+    def __init__(self, sim):
+        self.sim = sim
+        self._staged: dict[str, int] | None = None
+        self._active_profile: Profile | None = None
+        # Tasks 3/4's PRU programs have no sensible behavior on raw zeroed
+        # shared memory (a fresh hard_reset() leaves e.g. frame_width_bits=0)
+        # -- this module is responsible for the "default profile is 12-bit/
+        # 4 MHz" guarantee, not the PRU programs. This blocks until whichever
+        # core(s) are loaded ack it; see the module docstring's precondition.
+        self.stage(CUSTOM_LEGACY_12BIT_4MHZ)
+        self.apply()
+
+    # ------------------------------------------------------------------
+    # Stage
+    # ------------------------------------------------------------------
+
+    def stage(self, profile: "Profile | str | None" = None, **overrides) -> None:
+        """Validate and stage a config-field dict; nothing touches shared
+        memory here (that's apply()'s job).
+
+        ``profile`` may be a Profile instance, a name string looked up in
+        PROFILES, or None (stage on top of whatever was staged/applied last,
+        for a single-field tweak without re-specifying a whole profile).
+        """
+        if profile is None:
+            resolved_profile = self._active_profile
+            base = dict(self._staged) if self._staged is not None else {}
+        elif isinstance(profile, str):
+            if profile not in PROFILES:
+                raise ValueError(
+                    f"unknown profile name: {profile!r} "
+                    f"(known: {sorted(PROFILES)})"
+                )
+            resolved_profile = PROFILES[profile]
+            base = resolved_profile.as_dict()
+        elif isinstance(profile, Profile):
+            resolved_profile = profile
+            base = resolved_profile.as_dict()
+        else:
+            raise TypeError(
+                f"profile must be a Profile, str, or None, got {type(profile)!r}"
+            )
+
+        for key in overrides:
+            if key not in abi._CONFIG_FIELDS:
+                raise ValueError(f"unknown config field: {key!r}")
+
+        fields = dict(base)
+        fields.update(overrides)
+
+        for name in ("clock_high_cycles", "clock_low_cycles",
+                     "sample_delay_cycles", "tv_cycles"):
+            value = fields.get(name, 0)
+            if not (1 <= value <= _SINGLE_LOOP_MAX):
+                raise ValueError(
+                    f"{name}={value} out of the single-loop hardware range "
+                    f"[1, {_SINGLE_LOOP_MAX}]"
+                )
+
+        clock_high = fields["clock_high_cycles"]
+        sample_delay = fields["sample_delay_cycles"]
+        if not (0 < sample_delay < clock_high):
+            raise ValueError(
+                f"sample_delay_cycles={sample_delay} must be > 0 and "
+                f"< clock_high_cycles={clock_high}"
+            )
+
+        tv_cycles = fields["tv_cycles"]
+        if not (tv_cycles < clock_high):
+            raise ValueError(
+                f"tv_cycles={tv_cycles} must be < clock_high_cycles={clock_high}"
+            )
+
+        tm_pause = fields.get("tm_pause_outer_iters", 0)
+        tp_pause = fields.get("tp_pause_outer_iters", 0)
+        if not (tp_pause > tm_pause):
+            raise ValueError(
+                f"tp_pause_outer_iters={tp_pause} must be > "
+                f"tm_pause_outer_iters={tm_pause}"
+            )
+
+        if resolved_profile is not None:
+            clock_low = fields["clock_low_cycles"]
+            derived_hz = 300_000_000 / (clock_high + clock_low)
+            if derived_hz > resolved_profile.max_clock_hz:
+                raise ValueError(
+                    f"derived clock frequency {derived_hz:.0f} Hz exceeds "
+                    f"profile {resolved_profile.name!r}'s "
+                    f"max_clock_hz={resolved_profile.max_clock_hz}"
+                )
+
+        frame_width = fields.get("frame_width_bits", 0)
+        if frame_width > 64:
+            raise ValueError(
+                f"frame_width_bits={frame_width} exceeds the 64-bit hardware "
+                f"maximum"
+            )
+        required = (
+            fields.get("position_width_bits", 0)
+            + fields.get("error_width_bits", 0)
+            + fields.get("padding_width_bits", 0)
+        )
+        if frame_width < required:
+            raise ValueError(
+                f"frame_width_bits={frame_width} is smaller than "
+                f"position_width_bits+error_width_bits+padding_width_bits="
+                f"{required} (short by {required - frame_width})"
+            )
+
+        self._staged = fields
+        self._active_profile = resolved_profile
+
+    # ------------------------------------------------------------------
+    # Apply
+    # ------------------------------------------------------------------
+
+    def apply(self, timeout_steps: int = 200_000) -> None:
+        """Commit the staged config atomically: write everything except
+        requested_generation, then bump requested_generation last (the
+        commit signal), then block until both PRU cores ack it.
+        """
+        if self._staged is None:
+            raise RuntimeError("apply() called before stage()")
+
+        current_gen = int.from_bytes(
+            self.sim.memory_read(
+                abi.CONFIG_BASE + abi.CONFIG_REQUESTED_GENERATION_OFF, 4
+            ),
+            "little",
+        )
+        pru0_ack = int.from_bytes(
+            self.sim.memory_read(
+                abi.CONFIG_BASE + abi.CONFIG_PRU0_ACK_GENERATION_OFF, 4
+            ),
+            "little",
+        )
+        pru1_ack = int.from_bytes(
+            self.sim.memory_read(
+                abi.CONFIG_BASE + abi.CONFIG_PRU1_ACK_GENERATION_OFF, 4
+            ),
+            "little",
+        )
+
+        fields = dict(self._staged)
+        fields["abi_version"] = 1
+        fields["struct_size"] = 256
+        fields["requested_generation"] = current_gen  # unchanged in this write
+        fields["pru0_ack_generation"] = pru0_ack       # preserve, don't clobber
+        fields["pru1_ack_generation"] = pru1_ack
+
+        self.sim.memory.write(abi.CONFIG_BASE, abi.pack_config(**fields))
+
+        new_gen = current_gen + 1
+        self.sim.memory.write(
+            abi.CONFIG_BASE + abi.CONFIG_REQUESTED_GENERATION_OFF,
+            new_gen.to_bytes(4, "little"),
+        )
+
+        self.wait_for_apply(timeout_steps)
+
+    def wait_for_apply(self, timeout_steps: int = 200_000) -> None:
+        """Step the simulator until both PRU cores' ack fields catch up to
+        the currently requested_generation (or just PRU1's, for topology==1
+        reader-only, since PRU0 isn't loaded in that case and never acks).
+        """
+
+        def read_gen(offset: int) -> int:
+            return int.from_bytes(
+                self.sim.memory_read(abi.CONFIG_BASE + offset, 4), "little"
+            )
+
+        target = read_gen(abi.CONFIG_REQUESTED_GENERATION_OFF)
+        topology = self._staged.get("topology", 0) if self._staged else 0
+
+        for _ in range(timeout_steps):
+            self.sim.step_paced("pru1", "pru0")
+            pru1_ack = read_gen(abi.CONFIG_PRU1_ACK_GENERATION_OFF)
+            if topology == 1:
+                if pru1_ack == target:
+                    return
+            else:
+                pru0_ack = read_gen(abi.CONFIG_PRU0_ACK_GENERATION_OFF)
+                if pru0_ack == target and pru1_ack == target:
+                    return
+
+        raise TimeoutError(
+            f"generation {target} not acked within {timeout_steps} steps "
+            f"(pru0_ack={read_gen(abi.CONFIG_PRU0_ACK_GENERATION_OFF)}, "
+            f"pru1_ack={read_gen(abi.CONFIG_PRU1_ACK_GENERATION_OFF)}, "
+            f"topology={topology})"
+        )
+
+    # ------------------------------------------------------------------
+    # Read back: mailbox (seqlock-safe) and trace buffer.
+    # ------------------------------------------------------------------
+
+    def read_mailbox(self) -> dict:
+        """Seqlock-safe read of the latest-sample mailbox.
+
+        Retries while ``seq`` is odd (a write is in progress) or changed
+        between the first and second read of ``seq`` (a write straddled
+        this read) -- the exact protocol documented on the mailbox's
+        ``seq`` field in the ABI schema. Returns ``unpack_mailbox``'s dict
+        with ``position_value`` replaced by its semantically decoded form
+        (via ``decode_position``, using the currently-staged
+        ``encoding_type``/``position_width_bits``) rather than the raw
+        wire-encoded bits.
+        """
+
+        def read_seq() -> int:
+            return int.from_bytes(
+                self.sim.memory_read(abi.MAILBOX_BASE + abi.MAILBOX_SEQ_OFF, 4),
+                "little",
+            )
+
+        while True:
+            seq_before = read_seq()
+            if seq_before % 2 != 0:
+                continue
+            data = self.sim.memory_read(abi.MAILBOX_BASE, 64)
+            seq_after = read_seq()
+            if seq_after == seq_before:
+                break
+
+        mailbox = abi.unpack_mailbox(data)
+        encoding_type = self._staged.get("encoding_type", 0) if self._staged else 0
+        width = self._staged.get("position_width_bits", 0) if self._staged else 0
+        mailbox["position_value"] = self.decode_position(
+            mailbox["position_value"], encoding_type, width
+        )
+        return mailbox
+
+    def read_trace(self, newest_first: bool = True, limit: int | None = None) -> list[dict]:
+        """Read back currently-valid trace records, respecting the ring
+        buffer's oldest-overwritten semantics (see the design doc's capture
+        section): once ``trace_write_index`` exceeds 1,024, the oldest
+        surviving record is the slot about to be overwritten next.
+
+        Returns oldest-to-newest by default reversed into newest-first
+        (``newest_first=True``, the default) or left oldest-first
+        (``newest_first=False``). ``limit`` is applied after computing the
+        full ordered list: the most recent N records if ``newest_first``,
+        else the oldest N.
+        """
+        write_index = int.from_bytes(
+            self.sim.memory_read(
+                abi.CAPTURE_BASE + abi.CAPTURE_TRACE_WRITE_INDEX_OFF, 4
+            ),
+            "little",
+        )
+        valid_count = min(write_index, 1024)
+
+        if write_index <= 1024:
+            slots = list(range(valid_count))
+        else:
+            oldest_slot = write_index % 1024
+            slots = [(oldest_slot + i) % 1024 for i in range(1024)]
+
+        records = []
+        for slot in slots:
+            data = self.sim.memory_read(
+                abi.TRACE_BASE + slot * abi.TRACE_RECORD_SIZE, abi.TRACE_RECORD_SIZE
+            )
+            records.append(abi.unpack_trace_record(data))
+
+        if newest_first:
+            records.reverse()
+
+        if limit is not None:
+            records = records[:limit]
+
+        return records
+
+    # ------------------------------------------------------------------
+    # Decode
+    # ------------------------------------------------------------------
+
+    def decode_position(self, raw: int, encoding_type: int, width: int) -> int:
+        """Decode a mailbox/trace position_value into a natural position.
+
+        PRU1 only ever does structural offset/width extraction (see
+        ssi_generic_reader.asm); semantic decode of *how* the extracted bits
+        are encoded is this module's job.
+        """
+        if encoding_type in (0, 3):
+            # binary: no recoding needed. tannenbaum: a frame-layout
+            # convention already handled by position_offset_bits/
+            # singleturn_width_bits/multiturn_width_bits at the structural-
+            # extraction layer; no additional bit-recoding at decode time.
+            return raw
+
+        if encoding_type == 1:
+            # Gray-to-binary: MSB stays the same; each lower bit is the XOR
+            # of that Gray bit with the binary bit just decoded above it.
+            result = 0
+            prev_binary_bit = (raw >> (width - 1)) & 1
+            result |= prev_binary_bit << (width - 1)
+            for i in range(width - 2, -1, -1):
+                gray_bit = (raw >> i) & 1
+                binary_bit = gray_bit ^ prev_binary_bit
+                result |= binary_bit << i
+                prev_binary_bit = binary_bit
+            return result
+
+        if encoding_type == 2:
+            raise NotImplementedError(
+                "gray-excess (encoding_type=2) decode needs a family-"
+                "specific offset into the full Gray sequence that isn't "
+                "captured anywhere in this ABI, and no profile in this "
+                "task's table uses it -- not implementing a guessed formula"
+            )
+
+        raise ValueError(f"unknown encoding_type: {encoding_type!r}")

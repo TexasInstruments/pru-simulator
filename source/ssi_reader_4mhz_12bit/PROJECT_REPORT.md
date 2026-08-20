@@ -4,7 +4,7 @@
 
 ## Overview
 
-This project provides PRU0 assembly firmware for reading 12-bit absolute encoder data via Synchronous Serial Interface (SSI) at 4 MHz. The firmware generates the SSI clock, captures encoder data MSB-first, and stores the result in simulator DRAM0 for validation and testing purposes.
+This project provides PRU1 assembly firmware for reading 12-bit absolute encoder data via Synchronous Serial Interface (SSI) at 4 MHz. The firmware generates the SSI clock, captures encoder data MSB-first, and stores the result in simulator DRAM1 for validation and testing purposes.
 
 ## Design and Implementation
 
@@ -31,7 +31,7 @@ Each sampled bit is shifted into a capture register using a descending bit count
 
 ### Memory Interface
 
-Results are stored in the simulator's DRAM0 (accessed via C24 constant table):
+Results are stored in the simulator's DRAM1 (accessed via C24 constant table):
 - Offset 0x10: 32-bit captured word (12-bit position zero-extended)
 - Register R20: Running frame counter increments per frame for frame counting (accessible directly)
 
@@ -50,31 +50,31 @@ To ensure reliable frame detection:
 
 | File | Purpose |
 |------|---------|
-| `ssi_reader_4mhz_12bit.asm` | PRU0 firmware implementing SSI reader |
+| `ssi_reader_4mhz_12bit.asm` | PRU1 firmware implementing SSI reader |
 | `README.md` | This documentation |
 
 ## Running in the Simulator
 
-### Multi-core Validation (with PRU1 Emulator)
+### Multi-core Validation (with PRU0 Emulator)
 
 1. Start the simulator dashboard: `python ui/server.py`
-2. Load this firmware on **PRU0**
-3. Load a compatible SSI encoder emulator on **PRU1** (fixed-value or sequence variant)
+2. Load this firmware on **PRU1**
+3. Load a compatible SSI encoder emulator on **PRU0** (fixed-value or sequence variant)
 4. Configure GPIO loopback in the IO panel:
-   - PRU0 GPO0 (clock out) → PRU1 GPI16 (clock in)
-   - PRU1 GPO0 (data out) → PRU0 GPI8 (data in)
+   - PRU1 GPO0 (clock out) → PRU0 GPI16 (clock in)
+   - PRU0 GPO0 (data out) → PRU1 GPI8 (data in)
 5. Enable Signal Graph recording and run in multi-core mode
-6. Observe captured values at DRAM0 offset 0x10 on PRU0
-7. Monitor frame counter in PRU0 R20 register
+6. Observe captured values at DRAM1 offset 0x10 on PRU1
+7. Monitor frame counter in PRU1 R20 register
 
 ### Single-core Validation (SSI Encoder Inject)
 
-1. Load this firmware on **PRU0** only
+1. Load this firmware on **PRU1** only
 2. Use the SSI Encoder Inject panel in the UI:
    - Enter a 12-bit hex test value (e.g. `ABC`)
    - Select clock pin: GPO0, data pin: GPI8
    - Click **Inject** to prepare simulator state
-3. Click **Run** and check DRAM0 offset 0x10 for the result
+3. Click **Run** and check DRAM1 offset 0x10 for the result
 
 ### MCP Server Validation
 

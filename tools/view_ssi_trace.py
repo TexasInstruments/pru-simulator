@@ -95,7 +95,7 @@ class TraceViewer:
     def load(self, path: str | Path):
         self.csv_path = Path(path)
         self.rows = load_trace(self.csv_path)
-        self.frames = decode_ssi_frames([row for row in self.rows if row["core"] == "pru0"])
+        self.frames = decode_ssi_frames([row for row in self.rows if row["core"] == "pru1"])
         steps = [int(row.get("_step", row["step"])) for row in self.rows]
         self.trace_left, self.trace_right = min(steps), max(steps)
         labels = [f"{i + 1}: 0x{int(frame['value']):03X} ({frame['start']}..{frame['end']})"
@@ -111,10 +111,10 @@ class TraceViewer:
         for row in self.rows:
             rows_by_core.setdefault(row["core"], []).append(row)
         lane_specs = [
-            ("pru0", "gpo0", "PRU0 GPO0 clock", "tab:blue", 0),
-            ("pru0", "gpi8", "PRU0 GPI8 data", "tab:orange", 1),
-            ("pru1", "gpi16", "PRU1 GPI16 clock", "tab:green", 2),
-            ("pru1", "gpo0", "PRU1 GPO0 data", "tab:red", 3),
+            ("pru1", "gpo0", "PRU1 GPO0 clock", "tab:blue", 0),
+            ("pru0", "gpi16", "PRU0 GPI16 clock", "tab:orange", 1),
+            ("pru0", "gpo0", "PRU0 GPO0 data", "tab:green", 2),
+            ("pru1", "gpi8", "PRU1 GPI8 data", "tab:red", 3),
         ]
         for core, column, label, color, offset in lane_specs:
             core_rows = rows_by_core.get(core, [])
@@ -122,14 +122,14 @@ class TraceViewer:
                 continue
             steps, _, values = series_for_core(
                 self.rows, core,
-                "gpo0" if core == "pru0" else "gpi16",
+                "gpo0" if core == "pru1" else "gpi16",
                 column,
             )
             self.axis.step(steps, [value + offset for value in values], where="post",
                            color=color, label=label, linewidth=1.1)
         self.axis.set_xlim(self.trace_left, self.trace_right)
         self.axis.set_ylim(-0.25, 4.25)
-        self.axis.set_yticks([0.5, 1.5, 2.5, 3.5], ["PRU0 CLK", "PRU0 DATA", "PRU1 CLK", "PRU1 DATA"])
+        self.axis.set_yticks([0.5, 1.5, 2.5, 3.5], ["PRU1 CLK", "PRU0 CLK", "PRU0 DATA", "PRU1 DATA"])
         self.axis.set_xlabel("simulator step")
         self.axis.set_title(self.csv_path.name if self.csv_path else "PRU SSI trace")
         self.axis.grid(alpha=0.2)

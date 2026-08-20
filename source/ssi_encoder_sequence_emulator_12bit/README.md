@@ -1,6 +1,6 @@
 # ssi_encoder_sequence_emulator_12bit — Cycling 12-bit SSI Encoder Emulator
 
-**PRU1** firmware that emulates an absolute SSI encoder, cycling through a
+**PRU0** firmware that emulates an absolute SSI encoder, cycling through a
 fixed repeating sequence of five 12-bit position values. Designed for
 regression testing and signal-graph inspection.
 
@@ -9,10 +9,10 @@ regression testing and signal-graph inspection.
 * **Protocol:** idle CLK and DATA high; frame starts on the first falling clock
   edge; 12 bits MSB-first; DATA driven on each falling clock edge.
 * **Pins:**
-  * `R31.16` (GPI16) — SSI clock input from PRU0 master
-  * `R30.0` (GPO0) — SSI data output to PRU0 master
+  * `R31.16` (GPI16) — SSI clock input from PRU1 master
+  * `R30.0` (GPO0) — SSI data output to PRU1 master
 
-## DRAM1 memory map
+## DRAM0 memory map
 
 | Offset | Contents |
 |-------:|---------|
@@ -26,18 +26,18 @@ The value at `0x08` advances after each completed frame. After frame 4
 
 | File | Purpose |
 |------|---------|
-| `ssi_encoder_sequence_emulator_12bit.asm` | PRU1 firmware |
+| `ssi_encoder_sequence_emulator_12bit.asm` | PRU0 firmware |
 | `README.md` | this file |
 | `PROJECT_REPORT.md` | detailed project documentation |
 
 ## Run it in the simulator
 
-Use with `source/ssi_reader_4mhz_12bit/` on PRU0. See that project's README
+Use with `source/ssi_reader_4mhz_12bit/` on PRU1. See that project's README
 for the full multi-core setup procedure.
 
 Required GPIO wires:
-* `pru0:GPO0` → `pru1:GPI16` (clock from master to emulator)
-* `pru1:GPO0` → `pru0:GPI8` (data from emulator to master)
+* `pru1:GPO0` → `pru0:GPI16` (clock from master to emulator)
+* `pru0:GPO0` → `pru1:GPI8` (data from emulator to master)
 
 ### Automated regression test
 
@@ -45,7 +45,7 @@ Required GPIO wires:
 python -m pytest tests/test_ssi_encoder_sequence_emulator.py -q
 ```
 
-This test runs both cores, wires the GPIO loopback, and verifies that PRU0
+This test runs both cores, wires the GPIO loopback, and verifies that PRU1
 captures each sequence value in order.
 
 ## Sequence table
@@ -59,11 +59,11 @@ captures each sequence value in order.
 | 4 | CC2 | `0xCC2` |
 | 5+ | Repeats from 0 | — |
 
-The values were chosen so every captured DRAM0 word is visually distinct in
+The values were chosen so every captured DRAM1 word is visually distinct in
 the Memory panel, making manual inspection straightforward.
 
 ## Clock speed note
 
 The emulator is purely reactive and works with any master clock frequency.
-For correct timing with the SSI reader, ensure the PRU0 master runs at 300 MHz
+For correct timing with the SSI reader, ensure the PRU1 master runs at 300 MHz
 to produce an exact 4 MHz SSI clock (75 cycles/bit).

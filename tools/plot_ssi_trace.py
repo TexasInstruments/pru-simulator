@@ -67,7 +67,7 @@ def _clock_groups(rows: list[dict[str, str]], idle_gap: int = 500) -> list[list[
 def decode_ssi_frames(
     rows: list[dict[str, str]], idle_gap: int = 500
 ) -> list[dict[str, int | str]]:
-    """Decode 12-bit MSB-first SSI frames from PRU0 GPO0/GPI8 samples."""
+    """Decode 12-bit MSB-first SSI frames from PRU1 GPO0/GPI8 samples."""
     frames: list[dict[str, int | str]] = []
     for group in _clock_groups(rows, idle_gap):
         rising = [transition for transition in group if transition["from"] == 0 and transition["to"] == 1]
@@ -108,17 +108,17 @@ def plot_trace(rows: list[dict[str, str]], frames: list[dict[str, int | str]], o
 
     colors = {"pru0": ("tab:blue", "tab:orange"), "pru1": ("tab:green", "tab:red")}
     for core, core_rows in sorted(rows_by_core.items()):
-        clock_column = "gpi16" if core == "pru1" else "gpo0"
-        data_column = "gpo0" if core == "pru1" else "gpi8"
+        clock_column = "gpo0" if core == "pru1" else "gpi16"
+        data_column = "gpi8" if core == "pru1" else "gpo0"
         if clock_column not in core_rows[0]:
             continue
         steps, clock = _signal_values(core_rows, clock_column)
-        axes[0].step(steps, [v + (0 if core == "pru0" else 2) for v in clock], where="post",
+        axes[0].step(steps, [v + (0 if core == "pru1" else 2) for v in clock], where="post",
                      label=f"{core} {clock_column} clock", color=colors.get(core, ("black", "gray"))[0])
         _, data = _signal_values(core_rows, data_column)
-        axes[0].step(steps, [v + (1 if core == "pru0" else 3) for v in data], where="post",
+        axes[0].step(steps, [v + (1 if core == "pru1" else 3) for v in data], where="post",
                      label=f"{core} {data_column} data", color=colors.get(core, ("black", "gray"))[1])
-    axes[0].set_title("Full exported trace (offset lanes: PRU0 clock/data, PRU1 clock/data)")
+    axes[0].set_title("Full exported trace (offset lanes: PRU1 clock/data, PRU0 clock/data)")
     axes[0].set_ylabel("logic level + lane")
     axes[0].legend(loc="upper right", ncol=2)
     axes[0].grid(alpha=0.2)
@@ -130,8 +130,8 @@ def plot_trace(rows: list[dict[str, str]], frames: list[dict[str, int | str]], o
             window = [row for row in core_rows if start - 100 <= row["_step"] <= end + 100]
             if not window:
                 continue
-            clock_column = "gpi16" if core == "pru1" else "gpo0"
-            data_column = "gpo0" if core == "pru1" else "gpi8"
+            clock_column = "gpo0" if core == "pru1" else "gpi16"
+            data_column = "gpi8" if core == "pru1" else "gpo0"
             if clock_column not in window[0]:
                 continue
             steps, clock = _signal_values(window, clock_column)
@@ -161,8 +161,8 @@ def main() -> int:
     rows_by_core = {}
     for row in rows:
         rows_by_core.setdefault(row["core"], []).append(row)
-    pru0_rows = rows_by_core.get("pru0", [])
-    frames = decode_ssi_frames(pru0_rows)
+    pru1_rows = rows_by_core.get("pru1", [])
+    frames = decode_ssi_frames(pru1_rows)
     output = args.output or args.csv.with_name(args.csv.stem + "-ssi.png")
     plot_trace(rows, frames, output)
 
@@ -170,11 +170,11 @@ def main() -> int:
     print(f"plot: {output}")
     for index, frame in enumerate(frames, start=1):
         print(f"frame {index}: steps {frame['start']}..{frame['end']}, bits {frame['bits']}, value 0x{int(frame['value']):03X}")
-    if "pru1" in rows_by_core:
+    if "pru0" in rows_by_core:
         for left, right in (("gpo0", "gpi16"), ("gpi8", "gpo0")):
-            if right in rows_by_core["pru1"][0]:
-                mismatches, common = _mirror_mismatches(rows_by_core, "pru0", left, "pru1", right)
-                print(f"mirror PRU0 {left} / PRU1 {right}: {mismatches} mismatches over {common} aligned samples")
+            if right in rows_by_core["pru0"][0]:
+                mismatches, common = _mirror_mismatches(rows_by_core, "pru1", left, "pru0", right)
+                print(f"mirror PRU1 {left} / PRU0 {right}: {mismatches} mismatches over {common} aligned samples")
     return 0
 
 

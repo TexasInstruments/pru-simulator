@@ -1,8 +1,19 @@
 """Tests for MCP Server tool implementations."""
+import json
 from pathlib import Path
 
 import pytest
 from mcp_server.server import PRUSimulatorMCP
+
+
+SOURCE_DIR = Path(__file__).parent.parent / "source"
+SSI_READER_SRC = (SOURCE_DIR / "ssi_generic_reader" / "ssi_generic_reader.asm").read_text()
+SSI_EMULATOR_SRC = (SOURCE_DIR / "ssi_generic_emulator" / "ssi_generic_emulator.asm").read_text()
+
+SSI_READER_CLK_PIN = 0
+SSI_READER_DATA_PIN = 8
+SSI_EMULATOR_CLK_IN_PIN = 16
+SSI_EMULATOR_DATA_OUT_PIN = 0
 
 
 class TestMCPTools:
@@ -97,3 +108,78 @@ class TestMCPTools:
         detach = self.mcp.pru_i2c_attach(core="pru0", enabled=False)
         assert detach["success"] is True
         assert self.mcp.sim.i2c_state("pru0") is None
+
+    # ------------------------------------------------------------------
+    # SSI runtime tools (ssi_profile_list/ssi_stage/ssi_apply/
+    # ssi_read_mailbox/ssi_read_trace).
+    # ------------------------------------------------------------------
+
+    def _load_ssi_paired(self):
+        """Load+wire+hard_reset the generic SSI emulator (pru0) / reader
+        (pru1) pair, matching pru_io/ssi_runtime.py's constructor
+        precondition. There is no dedicated MCP tool for wiring/hard_reset,
+        so this test bootstrapping goes straight through self.mcp.sim (the
+        same Simulator every other test in this file already reaches for,
+        e.g. test_pru_i2c_attach's self.mcp.sim.i2c_state()); every SSI
+        config/capture operation after this point goes through the ssi_*
+        MCP tool methods only."""
+        assert self.mcp.pru_load(
+            source=SSI_READER_SRC, core="pru1", include_paths=[str(SOURCE_DIR)]
+        )["success"]
+        assert self.mcp.pru_load(
+            source=SSI_EMULATOR_SRC, core="pru0", include_paths=[str(SOURCE_DIR)]
+        )["success"]
+        self.mcp.sim.add_gpio_wire(
+            "pru1", SSI_READER_CLK_PIN, "pru0", SSI_EMULATOR_CLK_IN_PIN
+        )
+        self.mcp.sim.add_gpio_wire(
+            "pru0", SSI_EMULATOR_DATA_OUT_PIN, "pru1", SSI_READER_DATA_PIN
+        )
+        self.mcp.sim.hard_reset()
+
+    def test_ssi_profile_list(self):
+        result = self.mcp.ssi_profile_list()
+        assert "CUSTOM_LEGACY_12BIT_4MHZ" in result["profiles"]
+        assert "AHS_AHM36_SINGLETURN" in result["profiles"]
+
+    def test_ssi_stage_rejects_unknown_profile(self):
+        self._load_ssi_paired()
+        result = self.mcp.ssi_stage(profile="NOT_A_REAL_PROFILE")
+        assert result["status"] == "error"
+        assert "NOT_A_REAL_PROFILE" in result["error"]
+
+    def test_ssi_stage_apply_read_mailbox_and_trace_end_to_end(self):
+        """Profile switch (to reader-only + trace capture) plus several
+        captured frames, driven entirely through ssi_stage/ssi_apply/
+        ssi_read_mailbox/ssi_read_trace -- confirms the whole staged-apply
+        + mailbox/trace read-back path works through this MCP API surface
+        alone."""
+        self._load_ssi_paired()
+
+        stage_result = self.mcp.ssi_stage(
+            profile="CUSTOM_LEGACY_12BIT_4MHZ",
+            overrides_json=json.dumps({"topology": 1, "capture_mode": 2}),
+        )
+        assert stage_result["status"] == "success"
+        assert stage_result["staged"]["topology"] == 1
+        assert stage_result["staged"]["capture_mode"] == 2
+
+        apply_result = self.mcp.ssi_apply()
+        assert apply_result["status"] == "success"
+        assert apply_result["pru1_ack_generation"] == apply_result["requested_generation"]
+
+        # topology=1 is reader-only from here on; pru0 is never stepped
+        # again. Advance pru1 alone until a few frames have been captured.
+        mb = None
+        for _ in range(4000):
+            self.mcp.pru_step(core="pru1", count=500)
+            mb = self.mcp.ssi_read_mailbox()
+            if mb["frame_counter"] >= 3:
+                break
+        assert mb is not None and mb["frame_counter"] >= 3
+
+        trace_result = self.mcp.ssi_read_trace(newest_first=True, limit=10)
+        assert trace_result["overrun_count"] == 0
+        assert trace_result["write_index"] == mb["frame_counter"]
+        assert len(trace_result["records"]) >= 1
+        assert trace_result["records"][0]["timestamp_cycles"] > 0

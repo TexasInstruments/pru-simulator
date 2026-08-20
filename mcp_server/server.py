@@ -6,7 +6,11 @@ import os
 # Allow imports from parent directory when run directly
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import json
+
 from simulator import Simulator
+from pru_io import ssi_config_abi as abi
+from pru_io.ssi_runtime import SSIRuntime, PROFILES
 
 
 class PRUSimulatorMCP:
@@ -14,6 +18,19 @@ class PRUSimulatorMCP:
 
     def __init__(self, config_path: str = "memory.cfg"):
         self.sim = Simulator(config_path)
+        self._runtime: SSIRuntime | None = None
+
+    def _get_runtime(self) -> SSIRuntime:
+        """Lazily construct the SSIRuntime on first SSI-tool use.
+
+        SSIRuntime(sim) blocks until a loaded PRU core acks its implicit
+        default-profile apply (see ssi_runtime.py's module docstring), so it
+        can't be constructed in __init__ -- no core is loaded yet at that
+        point.
+        """
+        if self._runtime is None:
+            self._runtime = SSIRuntime(self.sim)
+        return self._runtime
 
     def pru_load(self, source: str, core: str = "pru0",
                  include_paths: list[str] | None = None) -> dict:
@@ -193,6 +210,93 @@ class PRUSimulatorMCP:
             "match": captured == expected,
             "frames_captured": frames_captured,
             "cycles": pru.counters.cycles,
+        }
+
+    def ssi_profile_list(self) -> dict:
+        """List every named SSI encoder profile ssi_stage can reference by name."""
+        return {"profiles": list(PROFILES.keys())}
+
+    def ssi_stage(self, profile: str = "", overrides_json: str = "{}") -> dict:
+        """Stage (but don't yet commit) an SSI encoder configuration.
+
+        ``profile`` is a name from ssi_profile_list, or "" to keep staging
+        on top of whatever was last staged/applied (SSIRuntime.stage()'s
+        own None convention). ``overrides_json`` is a JSON object string of
+        config-field-name -> value overrides applied on top of the
+        profile's defaults. Nothing reaches shared memory here; call
+        ssi_apply for that. A validation failure (unknown profile/field
+        name, an out-of-range value, etc.) is returned as
+        {"status": "error", "error": <message>} rather than raised, so an
+        MCP caller always gets a JSON-able result back -- this also covers
+        malformed ``overrides_json`` (invalid JSON, or valid JSON that
+        isn't an object) rather than letting json.loads/**overrides raise
+        past this method.
+        """
+        runtime = self._get_runtime()
+        try:
+            overrides = json.loads(overrides_json)
+            runtime.stage(profile if profile else None, **overrides)
+        except (ValueError, TypeError) as exc:
+            return {"status": "error", "error": str(exc)}
+        return {"status": "success", "staged": dict(runtime._staged)}
+
+    def ssi_apply(self, timeout_steps: int = 200_000) -> dict:
+        """Commit the currently staged SSI config to shared memory and block
+        (stepping the simulator up to timeout_steps times) until both PRU
+        cores ack the new generation. Returns {"status": "timeout", ...}
+        instead of raising if the ack never arrives within the budget,
+        alongside the requested/pru0/pru1 ack generations either way.
+        """
+        runtime = self._get_runtime()
+        try:
+            runtime.apply(timeout_steps)
+            status = "success"
+        except TimeoutError:
+            status = "timeout"
+
+        def read_gen(offset: int) -> int:
+            return int.from_bytes(
+                self.sim.memory_read(abi.CONFIG_BASE + offset, 4), "little"
+            )
+
+        return {
+            "status": status,
+            "requested_generation": read_gen(abi.CONFIG_REQUESTED_GENERATION_OFF),
+            "pru0_ack_generation": read_gen(abi.CONFIG_PRU0_ACK_GENERATION_OFF),
+            "pru1_ack_generation": read_gen(abi.CONFIG_PRU1_ACK_GENERATION_OFF),
+        }
+
+    def ssi_read_mailbox(self) -> dict:
+        """Seqlock-safe read of the latest-sample SSI mailbox, with
+        position_value already semantically decoded per the currently
+        staged encoding_type/position_width_bits."""
+        return self._get_runtime().read_mailbox()
+
+    def ssi_read_trace(self, newest_first: bool = True, limit: int = 100) -> dict:
+        """Read back currently-valid SSI trace-buffer records (a 1,024-slot
+        ring buffer). newest_first orders the returned records most-recent
+        first (oldest-first if False); limit caps the count (most recent N,
+        or oldest N if not newest_first). Also reports the raw
+        write_index/overrun_count counters.
+        """
+        runtime = self._get_runtime()
+        records = runtime.read_trace(newest_first=newest_first, limit=limit)
+        write_index = int.from_bytes(
+            self.sim.memory_read(
+                abi.CAPTURE_BASE + abi.CAPTURE_TRACE_WRITE_INDEX_OFF, 4
+            ),
+            "little",
+        )
+        overrun_count = int.from_bytes(
+            self.sim.memory_read(
+                abi.CAPTURE_BASE + abi.CAPTURE_TRACE_OVERRUN_COUNT_OFF, 4
+            ),
+            "little",
+        )
+        return {
+            "records": records,
+            "overrun_count": overrun_count,
+            "write_index": write_index,
         }
 
     def pru_status(self) -> dict:

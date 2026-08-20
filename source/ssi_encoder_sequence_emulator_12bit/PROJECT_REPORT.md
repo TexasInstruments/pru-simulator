@@ -4,7 +4,7 @@
 
 ## Overview
 
-This project provides PRU1 assembly firmware that emulates a 12-bit absolute encoder cycling through a predefined test sequence for SSI communication validation. The firmware responds to an external SSI clock, drives sequentially changing 12-bit position values MSB-first on the data line, and maintains observable state in simulator DRAM1 for regression testing purposes.
+This project provides PRU0 assembly firmware that emulates a 12-bit absolute encoder cycling through a predefined test sequence for SSI communication validation. The firmware responds to an external SSI clock, drives sequentially changing 12-bit position values MSB-first on the data line, and maintains observable state in simulator DRAM0 for regression testing purposes.
 
 ## Design and Implementation
 
@@ -43,7 +43,7 @@ Sequence implementation uses a frame counter/index that increments after each co
 
 ### Memory Interface
 
-Observable state is maintained in the simulator's DRAM1 (accessed via C24 constant table for PRU1):
+Observable state is maintained in the simulator's DRAM0 (accessed via C24 constant table for PRU0):
 - Offset 0x08: 32-bit current value being emitted (read-only at runtime)
 - Offset 0x14: 32-bit frame counter increments after each complete frame (0-indexed)
 
@@ -62,21 +62,21 @@ To prevent false triggering:
 
 | File | Purpose |
 |------|---------|
-| `ssi_encoder_sequence_emulator_12bit.asm` | PRU1 firmware implementing cycling sequence SSI encoder |
+| `ssi_encoder_sequence_emulator_12bit.asm` | PRU0 firmware implementing cycling sequence SSI encoder |
 | `README.md` | This documentation |
 
 ## Running in the Simulator
 
-### Regression Test Validation (with PRU0 Reader)
+### Regression Test Validation (with PRU1 Reader)
 
 1. Start the simulator dashboard: `python ui/server.py`
-2. Load this firmware on **PRU1**
-3. Load the SSI reader on **PRU0**
+2. Load this firmware on **PRU0**
+3. Load the SSI reader on **PRU1**
 4. Configure GPIO loopback in the IO panel:
-   - PRU0 GPO0 (clock out) → PRU1 GPI16 (clock in)
-   - PRU1 GPO0 (data out) → PRU0 GPI8 (data in)
+   - PRU1 GPO0 (clock out) → PRU0 GPI16 (clock in)
+   - PRU0 GPO0 (data out) → PRU1 GPI8 (data in)
 5. Enable Signal Graph recording and run in multi-core mode
-6. Observe PRU0 capturing the sequence values in order at DRAM0 offset 0x10:
+6. Observe PRU1 capturing the sequence values in order at DRAM1 offset 0x10:
    - Frame 0: 0xABC
    - Frame 1: 0xAAA
    - Frame 2: 0xBCA
@@ -95,11 +95,11 @@ This test automates the multi-core setup, GPIO wiring, execution, and verificati
 
 ### Single-core Validation
 
-1. Load this firmware on **PRU1** only
-2. Configure internal loopback in IO panel: Enable loopback on PRU1
+1. Load this firmware on **PRU0** only
+2. Configure internal loopback in IO panel: Enable loopback on PRU0
 3. Manually toggle GPI16 (clock input) to simulate clock pulses
 4. Observe GPO0 (data output) for correct bit sequence of current value
-5. Check DRAM1 offset 0x08 for stored value and 0x14 for frame counter
+5. Check DRAM0 offset 0x08 for stored value and 0x14 for frame counter
 
 ### MCP Server Validation
 

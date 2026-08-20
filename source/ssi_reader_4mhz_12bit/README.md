@@ -1,7 +1,7 @@
 # ssi_reader_4mhz_12bit — 12-bit / 4 MHz SSI Master (Reader)
 
-Single-core **PRU0** firmware that generates a 4 MHz SSI clock and captures a
-12-bit absolute encoder position MSB-first, storing the result in DRAM0.
+Single-core **PRU1** firmware that generates a 4 MHz SSI clock and captures a
+12-bit absolute encoder position MSB-first, storing the result in DRAM1.
 
 * **Clock rate:** 4 MHz (exact), requiring a **300 MHz PRU core clock**.
   75 cycles/bit × 3.33 ns/cycle = 250 ns/bit = 4.0 MHz.
@@ -12,43 +12,43 @@ Single-core **PRU0** firmware that generates a 4 MHz SSI clock and captures a
   * `R30.0` (GPO0) — SSI clock output
   * `R31.8` (GPI8) — SSI data input
 
-## DRAM0 memory map
+## DRAM1 memory map
 
 | Offset | Contents |
 |-------:|---------|
 | `0x10` | Latest 12-bit position, zero-extended to 32 bits (u32) |
 
-`R20` holds the running frame counter (accessible as a register; not stored to DRAM0).
+`R20` holds the running frame counter (accessible as a register; not stored to DRAM1).
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `ssi_reader_4mhz_12bit.asm` | PRU0 firmware |
+| `ssi_reader_4mhz_12bit.asm` | PRU1 firmware |
 | `README.md` | this file |
 | `PROJECT_REPORT.md` | detailed project documentation |
 
 ## Run it in the simulator
 
-### Multi-core mode (with PRU1 emulator)
+### Multi-core mode (with PRU0 emulator)
 
 1. Start the dashboard: `python ui/server.py`
-2. Load this firmware on **PRU0**.
-3. Load one of the SSI emulator firmwares on **PRU1**:
+2. Load this firmware on **PRU1**.
+3. Load one of the SSI emulator firmwares on **PRU0**:
    * `source/ssi_encoder_emulator_12bit/ssi_encoder_emulator_12bit.asm` — fixed value `0xA5A`
    * `source/ssi_encoder_sequence_emulator_12bit/ssi_encoder_sequence_emulator_12bit.asm` — cycling sequence
 4. Add GPIO wires in the IO panel:
-   * `pru0:GPO0` → `pru1:GPI16` (clock)
-   * `pru1:GPO0` → `pru0:GPI8` (data)
+   * `pru1:GPO0` → `pru0:GPI16` (clock)
+   * `pru0:GPO0` → `pru1:GPI8` (data)
 5. Enable Signal Graph recording, then click **Run** in multi-core mode.
-6. Inspect DRAM0 offset `0x10` on PRU0 for the captured position.
+6. Inspect DRAM1 offset `0x10` on PRU1 for the captured position.
 
 ### Single-core mode (SSI Encoder Inject panel)
 
-1. Start the dashboard and load this firmware on **PRU0** only.
+1. Start the dashboard and load this firmware on **PRU1** only.
 2. Open the **SSI Encoder Inject** panel, enter a 12-bit hex value (e.g. `ABC`),
    select pins `GPO0` / `GPI8`, then click **Inject**.
-3. Click **Run**. Check DRAM0 offset `0x10` for the result.
+3. Click **Run**. Check DRAM1 offset `0x10` for the result.
 
 ### MCP server
 
