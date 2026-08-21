@@ -48,6 +48,11 @@ def export_pin_waveform(sim, core: str, path: str, max_steps: int = 10000,
     Values are sampled before execution and after every retired instruction.
     Timestamps are relative to the capture start while ``start_cycle`` and
     ``end_cycle`` retain the corresponding absolute simulator counter values.
+
+    ``complete`` is true only when the core halts or reaches the end of its
+    loaded program.  ``success`` mirrors ``complete``: a valid partial VCD is
+    still written when the step budget is exhausted, but that capture must not
+    be reported as a successful complete run.
     """
     if max_steps < 0:
         raise ValueError("max_steps must be non-negative")
@@ -114,6 +119,7 @@ def export_pin_waveform(sim, core: str, path: str, max_steps: int = 10000,
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_bytes(output)
 
+    complete = pru.halted or pru.pc >= len(pru.instructions)
     if pru.halted:
         stop_reason = "halted"
     elif pru.pc >= len(pru.instructions):
@@ -122,7 +128,8 @@ def export_pin_waveform(sim, core: str, path: str, max_steps: int = 10000,
         stop_reason = "max_steps"
 
     return {
-        "success": True,
+        "success": complete,
+        "complete": complete,
         "path": str(output_path),
         "core": core,
         "clock_mhz": clock_mhz,
