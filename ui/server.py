@@ -20,6 +20,8 @@ from simulator import Simulator
 from core.branch import LoopState
 from perif.gpcfg import MUX_SD
 from xfr.xfr_bus import SPAD_BANK0, SPAD_BANK1, SPAD_BANK2, IPC_SPAD
+from pru_io import ssi_config_abi as ssi_abi
+from pru_io.ssi_runtime import PROFILES, SSIRuntime
 
 app = FastAPI(title="PRU Simulator Dashboard")
 
@@ -29,6 +31,140 @@ MAX_BREAKPOINTS = 64
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 config_path = os.path.join(PROJECT_ROOT, "memory.cfg")
 SOURCE_DIR = pathlib.Path(PROJECT_ROOT) / "source"
+
+SSI_RUNTIME_READER = SOURCE_DIR / "ssi_generic_reader" / "ssi_generic_reader.asm"
+SSI_RUNTIME_EMULATOR = SOURCE_DIR / "ssi_generic_emulator" / "ssi_generic_emulator.asm"
+SSI_RUNTIME_DEFAULT_FRAMES = [0xABC, 0xAAA, 0xBCA, 0x12A, 0xCC2]
+SSI_RUNTIME_READER_CLK_PIN = 0
+SSI_RUNTIME_READER_DATA_PIN = 8
+SSI_RUNTIME_EMULATOR_CLK_PIN = 16
+SSI_RUNTIME_EMULATOR_DATA_PIN = 0
+_ssi_runtime: SSIRuntime | None = None
+
+
+def _ssi_profile_catalog() -> list[dict]:
+    """Return JSON-safe named profile defaults for the dashboard controls."""
+    catalog = []
+    for name, profile in PROFILES.items():
+        item = profile.as_dict()
+        item.update({
+            "name": name,
+            "clock_hz": int(
+                300_000_000 / (profile.clock_high_cycles + profile.clock_low_cycles)
+            ),
+            "max_clock_hz": profile.max_clock_hz,
+        })
+        catalog.append(item)
+    return catalog
+
+
+def _parse_ssi_frame_values(values) -> list[int]:
+    """Parse UI raw-frame values, accepting hex strings with or without 0x."""
+    if not values:
+        raise ValueError("SSI frame sequence needs at least one value")
+    if not isinstance(values, list):
+        raise ValueError("SSI frame sequence must be a list")
+
+    parsed = []
+    for raw in values:
+        try:
+            if isinstance(raw, bool):
+                raise ValueError
+            if isinstance(raw, int):
+                value = raw
+            elif isinstance(raw, str):
+                token = raw.strip()
+                if token.lower().startswith("0x"):
+                    value = int(token, 16)
+                else:
+                    value = int(token, 16)
+            else:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise ValueError(f"invalid SSI frame value: {raw!r}") from None
+        if value < 0:
+            raise ValueError(f"invalid SSI frame value: {raw!r}")
+        parsed.append(value)
+    return parsed
+
+
+def _ssi_runtime_state() -> dict:
+    """Return the current generic SSI state in a dashboard-safe shape."""
+    if _ssi_runtime is None:
+        return {
+            "loaded": False,
+            "profiles": _ssi_profile_catalog(),
+            "status": "Load the generic SSI PRU pair first",
+        }
+
+    config = ssi_abi.unpack_config(
+        sim.memory_read(ssi_abi.CONFIG_BASE, 256)
+    )
+    write_index = int.from_bytes(
+        sim.memory_read(
+            ssi_abi.CAPTURE_BASE + ssi_abi.CAPTURE_TRACE_WRITE_INDEX_OFF, 4
+        ),
+        "little",
+    )
+    overrun_count = int.from_bytes(
+        sim.memory_read(
+            ssi_abi.CAPTURE_BASE + ssi_abi.CAPTURE_TRACE_OVERRUN_COUNT_OFF, 4
+        ),
+        "little",
+    )
+    return {
+        "loaded": True,
+        "profiles": _ssi_profile_catalog(),
+        "selected_profile": (
+            _ssi_runtime._active_profile.name
+            if _ssi_runtime._active_profile is not None
+            else ""
+        ),
+        "active": config,
+        "staged": dict(_ssi_runtime._staged or {}),
+        "frames": _ssi_runtime.read_raw_frames(),
+        "mailbox": _ssi_runtime.read_mailbox(),
+        "trace": {"write_index": write_index, "overrun_count": overrun_count},
+        "wires": sim.list_gpio_wires(),
+        "status": "Generic PRU0 emulator / PRU1 reader loaded",
+    }
+
+
+def _load_ssi_runtime_pair() -> dict:
+    """Load, wire and initialize the generic PRU0/PRU1 SSI pair."""
+    global _ssi_runtime
+    reader_source = SSI_RUNTIME_READER.read_text(encoding="utf-8")
+    emulator_source = SSI_RUNTIME_EMULATOR.read_text(encoding="utf-8")
+
+    errors = sim.load("pru1", reader_source, [str(SOURCE_DIR)])
+    if errors:
+        raise RuntimeError("PRU1 generic reader failed to load: " + "; ".join(errors))
+    errors = sim.load("pru0", emulator_source, [str(SOURCE_DIR)])
+    if errors:
+        raise RuntimeError("PRU0 generic emulator failed to load: " + "; ".join(errors))
+
+    sim.remove_gpio_wire(
+        "pru1", SSI_RUNTIME_READER_CLK_PIN,
+        "pru0", SSI_RUNTIME_EMULATOR_CLK_PIN,
+    )
+    sim.remove_gpio_wire(
+        "pru0", SSI_RUNTIME_EMULATOR_DATA_PIN,
+        "pru1", SSI_RUNTIME_READER_DATA_PIN,
+    )
+    sim.add_gpio_wire(
+        "pru1", SSI_RUNTIME_READER_CLK_PIN,
+        "pru0", SSI_RUNTIME_EMULATOR_CLK_PIN,
+    )
+    sim.add_gpio_wire(
+        "pru0", SSI_RUNTIME_EMULATOR_DATA_PIN,
+        "pru1", SSI_RUNTIME_READER_DATA_PIN,
+    )
+    sim.hard_reset()
+
+    _ssi_runtime = SSIRuntime(sim)
+    _ssi_runtime.set_raw_frames(SSI_RUNTIME_DEFAULT_FRAMES)
+    _ssi_runtime.apply()
+    return _ssi_runtime_state()
 
 
 def _safe_source_subpath(path: str) -> pathlib.Path | None:
@@ -220,7 +356,7 @@ async def get_clock_speed():
 
 @app.put("/config/clock_speed")
 async def put_clock_speed(request: Request):
-    global sim
+    global sim, _ssi_runtime
     body = await request.json()
     mhz = body.get("mhz")
     if mhz not in ALLOWED_CLOCK_MHZ:
@@ -237,6 +373,7 @@ async def put_clock_speed(request: Request):
             with open(config_path, "w") as f:
                 f.write(text)
             sim = Simulator(config_path=config_path)
+            _ssi_runtime = None
             _history["pru0"].clear()
             _history["rtu0"].clear()
             _history["pru1"].clear()
@@ -247,6 +384,7 @@ async def put_clock_speed(request: Request):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    global _ssi_runtime
     await websocket.accept()
     try:
         while True:
@@ -255,7 +393,96 @@ async def websocket_endpoint(websocket: WebSocket):
             action = msg.get("action")
             core = msg.get("core", "pru0")
 
-            if action == "load":
+            if action == "ssi_runtime_profiles":
+                await websocket.send_json({
+                    "type": "ssi_runtime_state",
+                    **_ssi_runtime_state(),
+                })
+            elif action == "ssi_runtime_load":
+                try:
+                    state = _load_ssi_runtime_pair()
+                    await websocket.send_json({
+                        "type": "ssi_runtime_state",
+                        **state,
+                    })
+                except Exception as exc:
+                    _ssi_runtime = None
+                    await websocket.send_json({
+                        "type": "ssi_runtime_error",
+                        "error": str(exc),
+                    })
+            elif action == "ssi_runtime_stage":
+                if _ssi_runtime is None:
+                    await websocket.send_json({
+                        "type": "ssi_runtime_error",
+                        "error": "Load the generic SSI PRU pair first",
+                    })
+                    continue
+                try:
+                    profile = msg.get("profile") or None
+                    overrides = msg.get("overrides", {})
+                    if not isinstance(overrides, dict):
+                        raise ValueError("SSI runtime overrides must be an object")
+                    _ssi_runtime.stage(profile, **overrides)
+                    await websocket.send_json({
+                        "type": "ssi_runtime_state",
+                        **_ssi_runtime_state(),
+                    })
+                except (TypeError, ValueError) as exc:
+                    await websocket.send_json({
+                        "type": "ssi_runtime_error",
+                        "error": str(exc),
+                    })
+            elif action == "ssi_runtime_frames":
+                if _ssi_runtime is None:
+                    await websocket.send_json({
+                        "type": "ssi_runtime_error",
+                        "error": "Load the generic SSI PRU pair first",
+                    })
+                    continue
+                try:
+                    values = _parse_ssi_frame_values(msg.get("frames", []))
+                    _ssi_runtime.set_raw_frames(values)
+                    await websocket.send_json({
+                        "type": "ssi_runtime_state",
+                        **_ssi_runtime_state(),
+                    })
+                except (TypeError, ValueError) as exc:
+                    await websocket.send_json({
+                        "type": "ssi_runtime_error",
+                        "error": str(exc),
+                    })
+            elif action == "ssi_runtime_apply":
+                if _ssi_runtime is None:
+                    await websocket.send_json({
+                        "type": "ssi_runtime_error",
+                        "error": "Load the generic SSI PRU pair first",
+                    })
+                    continue
+                try:
+                    _ssi_runtime.apply(int(msg.get("timeout_steps", 200_000)))
+                    await websocket.send_json({
+                        "type": "ssi_runtime_state",
+                        **_ssi_runtime_state(),
+                    })
+                except (TimeoutError, TypeError, ValueError) as exc:
+                    await websocket.send_json({
+                        "type": "ssi_runtime_error",
+                        "error": str(exc),
+                    })
+            elif action == "ssi_runtime_read":
+                if _ssi_runtime is None:
+                    await websocket.send_json({
+                        "type": "ssi_runtime_error",
+                        "error": "Load the generic SSI PRU pair first",
+                    })
+                    continue
+                await websocket.send_json({
+                    "type": "ssi_runtime_state",
+                    **_ssi_runtime_state(),
+                })
+            elif action == "load":
+                _ssi_runtime = None
                 _history[core].clear()
                 filename = msg.get("filename")
                 include_paths = None
@@ -274,6 +501,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json({"type": "error", "errors": errors})
                 await _send_state(websocket, core)
             elif action == "load_elf":
+                _ssi_runtime = None
                 _history[core].clear()
                 # ELF binary sent as base64-encoded string
                 elf_b64 = msg.get("data", "")
@@ -324,6 +552,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 sim.reset(core)
                 await _send_state(websocket, core)
             elif action == "hard_reset":
+                _ssi_runtime = None
                 for k in _history:
                     _history[k].clear()
                 sim.hard_reset()

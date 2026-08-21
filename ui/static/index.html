@@ -1698,6 +1698,76 @@ Example:
             <div id="ssi-inj-status" class="uart-hint" style="display:none;"></div>
           </div>
 
+          <hr class="uart-divider" />
+          <div class="io-section" id="ssi-runtime">
+            <div class="io-section-title">Generic SSI Runtime</div>
+            <div class="uart-controls" style="margin-bottom:5px;">
+              <button id="ssi-runtime-load" class="graph-btn" style="color:var(--accent);border-color:#3a5a8a;">Load PRU0 emulator + PRU1 reader</button>
+              <button id="ssi-runtime-refresh" class="graph-btn">Refresh</button>
+            </div>
+            <div id="ssi-runtime-status" class="uart-hint">Not loaded</div>
+            <div class="uart-controls" style="margin-top:6px;">
+              <span class="uart-label">Profile:</span>
+              <select id="ssi-runtime-profile" class="uart-inj-select" style="min-width:210px;">
+                <option value="">Load the generic pair first</option>
+              </select>
+            </div>
+            <div class="uart-controls" style="margin-top:5px;">
+              <span class="uart-label">Frame:</span>
+              <input id="ssi-runtime-frame-bits" class="uart-inj-num" type="number" min="1" max="64" value="12" title="Total raw SSI frame width" />
+              <span class="uart-label">Pos:</span>
+              <input id="ssi-runtime-position-bits" class="uart-inj-num" type="number" min="1" max="64" value="12" title="Position field width" />
+              <span class="uart-label">High:</span>
+              <input id="ssi-runtime-clock-high" class="uart-inj-num" type="number" min="1" max="256" value="33" title="Clock high phase in PRU cycles" />
+              <span class="uart-label">Low:</span>
+              <input id="ssi-runtime-clock-low" class="uart-inj-num" type="number" min="1" max="256" value="35" title="Clock low phase in PRU cycles" />
+            </div>
+            <div class="uart-controls" style="margin-top:5px;">
+              <span class="uart-label">Sample:</span>
+              <input id="ssi-runtime-sample-delay" class="uart-inj-num" type="number" min="1" max="256" value="15" title="Reader sample delay in PRU cycles" />
+              <span class="uart-label">tv:</span>
+              <input id="ssi-runtime-tv" class="uart-inj-num" type="number" min="0" max="256" value="10" title="Encoder data-valid delay in PRU cycles" />
+              <span class="uart-label">tm:</span>
+              <input id="ssi-runtime-tm" class="uart-inj-num" type="number" min="0" max="256" value="15" title="Encoder monoflop outer iterations" />
+              <span class="uart-label">Tp:</span>
+              <input id="ssi-runtime-tp" class="uart-inj-num" type="number" min="1" max="256" value="16" title="Inter-frame pause outer iterations" />
+            </div>
+            <div class="uart-controls" style="margin-top:5px;">
+              <span class="uart-label">Hold:</span>
+              <input id="ssi-runtime-hold" class="uart-inj-num" type="number" min="1" max="4294967295" value="1" title="Frames or estimated time units per raw frame" />
+              <span class="uart-label">Capture:</span>
+              <select id="ssi-runtime-capture" class="uart-inj-select" title="0 latest mailbox, 1 latest plus trace, 2 trace">
+                <option value="0">Mailbox</option>
+                <option value="1">Mailbox + trace</option>
+                <option value="2">Trace</option>
+              </select>
+              <span class="uart-label">Fault:</span>
+              <select id="ssi-runtime-fault" class="uart-inj-select" title="0 valid frames">
+                <option value="0">Valid</option>
+                <option value="1">Error bits</option>
+                <option value="2">Sentinel</option>
+                <option value="3">All ones</option>
+                <option value="5">Short frame</option>
+                <option value="6">Delayed tv</option>
+                <option value="7">Stuck low</option>
+                <option value="8">Stuck high</option>
+              </select>
+            </div>
+            <div class="uart-controls" style="margin-top:5px;">
+              <span class="uart-label">Raw frames (hex):</span>
+              <input id="ssi-runtime-frames" class="uart-inj-input" style="flex:1;min-width:180px;" value="ABC, AAA, BCA, 12A, CC2" spellcheck="false" title="Complete wire frames, MSB-first; values are hexadecimal" />
+            </div>
+            <div class="uart-controls" style="margin-top:6px;">
+              <button id="ssi-runtime-stage" class="graph-btn">Stage</button>
+              <button id="ssi-runtime-apply" class="graph-btn" style="color:var(--accent);border-color:#3a5a8a;">Apply atomically</button>
+              <input id="ssi-runtime-run-steps" class="uart-inj-num" type="number" min="100" max="200000" value="20000" title="Instruction steps per paired run" />
+              <button id="ssi-runtime-run" class="graph-btn">&#9654; Run pair</button>
+            </div>
+            <div class="uart-hint" style="margin-top:5px;">Run pair advances PRU1 (clock/reader) and PRU0 (emulator). Use the Signal Graph REC control for waveform capture.</div>
+            <pre id="ssi-runtime-mailbox" class="uart-hint" style="white-space:pre-wrap;margin:5px 0 0;">Mailbox: —</pre>
+            <pre id="ssi-runtime-trace" class="uart-hint" style="white-space:pre-wrap;margin:0;">Trace: —</pre>
+          </div>
+
         </div>
       </div>
 
@@ -2009,6 +2079,6 @@ Example:
   </div>
 
   <script src="/static/layout.js"></script>
-  <script src="/static/app.js?v=20260816"></script>
+  <script src="/static/app.js?v=20260820"></script>
 </body>
 </html>

@@ -379,6 +379,9 @@ function connect() {
         else renderMemory(msg);
       } else if (msg.type === "run_done") {
         runRequestInFlight = false;
+        if (msg.request_id === "ssi-runtime-run") {
+          sendAction({ action: "ssi_runtime_read" });
+        }
       } else if (msg.type === "uart_inject_ok") {
         const st = document.getElementById("uart-inj-status");
         if (st) {
@@ -395,6 +398,15 @@ function connect() {
             " (" + msg.bits + "-bit) \u00B7 CLK=GPO" + msg.clk_pin +
             " DATA=GPI" + msg.data_pin + " \u00B7 run to capture";
           st.style.color = "#6a9955";
+          st.style.display = "";
+        }
+      } else if (msg.type === "ssi_runtime_state") {
+        renderSsiRuntimeState(msg);
+      } else if (msg.type === "ssi_runtime_error") {
+        const st = document.getElementById("ssi-runtime-status");
+        if (st) {
+          st.textContent = "✗ " + msg.error;
+          st.style.color = "#f38ba8";
           st.style.display = "";
         }
       } else if (msg.type === "perif_ok") {
@@ -4339,6 +4351,175 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     statusEl.style.color = "#888";
     statusEl.style.display = "";
   });
+})();
+
+// ---- Generic SSI runtime panel ----------------------------------------------
+(function () {
+  const loadBtn = document.getElementById("ssi-runtime-load");
+  if (!loadBtn) return;
+
+  const profileSelect = document.getElementById("ssi-runtime-profile");
+  const fieldIds = {
+    frame_width_bits: "ssi-runtime-frame-bits",
+    position_width_bits: "ssi-runtime-position-bits",
+    clock_high_cycles: "ssi-runtime-clock-high",
+    clock_low_cycles: "ssi-runtime-clock-low",
+    sample_delay_cycles: "ssi-runtime-sample-delay",
+    tv_cycles: "ssi-runtime-tv",
+    tm_pause_outer_iters: "ssi-runtime-tm",
+    tp_pause_outer_iters: "ssi-runtime-tp",
+    sequence_hold_count: "ssi-runtime-hold",
+    capture_mode: "ssi-runtime-capture",
+    fault_mode: "ssi-runtime-fault",
+  };
+
+  function setRuntimeStatus(text, color) {
+    const el = document.getElementById("ssi-runtime-status");
+    if (!el) return;
+    el.textContent = text;
+    el.style.color = color || "";
+  }
+
+  function setRuntimeFields(values) {
+    if (!values) return;
+    Object.entries(fieldIds).forEach(([key, id]) => {
+      const el = document.getElementById(id);
+      if (el && values[key] !== undefined && document.activeElement !== el) {
+        el.value = values[key];
+      }
+    });
+  }
+
+  function renderRuntimeProfiles(profiles) {
+    if (!profileSelect || !Array.isArray(profiles)) return;
+    const selected = profileSelect.value;
+    profileSelect.innerHTML = "";
+    profiles.forEach((profile) => {
+      const option = document.createElement("option");
+      option.value = profile.name;
+      const mhz = (profile.clock_hz / 1e6).toFixed(3);
+      option.textContent = profile.name + " · " + profile.frame_width_bits + "b · " + mhz + " MHz default";
+      profileSelect.appendChild(option);
+    });
+    if (selected && profiles.some((p) => p.name === selected)) {
+      profileSelect.value = selected;
+    }
+  }
+
+  window.renderSsiRuntimeState = function (msg) {
+    renderRuntimeProfiles(msg.profiles);
+    const staged = msg.staged || msg.active || {};
+    if (msg.selected_profile && [...profileSelect.options].some((o) => o.value === msg.selected_profile)) {
+      profileSelect.value = msg.selected_profile;
+    }
+    setRuntimeFields(staged);
+
+    const status = msg.loaded ? msg.status : (msg.status || "Not loaded");
+    setRuntimeStatus(status, msg.loaded ? "#6a9955" : "#888");
+
+    const mailbox = document.getElementById("ssi-runtime-mailbox");
+    if (mailbox) {
+      const mb = msg.mailbox;
+      mailbox.textContent = mb
+        ? "Mailbox: position=0x" + Number(mb.position_value || 0).toString(16).toUpperCase() +
+          " raw=0x" + BigInt(mb.raw_frame || 0).toString(16).toUpperCase() +
+          " status=0x" + Number(mb.status_bits || 0).toString(16).toUpperCase() +
+          " frame=" + (mb.frame_counter || 0)
+        : "Mailbox: —";
+    }
+    const trace = document.getElementById("ssi-runtime-trace");
+    if (trace) {
+      const tr = msg.trace;
+      trace.textContent = tr
+        ? "Trace: " + tr.write_index + " records · " + tr.overrun_count + " overruns"
+        : "Trace: —";
+    }
+    if (Array.isArray(msg.frames) && msg.frames.length) {
+      const frames = msg.frames.map((value) => BigInt(value).toString(16).toUpperCase());
+      document.getElementById("ssi-runtime-frames").value = frames.join(", ");
+    }
+  };
+
+  function numericOverrides() {
+    const overrides = {};
+    Object.entries(fieldIds).forEach(([key, id]) => {
+      const value = Number(document.getElementById(id).value);
+      if (Number.isFinite(value)) overrides[key] = Math.trunc(value);
+    });
+    return overrides;
+  }
+
+  function selectedProfile() {
+    return profileSelect && profileSelect.value ? profileSelect.value : "";
+  }
+
+  function frameTokens() {
+    return document.getElementById("ssi-runtime-frames").value
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .map((value) => value.startsWith("0x") || value.startsWith("0X") ? value : "0x" + value);
+  }
+
+  loadBtn.addEventListener("click", () => {
+    setRuntimeStatus("Loading generic PRU0 emulator / PRU1 reader...", "#888");
+    sendAction({ action: "ssi_runtime_load" });
+  });
+
+  document.getElementById("ssi-runtime-refresh").addEventListener("click", () => {
+    sendAction({ action: "ssi_runtime_read" });
+  });
+
+  profileSelect.addEventListener("change", () => {
+    const selected = [...(window.ssiRuntimeProfileCatalog || [])]
+      .find((profile) => profile.name === profileSelect.value);
+    if (selected) setRuntimeFields(selected);
+  });
+
+  document.getElementById("ssi-runtime-stage").addEventListener("click", () => {
+    sendAction({
+      action: "ssi_runtime_stage",
+      profile: selectedProfile(),
+      overrides: numericOverrides(),
+    });
+    setRuntimeStatus("Configuration staged; press Apply atomically.", "#dcdcaa");
+  });
+
+  document.getElementById("ssi-runtime-apply").addEventListener("click", () => {
+    // WebSocket preserves message order: stage -> frame slots -> apply.
+    sendAction({
+      action: "ssi_runtime_stage",
+      profile: selectedProfile(),
+      overrides: numericOverrides(),
+    });
+    sendAction({ action: "ssi_runtime_frames", frames: frameTokens() });
+    sendAction({ action: "ssi_runtime_apply" });
+    setRuntimeStatus("Applying at an idle SSI frame boundary...", "#dcdcaa");
+  });
+
+  document.getElementById("ssi-runtime-run").addEventListener("click", () => {
+    const steps = Math.max(100, Math.min(
+      200000,
+      Number(document.getElementById("ssi-runtime-run-steps").value) || 20000,
+    ));
+    sendAction({
+      action: "run_multicore",
+      core: "pru1",
+      partner: "pru0",
+      max_steps: Math.trunc(steps),
+      capture: true,
+      request_id: "ssi-runtime-run",
+    });
+    setRuntimeStatus("Running paired SSI cores...", "#888");
+  });
+
+  // Keep the catalog available to the profile-change handler without coupling
+  // it to the websocket message format.
+  const originalRender = window.renderSsiRuntimeState;
+  window.renderSsiRuntimeState = function (msg) {
+    window.ssiRuntimeProfileCatalog = msg.profiles || window.ssiRuntimeProfileCatalog || [];
+    originalRender(msg);
+  };
 })();
 
 // ---- GP Mux mode selector (GPCFG.PRU_GP_MUX_SEL) ---------------------------

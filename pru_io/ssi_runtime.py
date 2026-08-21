@@ -504,6 +504,57 @@ class SSIRuntime:
 
         self.wait_for_apply(timeout_steps)
 
+    def set_raw_frames(self, frame_values: list[int]) -> None:
+        """Write the emulator's raw MSB-first frame sequence into shared RAM.
+
+        Values are complete wire frames, not semantic positions.  Keeping
+        this operation separate from ``stage`` preserves the atomic config
+        generation contract: callers write the sequence, then call ``apply``
+        after staging any matching width/timing changes.
+        """
+        if self._staged is None:
+            raise RuntimeError("set_raw_frames() called before stage()")
+        if not 1 <= len(frame_values) <= 16:
+            raise ValueError("SSI frame sequence must contain 1 to 16 values")
+
+        width = int(self._staged.get("frame_width_bits", 0))
+        if not 1 <= width <= 64:
+            raise ValueError(f"frame width must be in [1, 64], got {width}")
+        maximum = (1 << width) - 1
+
+        for index, value in enumerate(frame_values):
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise ValueError(f"SSI frame {index} is not an integer")
+            if not 0 <= value <= maximum:
+                raise ValueError(
+                    f"SSI frame {index}=0x{value:X} does not fit in {width} bits"
+                )
+            self.sim.memory.write(
+                abi.FRAMES_BASE + index * abi.FRAME_SLOT_SIZE,
+                abi.pack_frame_slot(value),
+            )
+
+        for index in range(len(frame_values), 16):
+            self.sim.memory.write(
+                abi.FRAMES_BASE + index * abi.FRAME_SLOT_SIZE,
+                abi.pack_frame_slot(abi.FRAME_SLOT_UNUSED_SENTINEL),
+            )
+
+    def read_raw_frames(self) -> list[int]:
+        """Read the active raw-frame sequence until its sentinel slot."""
+        frames = []
+        for index in range(16):
+            raw = int.from_bytes(
+                self.sim.memory_read(
+                    abi.FRAMES_BASE + index * abi.FRAME_SLOT_SIZE, 8
+                ),
+                "little",
+            )
+            if raw == abi.FRAME_SLOT_UNUSED_SENTINEL:
+                break
+            frames.append(raw)
+        return frames
+
     def wait_for_apply(self, timeout_steps: int = 200_000) -> None:
         """Step the simulator until both PRU cores' ack fields catch up to
         the currently requested_generation (or just PRU1's, for topology==1
