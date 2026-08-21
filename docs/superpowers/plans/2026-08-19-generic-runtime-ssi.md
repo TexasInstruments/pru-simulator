@@ -28,7 +28,11 @@ only — no new dependencies), pytest, JSON (schema).
   update, apply, readback, and frame-width overflow rejection.
 - [x] Source READMEs, project reports, handoff, session report, and this plan
   are synchronized with the dashboard behavior.
-- [ ] CCS/R5/hardware implementation and LaunchPad acceptance remain deferred.
+- [x] Parent CCS/R5 project structure, shared ABI snapshot, role-switched PRU
+  sources, and staged R5 control-plane implementation are present in
+  `encoder-workspace/firmware/ccs-tests/ssi_test`.
+- [ ] TI toolchain build and LaunchPad acceptance remain pending because they
+  require the CCS/SDK installation and physical hardware.
 
 ## Global Constraints
 
@@ -44,7 +48,9 @@ only — no new dependencies), pytest, JSON (schema).
 - PRU0 never encodes (Gray/Tannenbaum/alignment/padding) and PRU1 never
   decodes — both are pure bit-shifters against prepacked/raw wire bits; all
   encoding-aware logic lives in the Python runtime module.
-- Real CCS/R5/hardware work is explicitly out of scope for every task below.
+- The simulator and parent CCS/R5 sources must remain ABI-compatible; actual
+  TI-toolchain and LaunchPad validation is a separate pending verification
+  step.
 - Commit and push only when explicitly requested by the repository owner.
 
 ---

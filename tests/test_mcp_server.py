@@ -11,8 +11,8 @@ SSI_READER_SRC = (SOURCE_DIR / "ssi_generic_reader" / "ssi_generic_reader.asm").
 SSI_EMULATOR_SRC = (SOURCE_DIR / "ssi_generic_emulator" / "ssi_generic_emulator.asm").read_text()
 
 SSI_READER_CLK_PIN = 0
-SSI_READER_DATA_PIN = 8
-SSI_EMULATOR_CLK_IN_PIN = 16
+SSI_READER_DATA_PIN = 16
+SSI_EMULATOR_CLK_IN_PIN = 8
 SSI_EMULATOR_DATA_OUT_PIN = 0
 
 
@@ -183,3 +183,11 @@ class TestMCPTools:
         assert trace_result["write_index"] == mb["frame_counter"]
         assert len(trace_result["records"]) >= 1
         assert trace_result["records"][0]["timestamp_cycles"] > 0
+
+    def test_ssi_set_positions_uses_the_shared_packing_path(self):
+        self._load_ssi_paired()
+        result = self.mcp.ssi_set_positions(
+            positions_json=json.dumps(["ABC", "12A"])
+        )
+        assert result["status"] == "success"
+        assert result["frames"] == [0xABC, 0x12A]

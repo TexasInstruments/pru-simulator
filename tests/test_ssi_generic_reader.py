@@ -28,8 +28,8 @@ READER_SRC = (SOURCE_DIR / "ssi_generic_reader" / "ssi_generic_reader.asm").read
 EMULATOR_SRC = (SOURCE_DIR / "ssi_generic_emulator" / "ssi_generic_emulator.asm").read_text()
 
 READER_CLK_PIN = 0     # this program's GPO clock output (r30.0)
-READER_DATA_PIN = 8    # this program's GPI data input (r31.8)
-EMULATOR_CLK_IN_PIN = 16    # ssi_generic_emulator.asm's GPI clock input (r31.16)
+READER_DATA_PIN = 16   # this program's GPI data input (r31.16)
+EMULATOR_CLK_IN_PIN = 8     # ssi_generic_emulator.asm's GPI clock input (r31.8)
 EMULATOR_DATA_OUT_PIN = 0   # ssi_generic_emulator.asm's GPO data output (r30.0)
 
 
@@ -61,10 +61,8 @@ def make_reader_only_sim():
 
 def configure(sim, **fields):
     """Write a full config block. Defaults: plain 12-bit/no-error loopback
-    shape at the same clock timing test_ssi_generic_emulator.py already
-    proved works paired with a reader (clock_high=33/clock_low=35 match
-    ssi_reader_4mhz_12bit.asm's own HIGH_DLY/LOW_DLY; tv_cycles=5/
-    tm_pause_outer_iters=15 match that file's known-good pairing values)."""
+    shape at the direct loop counts used by the original fixed pair
+    (clock_high=33/clock_low=35; tv_cycles=5/tm_pause_outer_iters=15)."""
     base = dict(
         abi_version=1,
         struct_size=256,
@@ -143,6 +141,51 @@ def advance_reader_only_to_frame(sim, frame_count, settle_steps=200, max_steps=6
             sim.step("pru1", settle_steps)
             return read_u32(sim, abi.MAILBOX_BASE + abi.MAILBOX_FRAME_COUNTER_OFF)
     raise AssertionError(f"never reached frame_counter={frame_count}")
+
+
+def test_configured_clock_phase_lengths_are_observed_in_reader_only_mode():
+    """The configured high/low values describe the actual GPO phase widths.
+
+    Reader-only mode removes emulator scheduling from this timing check. A
+    constant data input also exercises the balanced sample path, so every
+    measured bit has the same duration.
+    """
+    sim = make_reader_only_sim()
+    configure(
+        sim,
+        topology=1,
+        frame_width_bits=8,
+        position_width_bits=8,
+        position_offset_bits=0,
+        error_offset_bits=0xFFFF,
+        error_width_bits=0,
+        clock_high_cycles=29,
+        clock_low_cycles=31,
+        sample_delay_cycles=15,
+        tv_cycles=10,
+    )
+    sim.set_input("pru1", READER_DATA_PIN, True)
+
+    previous = sim.cores["pru1"].io_port.gpo & 1
+    transitions = []
+    for _ in range(20_000):
+        sim.step("pru1", 1)
+        current = sim.cores["pru1"].io_port.gpo & 1
+        if current != previous:
+            transitions.append((sim.cores["pru1"].counters.cycles, previous, current))
+            previous = current
+        if len(transitions) >= 20:
+            break
+
+    rising = [cycle for cycle, old, new in transitions if old == 0 and new == 1]
+    falling = [cycle for cycle, old, new in transitions if old == 1 and new == 0]
+    assert len(rising) >= 8
+    assert len(falling) >= 8
+    # The configured values are the LOOP-body counts. The fixed reader hot
+    # path adds 11 cycles to the high phase and 4 to the low phase, so the
+    # legacy 29+31 setting produces exactly 75 cycles per bit.
+    assert [fall - rise for rise, fall in zip(rising, falling)][2:8] == [40] * 6
+    assert [rise - fall for fall, rise in zip(falling, rising[1:])][2:8] == [35] * 6
 
 
 # ---------------------------------------------------------------------------

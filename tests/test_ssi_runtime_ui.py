@@ -31,14 +31,26 @@ def test_generic_ssi_runtime_panel_exposes_load_configure_and_observe_controls()
         "ssi-runtime",
         "ssi-runtime-load",
         "ssi-runtime-profile",
+        "ssi-runtime-topology",
+        "ssi-runtime-encoding",
+        "ssi-runtime-alignment",
         "ssi-runtime-frame-bits",
+        "ssi-runtime-position-offset",
         "ssi-runtime-clock-high",
         "ssi-runtime-clock-low",
         "ssi-runtime-sample-delay",
         "ssi-runtime-tv",
         "ssi-runtime-tm",
         "ssi-runtime-tp",
+        "ssi-runtime-formation",
+        "ssi-runtime-formation-pause",
+        "ssi-runtime-hold-mode",
+        "ssi-runtime-position-count",
+        "ssi-runtime-gray-excess-offset",
+        "ssi-runtime-fault-argument",
+        "ssi-runtime-fault-repeat",
         "ssi-runtime-frames",
+        "ssi-runtime-positions",
         "ssi-runtime-stage",
         "ssi-runtime-apply",
         "ssi-runtime-run",
@@ -53,6 +65,7 @@ def test_generic_ssi_runtime_panel_exposes_load_configure_and_observe_controls()
         "ssi_runtime_load",
         "ssi_runtime_stage",
         "ssi_runtime_frames",
+        "ssi_runtime_positions",
         "ssi_runtime_apply",
         "ssi_runtime_read",
     ):
@@ -69,7 +82,7 @@ def test_profile_catalog_is_safe_for_ui_and_contains_default_and_documented_prof
 
     default = next(p for p in profiles if p["name"] == "CUSTOM_LEGACY_12BIT_4MHZ")
     assert default["frame_width_bits"] == 12
-    assert default["clock_hz"] > 4_000_000
+    assert default["clock_hz"] == 4_000_000
     assert set(default) >= {
         "name",
         "frame_width_bits",
@@ -137,7 +150,17 @@ def test_dashboard_websocket_runs_generic_ssi_pair_and_applies_raw_frames(fresh_
         assert loaded["type"] == "ssi_runtime_state"
         assert loaded["loaded"] is True
         assert loaded["selected_profile"] == "CUSTOM_LEGACY_12BIT_4MHZ"
-        assert {"src_core": "pru1", "src_pin": 0, "dst_core": "pru0", "dst_pin": 16} in loaded["wires"]
+        assert loaded["effective_clock_hz"] == loaded["active"]["effective_clock_hz"]
+        assert {"src_core": "pru1", "src_pin": 0, "dst_core": "pru0", "dst_pin": 8} in loaded["wires"]
+        assert {"src_core": "pru0", "src_pin": 0, "dst_core": "pru1", "dst_pin": 16} in loaded["wires"]
+
+        ws.send_json({
+            "action": "ssi_runtime_stage",
+            "profile": "KH53",
+        })
+        staged_profile = ws.receive_json()
+        assert staged_profile["selected_profile"] == "CUSTOM_LEGACY_12BIT_4MHZ"
+        assert staged_profile["staged_profile"] == "KH53"
 
         ws.send_json({
             "action": "ssi_runtime_stage",
@@ -154,6 +177,14 @@ def test_dashboard_websocket_runs_generic_ssi_pair_and_applies_raw_frames(fresh_
         })
         frames = ws.receive_json()
         assert frames["frames"] == [0xABC, 0xAAA, 0xBCA, 0x12A, 0xCC2]
+
+        ws.send_json({
+            "action": "ssi_runtime_positions",
+            "positions": ["ABC", "12A"],
+        })
+        positions = ws.receive_json()
+        assert positions["type"] == "ssi_runtime_state"
+        assert positions["frames"] == [0xABC, 0x12A]
 
         ws.send_json({"action": "ssi_runtime_apply"})
         applied = ws.receive_json()
@@ -174,7 +205,11 @@ def test_dashboard_websocket_rejects_frame_that_exceeds_staged_width(fresh_sim):
         ws.send_json({
             "action": "ssi_runtime_stage",
             "profile": "CUSTOM_LEGACY_12BIT_4MHZ",
-            "overrides": {"frame_width_bits": 8, "position_width_bits": 8},
+            "overrides": {
+                "frame_width_bits": 8,
+                "position_width_bits": 8,
+                "singleturn_width_bits": 8,
+            },
         })
         ws.receive_json()
         ws.send_json({"action": "ssi_runtime_frames", "frames": ["ABC"]})

@@ -4360,17 +4360,31 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
 
   const profileSelect = document.getElementById("ssi-runtime-profile");
   const fieldIds = {
+    topology: "ssi-runtime-topology",
+    encoding_type: "ssi-runtime-encoding",
+    alignment: "ssi-runtime-alignment",
+    formation_mode: "ssi-runtime-formation",
     frame_width_bits: "ssi-runtime-frame-bits",
+    position_offset_bits: "ssi-runtime-position-offset",
     position_width_bits: "ssi-runtime-position-bits",
+    singleturn_width_bits: "ssi-runtime-singleturn-bits",
+    multiturn_width_bits: "ssi-runtime-multiturn-bits",
+    error_offset_bits: "ssi-runtime-error-offset",
+    error_width_bits: "ssi-runtime-error-bits",
+    padding_width_bits: "ssi-runtime-padding-bits",
     clock_high_cycles: "ssi-runtime-clock-high",
     clock_low_cycles: "ssi-runtime-clock-low",
     sample_delay_cycles: "ssi-runtime-sample-delay",
     tv_cycles: "ssi-runtime-tv",
     tm_pause_outer_iters: "ssi-runtime-tm",
     tp_pause_outer_iters: "ssi-runtime-tp",
+    formation_pause_outer_iters: "ssi-runtime-formation-pause",
+    sequence_hold_mode: "ssi-runtime-hold-mode",
     sequence_hold_count: "ssi-runtime-hold",
     capture_mode: "ssi-runtime-capture",
     fault_mode: "ssi-runtime-fault",
+    fault_argument: "ssi-runtime-fault-argument",
+    fault_repeat_count: "ssi-runtime-fault-repeat",
   };
 
   function setRuntimeStatus(text, color) {
@@ -4415,7 +4429,12 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     setRuntimeFields(staged);
 
     const status = msg.loaded ? msg.status : (msg.status || "Not loaded");
-    setRuntimeStatus(status, msg.loaded ? "#6a9955" : "#888");
+    const generation = msg.loaded
+      ? " · gen " + msg.requested_generation +
+        " ack " + msg.pru0_ack_generation + "/" + msg.pru1_ack_generation +
+        " · " + (Number(msg.effective_clock_hz || 0) / 1e6).toFixed(3) + " MHz"
+      : "";
+    setRuntimeStatus(status + generation, msg.loaded ? "#6a9955" : "#888");
 
     const mailbox = document.getElementById("ssi-runtime-mailbox");
     if (mailbox) {
@@ -4461,6 +4480,31 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
       .map((value) => value.startsWith("0x") || value.startsWith("0X") ? value : "0x" + value);
   }
 
+  function positionTokens() {
+    return document.getElementById("ssi-runtime-positions").value
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .map((value) => value.startsWith("0x") || value.startsWith("0X") ? value : "0x" + value);
+  }
+
+  function optionalNumber(id) {
+    const value = document.getElementById(id).value.trim();
+    return value === "" ? undefined : Math.trunc(Number(value));
+  }
+
+  function sendPositionPacking() {
+    const message = {
+      action: "ssi_runtime_positions",
+      positions: positionTokens(),
+    };
+    const count = optionalNumber("ssi-runtime-position-count");
+    const offset = optionalNumber("ssi-runtime-gray-excess-offset");
+    if (count !== undefined) message.position_count = count;
+    if (offset !== undefined) message.gray_excess_offset = offset;
+    sendAction(message);
+  }
+
   loadBtn.addEventListener("click", () => {
     setRuntimeStatus("Loading generic PRU0 emulator / PRU1 reader...", "#888");
     sendAction({ action: "ssi_runtime_load" });
@@ -4468,6 +4512,11 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
 
   document.getElementById("ssi-runtime-refresh").addEventListener("click", () => {
     sendAction({ action: "ssi_runtime_read" });
+  });
+
+  document.getElementById("ssi-runtime-pack").addEventListener("click", () => {
+    sendPositionPacking();
+    setRuntimeStatus("Natural positions packed into staged frame slots.", "#dcdcaa");
   });
 
   profileSelect.addEventListener("change", () => {

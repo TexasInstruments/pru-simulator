@@ -11,10 +11,10 @@ PRU1 reader program whose behavior — bit width, clock timing, encoding, sequen
 faults — is driven entirely by a shared-memory configuration block, switchable at
 runtime without reloading either program.
 
-This spec covers the **simulator-only** slice: the shared-memory ABI, the generic
-PRU0/PRU1 assembly behavior, and the Python module that plays the role real R5
-firmware will eventually play (profile table, validation, staged-config-then-apply).
-Real R5/CCS work is a separate, later effort and is out of scope here.
+This spec defines the shared-memory ABI, the generic PRU0/PRU1 assembly
+behavior, and the Python control-plane model. The parent CCS/R5 project now
+uses the same contract; TI-toolchain and LaunchPad acceptance remain a
+separate hardware verification step.
 
 ## Scope decisions
 
@@ -61,8 +61,12 @@ the existing fixed firmware already nests two loops for its ~12.5 µs monoflop
 runtime division, every field below keeps that same convention explicitly:
 
 - `clock_high_cycles`, `clock_low_cycles`, `sample_delay_cycles`, `tv_cycles`
-  are each consumed by a single `loop label, N` instruction directly — the
-  config-writer (host) must keep each ≤ 256, matching hardware's own limit.
+  are each consumed by a single `loop label, N` instruction directly - the
+  config-writer (host) must keep each <= 256, matching hardware's own limit.
+  The generic reader's balanced bit path adds a fixed 15 cycles to each full
+  bit period (11 in the high phase and 4 in the low phase); effective clock
+  frequency is therefore `300 MHz / (high + low + 15)`. The default
+  29+31 loop counts produce exactly 75 cycles per bit and 4 MHz.
 - `tm_pause_outer_iters`, `tp_pause_outer_iters`, `formation_pause_outer_iters`
   are **outer-loop repeat counts** against a fixed inner count of 250
   (`SSI_PAUSE_INNER_ITERS` in the generated `.inc`, not configurable — it
@@ -92,10 +96,10 @@ runtime division, every field below keeps that same convention explicitly:
 | `0x22` | u16 | `error_offset_bits` | Bit offset of the error/status field; `0xFFFF` if none. |
 | `0x24` | u16 | `error_width_bits` | Error/status bit count. |
 | `0x26` | u16 | `padding_width_bits` | Zero-fill bits when resolution is below the allocated width. |
-| `0x28` | u32 | `clock_high_cycles` | Single-loop iterations the SSI clock line stays high per bit (≤256). |
-| `0x2C` | u32 | `clock_low_cycles` | Single-loop iterations the SSI clock line stays low per bit (≤256). |
+| `0x28` | u32 | `clock_high_cycles` | Single-loop iterations for the high phase body (≤256); the fixed 11-cycle high-path overhead is not included. |
+| `0x2C` | u32 | `clock_low_cycles` | Single-loop iterations for the low phase body (≤256); the fixed 4-cycle low-path overhead is not included. |
 | `0x30` | u32 | `sample_delay_cycles` | Reader: single-loop iterations after the rising edge before sampling data (≤256, and `< clock_high_cycles`). |
-| `0x34` | u32 | `tv_cycles` | Emulator: single-loop iterations after the clock edge before data is valid (datasheet `tv`, ≤256). |
+| `0x34` | u32 | `tv_cycles` | Emulator: single-loop iterations after the clock edge before data is valid (datasheet `tv`, ≤256, and `< sample_delay_cycles`). |
 | `0x38` | u32 | `tm_pause_outer_iters` | Outer-loop count (× fixed inner 250) for the monoflop / inter-frame idle time the emulator holds before accepting a new frame. |
 | `0x3C` | u32 | `tp_pause_outer_iters` | Outer-loop count (× fixed inner 250) for the reader's inter-frame gap; must be `> tm_pause_outer_iters`. |
 | `0x40` | u32 | `formation_pause_outer_iters` | Outer-loop count (× fixed inner 250). Sync mode: delay from clock-train end to position latch. Async mode: refresh interval. |
@@ -215,26 +219,27 @@ panel. It is a simulator-only client of `SSIRuntime`; it does not duplicate
 profile validation or write ABI offsets directly.
 
 The load action loads the generic emulator on PRU0 and the generic reader on
-PRU1, installs the virtual loopback wires `pru1:GPO0 -> pru0:GPI16` for the
-clock and `pru0:GPO0 -> pru1:GPI8` for data, and initializes the default
+PRU1, installs the virtual loopback wires `pru1:GPO0 -> pru0:GPI8` for the
+clock and `pru0:GPO0 -> pru1:GPI16` for data, and initializes the default
 profile. The panel exposes named profiles, frame/position widths, clock
 high/low cycles, sample delay, `tv`, `tm`, `Tp`, sequence hold, capture mode,
-fault mode, and a comma-separated raw hexadecimal frame sequence.
+fault mode, and comma-separated semantic positions with optional Gray-excess
+metadata. Raw frame slots remain available through the runtime/API.
 
 The browser applies a complete generation in this order:
 
 1. Send staged profile and numeric overrides.
-2. Send raw frame slots, rejecting values that exceed the staged frame width.
+2. Pack semantic positions or send raw frame slots, rejecting values that
+   exceed the staged resolution.
 3. Send apply and wait for the PRU generation acknowledgements.
 4. Run PRU1 and PRU0 as a pair and read the seqlock mailbox/trace state.
 
 The UI displays the latest raw frame, structurally extracted position/status,
-frame counter, trace write index, and trace overrun count. Raw values are
-complete wire frames in hexadecimal; the UI does not interpolate missing
-frames or silently truncate oversized values. Encoding semantics, alignment,
-formation mode, and other fields not exposed by these controls remain
-available through the Python/MCP runtime surface and retain the limitations
-documented in the handoff.
+frame counter, trace write index, and trace overrun count. Semantic positions
+are packed by the host runtime, complete raw frames remain available through
+the API, and neither path interpolates missing frames or silently truncates
+oversized values. Formation timing and all encoding/layout controls are
+validated by the shared runtime surface.
 
 The browser contract is tested by `tests/test_ssi_runtime_ui.py`, while the
 parent workspace guide provides a manual test sequence for users.

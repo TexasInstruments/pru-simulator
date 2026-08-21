@@ -4,7 +4,9 @@
 ; width and clock timing are driven by the shared-memory config block
 ; described in ssi_config_abi.inc / docs/superpowers/specs/
 ; 2026-08-19-generic-runtime-ssi-design.md instead of hardcoded .set
-; constants. The fixed file is untouched.
+; constants. The fixed file is untouched. The configured LOOP bodies are
+; separate from the fixed 15-cycle per-bit hot-path overhead; the host
+; reports the resulting effective frequency.
 ;
 ; Unlike ssi_generic_emulator.asm (PRU0, reactive: waits for an external
 ; clock and needs a debounce/sync mechanism), THIS program is the *active*
@@ -17,10 +19,9 @@
 ; mailbox every frame, and optionally appends 24-byte trace records --
 ; none of which PRU0 needs to do.
 ;
-; Virtual loopback (same pin convention as ssi_reader_4mhz_12bit.asm /
-; ssi_generic_emulator.asm's header comment):
-;   this program R30.0  (CLK out)  -> emulator R31.16 (CLK in)
-;   emulator     R30.0  (DATA out) -> this program R31.8 (DATA in)
+; LaunchPad loopback pin contract:
+;   this program R30.0  (CLK out, BP.11) -> emulator R31.8 (CLK in, BP.51)
+;   emulator     R30.0  (DATA out, BP.33) -> this program R31.16 (DATA in, BP.57)
 ;
 ; ---------------------------------------------------------------------------
 ; Register map (r30/r31 are the GPIO pins; everything else is ours to pick).
@@ -37,8 +38,8 @@
 ;     r9  POS_WIDTH         cached position_width_bits
 ;     r10 ERR_OFFSET        cached error_offset_bits (0xFFFF sentinel if none)
 ;     r11 ERR_WIDTH         cached error_width_bits (0 => no error field)
-;     r12 CLK_HIGH          cached clock_high_cycles (total high-phase length)
-;     r13 CLK_LOW           cached clock_low_cycles
+;     r12 CLK_HIGH          cached high-phase LOOP-body count
+;     r13 CLK_LOW           cached low-phase LOOP-body count
 ;     r14 SAMPLE_DELAY      cached sample_delay_cycles
 ;     r15 POS_OFFSET        cached position_offset_bits
 ;     r16 REMAINING_HIGH    derived: CLK_HIGH - SAMPLE_DELAY (see below)
@@ -86,7 +87,7 @@
     .include "ssi_config_abi.inc"
 
 CLK_PIN       .set 0     ; this program's GPO clock output
-DATA_PIN      .set 8     ; this program's GPI data input
+DATA_PIN      .set 16    ; this program's GPI data input (LaunchPad BP.57)
 
 ; Real (non-reserved) config fields run from SSI_CONFIG_BASE for this many
 ; bytes; the 172-byte reserved tail is never read. Matches
@@ -103,6 +104,10 @@ SSI_CAPTURE_OFF_FROM_CFG .set 0x240
 SSI_TRACE_OFF_FROM_CFG   .set 0x400
 
 TRACE_SLOT_COUNT .set 1024   ; must match the design doc's 1,024-slot buffer
+; Fixed instructions in the bit path in addition to the two configured LOOP
+; bodies. Keep this in the timestamp estimate as well as the host frequency
+; calculation so both report the same nominal bit period.
+CLOCK_LOOP_OVERHEAD_CYCLES .set 15
 
 ; ---- Register aliases (pure text substitution via .asg; see map above) ----
     .asg r4,  APPLIED_GEN
@@ -187,8 +192,9 @@ l_apply_config:
 
     ; High-phase split: the config-writer promises sample_delay_cycles > 0
     ; and < clock_high_cycles (design doc's field doc for sample_delay_cycles),
-    ; so this can never underflow. See the bit loop below for how the two
-    ; pieces are used.
+    ; so this can never underflow. The fixed hot path contributes 11 cycles
+    ; beyond the two LOOP bodies; this is included in the host frequency
+    ; estimate and remains constant for both data levels.
     sub   REMAINING_HIGH, CLK_HIGH, SAMPLE_DELAY
 
     ; -- word15 (@0x3C): tp_pause_outer_iters, standalone, no extraction --
@@ -234,11 +240,15 @@ l_bit_loop:
     loop  l_sample_pt, SAMPLE_DELAY   ; tv-equivalent: wait until data is valid
     nop
 l_sample_pt:
-    qbbc  l_bit_zero, r31, DATA_PIN
-    ldi   BITVAL, 1
-    qba   l_bit_shift
-l_bit_zero:
+    ; Keep both data levels on the same instruction path. The old
+    ; qbbc/ldi/qba form made a one-bit high phase one cycle longer than a
+    ; zero-bit high phase, which distorted the clock duty cycle and its
+    ; apparent frequency.
     ldi   BITVAL, 0
+    qbbs  l_bit_one, r31, DATA_PIN
+    qba   l_bit_shift
+l_bit_one:
+    ldi   BITVAL, 1
 l_bit_shift:
     ; Shift the 64-bit accumulator left by 1 across both words, then OR the
     ; newly sampled bit into RAW_LO's LSB, MSB-first:
@@ -291,7 +301,8 @@ l_extract_done:
 ; free-running cycle counter readable by a running program, so
 ; timestamp_cycles is a documented *approximation* (same framing as
 ; ssi_generic_emulator.asm's hold-time estimate): frame_width_bits *
-; (clock_high_cycles + clock_low_cycles) + tp_pause_outer_iters *
+; (clock_high_cycles + clock_low_cycles + CLOCK_LOOP_OVERHEAD_CYCLES) +
+; tp_pause_outer_iters *
 ; SSI_PAUSE_INNER_ITERS, added to the running accumulator every completed
 ; frame. Not exact wall-clock cycles, but monotonic and deterministic.
 ;
@@ -307,7 +318,8 @@ l_extract_done:
 ; =============================================================================
     add   FRAME_COUNTER, FRAME_COUNTER, 1
 
-    add   TMP, CLK_HIGH, CLK_LOW      ; TMP = clock_high_cycles + clock_low_cycles
+    add   TMP, CLK_HIGH, CLK_LOW      ; configured LOOP bodies
+    add   TMP, TMP, CLOCK_LOOP_OVERHEAD_CYCLES ; fixed hot-path cycles per bit
     ldi   EXT_TMP, 0                  ; EXT_TMP (was subroutine scratch) = TSINC
     loop  l_ts_mul1_done, FRAME_WIDTH
     add   EXT_TMP, EXT_TMP, TMP

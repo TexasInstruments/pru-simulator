@@ -70,6 +70,11 @@ NO_ERROR_FIELD = 0xFFFF
 # Single-loop hardware ceiling (LOOP instruction caps at 256 iterations);
 # see the design doc's "Units convention".
 _SINGLE_LOOP_MAX = 256
+# The generic reader's fixed per-bit work outside the high/low LOOP bodies:
+# balanced data selection (3), 64-bit shift (5), and edge/loop bookkeeping
+# (7). Keep this in the control plane so the UI reports the waveform that the
+# deterministic PRU loop actually generates.
+CLOCK_LOOP_OVERHEAD_CYCLES = 15
 
 
 @dataclass(frozen=True)
@@ -132,12 +137,9 @@ class Profile:
 # fail this module's own stage() validation, and stage()ing this exact
 # profile is what SSIRuntime.__init__ does unconditionally on every
 # construction -- see the report for the full justification:
-#   - clock_high_cycles=33/clock_low_cycles=35 (pinned exactly to match the
-#     existing fixed ssi_reader_4mhz_12bit.asm/ssi_encoder_emulator_12bit.asm
-#     programs) yield a derived clock of 300_000_000/68 ~= 4,411,765 Hz, a
-#     few percent over a literal 4_000_000 Hz ceiling. max_clock_hz is raised
-#     to 4_500_000 (still "~4 MHz", now actually covering the pinned cycle
-#     counts) rather than touching the pinned clock_high/low_cycles values.
+#   - clock_high_cycles=29/clock_low_cycles=31 are the generic LOOP-body
+#     counts. Including the fixed 15-cycle hot path gives 75 cycles/bit and
+#     exactly 4,000,000 Hz at a 300 MHz PRU clock.
 #   - tp_pause_outer_iters is raised from 15 to 16 so it is strictly greater
 #     than tm_pause_outer_iters=15, per stage()'s own validation rule; the
 #     fixed reference programs use 15/15 (equal), which the brief's table
@@ -309,14 +311,29 @@ CUSTOM_LEGACY_12BIT_4MHZ = Profile(
     error_offset_bits=12,
     error_width_bits=0,
     padding_width_bits=0,
-    clock_high_cycles=33,
-    clock_low_cycles=35,  # matches the existing fixed programs exactly
+    clock_high_cycles=29,
+    clock_low_cycles=31,  # 29+31 LOOP cycles plus 15 fixed cycles = 75
     sample_delay_cycles=15,
     tv_cycles=10,
     tm_pause_outer_iters=15,
     tp_pause_outer_iters=16,  # see module-level NOTE above (brief says 15)
-    max_clock_hz=4_500_000,  # see module-level NOTE above (brief says 4_000_000)
+    max_clock_hz=4_000_000,
 )
+
+_POSITION_METADATA_FIELDS = (
+    "encoding_type",
+    "alignment",
+    "frame_width_bits",
+    "position_offset_bits",
+    "position_width_bits",
+    "singleturn_width_bits",
+    "multiturn_width_bits",
+    "error_offset_bits",
+    "error_width_bits",
+    "padding_width_bits",
+)
+
+DEFAULT_RUNTIME_FRAMES = (0xABC, 0xAAA, 0xBCA, 0x12A, 0xCC2)
 
 
 PROFILES: dict[str, Profile] = {
@@ -348,12 +365,25 @@ class SSIRuntime:
         self.sim = sim
         self._staged: dict[str, int] | None = None
         self._active_profile: Profile | None = None
+        self._staged_profile: Profile | None = None
+        self._active_config: dict[str, int] | None = None
+        # Gray-excess selects a product-specific window in the full Gray
+        # code. The fixed shared ABI carries the wire frame, while this
+        # host-side metadata keeps packing and semantic readback paired.
+        self._position_count: int | None = None
+        self._gray_excess_offset: int | None = None
+        self._active_position_count: int | None = None
+        self._active_gray_excess_offset: int | None = None
         # Tasks 3/4's PRU programs have no sensible behavior on raw zeroed
         # shared memory (a fresh hard_reset() leaves e.g. frame_width_bits=0)
         # -- this module is responsible for the "default profile is 12-bit/
         # 4 MHz" guarantee, not the PRU programs. This blocks until whichever
         # core(s) are loaded ack it; see the module docstring's precondition.
         self.stage(CUSTOM_LEGACY_12BIT_4MHZ)
+        # Populate slots before publishing generation 1. This prevents a
+        # just-loaded pair from clocking zero/sentinel frames while the host
+        # is still installing the documented default sequence.
+        self.set_raw_frames(list(DEFAULT_RUNTIME_FRAMES))
         self.apply()
 
     # ------------------------------------------------------------------
@@ -369,7 +399,9 @@ class SSIRuntime:
         for a single-field tweak without re-specifying a whole profile).
         """
         if profile is None:
-            resolved_profile = self._active_profile
+            resolved_profile = getattr(self, "_staged_profile", None)
+            if resolved_profile is None:
+                resolved_profile = self._active_profile
             base = dict(self._staged) if self._staged is not None else {}
         elif isinstance(profile, str):
             if profile not in PROFILES:
@@ -412,13 +444,22 @@ class SSIRuntime:
             )
 
         tv_cycles = fields["tv_cycles"]
-        if not (tv_cycles < clock_high):
+        if not (tv_cycles < sample_delay):
             raise ValueError(
-                f"tv_cycles={tv_cycles} must be < clock_high_cycles={clock_high}"
+                f"tv_cycles={tv_cycles} must be < "
+                f"sample_delay_cycles={sample_delay}"
             )
 
         tm_pause = fields.get("tm_pause_outer_iters", 0)
         tp_pause = fields.get("tp_pause_outer_iters", 0)
+        formation_pause = fields.get("formation_pause_outer_iters", 0)
+        for name, value in (
+            ("tm_pause_outer_iters", tm_pause),
+            ("tp_pause_outer_iters", tp_pause),
+            ("formation_pause_outer_iters", formation_pause),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 0xFFFFFFFF:
+                raise ValueError(f"{name} must be an unsigned 32-bit integer")
         if not (tp_pause > tm_pause):
             raise ValueError(
                 f"tp_pause_outer_iters={tp_pause} must be > "
@@ -427,7 +468,9 @@ class SSIRuntime:
 
         if resolved_profile is not None:
             clock_low = fields["clock_low_cycles"]
-            derived_hz = 300_000_000 / (clock_high + clock_low)
+            derived_hz = 300_000_000 / (
+                clock_high + clock_low + CLOCK_LOOP_OVERHEAD_CYCLES
+            )
             if derived_hz > resolved_profile.max_clock_hz:
                 raise ValueError(
                     f"derived clock frequency {derived_hz:.0f} Hz exceeds "
@@ -436,25 +479,105 @@ class SSIRuntime:
                 )
 
         frame_width = fields.get("frame_width_bits", 0)
-        if frame_width > 64:
+        if isinstance(frame_width, bool) or not isinstance(frame_width, int):
+            raise ValueError("frame_width_bits must be an integer")
+        if not 1 <= frame_width <= 64:
             raise ValueError(
-                f"frame_width_bits={frame_width} exceeds the 64-bit hardware "
-                f"maximum"
-            )
-        required = (
-            fields.get("position_width_bits", 0)
-            + fields.get("error_width_bits", 0)
-            + fields.get("padding_width_bits", 0)
-        )
-        if frame_width < required:
-            raise ValueError(
-                f"frame_width_bits={frame_width} is smaller than "
-                f"position_width_bits+error_width_bits+padding_width_bits="
-                f"{required} (short by {required - frame_width})"
+                f"frame_width_bits={frame_width} must be in the 1..64-bit "
+                f"hardware range"
             )
 
+        alignment = fields.get("alignment", 0)
+        if alignment not in (0, 1):
+            raise ValueError(
+                f"alignment={alignment} must be 0 (left) or 1 (right)"
+            )
+
+        def nonnegative_int(name: str) -> int:
+            value = fields.get(name, 0)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+            return value
+
+        position_offset = nonnegative_int("position_offset_bits")
+        position_width = nonnegative_int("position_width_bits")
+        singleturn_width = nonnegative_int("singleturn_width_bits")
+        multiturn_width = nonnegative_int("multiturn_width_bits")
+        error_width = nonnegative_int("error_width_bits")
+        padding_width = nonnegative_int("padding_width_bits")
+        if not 1 <= position_width <= 64:
+            raise ValueError(
+                f"position_width_bits={position_width} must be in the 1..64-bit "
+                f"hardware range"
+            )
+        if singleturn_width + multiturn_width != position_width:
+            raise ValueError(
+                "singleturn_width_bits+multiturn_width_bits must equal "
+                "position_width_bits"
+            )
+        if error_width > 0xFFFF:
+            raise ValueError("error_width_bits exceeds the ABI field width")
+
+        effective_position_offset = position_offset
+        if alignment == 1 and position_offset == 0:
+            effective_position_offset = (
+                frame_width - position_width - error_width - padding_width
+            )
+        position_end = effective_position_offset + position_width
+        required = position_width + error_width + padding_width
+        if effective_position_offset < 0 or position_end > frame_width:
+            raise ValueError(
+                f"position field does not fit in the {frame_width}-bit SSI "
+                f"frame (required field span: {required} bits)"
+            )
+
+        error_offset = fields.get("error_offset_bits", NO_ERROR_FIELD)
+        if error_width:
+            if error_offset == NO_ERROR_FIELD:
+                raise ValueError(
+                    "error_offset_bits is required when error_width_bits is non-zero"
+                )
+            if not isinstance(error_offset, int) or error_offset < 0:
+                raise ValueError("error_offset_bits must be a valid bit offset")
+            error_end = error_offset + error_width
+            if error_end > frame_width:
+                raise ValueError("error field does not fit in the SSI frame")
+            if error_offset < position_end and error_end > effective_position_offset:
+                raise ValueError("position and error fields overlap")
+        elif error_offset != NO_ERROR_FIELD and error_offset < 0:
+            raise ValueError("error_offset_bits must be non-negative or 0xFFFF")
+
+        for name, maximum in (
+            ("topology", 1),
+            ("encoding_type", 3),
+            ("formation_mode", 1),
+            ("sequence_hold_mode", 1),
+            ("fault_mode", 8),
+            ("capture_mode", 2),
+        ):
+            value = fields.get(name, 0)
+            if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= maximum:
+                raise ValueError(f"{name}={value!r} is outside the supported range 0..{maximum}")
+
+        if fields["formation_mode"] == 1 and tp_pause <= formation_pause:
+            raise ValueError(
+                "tp_pause_outer_iters must be greater than "
+                "formation_pause_outer_iters in synchronous formation mode"
+            )
+
+        previous = self._staged
+        if previous is not None and any(
+            fields.get(name) != previous.get(name)
+            for name in _POSITION_METADATA_FIELDS
+        ):
+            # Position-count/Gray-excess metadata belongs to the staged
+            # packing layout. Do not carry it into a different wire layout;
+            # the already-applied metadata remains untouched until commit.
+            self._position_count = None
+            self._gray_excess_offset = None
+
         self._staged = fields
-        self._active_profile = resolved_profile
+        self._staged_profile = resolved_profile
 
     # ------------------------------------------------------------------
     # Apply
@@ -503,6 +626,16 @@ class SSIRuntime:
         )
 
         self.wait_for_apply(timeout_steps)
+        # The PRUs have acknowledged the generation, so this is the only
+        # point at which staged semantic metadata becomes active readback
+        # metadata. A staged edit must never reinterpret an older mailbox or
+        # trace record before Apply completes.
+        self._active_config = dict(fields)
+        self._active_profile = getattr(self, "_staged_profile", None)
+        self._active_position_count = getattr(self, "_position_count", None)
+        self._active_gray_excess_offset = getattr(
+            self, "_gray_excess_offset", None
+        )
 
     def set_raw_frames(self, frame_values: list[int]) -> None:
         """Write the emulator's raw MSB-first frame sequence into shared RAM.
@@ -620,10 +753,24 @@ class SSIRuntime:
                 break
 
         mailbox = abi.unpack_mailbox(data)
-        encoding_type = self._staged.get("encoding_type", 0) if self._staged else 0
-        width = self._staged.get("position_width_bits", 0) if self._staged else 0
+        active_config = getattr(self, "_active_config", None)
+        config = active_config or self._staged or {}
+        encoding_type = config.get("encoding_type", 0)
+        width = config.get("position_width_bits", 0)
+        position_count = (
+            getattr(self, "_active_position_count", None)
+            if active_config is not None
+            else getattr(self, "_position_count", None)
+        )
+        gray_excess_offset = (
+            getattr(self, "_active_gray_excess_offset", None)
+            if active_config is not None
+            else getattr(self, "_gray_excess_offset", None)
+        )
         mailbox["position_value"] = self.decode_position(
-            mailbox["position_value"], encoding_type, width
+            mailbox["position_value"], encoding_type, width,
+            position_count=position_count,
+            gray_excess_offset=gray_excess_offset,
         )
         return mailbox
 
@@ -663,22 +810,259 @@ class SSIRuntime:
         if newest_first:
             records.reverse()
 
+        active_config = getattr(self, "_active_config", None)
+        config = active_config or self._staged or {}
+        encoding_type = config.get("encoding_type", 0)
+        width = config.get("position_width_bits", 0)
+        position_count = (
+            getattr(self, "_active_position_count", None)
+            if active_config is not None
+            else getattr(self, "_position_count", None)
+        )
+        gray_excess_offset = (
+            getattr(self, "_active_gray_excess_offset", None)
+            if active_config is not None
+            else getattr(self, "_gray_excess_offset", None)
+        )
+        for record in records:
+            record["position_value_decoded"] = self.decode_position(
+                record["position_value"], encoding_type, width,
+                position_count=position_count,
+                gray_excess_offset=gray_excess_offset,
+            )
+
         if limit is not None:
             records = records[:limit]
 
         return records
 
     # ------------------------------------------------------------------
+    # Semantic position encoding/packing
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _validate_position_width(width: int) -> int:
+        if isinstance(width, bool) or not isinstance(width, int):
+            raise ValueError(f"position width must be an integer, got {width!r}")
+        if not 1 <= width <= 64:
+            raise ValueError(f"position width must be in [1, 64], got {width}")
+        return (1 << width) - 1
+
+    @staticmethod
+    def _gray_to_binary(raw: int, width: int) -> int:
+        result = 0
+        previous = (raw >> (width - 1)) & 1
+        result |= previous << (width - 1)
+        for bit in range(width - 2, -1, -1):
+            decoded = ((raw >> bit) & 1) ^ previous
+            result |= decoded << bit
+            previous = decoded
+        return result
+
+    @staticmethod
+    def _gray_excess_offset(
+        width: int,
+        position_count: int,
+        gray_excess_offset: int | None,
+    ) -> int:
+        full_count = 1 << width
+        if isinstance(position_count, bool) or not isinstance(position_count, int):
+            raise ValueError("gray-excess position_count must be an integer")
+        if not 1 <= position_count <= full_count:
+            raise ValueError(
+                f"gray-excess position_count must be in [1, {full_count}], "
+                f"got {position_count}"
+            )
+        if gray_excess_offset is None:
+            return (full_count - position_count) // 2
+        if isinstance(gray_excess_offset, bool) or not isinstance(
+            gray_excess_offset, int
+        ):
+            raise ValueError("gray-excess offset must be an integer")
+        if not 0 <= gray_excess_offset <= full_count - position_count:
+            raise ValueError(
+                "gray-excess offset must leave the selected code window "
+                "inside the full Gray code"
+            )
+        return gray_excess_offset
+
+    def encode_position(
+        self,
+        position: int,
+        encoding_type: int,
+        width: int,
+        *,
+        position_count: int | None = None,
+        gray_excess_offset: int | None = None,
+    ) -> int:
+        """Encode one natural position into its SSI wire representation.
+
+        Binary and Tannenbaum profiles use the natural value unchanged.
+        Gray uses the standard reflected Gray transform. Gray-excess selects
+        a contiguous window from the full Gray code, centered by default; the
+        optional offset makes the window explicit for a product-family profile.
+        No value is silently masked or truncated.
+        """
+        mask = self._validate_position_width(width)
+        if isinstance(position, bool) or not isinstance(position, int):
+            raise ValueError(f"position must be an integer, got {position!r}")
+        if not 0 <= position <= mask:
+            raise ValueError(
+                f"position {position} does not fit in {width} bits"
+            )
+
+        if encoding_type in (0, 3):
+            return position
+        if encoding_type == 1:
+            return position ^ (position >> 1)
+        if encoding_type == 2:
+            offset = self._gray_excess_offset(
+                width, position_count if position_count is not None else 0,
+                gray_excess_offset,
+            )
+            encoded_index = position + offset
+            if encoded_index >= offset + position_count:
+                raise ValueError(
+                    f"position {position} is outside the configured "
+                    f"gray-excess range of {position_count} positions"
+                )
+            return encoded_index ^ (encoded_index >> 1)
+        raise ValueError(f"unknown encoding_type: {encoding_type!r}")
+
+    def pack_position_frame(
+        self,
+        *,
+        position: int,
+        status: int = 0,
+        frame_width: int,
+        position_offset: int,
+        position_width: int,
+        error_offset: int,
+        error_width: int,
+        padding_width: int,
+        encoding_type: int,
+        alignment: int = 0,
+        position_count: int | None = None,
+        gray_excess_offset: int | None = None,
+    ) -> int:
+        """Pack natural position/status fields into a right-aligned wire frame."""
+        if not 1 <= frame_width <= 64:
+            raise ValueError(f"frame width must be in [1, 64], got {frame_width}")
+        if alignment not in (0, 1):
+            raise ValueError(f"alignment must be 0 or 1, got {alignment}")
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in (
+                position_offset,
+                position_width,
+                error_width,
+                padding_width,
+            )
+        ):
+            raise ValueError("frame field widths and offsets must be non-negative integers")
+        self._validate_position_width(position_width)
+
+        if alignment == 1 and position_offset == 0:
+            position_offset = (
+                frame_width - position_width - error_width - padding_width
+            )
+        position_end = position_offset + position_width
+        if position_offset < 0 or position_end > frame_width:
+            raise ValueError("position field does not fit in the SSI frame")
+
+        wire_position = self.encode_position(
+            position,
+            encoding_type,
+            position_width,
+            position_count=position_count,
+            gray_excess_offset=gray_excess_offset,
+        )
+        frame = wire_position << (frame_width - position_end)
+
+        if error_width:
+            if error_offset == NO_ERROR_FIELD:
+                raise ValueError("error_offset is required when error_width is non-zero")
+            if error_offset < 0 or error_offset + error_width > frame_width:
+                raise ValueError("error field does not fit in the SSI frame")
+            if (
+                error_offset < position_end
+                and error_offset + error_width > position_offset
+            ):
+                raise ValueError("position and error fields overlap")
+            if isinstance(status, bool) or not isinstance(status, int):
+                raise ValueError("status must be an integer")
+            status_mask = (1 << error_width) - 1
+            if not 0 <= status <= status_mask:
+                raise ValueError(
+                    f"status {status} does not fit in {error_width} bits"
+                )
+            frame |= status << (frame_width - error_offset - error_width)
+        elif status:
+            raise ValueError("status must be zero when the frame has no error field")
+
+        return frame
+
+    def set_positions(
+        self,
+        positions: list[int],
+        statuses: list[int] | None = None,
+        *,
+        position_count: int | None = None,
+        gray_excess_offset: int | None = None,
+    ) -> None:
+        """Pack natural positions using the staged layout and write frame slots."""
+        if self._staged is None:
+            raise RuntimeError("set_positions() called before stage()")
+        if statuses is None:
+            statuses = [0] * len(positions)
+        if len(statuses) != len(positions):
+            raise ValueError("statuses must have the same length as positions")
+
+        self._position_count = position_count
+        self._gray_excess_offset = gray_excess_offset
+        fields = self._staged
+        frames = [
+            self.pack_position_frame(
+                position=position,
+                status=status,
+                frame_width=fields["frame_width_bits"],
+                position_offset=fields["position_offset_bits"],
+                position_width=fields["position_width_bits"],
+                error_offset=fields["error_offset_bits"],
+                error_width=fields["error_width_bits"],
+                padding_width=fields["padding_width_bits"],
+                encoding_type=fields["encoding_type"],
+                alignment=fields["alignment"],
+                position_count=position_count,
+                gray_excess_offset=gray_excess_offset,
+            )
+            for position, status in zip(positions, statuses)
+        ]
+        self.set_raw_frames(frames)
+
+    # ------------------------------------------------------------------
     # Decode
     # ------------------------------------------------------------------
 
-    def decode_position(self, raw: int, encoding_type: int, width: int) -> int:
+    def decode_position(
+        self,
+        raw: int,
+        encoding_type: int,
+        width: int,
+        *,
+        position_count: int | None = None,
+        gray_excess_offset: int | None = None,
+    ) -> int:
         """Decode a mailbox/trace position_value into a natural position.
 
         PRU1 only ever does structural offset/width extraction (see
         ssi_generic_reader.asm); semantic decode of *how* the extracted bits
         are encoded is this module's job.
         """
+        mask = self._validate_position_width(width)
+        if isinstance(raw, bool) or not isinstance(raw, int) or not 0 <= raw <= mask:
+            raise ValueError(f"raw position {raw!r} does not fit in {width} bits")
+
         if encoding_type in (0, 3):
             # binary: no recoding needed. tannenbaum: a frame-layout
             # convention already handled by position_offset_bits/
@@ -689,22 +1073,18 @@ class SSIRuntime:
         if encoding_type == 1:
             # Gray-to-binary: MSB stays the same; each lower bit is the XOR
             # of that Gray bit with the binary bit just decoded above it.
-            result = 0
-            prev_binary_bit = (raw >> (width - 1)) & 1
-            result |= prev_binary_bit << (width - 1)
-            for i in range(width - 2, -1, -1):
-                gray_bit = (raw >> i) & 1
-                binary_bit = gray_bit ^ prev_binary_bit
-                result |= binary_bit << i
-                prev_binary_bit = binary_bit
-            return result
+            return self._gray_to_binary(raw, width)
 
         if encoding_type == 2:
-            raise NotImplementedError(
-                "gray-excess (encoding_type=2) decode needs a family-"
-                "specific offset into the full Gray sequence that isn't "
-                "captured anywhere in this ABI, and no profile in this "
-                "task's table uses it -- not implementing a guessed formula"
+            offset = self._gray_excess_offset(
+                width, position_count if position_count is not None else 0,
+                gray_excess_offset,
             )
+            encoded_index = self._gray_to_binary(raw, width)
+            if not offset <= encoded_index < offset + position_count:
+                raise ValueError(
+                    "Gray-excess wire value is outside the configured code window"
+                )
+            return encoded_index - offset
 
         raise ValueError(f"unknown encoding_type: {encoding_type!r}")

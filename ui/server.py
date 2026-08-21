@@ -21,7 +21,7 @@ from core.branch import LoopState
 from perif.gpcfg import MUX_SD
 from xfr.xfr_bus import SPAD_BANK0, SPAD_BANK1, SPAD_BANK2, IPC_SPAD
 from pru_io import ssi_config_abi as ssi_abi
-from pru_io.ssi_runtime import PROFILES, SSIRuntime
+from pru_io.ssi_runtime import CLOCK_LOOP_OVERHEAD_CYCLES, PROFILES, SSIRuntime
 
 app = FastAPI(title="PRU Simulator Dashboard")
 
@@ -36,8 +36,8 @@ SSI_RUNTIME_READER = SOURCE_DIR / "ssi_generic_reader" / "ssi_generic_reader.asm
 SSI_RUNTIME_EMULATOR = SOURCE_DIR / "ssi_generic_emulator" / "ssi_generic_emulator.asm"
 SSI_RUNTIME_DEFAULT_FRAMES = [0xABC, 0xAAA, 0xBCA, 0x12A, 0xCC2]
 SSI_RUNTIME_READER_CLK_PIN = 0
-SSI_RUNTIME_READER_DATA_PIN = 8
-SSI_RUNTIME_EMULATOR_CLK_PIN = 16
+SSI_RUNTIME_READER_DATA_PIN = 16
+SSI_RUNTIME_EMULATOR_CLK_PIN = 8
 SSI_RUNTIME_EMULATOR_DATA_PIN = 0
 _ssi_runtime: SSIRuntime | None = None
 
@@ -50,7 +50,11 @@ def _ssi_profile_catalog() -> list[dict]:
         item.update({
             "name": name,
             "clock_hz": int(
-                300_000_000 / (profile.clock_high_cycles + profile.clock_low_cycles)
+                300_000_000 / (
+                    profile.clock_high_cycles
+                    + profile.clock_low_cycles
+                    + CLOCK_LOOP_OVERHEAD_CYCLES
+                )
             ),
             "max_clock_hz": profile.max_clock_hz,
         })
@@ -88,6 +92,19 @@ def _parse_ssi_frame_values(values) -> list[int]:
     return parsed
 
 
+def _parse_ssi_position_values(values) -> list[int]:
+    """Parse natural positions for semantic frame packing."""
+    return _parse_ssi_frame_values(values)
+
+
+def _effective_ssi_clock_hz(fields: dict) -> int:
+    high = int(fields.get("clock_high_cycles", 0))
+    low = int(fields.get("clock_low_cycles", 0))
+    if high <= 0 or low <= 0:
+        return 0
+    return int(300_000_000 / (high + low + CLOCK_LOOP_OVERHEAD_CYCLES))
+
+
 def _ssi_runtime_state() -> dict:
     """Return the current generic SSI state in a dashboard-safe shape."""
     if _ssi_runtime is None:
@@ -112,6 +129,10 @@ def _ssi_runtime_state() -> dict:
         ),
         "little",
     )
+    active = config
+    active["effective_clock_hz"] = _effective_ssi_clock_hz(active)
+    staged = dict(_ssi_runtime._staged or {})
+    staged["effective_clock_hz"] = _effective_ssi_clock_hz(staged)
     return {
         "loaded": True,
         "profiles": _ssi_profile_catalog(),
@@ -120,8 +141,17 @@ def _ssi_runtime_state() -> dict:
             if _ssi_runtime._active_profile is not None
             else ""
         ),
-        "active": config,
-        "staged": dict(_ssi_runtime._staged or {}),
+        "staged_profile": (
+            _ssi_runtime._staged_profile.name
+            if _ssi_runtime._staged_profile is not None
+            else ""
+        ),
+        "active": active,
+        "staged": staged,
+        "effective_clock_hz": active["effective_clock_hz"],
+        "requested_generation": active["requested_generation"],
+        "pru0_ack_generation": active["pru0_ack_generation"],
+        "pru1_ack_generation": active["pru1_ack_generation"],
         "frames": _ssi_runtime.read_raw_frames(),
         "mailbox": _ssi_runtime.read_mailbox(),
         "trace": {"write_index": write_index, "overrun_count": overrun_count},
@@ -443,6 +473,39 @@ async def websocket_endpoint(websocket: WebSocket):
                 try:
                     values = _parse_ssi_frame_values(msg.get("frames", []))
                     _ssi_runtime.set_raw_frames(values)
+                    await websocket.send_json({
+                        "type": "ssi_runtime_state",
+                        **_ssi_runtime_state(),
+                    })
+                except (TypeError, ValueError) as exc:
+                    await websocket.send_json({
+                        "type": "ssi_runtime_error",
+                        "error": str(exc),
+                    })
+            elif action == "ssi_runtime_positions":
+                if _ssi_runtime is None:
+                    await websocket.send_json({
+                        "type": "ssi_runtime_error",
+                        "error": "Load the generic SSI PRU pair first",
+                    })
+                    continue
+                try:
+                    positions = _parse_ssi_position_values(msg.get("positions", []))
+                    statuses = msg.get("statuses")
+                    if statuses is not None:
+                        statuses = _parse_ssi_position_values(statuses)
+                    position_count = msg.get("position_count")
+                    if position_count is not None:
+                        position_count = int(position_count)
+                    gray_excess_offset = msg.get("gray_excess_offset")
+                    if gray_excess_offset is not None:
+                        gray_excess_offset = int(gray_excess_offset)
+                    _ssi_runtime.set_positions(
+                        positions,
+                        statuses,
+                        position_count=position_count,
+                        gray_excess_offset=gray_excess_offset,
+                    )
                     await websocket.send_json({
                         "type": "ssi_runtime_state",
                         **_ssi_runtime_state(),

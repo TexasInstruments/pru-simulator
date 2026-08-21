@@ -1713,10 +1713,48 @@ Example:
               </select>
             </div>
             <div class="uart-controls" style="margin-top:5px;">
+              <span class="uart-label">Topology:</span>
+              <select id="ssi-runtime-topology" class="uart-inj-select" title="0 loopback, 1 reader-only">
+                <option value="0">Loopback</option>
+                <option value="1">Reader only</option>
+              </select>
+              <span class="uart-label">Encoding:</span>
+              <select id="ssi-runtime-encoding" class="uart-inj-select" title="0 binary, 1 Gray, 2 Gray-excess, 3 Tannenbaum">
+                <option value="0">Binary</option>
+                <option value="1">Gray</option>
+                <option value="2">Gray-excess</option>
+                <option value="3">Tannenbaum</option>
+              </select>
+              <span class="uart-label">Align:</span>
+              <select id="ssi-runtime-alignment" class="uart-inj-select" title="0 explicit offset, 1 right-justified when offset is zero">
+                <option value="0">Explicit</option>
+                <option value="1">Right</option>
+              </select>
+              <span class="uart-label">Formation:</span>
+              <select id="ssi-runtime-formation" class="uart-inj-select" title="0 asynchronous, 1 synchronous">
+                <option value="0">Async</option>
+                <option value="1">Sync</option>
+              </select>
+            </div>
+            <div class="uart-controls" style="margin-top:5px;">
               <span class="uart-label">Frame:</span>
               <input id="ssi-runtime-frame-bits" class="uart-inj-num" type="number" min="1" max="64" value="12" title="Total raw SSI frame width" />
+              <span class="uart-label">Offset:</span>
+              <input id="ssi-runtime-position-offset" class="uart-inj-num" type="number" min="0" max="64" value="0" title="Position field offset from the first clocked bit" />
               <span class="uart-label">Pos:</span>
               <input id="ssi-runtime-position-bits" class="uart-inj-num" type="number" min="1" max="64" value="12" title="Position field width" />
+              <span class="uart-label">ST:</span>
+              <input id="ssi-runtime-singleturn-bits" class="uart-inj-num" type="number" min="0" max="64" value="12" title="Single-turn position bits" />
+              <span class="uart-label">MT:</span>
+              <input id="ssi-runtime-multiturn-bits" class="uart-inj-num" type="number" min="0" max="64" value="0" title="Multi-turn position bits" />
+            </div>
+            <div class="uart-controls" style="margin-top:5px;">
+              <span class="uart-label">Err off:</span>
+              <input id="ssi-runtime-error-offset" class="uart-inj-num" type="number" min="0" max="65535" value="12" title="Status/error field offset; 65535 means none" />
+              <span class="uart-label">Err bits:</span>
+              <input id="ssi-runtime-error-bits" class="uart-inj-num" type="number" min="0" max="64" value="0" title="Status/error field width" />
+              <span class="uart-label">Pad:</span>
+              <input id="ssi-runtime-padding-bits" class="uart-inj-num" type="number" min="0" max="64" value="0" title="Zero-fill padding bits" />
               <span class="uart-label">High:</span>
               <input id="ssi-runtime-clock-high" class="uart-inj-num" type="number" min="1" max="256" value="33" title="Clock high phase in PRU cycles" />
               <span class="uart-label">Low:</span>
@@ -1731,10 +1769,17 @@ Example:
               <input id="ssi-runtime-tm" class="uart-inj-num" type="number" min="0" max="256" value="15" title="Encoder monoflop outer iterations" />
               <span class="uart-label">Tp:</span>
               <input id="ssi-runtime-tp" class="uart-inj-num" type="number" min="1" max="256" value="16" title="Inter-frame pause outer iterations" />
+              <span class="uart-label">Form:</span>
+              <input id="ssi-runtime-formation-pause" class="uart-inj-num" type="number" min="0" max="256" value="15" title="Formation/refresh pause outer iterations" />
             </div>
             <div class="uart-controls" style="margin-top:5px;">
               <span class="uart-label">Hold:</span>
               <input id="ssi-runtime-hold" class="uart-inj-num" type="number" min="1" max="4294967295" value="1" title="Frames or estimated time units per raw frame" />
+              <span class="uart-label">Mode:</span>
+              <select id="ssi-runtime-hold-mode" class="uart-inj-select" title="0 frame count, 1 estimated time">
+                <option value="0">Frames</option>
+                <option value="1">Time</option>
+              </select>
               <span class="uart-label">Capture:</span>
               <select id="ssi-runtime-capture" class="uart-inj-select" title="0 latest mailbox, 1 latest plus trace, 2 trace">
                 <option value="0">Mailbox</option>
@@ -1752,10 +1797,23 @@ Example:
                 <option value="7">Stuck low</option>
                 <option value="8">Stuck high</option>
               </select>
+              <span class="uart-label">Arg:</span>
+              <input id="ssi-runtime-fault-argument" class="uart-inj-num" type="number" min="0" max="4294967295" value="0" title="Fault-specific argument" />
+              <span class="uart-label">Count:</span>
+              <input id="ssi-runtime-fault-repeat" class="uart-inj-num" type="number" min="0" max="4294967295" value="0" title="Fault repeat frames; zero means indefinitely" />
             </div>
             <div class="uart-controls" style="margin-top:5px;">
               <span class="uart-label">Raw frames (hex):</span>
               <input id="ssi-runtime-frames" class="uart-inj-input" style="flex:1;min-width:180px;" value="ABC, AAA, BCA, 12A, CC2" spellcheck="false" title="Complete wire frames, MSB-first; values are hexadecimal" />
+            </div>
+            <div class="uart-controls" style="margin-top:5px;">
+              <span class="uart-label">Positions:</span>
+              <input id="ssi-runtime-positions" class="uart-inj-input" style="flex:1;min-width:180px;" value="ABC, AAA, BCA, 12A, CC2" spellcheck="false" title="Natural positions; binary, Gray, Gray-excess or Tannenbaum packing is applied" />
+              <span class="uart-label">Count:</span>
+              <input id="ssi-runtime-position-count" class="uart-inj-num" type="number" min="1" max="4294967295" placeholder="auto" title="Gray-excess position count; leave empty for other encodings" />
+              <span class="uart-label">GE off:</span>
+              <input id="ssi-runtime-gray-excess-offset" class="uart-inj-num" type="number" min="0" max="4294967295" placeholder="center" title="Optional Gray-excess code-window offset" />
+              <button id="ssi-runtime-pack" class="graph-btn">Pack positions</button>
             </div>
             <div class="uart-controls" style="margin-top:6px;">
               <button id="ssi-runtime-stage" class="graph-btn">Stage</button>

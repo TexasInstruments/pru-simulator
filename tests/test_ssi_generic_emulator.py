@@ -27,8 +27,14 @@ EMULATOR_SRC = (SOURCE_DIR / "ssi_generic_emulator" / "ssi_generic_emulator.asm"
 READER_SRC = (SOURCE_DIR / "ssi_reader_4mhz_12bit" / "ssi_reader_4mhz_12bit.asm").read_text()
 GENERIC_READER_SRC = (SOURCE_DIR / "ssi_generic_reader" / "ssi_generic_reader.asm").read_text()
 
-CLK_PIN = 16   # this program's GPI clock input (matches ssi_encoder_sequence_emulator_12bit.asm)
+CLK_PIN = 8    # this program's GPI clock input (LaunchPad BP.51)
 DATA_PIN = 0   # this program's GPO data output
+
+
+def test_synchronous_formation_gate_is_part_of_the_emulator_idle_path():
+    assert "SSI_CONFIG_FORMATION_MODE_OFF" in EMULATOR_SRC
+    assert "SSI_CONFIG_FORMATION_PAUSE_OUTER_ITERS_OFF" in EMULATOR_SRC
+    assert "l_formation_gate" in EMULATOR_SRC
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +149,8 @@ def test_normal_transmission_matches_reader_capture():
     assert sim.load("pru1", READER_SRC) == []
     assert sim.load("pru0", EMULATOR_SRC, include_paths=[str(SOURCE_DIR)]) == []
     sim.add_gpio_wire("pru1", 0, "pru0", CLK_PIN)
+    # The fixed reader is intentionally retained here as a compatibility
+    # probe; unlike the switched generic reader it samples GPI8.
     sim.add_gpio_wire("pru0", DATA_PIN, "pru1", 8)
     sim.hard_reset()
 
@@ -359,7 +367,7 @@ def test_generation_change_during_idle_gap_after_debounce_does_not_deadlock():
     assert sim.load("pru1", GENERIC_READER_SRC, include_paths=[str(SOURCE_DIR)]) == []
     assert sim.load("pru0", EMULATOR_SRC, include_paths=[str(SOURCE_DIR)]) == []
     sim.add_gpio_wire("pru1", 0, "pru0", CLK_PIN)     # reader CLK out -> this program's CLK in
-    sim.add_gpio_wire("pru0", DATA_PIN, "pru1", 8)    # this program's DATA out -> reader DATA in
+    sim.add_gpio_wire("pru0", DATA_PIN, "pru1", 16)   # this program's DATA out -> reader DATA in
     sim.hard_reset()
 
     def configure_paired(**fields):

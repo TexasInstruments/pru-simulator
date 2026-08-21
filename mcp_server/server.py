@@ -240,6 +240,59 @@ class PRUSimulatorMCP:
             return {"status": "error", "error": str(exc)}
         return {"status": "success", "staged": dict(runtime._staged)}
 
+    def ssi_set_positions(
+        self,
+        positions_json: str = "[]",
+        statuses_json: str = "",
+        position_count: int = 0,
+        gray_excess_offset: int = -1,
+    ) -> dict:
+        """Pack natural positions into the staged emulator frame slots.
+
+        Values accept JSON integers or hexadecimal strings (with or without
+        ``0x``). This is intentionally separate from ``ssi_stage`` and
+        ``ssi_apply``: callers can stage a new shape, pack slots, then commit
+        the whole generation with ``ssi_apply``.
+        """
+        runtime = self._get_runtime()
+
+        def parse_values(payload: str, label: str) -> list[int]:
+            values = json.loads(payload)
+            if not isinstance(values, list):
+                raise ValueError(f"{label} must be a JSON array")
+            parsed = []
+            for raw in values:
+                if isinstance(raw, bool):
+                    raise ValueError(f"invalid {label} value: {raw!r}")
+                if isinstance(raw, int):
+                    value = raw
+                elif isinstance(raw, str):
+                    token = raw.strip()
+                    value = int(token, 16)
+                else:
+                    raise ValueError(f"invalid {label} value: {raw!r}")
+                if value < 0:
+                    raise ValueError(f"invalid {label} value: {raw!r}")
+                parsed.append(value)
+            return parsed
+
+        try:
+            positions = parse_values(positions_json, "position")
+            statuses = None
+            if statuses_json:
+                statuses = parse_values(statuses_json, "status")
+            count = position_count if position_count > 0 else None
+            offset = gray_excess_offset if gray_excess_offset >= 0 else None
+            runtime.set_positions(
+                positions,
+                statuses,
+                position_count=count,
+                gray_excess_offset=offset,
+            )
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            return {"status": "error", "error": str(exc)}
+        return {"status": "success", "frames": runtime.read_raw_frames()}
+
     def ssi_apply(self, timeout_steps: int = 200_000) -> dict:
         """Commit the currently staged SSI config to shared memory and block
         (stepping the simulator up to timeout_steps times) until both PRU

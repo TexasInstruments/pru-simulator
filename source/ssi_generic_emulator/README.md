@@ -45,7 +45,7 @@ Same pin convention as `ssi_encoder_sequence_emulator_12bit.asm`:
 
 | Signal | Pin | Direction |
 |---|---|---|
-| Clock in | `R31.16` (GPI16) | reader's `R30.0` clock out → this program's clock in |
+| Clock in | `R31.8` (GPI8) | reader's `R30.0` clock out → this program's clock in |
 | Data out | `R30.0` (GPO0) | this program's data out → reader's `R31.8` data in |
 
 ## Files
@@ -65,7 +65,7 @@ Same pin convention as `ssi_encoder_sequence_emulator_12bit.asm`:
 
 1. Load `source/ssi_generic_reader/ssi_generic_reader.asm` on **PRU1**.
 2. Load this firmware on **PRU0**.
-3. Wire GPIO: `pru1:GPO0` → `pru0:GPI16` (clock), `pru0:GPO0` → `pru1:GPI8`
+3. Wire GPIO: `pru1:GPO0` → `pru0:GPI8` (clock), `pru0:GPO0` → `pru1:GPI16`
    (data).
 4. `hard_reset()`, then either poke the config block + frame slots directly
    (see `tests/test_ssi_generic_emulator.py` for the byte-level convention),
@@ -83,19 +83,22 @@ reader without manual assembly loading or memory pokes:
 1. Start `python ui/server.py` and open `http://localhost:8080`.
 2. In **Generic SSI Runtime**, click **Load PRU0 emulator + PRU1 reader**.
    The server loads this program on PRU0, the reader on PRU1, and installs the
-   virtual wires `pru1:GPO0 -> pru0:GPI16` and `pru0:GPO0 -> pru1:GPI8`.
-3. Select a profile, configure timing/capture/fault fields, and enter raw
-   hexadecimal frame values. The default sequence is
+   virtual wires `pru1:GPO0 -> pru0:GPI8` and `pru0:GPO0 -> pru1:GPI16`.
+3. Select a profile, configure timing/capture/fault fields, and enter natural
+   positions. **Pack positions** applies the selected binary, Gray,
+   Gray-excess, or Tannenbaum host-side layout; complete raw frame slots can
+   also be supplied by the API. The default sequence is
    `ABC, AAA, BCA, 12A, CC2`.
-4. Click **Apply atomically**. The browser sends the staged configuration,
-   frame slots, and apply request in that order; the runtime waits for the
-   generation acknowledgements at an idle frame boundary.
+4. Click **Stage**, then **Apply atomically**. The browser sends the staged
+   configuration, packed frame slots, and apply request in that order; the
+   runtime waits for the generation acknowledgements at an idle frame
+   boundary.
 5. Click **Run pair**, optionally after enabling Signal Graph recording, then
    click **Refresh** to inspect the latest mailbox and trace counters.
 
-Raw values are complete wire frames and are rejected when they do not fit the
-selected frame width; the UI never silently truncates them. Detailed manual
-examples are in `docs/handoff/2026-08-20-generic-runtime-ssi.md`.
+Natural positions and complete raw wire frames are rejected when they do not
+fit the selected resolution; the UI never silently truncates them. Detailed
+manual examples are in `docs/handoff/2026-08-20-generic-runtime-ssi.md`.
 
 ### Pairing with a fixed reader
 
@@ -115,8 +118,8 @@ python -m pytest tests/test_ssi_generic_emulator.py -v
 
 The config block this program reads is generated from
 `schema/ssi_config_abi.json` (see `pru_io/ssi_config_abi.py` /
-`source/ssi_config_abi.inc`). `pru_io/ssi_runtime.py` plays the role real R5
-firmware will eventually play: named encoder profiles, staged-then-validated
-configuration, and atomic apply. See
+`source/ssi_config_abi.inc`). `pru_io/ssi_runtime.py` mirrors the R5 layer:
+named encoder profiles, staged-then-validated configuration, frame packing,
+and atomic apply. See
 `docs/superpowers/specs/2026-08-19-generic-runtime-ssi-design.md` for the
 full memory map and design rationale.

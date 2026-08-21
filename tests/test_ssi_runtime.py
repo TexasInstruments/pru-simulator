@@ -26,8 +26,8 @@ EMULATOR_SRC = (SOURCE_DIR / "ssi_generic_emulator" / "ssi_generic_emulator.asm"
 READER_SRC = (SOURCE_DIR / "ssi_generic_reader" / "ssi_generic_reader.asm").read_text()
 
 READER_CLK_PIN = 0
-READER_DATA_PIN = 8
-EMULATOR_CLK_IN_PIN = 16
+READER_DATA_PIN = 16
+EMULATOR_CLK_IN_PIN = 8
 EMULATOR_DATA_OUT_PIN = 0
 
 
@@ -55,6 +55,20 @@ def make_reader_only_sim():
     assert sim.load("pru1", READER_SRC, include_paths=[str(SOURCE_DIR)]) == []
     sim.hard_reset()
     return sim
+
+
+def test_switched_role_pin_contract_matches_launchpad_wiring():
+    """PRU1 clocks on BP.11 and receives data on BP.57; PRU0 receives
+    that clock on BP.51 and drives data on BP.33.
+
+    The virtual pin numbers mirror the direct R30/R31 bit numbers used by the
+    hardware project, so this test catches a simulator-only role reversal that
+    would otherwise pass with the old cross-wiring.
+    """
+    assert "CLK_PIN       .set 8" in EMULATOR_SRC
+    assert "DATA_PIN      .set 0" in EMULATOR_SRC
+    assert "CLK_PIN       .set 0" in READER_SRC
+    assert "DATA_PIN      .set 16" in READER_SRC
 
 
 def set_slot(sim, index, frame_bits, hold_override=0):
@@ -138,6 +152,8 @@ def bare_runtime():
     runtime.sim = None
     runtime._staged = None
     runtime._active_profile = None
+    runtime._staged_profile = None
+    runtime._active_config = None
     return runtime
 
 
@@ -155,10 +171,9 @@ def test_default_behavior_matches_fixed_12bit_4mhz():
     order-of-magnitude timing (reaches several frames well within a normal
     step budget)."""
     sim = make_paired_sim()
-    SSIRuntime(sim)  # implicit stage()+apply(); nothing else called on it
-
-    set_slot(sim, 0, 0xABC)
-    clear_slots(sim, 1)
+    runtime = SSIRuntime(sim)  # implicit default stage()+apply()
+    runtime.set_raw_frames([0xABC])
+    runtime.apply()  # publish the slot update at an idle frame boundary
 
     mb = run_paired_and_settle(sim, 3)
     assert mb["position_value"] == 0xABC
@@ -220,13 +235,13 @@ def test_profile_atm60_90_tannenbaum_sync_end_to_end():
     sim = make_paired_sim()
     runtime = SSIRuntime(sim)
     runtime.stage("ATM60_90")
-    runtime.apply()
 
     position_value = 12_345_678  # fits 25 bits (max 33_554_431)
     error_value = 1               # fits 1 bit
     frame_bits = (position_value << 1) | error_value
     set_slot(sim, 0, frame_bits)
     clear_slots(sim, 1)
+    runtime.apply()
 
     mb = run_paired_and_settle(sim, 3)
     assert mb["position_value"] == position_value
@@ -253,6 +268,34 @@ def test_profile_custom_legacy_12bit_4mhz_explicit_apply_round_trips():
     assert decoded == 0x0DE
 
 
+@pytest.mark.parametrize("profile_name", sorted(PROFILES))
+def test_every_named_profile_round_trips_one_semantic_position(profile_name):
+    """Every catalog entry must drive one complete emulator/reader frame."""
+    sim = make_paired_sim()
+    runtime = SSIRuntime(sim)
+    profile = PROFILES[profile_name]
+    runtime.stage(profile_name)
+
+    position_mask = (1 << profile.position_width_bits) - 1
+    position = min(position_mask, 0x12345)
+    status = (
+        (1 << profile.error_width_bits) - 1
+        if profile.error_width_bits
+        else 0
+    )
+    runtime.set_positions([position], [status])
+    runtime.apply()
+
+    mailbox = run_paired_and_settle(sim, 2)
+    assert mailbox["position_value"] == position
+    assert mailbox["status_bits"] == status
+    assert runtime.decode_position(
+        mailbox["position_value"],
+        profile.encoding_type,
+        profile.position_width_bits,
+    ) == position
+
+
 # ---------------------------------------------------------------------------
 # Gray decode: standalone unit test, no simulator needed.
 # ---------------------------------------------------------------------------
@@ -273,9 +316,107 @@ def test_decode_position_gray_4bit_hand_computed():
     assert runtime.decode_position(0b1110, encoding_type=1, width=4) == 0b1011
 
 
-def test_decode_position_gray_excess_not_implemented():
+def test_encode_position_binary_and_gray_round_trip():
     runtime = bare_runtime()
-    with pytest.raises(NotImplementedError):
+
+    assert runtime.encode_position(0b1011, encoding_type=0, width=4) == 0b1011
+    assert runtime.encode_position(0b1011, encoding_type=1, width=4) == 0b1110
+    assert runtime.decode_position(
+        runtime.encode_position(0b1011, encoding_type=1, width=4),
+        encoding_type=1,
+        width=4,
+    ) == 0b1011
+
+
+def test_encode_position_rejects_values_outside_resolution():
+    runtime = bare_runtime()
+
+    with pytest.raises(ValueError, match="does not fit in 4 bits"):
+        runtime.encode_position(16, encoding_type=0, width=4)
+
+
+def test_gray_excess_uses_a_centered_non_power_of_two_code_window():
+    runtime = bare_runtime()
+
+    wire_zero = runtime.encode_position(
+        0,
+        encoding_type=2,
+        width=4,
+        position_count=10,
+    )
+    wire_last = runtime.encode_position(
+        9,
+        encoding_type=2,
+        width=4,
+        position_count=10,
+    )
+
+    assert runtime.decode_position(
+        wire_zero, encoding_type=2, width=4, position_count=10
+    ) == 0
+    assert runtime.decode_position(
+        wire_last, encoding_type=2, width=4, position_count=10
+    ) == 9
+
+
+def test_stage_rejects_invalid_alignment_and_field_layout():
+    runtime = bare_runtime()
+
+    with pytest.raises(ValueError, match="alignment"):
+        runtime.stage("CUSTOM_LEGACY_12BIT_4MHZ", alignment=2)
+
+    with pytest.raises(ValueError, match="position field"):
+        runtime.stage(
+            "CUSTOM_LEGACY_12BIT_4MHZ",
+            frame_width_bits=12,
+            position_offset_bits=1,
+            position_width_bits=12,
+        )
+
+
+def test_stage_requires_inter_frame_gap_to_cover_sync_formation_pause():
+    runtime = bare_runtime()
+
+    with pytest.raises(ValueError, match="formation_pause_outer_iters"):
+        runtime.stage(
+            "CUSTOM_LEGACY_12BIT_4MHZ",
+            formation_mode=1,
+            formation_pause_outer_iters=20,
+            tp_pause_outer_iters=16,
+        )
+
+
+def test_pack_position_frame_right_aligns_position_without_truncation():
+    runtime = bare_runtime()
+
+    frame = runtime.pack_position_frame(
+        position=0xAB,
+        status=0,
+        frame_width=16,
+        position_offset=0,
+        position_width=8,
+        error_offset=0xFFFF,
+        error_width=0,
+        padding_width=0,
+        encoding_type=0,
+        alignment=1,
+    )
+
+    assert frame == 0x00AB
+
+
+def test_set_positions_packs_the_active_profile_into_frame_slots():
+    sim = make_paired_sim()
+    runtime = SSIRuntime(sim)
+    runtime.stage("CUSTOM_LEGACY_12BIT_4MHZ")
+    runtime.set_positions([0xABC, 0x12A])
+
+    assert runtime.read_raw_frames()[:2] == [0xABC, 0x12A]
+
+
+def test_decode_position_gray_excess_requires_a_declared_code_window():
+    runtime = bare_runtime()
+    with pytest.raises(ValueError, match="position_count"):
         runtime.decode_position(0, encoding_type=2, width=8)
 
 
@@ -283,6 +424,27 @@ def test_decode_position_binary_and_tannenbaum_are_passthrough():
     runtime = bare_runtime()
     assert runtime.decode_position(0x1234, encoding_type=0, width=16) == 0x1234
     assert runtime.decode_position(0x1234, encoding_type=3, width=16) == 0x1234
+
+
+def test_mailbox_decode_uses_last_applied_configuration_until_apply():
+    """Staging a new wire encoding must not reinterpret the active mailbox."""
+    sim = make_reader_only_sim()
+    runtime = bare_runtime()
+    runtime.sim = sim
+    runtime.stage("CUSTOM_LEGACY_12BIT_4MHZ", topology=1)
+    runtime.set_raw_frames([0xABC])
+    runtime.apply()
+    sim.ssi_inject(
+        core="pru1", clk_pin=READER_CLK_PIN, data_pin=READER_DATA_PIN,
+        value=0xABC, bits=12,
+    )
+
+    active_read = advance_reader_only_to_frame(sim, 2)
+    assert active_read["position_value"] == 0xABC
+
+    runtime.stage(encoding_type=1)
+    staged_read = runtime.read_mailbox()
+    assert staged_read["position_value"] == 0xABC
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +545,16 @@ def test_stage_rejects_clock_high_cycles_over_256():
     runtime = bare_runtime()
     with pytest.raises(ValueError):
         runtime.stage("CUSTOM_LEGACY_12BIT_4MHZ", clock_high_cycles=300)
+
+
+def test_stage_rejects_tv_at_or_after_the_reader_sample_point():
+    runtime = bare_runtime()
+    with pytest.raises(ValueError, match="tv_cycles"):
+        runtime.stage(
+            "CUSTOM_LEGACY_12BIT_4MHZ",
+            sample_delay_cycles=15,
+            tv_cycles=15,
+        )
 
 
 def test_stage_rejects_frame_width_smaller_than_position_plus_error():

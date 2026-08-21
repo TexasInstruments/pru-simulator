@@ -6,9 +6,9 @@
 ; in ssi_config_abi.inc / docs/superpowers/specs/2026-08-19-generic-runtime-ssi-design.md
 ; instead of hardcoded .set constants. The old fixed files are untouched.
 ;
-; Virtual loopback (same pin convention as ssi_encoder_sequence_emulator_12bit.asm):
-;   reader  R30.0  (CLK out) -> this program R31.16 (CLK in)
-;   this program R30.0 (DATA out) -> reader R31.8   (DATA in)
+; LaunchPad loopback pin contract:
+;   reader  R30.0  (CLK out, BP.11) -> this program R31.8 (CLK in, BP.51)
+;   this program R30.0 (DATA out, BP.33) -> reader R31.16 (DATA in, BP.57)
 ;
 ; This program never encodes/decodes position data and never checks
 ; `topology` -- when topology==1 (reader-only) it simply is not loaded, per
@@ -71,7 +71,7 @@
 
     .include "ssi_config_abi.inc"
 
-CLK_PIN       .set 16
+CLK_PIN       .set 8
 DATA_PIN      .set 0
 
 ; Real (non-reserved) config fields run from SSI_CONFIG_BASE for this many
@@ -207,6 +207,11 @@ l_use_override:
 l_restart_sync:
     lbco  &TMP, c28, SSI_CONFIG_REQUESTED_GENERATION_OFF, 4
     qbne  l_apply_config, TMP, APPLIED_GEN   ; changed -> full reapply, nothing else read here
+    ; The synchronous master already guarantees a valid high idle interval
+    ; (Tp > formation pause). Avoid spending the asynchronous qualification
+    ; polls a second time on this deterministic request-relative path.
+    lbco  &TMP, c28, SSI_CONFIG_FORMATION_MODE_OFF, 1
+    qbne  l_wait_falling_edge, TMP, 0
     mov   LOOPCNT, DEBOUNCE_THRESH
 l_check_high:
     qbbc  l_restart_sync, r31, CLK_PIN
@@ -412,6 +417,22 @@ l_hold_advance:
 l_slot_wrap:
     ldi   SLOT_INDEX, 0
 l_hold_finish:
+; Synchronous SSI profiles form/latch the next position during the bounded
+; inter-frame window. The reader's Tp validation guarantees that this wait
+; completes before its next falling edge, so no mixed-generation frame can
+; be observed. Asynchronous profiles keep the existing shortest path.
+l_formation_gate:
+    lbco  &TMP, c28, SSI_CONFIG_FORMATION_MODE_OFF, 1
+    qbeq  l_load_active_slot, TMP, 0
+    lbco  &TMP, c28, SSI_CONFIG_FORMATION_PAUSE_OUTER_ITERS_OFF, 4
+    qbeq  l_load_active_slot, TMP, 0
+    mov   LOOPCNT, TMP
+l_formation_outer:
+    loop  l_formation_inner_done, SSI_PAUSE_INNER_ITERS
+    nop
+l_formation_inner_done:
+    sub   LOOPCNT, LOOPCNT, 1
+    qbne  l_formation_outer, LOOPCNT, 0
     qba   l_load_active_slot
 l_seq_done:
     qba   l_restart_sync

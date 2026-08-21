@@ -4,8 +4,9 @@ Harness conventions are reused verbatim from test_ssi_generic_reader.py's own
 capture-mode-2 trace-wraparound test (test_capture_mode_2_trace_overrun_and_wrap):
 reader-only (topology=1, no PRU0 emulator, no encoder needed -- the reader
 just clocks its own frames against whatever's on the floating data pin) at
-the fastest timing that test proved legal (clock_high_cycles=2/
-clock_low_cycles=1/sample_delay_cycles=1/tp_pause_outer_iters=1,
+the fastest timing that test proved legal after the runtime timing contract
+is applied (clock_high_cycles=3/clock_low_cycles=1/sample_delay_cycles=2/
+tv_cycles=1/tp_pause_outer_iters=1,
 frame_width_bits=4), so 1,050 frames runs in well under a second.
 
 Going through SSIRuntime.stage()/apply() (this task's actual target, not a
@@ -13,8 +14,8 @@ raw memory poke) rather than test_ssi_generic_reader.py's configure()
 requires a real Profile: stage()'s own validation enforces
 "derived clock Hz <= profile.max_clock_hz", and every profile in
 ssi_runtime.PROFILES (including the fastest, CUSTOM_LEGACY_12BIT_4MHZ, at
-max_clock_hz=4_500_000) is far too slow a ceiling for this raw timing
-(300_000_000/(2+1) = 100 MHz). So this file defines its own throwaway
+max_clock_hz=4_000_000) is far too slow a ceiling for this raw timing
+(300_000_000/(2+1+15) is still over 16 MHz). So this file defines its own throwaway
 Profile instance -- stage() accepts any Profile, not just named ones -- with
 the same fastest-legal wire timing as test_ssi_generic_reader.py's own test,
 just given a permissive max_clock_hz since this is a simulation-speed
@@ -48,9 +49,9 @@ FAST_TEST_PROFILE = Profile(
     error_width_bits=0,
     padding_width_bits=0,
     topology=1,
-    clock_high_cycles=2,
+    clock_high_cycles=3,
     clock_low_cycles=1,
-    sample_delay_cycles=1,
+    sample_delay_cycles=2,
     tv_cycles=1,
     tm_pause_outer_iters=0,
     tp_pause_outer_iters=1,
