@@ -2,11 +2,15 @@
 
 import sys
 import os
+import base64
+import binascii
+import struct
 
 # Allow imports from parent directory when run directly
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from simulator import Simulator
+from mcp_server.vcd_export import export_pin_waveform
 
 
 class PRUSimulatorMCP:
@@ -22,6 +26,113 @@ class PRUSimulatorMCP:
         line_count = len([l for l in source.split('\n') if l.strip()])
         return {"success": len(errors) == 0, "errors": errors, "line_count": line_count}
 
+    @staticmethod
+    def _elf_metadata(elf_data: bytes) -> tuple[int, list[dict]]:
+        """Validate an ELF32 image and return its entry point and loadable sections."""
+        if len(elf_data) < 52:
+            raise ValueError("File too small to be a valid ELF")
+        if elf_data[:4] != b"\x7fELF":
+            raise ValueError("Not an ELF file (bad magic)")
+        if elf_data[4] != 1 or elf_data[5] != 1:
+            raise ValueError("Expected a little-endian ELF32 image")
+
+        elf_type, machine, version = struct.unpack_from("<HHI", elf_data, 16)
+        if elf_type != 2:
+            raise ValueError(f"Expected an executable ELF (ET_EXEC=2), got {elf_type}")
+        if machine != 0x90:
+            raise ValueError(f"Expected a TI PRU ELF (machine=0x0090), got 0x{machine:04x}")
+        if version != 1:
+            raise ValueError(f"Invalid ELF version: {version}")
+
+        entry = struct.unpack_from("<I", elf_data, 24)[0]
+        header_size = struct.unpack_from("<H", elf_data, 40)[0]
+        if header_size != 52:
+            raise ValueError(f"Invalid ELF32 header size: {header_size}")
+        if entry % 4:
+            raise ValueError(f"PRU ELF entry point is not instruction-aligned: 0x{entry:x}")
+        section_offset = struct.unpack_from("<I", elf_data, 32)[0]
+        section_size, section_count, names_index = struct.unpack_from("<HHH", elf_data, 46)
+        if section_count == 0:
+            raise ValueError("ELF contains no sections")
+        if section_size < 40:
+            raise ValueError(f"Invalid ELF section header size: {section_size}")
+        if section_offset > len(elf_data) or section_count > (
+                len(elf_data) - section_offset) // section_size:
+            raise ValueError("ELF section header table is truncated")
+
+        headers = []
+        for index in range(section_count):
+            offset = section_offset + index * section_size
+            name_offset, section_type, flags, address, data_offset, size = struct.unpack_from(
+                "<IIIIII", elf_data, offset)
+            if section_type != 8 and size and (
+                    data_offset > len(elf_data) or size > len(elf_data) - data_offset):
+                raise ValueError(f"ELF section {index} data is truncated")
+            headers.append({
+                "name_offset": name_offset,
+                "type": section_type,
+                "flags": flags,
+                "address": address,
+                "offset": data_offset,
+                "size": size,
+            })
+
+        if names_index >= len(headers):
+            raise ValueError("ELF section-name table index is invalid")
+        names_header = headers[names_index]
+        names = elf_data[names_header["offset"]:
+                         names_header["offset"] + names_header["size"]]
+
+        def section_name(name_offset: int) -> str:
+            if name_offset >= len(names):
+                raise ValueError("ELF section name offset is invalid")
+            end = names.find(b"\0", name_offset)
+            if end < 0:
+                raise ValueError("ELF section name table is truncated")
+            return names[name_offset:end].decode("ascii", errors="replace")
+
+        sections = []
+        for header in headers:
+            name = section_name(header["name_offset"])
+            if ((name.startswith(".text") or name == ".data")
+                    and header["type"] != 8 and header["size"] > 0):
+                sections.append({
+                    "name": name,
+                    "address": header["address"],
+                    "size": header["size"],
+                })
+        if not sections:
+            raise ValueError("ELF contains no loadable .text or .data sections")
+        return entry, sections
+
+    def pru_elf_load(self, core: str = "pru0", path: str = "", b64: str = "") -> dict:
+        """Load a PRU ELF image from a filesystem path or base64-encoded bytes."""
+        errors = []
+        entry = None
+        sections = []
+        try:
+            if bool(path) == bool(b64):
+                raise ValueError("Provide exactly one of 'path' or 'b64'")
+            if path:
+                with open(path, "rb") as elf_file:
+                    elf_data = elf_file.read()
+            else:
+                elf_data = base64.b64decode(b64, validate=True)
+            entry, sections = self._elf_metadata(elf_data)
+            self.sim.reset(core)
+            errors = self.sim.load_elf(core, elf_data)
+        except (OSError, ValueError, binascii.Error) as exc:
+            errors = [f"ELF load failed: {exc}"]
+        if errors:
+            entry = None
+            sections = []
+        return {
+            "success": len(errors) == 0,
+            "errors": errors,
+            "entry": entry,
+            "sections": sections,
+        }
+
     def pru_step(self, core: str = "pru0", count: int = 1) -> dict:
         """Execute count instructions on the specified core."""
         result = self.sim.step(core, count)
@@ -33,17 +144,110 @@ class PRUSimulatorMCP:
         result["instruction_text"] = inst_text
         return result
 
-    def pru_run_until(self, core: str = "pru0", condition: str = "halt", max_steps: int = 10000) -> dict:
-        """Run the core until halted or max_steps reached."""
+    def pru_step_multicore(self, lead: str = "pru0", follow: str = "pru1",
+                           count: int = 1, guard_ns: float = 0.0) -> dict:
+        """Step two cores with peripheral-clock pacing and return both core states.
+
+        ``guard_ns`` is how far the follow core may trail the lead core.  The
+        MCP default is zero so even short validation programs advance both
+        cores; callers modelling a receiver guard may request a positive lag.
+        """
+        if count < 0:
+            raise ValueError("count must be non-negative")
+        if guard_ns < 0:
+            raise ValueError("guard_ns must be non-negative")
+        for _ in range(count):
+            follow_pru = self.sim.cores[follow]
+            follow_cycles = follow_pru.counters.cycles
+            self.sim.step_paced(lead, follow, 1, guard_ns=guard_ns)
+            # Peripheral time does not advance for ordinary ALU-only programs.
+            # A user-facing "step both" tool must still retire one instruction
+            # on the follower instead of returning two plausible-looking states
+            # after advancing only the lead core.
+            if (follow_pru.counters.cycles == follow_cycles
+                    and not follow_pru.halted
+                    and follow_pru.pc < len(follow_pru.instructions)):
+                follow_pru.step()
+
+        def state(core: str) -> dict:
+            c = self.sim.cores[core]
+            return {
+                "core": core,
+                "pc": c.pc,
+                "cycles": c.counters.cycles,
+                "halted": c.halted,
+            }
+
+        return {"lead": state(lead), "follow": state(follow)}
+
+    def pru_run_until(self, core: str = "pru0", condition: str = "halt",
+                      max_steps: int = 10000, max_cycles: int = 0) -> dict:
+        """Run until a condition, step limit, or cycle budget is reached.
+
+        Conditions: ``halt``, ``cycles>N``, ``reg:rN==V``, ``mem:ADDR!=V``
+        (32-bit little-endian), and ``pin:N==V``/``gpi:N==V``/``gpo:N==V``.
+        ``pin`` is an alias for GPI; input and output predicates are never ORed.
+        A positive ``max_cycles`` is an inclusive budget measured from this call.
+        """
+        if max_steps < 0:
+            raise ValueError("max_steps must be non-negative")
+        if max_cycles < 0:
+            raise ValueError("max_cycles must be non-negative")
         c = self.sim.cores[core]
+        start_cycles = c.counters.cycles
+
+        def condition_met() -> bool:
+            if condition == "halt":
+                return c.halted
+            if condition.startswith("cycles>"):
+                return c.counters.cycles > int(condition[7:], 0)
+            if condition.startswith("reg:"):
+                register, value = condition[4:].split("==", 1)
+                if not register.lower().startswith("r"):
+                    raise ValueError(f"Invalid register condition: {condition}")
+                index = int(register[1:])
+                if not 0 <= index < 32:
+                    raise ValueError(f"Invalid register condition: {condition}")
+                return c.registers.read_full(index) == int(value, 0)
+            if condition.startswith("mem:"):
+                address, value = condition[4:].split("!=", 1)
+                actual = int.from_bytes(self.sim.memory_read(int(address, 0), 4), "little")
+                return actual != int(value, 0)
+            pin_prefix = next((prefix for prefix in ("pin:", "gpi:", "gpo:")
+                               if condition.startswith(prefix)), None)
+            if pin_prefix:
+                pin, value = condition[len(pin_prefix):].split("==", 1)
+                index = int(pin, 0)
+                target = int(value, 0)
+                if not 0 <= index < 20 or target not in (0, 1):
+                    raise ValueError(f"Invalid pin condition: {condition}")
+                io_state = self.sim.io(core)
+                kind = "gpo" if pin_prefix == "gpo:" else "gpi"
+                return io_state[f"{kind}_pins"][index] == target
+            raise ValueError(f"Unsupported run condition: {condition}")
+
+        reason = None
         for _ in range(max_steps):
-            if c.halted:
+            if condition_met():
+                reason = "halted" if condition == "halt" else "condition_met"
                 break
             c.step()
+            if max_cycles and c.counters.cycles - start_cycles > max_cycles:
+                return {
+                    "pc": c.pc,
+                    "cycles": c.counters.cycles,
+                    "reason": "budget_exceeded",
+                    "budget_exceeded": True,
+                    "condition_met": False,
+                }
+        if reason is None and condition_met():
+            reason = "halted" if condition == "halt" else "condition_met"
         return {
             "pc": c.pc,
             "cycles": c.counters.cycles,
-            "reason": "halted" if c.halted else "max_steps",
+            "reason": reason or "max_steps",
+            "budget_exceeded": False,
+            "condition_met": reason is not None,
         }
 
     def pru_registers(self, core: str = "pru0") -> dict:
@@ -69,6 +273,14 @@ class PRUSimulatorMCP:
         """Set a single GPI pin on the specified core's I/O port."""
         self.sim.set_input(core, pin, value)
         return {"ok": True}
+
+    def pru_vcd_export(self, path: str, core: str = "pru0", max_steps: int = 10000,
+                       pins: str = "0-19", include_gpi: bool = False) -> dict:
+        """Run a loaded core and export selected GPIO pins as deterministic VCD."""
+        return export_pin_waveform(
+            self.sim, core, path, max_steps=max_steps, pins=pins,
+            include_gpi=include_gpi,
+        )
 
     def pru_i2c_attach(self, core: str = "pru0", enabled: bool = True, address: int = 0x23) -> dict:
         """Attach or detach a TCA9538 I2C device model on SCL=bit0/SDA=bit1 of the specified core."""
@@ -177,6 +389,8 @@ def run_stdio_server():
                 annotation = param.annotation
                 if annotation in (int,):
                     ptype = "integer"
+                elif annotation in (float,):
+                    ptype = "number"
                 elif annotation in (bool,):
                     ptype = "boolean"
                 prop = {"type": ptype}
