@@ -56,6 +56,20 @@ When `capture_mode == 2`, a 24-byte trace record is appended per frame at
 `trace_write_index`/`trace_overrun_count` counters the design doc specifies,
 without adding a stall to the normal per-frame path.
 
+### 2.6 Dashboard integration
+
+The simulator dashboard now exposes the paired generic SSI workflow through
+the **Generic SSI Runtime** panel. The server loads this reader on PRU1, the
+generic emulator on PRU0, installs the virtual loopback wires, and wraps the
+existing `SSIRuntime` staging/apply API. The browser sends configuration, raw
+frame slots, and the apply request in order, then runs both cores and displays
+the mailbox and trace counters.
+
+The reader remains responsible only for timing, sampling, structural field
+extraction, mailbox publication, and trace capture. Raw frame values are
+validated by the host-side runtime before they reach the emulator; semantic
+encoding decode remains outside this PRU program.
+
 ## 3. Files generated
 
 | File | Purpose |
@@ -64,6 +78,10 @@ without adding a stall to the normal per-frame path.
 | `source/ssi_generic_reader/README.md` | Usage documentation |
 | `source/ssi_generic_reader/PROJECT_REPORT.md` | This report |
 | `tests/test_ssi_generic_reader.py` | Bit-level and integration tests |
+| `tests/test_ssi_runtime_ui.py` | Dashboard contract, websocket workflow, and frame-width validation tests |
+| `ui/server.py` | Generic SSI load/stage/frame/apply/read WebSocket actions |
+| `ui/static/index.html` | Generic SSI Runtime panel markup |
+| `ui/static/app.js` | Generic SSI Runtime panel behavior and state rendering |
 
 ## 4. Testing
 
@@ -88,6 +106,10 @@ without adding a stall to the normal per-frame path.
   `test_topology_reader_only_skips_pru0_ack_wait` and
   `test_generation_change_applied_only_at_idle_boundary` (this file's own
   active-master mirror of the emulator's identically-named test).
+* **Dashboard integration:** `tests/test_ssi_runtime_ui.py` verifies the
+  panel contract, profile catalog, raw-frame parser, paired load/stage/frame/
+  apply/read WebSocket workflow, and rejection of a value wider than the
+  selected frame width.
 * **Full suite:** `python -m pytest tests/test_ssi_generic_reader.py -v`
   must pass in isolation, and the full repository suite must show no
   regressions.
@@ -125,6 +147,19 @@ without adding a stall to the normal per-frame path.
   simulator-only slice.
 
 ## 6. Running with the UI simulator
+
+### 6.1 Dashboard panel
+
+1. Start `python ui/server.py` and open `http://localhost:8080`.
+2. In **Generic SSI Runtime**, click **Load PRU0 emulator + PRU1 reader**.
+3. Leave `ABC, AAA, BCA, 12A, CC2`, choose **Mailbox + trace**, and click
+   **Apply atomically**.
+4. Enable Signal Graph recording if waveforms are needed, click **Run pair**,
+   then **Refresh** to inspect the mailbox and trace counters.
+5. Change the profile, width, timing, sequence, or fault fields and apply
+   again. Values wider than the selected frame width are rejected.
+
+### 6.2 Direct simulator path
 
 1. Start the dashboard: `python ui/server.py`.
 2. Load this file on **PRU1** and `ssi_generic_emulator.asm` on **PRU0**.

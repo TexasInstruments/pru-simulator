@@ -17,6 +17,19 @@ module for staging/applying config and decoding results, standing in for R5.
 **Tech Stack:** PRU assembly (existing simulator dialect), Python 3 (stdlib
 only — no new dependencies), pytest, JSON (schema).
 
+## Implementation status (2026-08-21)
+
+- [x] Shared ABI, generic PRU0 emulator, generic PRU1 reader, runtime profiles,
+  atomic apply, trace helpers, and MCP operations are implemented in the
+  simulator branch.
+- [x] The dashboard exposes the paired PRU0-emulator/PRU1-reader workflow with
+  profile, width, timing, sequence, capture, fault, mailbox, and trace controls.
+- [x] UI contract and WebSocket integration tests cover load, stage, frame-slot
+  update, apply, readback, and frame-width overflow rejection.
+- [x] Source READMEs, project reports, handoff, session report, and this plan
+  are synchronized with the dashboard behavior.
+- [ ] CCS/R5/hardware implementation and LaunchPad acceptance remain deferred.
+
 ## Global Constraints
 
 - Default profile behavior (no `stage()`/`apply()` call) must remain 12-bit
@@ -32,7 +45,7 @@ only — no new dependencies), pytest, JSON (schema).
   decodes — both are pure bit-shifters against prepacked/raw wire bits; all
   encoding-aware logic lives in the Python runtime module.
 - Real CCS/R5/hardware work is explicitly out of scope for every task below.
-- Do not commit or push (per this session's standing instruction) unless told.
+- Commit and push only when explicitly requested by the repository owner.
 
 ---
 
@@ -162,7 +175,7 @@ truncating it.
 
 ---
 
-### Task 6: Trace buffer, capture control, and MCP parity
+### Task 6: Trace buffer, capture control, MCP, and dashboard parity
 
 **Depends on:** Tasks 2, 4, 5.
 
@@ -173,6 +186,10 @@ truncating it.
   when this task is briefed, following this file's existing method style)
 - Test: `pru-simulator/tests/test_ssi_runtime_trace.py`, MCP-layer test
   alongside the existing `test_mcp_server.py` patterns
+- Modify: `pru-simulator/ui/server.py`, `pru-simulator/ui/static/index.html`,
+  `pru-simulator/ui/static/app.js` (dashboard controls and WebSocket actions
+  for the paired generic SSI runtime)
+- Test: `pru-simulator/tests/test_ssi_runtime_ui.py`
 
 **Acceptance:** a helper that reads all currently-valid trace records
 (respecting `trace_write_index`/`trace_overrun_count`, oldest-overwritten
@@ -181,6 +198,10 @@ overrun count and buffer contents are exactly right; MCP tool functions that
 let an external client stage a profile, apply it, and read back the latest
 mailbox/trace without touching `Simulator` internals directly, mirroring how
 `pru_ssi_inject` already wraps `Simulator` for the fixed-profile case.
+The dashboard must provide the same stage/apply/read path through the browser,
+load PRU0 as the emulator and PRU1 as the reader, install the two virtual
+loopback wires, validate raw frame values against the selected width, and
+display mailbox/trace state after a paired run.
 
 ---
 
@@ -193,7 +214,9 @@ mailbox/trace without touching `Simulator` internals directly, mirroring how
 - Update: `pru-simulator/source/ssi_generic_emulator/README.md` +
   `PROJECT_REPORT.md`, `pru-simulator/source/ssi_generic_reader/README.md` +
   `PROJECT_REPORT.md` (per the `project-documentation` skill)
-- Create: `pru-simulator/docs/handoff/<date>-generic-runtime-ssi.md`
+- Update: `pru-simulator/docs/handoff/<date>-generic-runtime-ssi.md`,
+  `pru-simulator/docs/reports/<date>-generic-runtime-ssi-session-report.html`
+- Update: this plan and `docs/superpowers/specs/2026-08-19-generic-runtime-ssi-design.md`
 
 **Acceptance:** run the full suite, confirm every family profile has at
 least one passing end-to-end test, confirm the parent plan's Task 7
@@ -201,6 +224,6 @@ verification list is covered for everything that's simulator-testable
 (binary/Gray/Gray-excess/Tannenbaum packing, alignment/padding/status bits,
 every fault mode, runtime switching without mixed-generation frames,
 rejection of out-of-range values, mailbox coherence, trace overflow/overrun
-counting, MCP parity). Anything on that list that's real-hardware-only
+counting, MCP parity, and dashboard parity). Anything on that list that's real-hardware-only
 (logic-analyzer verification, UART command parity) gets explicitly called
 out as deferred to the hardware phase, not silently dropped.

@@ -64,6 +64,20 @@ slot's raw wire bits before this program ever sees them. This program is a
 pure bit-shifter: MSB-first, `frame_width_bits` clocks, from whatever is
 already in the active slot's `frame_bits`.
 
+### 2.6 Dashboard integration
+
+The simulator dashboard now exposes the paired generic SSI workflow through
+the **Generic SSI Runtime** panel. The server loads this emulator on PRU0, the
+generic reader on PRU1, installs the virtual loopback wires, and wraps the
+existing `SSIRuntime` staging/apply API. The browser sends configuration, raw
+frame slots, and the apply request in order, so a complete generation is
+committed before the PRUs acknowledge it. The panel also runs the pair and
+displays the latest mailbox and trace counters.
+
+`SSIRuntime.set_raw_frames()` validates that every raw wire value fits the
+staged frame width and clears unused slots. This is UI support only; the PRU
+bit loop and its deterministic edge-driven behavior are unchanged.
+
 ## 3. Files generated
 
 | File | Purpose |
@@ -72,6 +86,10 @@ already in the active slot's `frame_bits`.
 | `source/ssi_generic_emulator/README.md` | Usage documentation |
 | `source/ssi_generic_emulator/PROJECT_REPORT.md` | This report |
 | `tests/test_ssi_generic_emulator.py` | Bit-level and fault-mode tests |
+| `tests/test_ssi_runtime_ui.py` | Dashboard contract, websocket workflow, and frame-width validation tests |
+| `ui/server.py` | Generic SSI load/stage/frame/apply/read WebSocket actions |
+| `ui/static/index.html` | Generic SSI Runtime panel markup |
+| `ui/static/app.js` | Generic SSI Runtime panel behavior and state rendering |
 
 ## 4. Testing
 
@@ -95,6 +113,10 @@ already in the active slot's `frame_bits`.
   `test_sequence_hold_mode_1_time_based`.
 * **Integration:** `test_normal_transmission_matches_reader_capture` pairs
   this program with `ssi_generic_reader.asm` end-to-end.
+* **Dashboard integration:** `tests/test_ssi_runtime_ui.py` verifies the
+  panel contract, profile catalog, raw-frame parser, paired load/stage/frame/
+  apply/read WebSocket workflow, and rejection of a value wider than the
+  selected frame width.
 * **Full suite:** `python -m pytest tests/test_ssi_generic_emulator.py -v`
   must pass in isolation, and the full repository suite must show no
   regressions.
@@ -132,6 +154,19 @@ already in the active slot's `frame_bits`.
   simulator-only slice.
 
 ## 6. Running with the UI simulator
+
+### 6.1 Dashboard panel
+
+1. Start `python ui/server.py` and open `http://localhost:8080`.
+2. In **Generic SSI Runtime**, click **Load PRU0 emulator + PRU1 reader**.
+3. Leave `ABC, AAA, BCA, 12A, CC2`, choose **Mailbox + trace**, and click
+   **Apply atomically**.
+4. Enable Signal Graph recording if waveforms are needed, click **Run pair**,
+   then **Refresh** to inspect the mailbox and trace counters.
+5. Change the profile, width, timing, sequence, or fault fields and apply
+   again. Values wider than the selected frame width are rejected.
+
+### 6.2 Direct simulator path
 
 1. Start the dashboard: `python ui/server.py`.
 2. Load `ssi_generic_reader.asm` on **PRU1** and this file on **PRU0**.

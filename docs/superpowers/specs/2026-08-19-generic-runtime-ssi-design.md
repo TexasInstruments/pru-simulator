@@ -208,6 +208,37 @@ the R5 role:
    raises after `timeout_steps`), so tests don't hand-roll this polling loop
    per test.
 
+## Dashboard UI (simulator)
+
+The dashboard exposes the same runtime state through a **Generic SSI Runtime**
+panel. It is a simulator-only client of `SSIRuntime`; it does not duplicate
+profile validation or write ABI offsets directly.
+
+The load action loads the generic emulator on PRU0 and the generic reader on
+PRU1, installs the virtual loopback wires `pru1:GPO0 -> pru0:GPI16` for the
+clock and `pru0:GPO0 -> pru1:GPI8` for data, and initializes the default
+profile. The panel exposes named profiles, frame/position widths, clock
+high/low cycles, sample delay, `tv`, `tm`, `Tp`, sequence hold, capture mode,
+fault mode, and a comma-separated raw hexadecimal frame sequence.
+
+The browser applies a complete generation in this order:
+
+1. Send staged profile and numeric overrides.
+2. Send raw frame slots, rejecting values that exceed the staged frame width.
+3. Send apply and wait for the PRU generation acknowledgements.
+4. Run PRU1 and PRU0 as a pair and read the seqlock mailbox/trace state.
+
+The UI displays the latest raw frame, structurally extracted position/status,
+frame counter, trace write index, and trace overrun count. Raw values are
+complete wire frames in hexadecimal; the UI does not interpolate missing
+frames or silently truncate oversized values. Encoding semantics, alignment,
+formation mode, and other fields not exposed by these controls remain
+available through the Python/MCP runtime surface and retain the limitations
+documented in the handoff.
+
+The browser contract is tested by `tests/test_ssi_runtime_ui.py`, while the
+parent workspace guide provides a manual test sequence for users.
+
 ## Profiles
 
 `ssi_runtime.py` ships one `Profile` per named family from the SSI interface

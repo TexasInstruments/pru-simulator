@@ -1,14 +1,15 @@
 # Generic runtime-configurable SSI — simulator-scoped wrap-up
 
-This handoff closes out the simulator-only slice of the generic
+This handoff records the simulator-only slice of the generic
 runtime-configurable SSI effort (Tasks 2-6 of
 `docs/superpowers/plans/2026-08-19-generic-runtime-ssi.md`, design reference
 `docs/superpowers/specs/2026-08-19-generic-runtime-ssi-design.md`). All code
-was implemented and independently reviewed in prior tasks; this note
-documents what exists and audits test coverage against the parent plan's
+was implemented and independently reviewed in prior tasks. The dashboard
+follow-up is recorded below; this note documents what exists and audits test coverage against the parent plan's
 Task 7 verification list
 (`encoder-workspace/docs/protocol/generic_runtime_ssi_implementation_plan.md`,
-`## Task 7`). No new PRU/runtime behavior was added by this task.
+`## Task 7`). The dashboard adds browser-facing configuration and raw-frame
+slot helpers; it does not change the PRU bit-loop behavior.
 
 ## What was built
 
@@ -53,6 +54,13 @@ Task 7 verification list
   operations in `mcp_server/server.py` (`ssi_profile_list`, `ssi_stage`,
   `ssi_apply`, `ssi_read_mailbox`, `ssi_read_trace`) mirroring how
   `pru_ssi_inject` already wraps `Simulator` for the fixed-profile case.
+- **Task 6 follow-up — dashboard UI:** the **Generic SSI Runtime** panel now
+  loads PRU0 as the emulator and PRU1 as the reader, installs the virtual
+  clock/data wires, exposes profile/width/timing/sequence/capture/fault fields,
+  and performs the ordered stage -> frame-slot write -> apply workflow. It
+  also runs the pair and renders the latest mailbox and trace counters. The UI
+  contract and WebSocket integration are covered by
+  `tests/test_ssi_runtime_ui.py`.
 
 ## Known limitations
 
@@ -89,10 +97,9 @@ works*.
   `encoder-workspace/docs/protocol/generic_runtime_ssi_implementation_plan.md`'s
   own Tasks 1/2/3/4/5/6 hardware-facing halves and "Hardware acceptance"
   list). Not started in this repository.
-- **Any web/dashboard UI for SSI configuration.** No SSI config panel exists
-  in `pru-simulator`'s UI today; the only surfaces are the MCP operations
-  listed above and direct Python (`SSIRuntime`) / memory-poke access used by
-  tests.
+- **Real CCS/R5/hardware integration.** The dashboard is simulator-only; the
+  real R5 API, generated C headers, PRU loading, pinmux, UART control, and
+  LaunchPad validation remain deferred to the hardware phase.
 
 ## Verification checklist audit
 
@@ -124,7 +131,21 @@ silently dropped.
 | Latest-mailbox coherence | `tests/test_ssi_generic_reader.py::test_mailbox_seq_even_between_frames_and_counters_monotonic` (seq always even between frames, counters strictly increasing) and `tests/test_ssi_runtime_trace.py::test_read_mailbox_matches_raw_and_is_decoded` (seqlock-safe read via `SSIRuntime.read_mailbox`) |
 | Trace overflow and exact overrun counting | `tests/test_ssi_generic_reader.py::test_capture_mode_2_trace_overrun_and_wrap` (raw memory, exact `n_frames - 1024`) and `tests/test_ssi_runtime_trace.py::test_read_trace_overrun_ordering_and_limit_after_wraparound` (through `SSIRuntime.read_trace`, ordering + limit + overrun count) |
 | Every fault-injection mode | All 8: `tests/test_ssi_generic_emulator.py::test_fault_mode_1_status_bits_is_pure_passthrough` through `::test_fault_mode_8_data_stuck_high` |
-| UI and MCP configuration parity | **MCP:** `tests/test_mcp_server.py::test_ssi_profile_list`, `::test_ssi_stage_rejects_unknown_profile`, `::test_ssi_stage_apply_read_mailbox_and_trace_end_to_end` (full stage→apply→read-mailbox→read-trace round trip). **UI:** no SSI configuration UI exists in this repository for this feature — there is nothing to have parity with yet; noted explicitly rather than silently dropped |
+| UI and MCP configuration parity | **MCP:** `tests/test_mcp_server.py::test_ssi_profile_list`, `::test_ssi_stage_rejects_unknown_profile`, `::test_ssi_stage_apply_read_mailbox_and_trace_end_to_end` (full stage→apply→read-mailbox→read-trace round trip). **UI:** `tests/test_ssi_runtime_ui.py` covers the panel contract plus the paired load→stage→frame-slots→apply→read workflow and width-overflow rejection. Both surfaces use the same `SSIRuntime`/ABI state. |
+
+### Manual dashboard validation
+
+1. Start `python ui/server.py` and open `http://localhost:8080`.
+2. In **Generic SSI Runtime**, click **Load PRU0 emulator + PRU1 reader**.
+   This loads the emulator on PRU0, the reader on PRU1, and installs the
+   `pru1:GPO0 -> pru0:GPI16` clock wire plus the
+   `pru0:GPO0 -> pru1:GPI8` data wire.
+3. Leave the default raw sequence `ABC, AAA, BCA, 12A, CC2`, choose
+   **Mailbox + trace**, and click **Apply atomically**.
+4. Enable Signal Graph recording when waveform capture is needed, click
+   **Run pair**, and click **Refresh** to inspect the mailbox and trace.
+5. Change the raw sequence, profile, width, or timing and repeat Apply before
+   running again. A value that exceeds the selected frame width is rejected.
 
 ### Hardware acceptance (deferred to the hardware phase)
 
@@ -160,10 +181,17 @@ separate, explicitly-deferred CCS/R5/hardware project.
 ## Full suite confirmation
 
 ```
-python -m pytest -q --ignore=references --ignore=tests/test_trace_plot.py --ignore=tests/test_trace_viewer.py
+python -m pytest tests/test_ssi_runtime_ui.py tests/test_ui_startup_assets.py tests/test_ssi_config_abi_generated.py tests/test_ssi_generic_emulator.py tests/test_ssi_generic_reader.py tests/test_ssi_runtime.py tests/test_ssi_runtime_trace.py tests/test_mcp_server.py -q
 ```
 
-Result: **1290 passed, 1 failed, 2 xfailed** — matches the current baseline
-exactly. The 1 failure
+Result: **67 passed** for the SSI/runtime/UI regression set.
+
+The full suite was also run with an explicit writable pytest base directory:
+
+```
+python -m pytest -q --basetemp .pytest-tmp-full
+```
+
+Result: **1311 passed, 1 failed, 2 xfailed**. The 1 failure
 (`tests/test_perif_drift_experiment.py::test_roundtrip_with_no_host_register_setup`)
 is pre-existing and unrelated to the SSI work in this handoff.

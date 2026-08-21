@@ -49,6 +49,9 @@ Same pin convention as `ssi_reader_4mhz_12bit.asm` / `ssi_generic_emulator.asm`:
 | `ssi_generic_reader.asm` | PRU1 firmware |
 | `README.md` | this file |
 | `PROJECT_REPORT.md` | detailed project documentation |
+| `ui/server.py` | Dashboard WebSocket actions for the generic SSI pair |
+| `ui/static/index.html`, `ui/static/app.js` | Generic SSI Runtime controls and state rendering |
+| `tests/test_ssi_runtime_ui.py` | Browser-contract and paired-runtime UI tests |
 
 ## Run it in the simulator
 
@@ -64,6 +67,28 @@ Same pin convention as `ssi_reader_4mhz_12bit.asm` / `ssi_generic_emulator.asm`:
    named profile, `apply()`, then step).
 5. Step both cores in lockstep (`sim.step_paced("pru1", "pru0")`) and inspect
    the mailbox at `0x0200` / trace buffer at `0x0400`.
+
+### Dashboard UI (generic runtime panel)
+
+The dashboard can load and configure this reader together with the generic
+emulator without manual assembly loading or memory pokes:
+
+1. Start `python ui/server.py` and open `http://localhost:8080`.
+2. In **Generic SSI Runtime**, click **Load PRU0 emulator + PRU1 reader**.
+   The server loads this program on PRU1, the emulator on PRU0, and installs
+   the virtual wires `pru1:GPO0 -> pru0:GPI16` and `pru0:GPO0 -> pru1:GPI8`.
+3. Select a profile, configure timing/capture/fault fields, and enter raw
+   hexadecimal frame values. The default sequence is
+   `ABC, AAA, BCA, 12A, CC2`.
+4. Click **Apply atomically**. The browser sends the staged configuration,
+   frame slots, and apply request in that order; the runtime waits for the
+   generation acknowledgements at an idle frame boundary.
+5. Click **Run pair**, optionally after enabling Signal Graph recording, then
+   click **Refresh** to inspect the latest mailbox and trace counters.
+
+The mailbox shows the raw frame and structurally extracted position/status
+fields. Semantic encoding decode remains a host/R5 responsibility. Detailed
+manual examples are in `docs/handoff/2026-08-20-generic-runtime-ssi.md`.
 
 ### Reader-only mode (`topology=1`)
 
