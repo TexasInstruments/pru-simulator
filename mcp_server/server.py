@@ -4,6 +4,8 @@ import sys
 import os
 import base64
 import binascii
+import copy
+import random
 import struct
 
 # Allow imports from parent directory when run directly
@@ -17,6 +19,7 @@ class PRUSimulatorMCP:
     """Wraps the Simulator and exposes its methods as MCP-compatible tool functions."""
 
     def __init__(self, config_path: str = "memory.cfg"):
+        self._config_path = config_path
         self.sim = Simulator(config_path)
 
     def pru_load(self, source: str, core: str = "pru0",
@@ -119,8 +122,33 @@ class PRUSimulatorMCP:
             else:
                 elf_data = base64.b64decode(b64, validate=True)
             entry, sections = self._elf_metadata(elf_data)
-            self.sim.reset(core)
-            errors = self.sim.load_elf(core, elf_data)
+            text_sections = sorted(
+                (section for section in sections if section["name"].startswith(".text")),
+                key=lambda section: section["address"],
+            )
+            entry_pc = None
+            preceding_words = 0
+            for section in text_sections:
+                if section["size"] % 4:
+                    raise ValueError(
+                        f"ELF text section {section['name']} size is not word-aligned")
+                if section["address"] <= entry < section["address"] + section["size"]:
+                    entry_pc = preceding_words + (entry - section["address"]) // 4
+                    break
+                preceding_words += section["size"] // 4
+            if entry_pc is None:
+                raise ValueError(
+                    f"ELF entry point 0x{entry:x} is not inside a loadable text section")
+
+            # Load transactionally into a fresh simulator.  Besides ensuring a
+            # failed load cannot corrupt the current session, this prevents
+            # stale shared memory, other-core state, or breakpoints from
+            # contaminating a supposedly independent ELF run.
+            candidate = Simulator(self._config_path)
+            errors = candidate.load_elf(core, elf_data)
+            if not errors:
+                candidate.cores[core].pc = entry_pc
+                self.sim = candidate
         except (OSError, ValueError, binascii.Error) as exc:
             errors = [f"ELF load failed: {exc}"]
         if errors:
@@ -156,6 +184,18 @@ class PRUSimulatorMCP:
             raise ValueError("count must be non-negative")
         if guard_ns < 0:
             raise ValueError("guard_ns must be non-negative")
+        if lead == follow:
+            raise ValueError("lead and follow must name different cores")
+
+        def state(core: str) -> dict:
+            c = self.sim.cores[core]
+            return {
+                "core": core,
+                "pc": c.pc,
+                "cycles": c.counters.cycles,
+                "halted": c.halted,
+            }
+
         for _ in range(count):
             follow_pru = self.sim.cores[follow]
             follow_cycles = follow_pru.counters.cycles
@@ -169,16 +209,26 @@ class PRUSimulatorMCP:
                     and follow_pru.pc < len(follow_pru.instructions)):
                 follow_pru.step()
 
-        def state(core: str) -> dict:
-            c = self.sim.cores[core]
-            return {
-                "core": core,
-                "pc": c.pc,
-                "cycles": c.counters.cycles,
-                "halted": c.halted,
-            }
+            lead_perif = self.sim._perif.get(lead)
+            follow_perif = self.sim._perif.get(follow)
+            if lead_perif is not None and follow_perif is not None:
+                target_ns = lead_perif._now_ns - guard_ns
+                if follow_perif._now_ns < target_ns:
+                    return {
+                        "success": False,
+                        "reason": "pacing_catchup_failed",
+                        "target_ns": target_ns,
+                        "follow_ns": follow_perif._now_ns,
+                        "lead": state(lead),
+                        "follow": state(follow),
+                    }
 
-        return {"lead": state(lead), "follow": state(follow)}
+        return {
+            "success": True,
+            "reason": "stepped",
+            "lead": state(lead),
+            "follow": state(follow),
+        }
 
     def pru_run_until(self, core: str = "pru0", condition: str = "halt",
                       max_steps: int = 10000, max_cycles: int = 0) -> dict:
@@ -231,15 +281,32 @@ class PRUSimulatorMCP:
             if condition_met():
                 reason = "halted" if condition == "halt" else "condition_met"
                 break
+            if c.pc in c.breakpoints:
+                reason = "breakpoint"
+                break
+            if max_cycles:
+                # An instruction may add memory stall cycles.  Predict it on a
+                # private copy, and do not mutate the live simulator unless the
+                # complete instruction fits inside the inclusive budget.
+                rng_state = random.getstate()
+                try:
+                    projected = copy.deepcopy(self.sim)
+                    projected_core = projected.cores[core]
+                    projected_core.step()
+                finally:
+                    # Memory read jitter uses the module RNG.  The live step
+                    # must draw the same value as the projection.
+                    random.setstate(rng_state)
+                projected_delta = projected_core.counters.cycles - c.counters.cycles
+                if c.counters.cycles - start_cycles + projected_delta > max_cycles:
+                    return {
+                        "pc": c.pc,
+                        "cycles": c.counters.cycles,
+                        "reason": "budget_exceeded",
+                        "budget_exceeded": True,
+                        "condition_met": False,
+                    }
             c.step()
-            if max_cycles and c.counters.cycles - start_cycles > max_cycles:
-                return {
-                    "pc": c.pc,
-                    "cycles": c.counters.cycles,
-                    "reason": "budget_exceeded",
-                    "budget_exceeded": True,
-                    "condition_met": False,
-                }
         if reason is None and condition_met():
             reason = "halted" if condition == "halt" else "condition_met"
         return {
@@ -247,7 +314,7 @@ class PRUSimulatorMCP:
             "cycles": c.counters.cycles,
             "reason": reason or "max_steps",
             "budget_exceeded": False,
-            "condition_met": reason is not None,
+            "condition_met": reason in ("halted", "condition_met"),
         }
 
     def pru_registers(self, core: str = "pru0") -> dict:
