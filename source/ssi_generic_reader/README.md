@@ -84,14 +84,26 @@ emulator without manual assembly loading or memory pokes:
    Gray-excess, or Tannenbaum host-side layout; complete raw frame slots can
    also be supplied by the API. The default sequence is
    `ABC, AAA, BCA, 12A, CC2`.
-4. Click **Stage**, then **Apply atomically**. The browser sends the staged
-   configuration, packed frame slots, and apply request in that order; the
-   runtime waits for the generation acknowledgements at an idle frame
-   boundary.
+4. Click **Stage** when you want to inspect a proposed configuration. Click
+   **Apply atomically** to send one complete configuration-and-frame
+   transaction; the server validates every value before publishing a new
+   generation and waits for the acknowledgements at an idle frame boundary.
    Until both acknowledgements complete, active mailbox/trace decoding stays
    on the previous applied layout.
-5. Click **Run pair**, optionally after enabling Signal Graph recording, then
+5. Click **Multi-core** when both register panels are needed. After the
+   generic pair is loaded, the second panel is automatically set to **PRU1**;
+   the toolbar **Run**, **Step**, **SIM**, and **Reset** controls operate PRU1
+   (reader) together with PRU0 (emulator).
+6. Click **Run pair**, optionally after enabling Signal Graph recording, then
    click **Refresh** to inspect the latest mailbox and trace counters.
+7. The memory panels use absolute/global addresses. Use `0x00000000` for
+   PRU0 DRAM, `0x00002000` for PRU1 DRAM, and `0x00010000` for shared RAM.
+   Each read carries a panel request ID, so an older response cannot replace a
+   newer address window.
+
+Loading the generic pair removes stale user-created GPIO wires and installs
+only the two documented loopback wires. The panel displays the actual wiring
+under the status line so a test can confirm it before running.
 
 The mailbox shows the raw frame and structurally extracted position/status
 fields. The runtime readback adds semantic host-side decoding. Detailed

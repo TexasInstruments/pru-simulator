@@ -68,7 +68,10 @@ prepacked frames at `0x0100`, mailbox at `0x0200`, capture counters at
 The dashboard loads this program on PRU0, the generic reader on PRU1, and
 installs both virtual wires. The Generic SSI Runtime panel stages profiles,
 semantic positions or raw frames, timing, formation, hold, fault, and capture
-settings before an explicit atomic Apply action.
+settings before an explicit atomic Apply action. Apply sends one complete
+configuration/frame transaction and validates it before publishing a new
+generation. Generic loading replaces stale GPIO wires, and the toolbar pair
+controls use PRU1 as the reader and PRU0 as the emulator.
 
 Important files:
 
@@ -91,7 +94,8 @@ The focused SSI/runtime/UI suite covers:
 - frame-count/time holds, synchronous formation, all eight fault modes, and
   finite fault recovery;
 - generation changes at idle boundaries, mailbox seqlock publication, trace
-  wrap/overrun, MCP parity, and dashboard stage/apply/readback.
+  wrap/overrun, MCP parity, dashboard stage/apply/readback, stale-wire
+  replacement, and request-tagged memory reads.
 
 Run the focused tests with:
 
@@ -99,7 +103,7 @@ Run the focused tests with:
 python -m pytest -q tests/test_ssi_config_abi_generated.py tests/test_ssi_runtime.py tests/test_ssi_generic_emulator.py tests/test_ssi_generic_reader.py tests/test_ssi_runtime_ui.py tests/test_ssi_runtime_trace.py tests/test_mcp_server.py
 ```
 
-The current focused result is 92 passing tests. The complete repository
+The current focused result is 96 passing tests. The complete repository
 result is recorded in the dated session report; one unrelated peripheral
 drift experiment remains a pre-existing failure.
 

@@ -56,6 +56,7 @@ def test_generic_ssi_runtime_panel_exposes_load_configure_and_observe_controls()
         "ssi-runtime-run",
         "ssi-runtime-refresh",
         "ssi-runtime-status",
+        "ssi-runtime-wires",
         "ssi-runtime-mailbox",
         "ssi-runtime-trace",
     ):
@@ -64,12 +65,18 @@ def test_generic_ssi_runtime_panel_exposes_load_configure_and_observe_controls()
     for action in (
         "ssi_runtime_load",
         "ssi_runtime_stage",
-        "ssi_runtime_frames",
         "ssi_runtime_positions",
         "ssi_runtime_apply",
         "ssi_runtime_read",
     ):
         assert action in js, action
+
+    assert 'action: "ssi_runtime_apply"' in js
+    assert "frames: frameTokens()" in js
+    assert "request_id" in js
+    assert "selectGenericSsiPartner" in js
+    assert "PRU1:GPO0" in html
+    assert "PRU1 DRAM (global 0x00002000)" in html
 
 
 def test_profile_catalog_is_safe_for_ui_and_contains_default_and_documented_profiles():
@@ -196,6 +203,105 @@ def test_dashboard_websocket_runs_generic_ssi_pair_and_applies_raw_frames(fresh_
         readback = ws.receive_json()
         assert readback["mailbox"]["frame_counter"] >= 0
         assert readback["trace"]["write_index"] >= 0
+
+
+def test_dashboard_generic_pair_run_completes_with_reader_as_lead(fresh_sim):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "ssi_runtime_load"})
+        loaded = ws.receive_json()
+        assert loaded["loaded"] is True
+
+        ws.send_json({
+            "action": "run_multicore",
+            "core": "pru1",
+            "partner": "pru0",
+            "max_steps": 20000,
+            "capture": False,
+            "request_id": "ssi-runtime-general-1",
+        })
+
+        messages = []
+        while True:
+            message = ws.receive_json()
+            messages.append(message)
+            if message.get("type") == "run_done":
+                break
+
+    assert {message["core"] for message in messages if message["type"] == "state"} == {
+        "pru0", "pru1",
+    }
+    assert messages[-1] == {
+        "type": "run_done",
+        "request_id": "ssi-runtime-general-1",
+    }
+
+
+def test_generic_load_replaces_stale_gpio_wires(fresh_sim):
+    fresh_sim.add_gpio_wire("pru0", 1, "pru1", 2)
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "ssi_runtime_load"})
+        loaded = ws.receive_json()
+
+    assert loaded["wires"] == [
+        {"src_core": "pru1", "src_pin": 0, "dst_core": "pru0", "dst_pin": 8},
+        {"src_core": "pru0", "src_pin": 0, "dst_core": "pru1", "dst_pin": 16},
+    ]
+
+
+def test_dashboard_apply_is_transactional_when_frame_validation_fails(fresh_sim):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "ssi_runtime_load"})
+        loaded = ws.receive_json()
+        original_generation = loaded["active"]["requested_generation"]
+        original_frames = loaded["frames"]
+
+        ws.send_json({
+            "action": "ssi_runtime_apply",
+            "profile": "CUSTOM_LEGACY_12BIT_4MHZ",
+            "overrides": {
+                "frame_width_bits": 8,
+                "position_width_bits": 8,
+                "singleturn_width_bits": 8,
+            },
+            "frames": ["ABC"],
+        })
+        error = ws.receive_json()
+        assert error["type"] == "ssi_runtime_error"
+        assert "does not fit in 8 bits" in error["error"]
+
+        ws.send_json({"action": "ssi_runtime_read"})
+        unchanged = ws.receive_json()
+        assert unchanged["active"]["requested_generation"] == original_generation
+        assert unchanged["active"]["frame_width_bits"] == 12
+        assert unchanged["staged"]["frame_width_bits"] == 12
+        assert unchanged["frames"] == original_frames
+
+
+def test_dashboard_apply_commits_one_complete_transaction(fresh_sim):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "ssi_runtime_load"})
+        loaded = ws.receive_json()
+        original_generation = loaded["active"]["requested_generation"]
+
+        ws.send_json({
+            "action": "ssi_runtime_apply",
+            "profile": "CUSTOM_LEGACY_12BIT_4MHZ",
+            "overrides": {
+                "frame_width_bits": 8,
+                "position_width_bits": 8,
+                "singleturn_width_bits": 8,
+                "multiturn_width_bits": 0,
+            },
+            "frames": ["12", "A5", "FF"],
+        })
+        applied = ws.receive_json()
+
+    assert applied["type"] == "ssi_runtime_state"
+    assert applied["active"]["frame_width_bits"] == 8
+    assert applied["frames"] == [0x12, 0xA5, 0xFF]
+    assert applied["active"]["requested_generation"] > original_generation
+    assert applied["active"]["requested_generation"] == applied["active"]["pru1_ack_generation"]
 
 
 def test_dashboard_websocket_rejects_frame_that_exceeds_staged_width(fresh_sim):

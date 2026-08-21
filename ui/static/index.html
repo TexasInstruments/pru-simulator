@@ -1474,9 +1474,9 @@ Example:
         <div id="memory-controls" data-panel-id="memory1">
           <select id="mem-region-sel" title="Jump to a known memory region" style="background:var(--btn);color:var(--text);border:1px solid var(--border);padding:2px 4px;border-radius:3px;font-family:inherit;font-size:11px;">
             <option value="">Region…</option>
-            <option value="0x00000000">PRU0 DRAM</option>
-            <option value="0x00002000">PRU1 DRAM</option>
-            <option value="0x00010000">Shared RAM</option>
+            <option value="0x00000000">PRU0 DRAM (global 0x00000000)</option>
+            <option value="0x00002000">PRU1 DRAM (global 0x00002000)</option>
+            <option value="0x00010000">Shared RAM (global 0x00010000)</option>
           </select>
           <label>Address:</label>
           <input type="text" id="mem-addr-input" list="mem-region-list" value="0x00000000" />
@@ -1508,9 +1508,9 @@ Example:
         <div id="memory-controls-2" data-panel-id="memory2">
           <select id="mem-region-sel-2" title="Jump to a known memory region" style="background:var(--btn);color:var(--text);border:1px solid var(--border);padding:2px 4px;border-radius:3px;font-family:inherit;font-size:11px;">
             <option value="">Region…</option>
-            <option value="0x00000000">PRU0 DRAM</option>
-            <option value="0x00002000">PRU1 DRAM</option>
-            <option value="0x00010000">Shared RAM</option>
+            <option value="0x00000000">PRU0 DRAM (global 0x00000000)</option>
+            <option value="0x00002000">PRU1 DRAM (global 0x00002000)</option>
+            <option value="0x00010000">Shared RAM (global 0x00010000)</option>
           </select>
           <label>Address:</label>
           <input type="text" id="mem-addr-input-2" list="mem-region-list-2" value="0x00010000" />
@@ -1706,6 +1706,8 @@ Example:
               <button id="ssi-runtime-refresh" class="graph-btn">Refresh</button>
             </div>
             <div id="ssi-runtime-status" class="uart-hint">Not loaded</div>
+            <div class="uart-hint" style="margin-top:4px;">Default SSI wires: PRU1:GPO0 -&gt; PRU0:GPI8 (clock), PRU0:GPO0 -&gt; PRU1:GPI16 (data).</div>
+            <div id="ssi-runtime-wires" class="uart-hint" style="margin-top:2px;">Wires: —</div>
             <div class="uart-controls" style="margin-top:6px;">
               <span class="uart-label">Profile:</span>
               <select id="ssi-runtime-profile" class="uart-inj-select" style="min-width:210px;">

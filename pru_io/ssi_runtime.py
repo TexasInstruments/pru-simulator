@@ -637,6 +637,60 @@ class SSIRuntime:
             self, "_gray_excess_offset", None
         )
 
+    def stage_and_apply(
+        self,
+        profile: "Profile | str | None" = None,
+        frame_values: list[int] | None = None,
+        timeout_steps: int = 200_000,
+        **overrides,
+    ) -> None:
+        """Validate and commit one complete dashboard configuration.
+
+        The dashboard's Apply button must not leave a new staged layout next
+        to old frame slots when one of the requested frames is invalid.  This
+        helper therefore stages the layout, validates/writes the optional
+        frame sequence, and only then calls :meth:`apply`.  If validation
+        fails before the generation commit starts, the previous staged state
+        and frame slots are restored.
+        """
+        previous_staged = self._staged
+        previous_staged_profile = getattr(self, "_staged_profile", None)
+        previous_position_count = getattr(self, "_position_count", None)
+        previous_gray_excess_offset = getattr(self, "_gray_excess_offset", None)
+        previous_frames = None
+        if frame_values is not None:
+            previous_frames = [
+                self.sim.memory_read(
+                    abi.FRAMES_BASE + index * abi.FRAME_SLOT_SIZE,
+                    abi.FRAME_SLOT_SIZE,
+                )
+                for index in range(16)
+            ]
+
+        apply_started = False
+        try:
+            self.stage(profile, **overrides)
+            if frame_values is not None:
+                self.set_raw_frames(frame_values)
+            apply_started = True
+            self.apply(timeout_steps)
+        except Exception:
+            # Once apply() starts it may already have published a new
+            # generation.  Do not pretend that host-side metadata was rolled
+            # back after that point; the caller must report the commit failure.
+            if not apply_started:
+                if previous_frames is not None:
+                    for index, raw in enumerate(previous_frames):
+                        self.sim.memory.write(
+                            abi.FRAMES_BASE + index * abi.FRAME_SLOT_SIZE,
+                            raw,
+                        )
+                self._staged = previous_staged
+                self._staged_profile = previous_staged_profile
+                self._position_count = previous_position_count
+                self._gray_excess_offset = previous_gray_excess_offset
+            raise
+
     def set_raw_frames(self, frame_values: list[int]) -> None:
         """Write the emulator's raw MSB-first frame sequence into shared RAM.
 
@@ -767,11 +821,20 @@ class SSIRuntime:
             if active_config is not None
             else getattr(self, "_gray_excess_offset", None)
         )
-        mailbox["position_value"] = self.decode_position(
-            mailbox["position_value"], encoding_type, width,
-            position_count=position_count,
-            gray_excess_offset=gray_excess_offset,
-        )
+        raw_position = mailbox["position_value"]
+        mailbox["raw_position_value"] = raw_position
+        try:
+            mailbox["position_value"] = self.decode_position(
+                raw_position, encoding_type, width,
+                position_count=position_count,
+                gray_excess_offset=gray_excess_offset,
+            )
+        except ValueError as exc:
+            # A generation change can precede the first frame in the new
+            # layout. Keep the raw mailbox sample visible, but do not decode
+            # an old wider sample as if it belonged to the new generation.
+            mailbox["position_value"] = None
+            mailbox["position_decode_error"] = str(exc)
         return mailbox
 
     def read_trace(self, newest_first: bool = True, limit: int | None = None) -> list[dict]:
@@ -825,11 +888,15 @@ class SSIRuntime:
             else getattr(self, "_gray_excess_offset", None)
         )
         for record in records:
-            record["position_value_decoded"] = self.decode_position(
-                record["position_value"], encoding_type, width,
-                position_count=position_count,
-                gray_excess_offset=gray_excess_offset,
-            )
+            try:
+                record["position_value_decoded"] = self.decode_position(
+                    record["position_value"], encoding_type, width,
+                    position_count=position_count,
+                    gray_excess_offset=gray_excess_offset,
+                )
+            except ValueError as exc:
+                record["position_value_decoded"] = None
+                record["position_decode_error"] = str(exc)
 
         if limit is not None:
             records = records[:limit]

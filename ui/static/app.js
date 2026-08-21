@@ -12,6 +12,8 @@ let running = false;
 let runInterval = null;
 let runRequestInFlight = false;
 let nextRunRequestId = 1;
+let genericSsiLoaded = false;
+let genericSsiRunInFlight = false;
 let simRunning = false;
 let simTimer = null;
 let _flashTimer = null;
@@ -350,6 +352,7 @@ function connect() {
     wsStatus.textContent = "Disconnected";
     wsStatus.className = "error";
     runRequestInFlight = false;
+    genericSsiRunInFlight = false;
     stopRun();
     // Attempt reconnect after 2 s
     setTimeout(connect, 2000);
@@ -379,7 +382,9 @@ function connect() {
         else renderMemory(msg);
       } else if (msg.type === "run_done") {
         runRequestInFlight = false;
-        if (msg.request_id === "ssi-runtime-run") {
+        const requestId = String(msg.request_id ?? "");
+        if (requestId.startsWith("ssi-runtime-")) {
+          genericSsiRunInFlight = false;
           sendAction({ action: "ssi_runtime_read" });
         }
       } else if (msg.type === "uart_inject_ok") {
@@ -421,7 +426,13 @@ function connect() {
       } else if (msg.type === "error") {
         if (msg.tag && msg.tag.startsWith("graph-")) graphMarkChannelError(msg.tag);
         else {
-          if (msg.request_id !== undefined) runRequestInFlight = false;
+          if (msg.request_id !== undefined) {
+            runRequestInFlight = false;
+            const requestId = String(msg.request_id);
+            if (requestId.startsWith("ssi-runtime-")) {
+              genericSsiRunInFlight = false;
+            }
+          }
           if (msg.code === "multicore_sync") {
             stopRun();
             graphSetRecording(false);
@@ -1969,7 +1980,18 @@ coreSelect.addEventListener("change", () => {
 
 btnStep.addEventListener("click", () => {
   stopRun(); stopSim();
-  if (multiCoreMode) {
+  if (genericSsiLoaded) {
+    if (runRequestInFlight) return;
+    const request_id = "ssi-runtime-step-" + nextRunRequestId++;
+    runRequestInFlight = sendAction({
+      action: "run_multicore",
+      core: "pru1",
+      partner: "pru0",
+      max_steps: 1,
+      capture: signalGraph.recording,
+      request_id,
+    });
+  } else if (multiCoreMode) {
     sendAction({ action: "step", core: "pru0", count: 1 });
     sendAction({ action: "step", core: mcPartner, count: 1 });
   } else {
@@ -1991,8 +2013,21 @@ btnReset.addEventListener("click", () => {
   graphClear();
   clearErrors();
   prevRegisters = new Array(32).fill("0x00000000");
-  if (multiCoreMode) {
-    mcPrevRegs = { pru0: new Array(32).fill("0x00000000"), rtu0: new Array(32).fill("0x00000000") };
+  if (genericSsiLoaded) {
+    mcPrevRegs = {
+      pru0: new Array(32).fill("0x00000000"),
+      rtu0: new Array(32).fill("0x00000000"),
+      pru1: new Array(32).fill("0x00000000"),
+    };
+    sendAction({ action: "reset", core: "pru1" });
+    sendAction({ action: "reset", core: "pru0" });
+    sendAction({ action: "ssi_runtime_read" });
+  } else if (multiCoreMode) {
+    mcPrevRegs = {
+      pru0: new Array(32).fill("0x00000000"),
+      rtu0: new Array(32).fill("0x00000000"),
+      pru1: new Array(32).fill("0x00000000"),
+    };
     sendAction({ action: "reset", core: "pru0" });
     sendAction({ action: "reset", core: mcPartner });
   } else {
@@ -2005,8 +2040,24 @@ btnHardReset.addEventListener("click", () => {
   graphClear();
   clearErrors();
   prevRegisters = new Array(32).fill("0x00000000");
-  if (multiCoreMode) {
-    mcPrevRegs = { pru0: new Array(32).fill("0x00000000"), rtu0: new Array(32).fill("0x00000000") };
+  if (genericSsiLoaded) {
+    genericSsiLoaded = false;
+    genericSsiRunInFlight = false;
+    mcPrevRegs = {
+      pru0: new Array(32).fill("0x00000000"),
+      rtu0: new Array(32).fill("0x00000000"),
+      pru1: new Array(32).fill("0x00000000"),
+    };
+    sendAction({ action: "hard_reset", core: "pru1" });
+    // Hard reset clears the runtime object as well as the cores.  Reload the
+    // complete pair so the normal Run and Apply controls remain usable.
+    sendAction({ action: "ssi_runtime_load" });
+  } else if (multiCoreMode) {
+    mcPrevRegs = {
+      pru0: new Array(32).fill("0x00000000"),
+      rtu0: new Array(32).fill("0x00000000"),
+      pru1: new Array(32).fill("0x00000000"),
+    };
     sendAction({ action: "hard_reset", core: "pru0" });
     sendAction({ action: "get_state", core: mcPartner });
   } else {
@@ -2600,9 +2651,14 @@ function startRun() {
     const max_steps = 1000;
     if (!canStartRunRequest(runRequestInFlight)) return;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    const request_id = nextRunRequestId++;
+    const request_id = genericSsiLoaded
+      ? "ssi-runtime-general-" + nextRunRequestId++
+      : nextRunRequestId++;
     let sent;
-    if (multiCoreMode) {
+    if (genericSsiLoaded) {
+      sent = sendAction({ action: "run_multicore", core: "pru1",
+                          partner: "pru0", max_steps, capture, request_id });
+    } else if (multiCoreMode) {
       sent = sendAction({ action: "run_multicore", core: "pru0",
                           partner: mcPartner, max_steps, capture, request_id });
     } else {
@@ -2633,7 +2689,18 @@ function startSim() {
   btnSim.classList.remove("btn-sim");
   const ms = Math.round((parseFloat(simIntervalInput.value) || 1.0) * 1000);
   simTimer = setInterval(() => {
-    if (multiCoreMode) {
+    if (genericSsiLoaded) {
+      if (runRequestInFlight) return;
+      const request_id = "ssi-runtime-sim-" + nextRunRequestId++;
+      runRequestInFlight = sendAction({
+        action: "run_multicore",
+        core: "pru1",
+        partner: "pru0",
+        max_steps: 1,
+        capture: signalGraph.recording,
+        request_id,
+      });
+    } else if (multiCoreMode) {
       sendAction({ action: "step", core: "pru0", count: 1 });
       sendAction({ action: "step", core: mcPartner, count: 1 });
     } else {
@@ -2831,6 +2898,8 @@ let memMsbFirst = false;
 let regionMap = {};  // name -> base address
 let memAutoRefresh = false;
 let _memAutoLastFetch = 0;
+let memRequestId = 0;
+let memViewKey = "";
 
 // ---- Memory panel 2 -------------------------------------------------------
 const memAddrInput2  = document.getElementById("mem-addr-input-2");
@@ -2845,6 +2914,8 @@ let memFormat2   = "32b";
 let memMsbFirst2 = false;
 let memAutoRefresh2 = false;
 let _memAutoLastFetch2 = 0;
+let memRequestId2 = 0;
+let memViewKey2 = "";
 
 // Auto-refresh: throttled trigger on every simulation "state" update (near
 // real-time while stepping/running), plus a 1 s floor interval that catches
@@ -2932,10 +3003,16 @@ function refreshMemory2() {
     addr = parseInt(raw, 16) || parseInt(raw, 10) || 0x00010000;
   }
   const length = parseInt(memLenInput2.value, 10) || 1024;
-  sendAction({ action: "read_memory", addr, length, tag: "mem2" });
+  const viewKey = `${addr}:${length}`;
+  if (viewKey !== memViewKey2) prevMemData2 = [];
+  memViewKey2 = viewKey;
+  const request_id = ++memRequestId2;
+  sendAction({ action: "read_memory", addr, length, tag: "mem2", request_id });
 }
 
 function renderMemory2(msg) {
+  if (msg.request_id !== undefined && msg.request_id !== null &&
+      msg.request_id !== memRequestId2) return;
   const addr = msg.addr;
   const data = msg.data;
   memBaseAddr2 = addr;
@@ -3269,7 +3346,11 @@ function refreshMemory() {
     addr = parseInt(raw, 16) || parseInt(raw, 10) || 0;
   }
   const length = parseInt(memLenInput.value, 10) || 1024;
-  sendAction({ action: "read_memory", addr, length, tag: "mem1" });
+  const viewKey = `${addr}:${length}`;
+  if (viewKey !== memViewKey) prevMemData = [];
+  memViewKey = viewKey;
+  const request_id = ++memRequestId;
+  sendAction({ action: "read_memory", addr, length, tag: "mem1", request_id });
 }
 
 async function loadRegions() {
@@ -3320,6 +3401,8 @@ function assembleBytes(data, offset, wordSize) {
 }
 
 function renderMemory(msg) {
+  if (msg.request_id !== undefined && msg.request_id !== null &&
+      msg.request_id !== memRequestId) return;
   const addr = msg.addr;
   const data = msg.data;
   memBaseAddr = addr;
@@ -3704,6 +3787,23 @@ document.getElementById("btn-reset-layout").addEventListener("click", resetLayou
 
 // ---- Multi-core partner (second core in the MC view: RTU0 or PRU1) --------
 const mcPartnerSelect = document.getElementById("mc-partner-select");
+
+function selectGenericSsiPartner() {
+  const changed = mcPartner !== "pru1";
+  mcPartner = "pru1";
+  if (mcPartnerSelect) mcPartnerSelect.value = "pru1";
+  applyMCPartnerLabels();
+  if (changed && multiCoreMode) {
+    mcPrevRegs.rtu0 = new Array(32).fill("0x00000000");
+    mcLastSourceKey.rtu0 = "";
+    mcBreakpoints.rtu0 = new Set();
+    mcHaltedState.rtu0 = false;
+    mcBreakState.rtu0 = false;
+    buildMCRegTable("rtu0");
+    sendAction({ action: "get_state", core: "pru0" });
+    sendAction({ action: "get_state", core: "pru1" });
+  }
+}
 
 function applyMCPartnerLabels() {
   const label = mcPartner === "pru1" ? "PRU1" : "RTU0";
@@ -4104,7 +4204,9 @@ document.addEventListener("keydown", (e) => {
   } else if (e.key === "ArrowRight") {
     e.preventDefault();
     stopRun(); stopSim();
-    if (multiCoreMode) {
+    if (genericSsiLoaded) {
+      btnStep.click();
+    } else if (multiCoreMode) {
       sendAction({ action: "step", core: "pru0", count: 1 });
       sendAction({ action: "step", core: mcPartner, count: 1 });
     } else {
@@ -4436,11 +4538,27 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
       : "";
     setRuntimeStatus(status + generation, msg.loaded ? "#6a9955" : "#888");
 
+    const wires = document.getElementById("ssi-runtime-wires");
+    if (wires) {
+      const wireText = (msg.wires || []).map((wire) =>
+        `${wire.src_core}:GPO${wire.src_pin} -> ${wire.dst_core}:GPI${wire.dst_pin}`
+      );
+      wires.textContent = wireText.length
+        ? "Wires: " + wireText.join(" | ")
+        : "Wires: —";
+    }
+
     const mailbox = document.getElementById("ssi-runtime-mailbox");
     if (mailbox) {
       const mb = msg.mailbox;
+      const decodedPosition = mb && mb.position_value !== null && mb.position_value !== undefined
+        ? "0x" + Number(mb.position_value).toString(16).toUpperCase()
+        : "invalid for active width";
+      const rawPosition = mb && mb.raw_position_value !== undefined
+        ? " raw_position=0x" + Number(mb.raw_position_value).toString(16).toUpperCase()
+        : "";
       mailbox.textContent = mb
-        ? "Mailbox: position=0x" + Number(mb.position_value || 0).toString(16).toUpperCase() +
+        ? "Mailbox: position=" + decodedPosition + rawPosition +
           " raw=0x" + BigInt(mb.raw_frame || 0).toString(16).toUpperCase() +
           " status=0x" + Number(mb.status_bits || 0).toString(16).toUpperCase() +
           " frame=" + (mb.frame_counter || 0)
@@ -4506,6 +4624,12 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
   }
 
   loadBtn.addEventListener("click", () => {
+    genericSsiLoaded = false;
+    genericSsiRunInFlight = false;
+    stopRun();
+    stopSim();
+    graphClear();
+    clearErrors();
     setRuntimeStatus("Loading generic PRU0 emulator / PRU1 reader...", "#888");
     sendAction({ action: "ssi_runtime_load" });
   });
@@ -4535,30 +4659,49 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
   });
 
   document.getElementById("ssi-runtime-apply").addEventListener("click", () => {
-    // WebSocket preserves message order: stage -> frame slots -> apply.
+    if (!genericSsiLoaded) {
+      setRuntimeStatus("Load the generic SSI pair before Apply.", "#f38ba8");
+      return;
+    }
+    if (runRequestInFlight || genericSsiRunInFlight) {
+      setRuntimeStatus("Wait for the current paired run to finish before Apply.", "#f38ba8");
+      return;
+    }
+    // Send one complete transaction.  The server validates the layout and
+    // every frame before publishing a new generation.
     sendAction({
-      action: "ssi_runtime_stage",
+      action: "ssi_runtime_apply",
       profile: selectedProfile(),
       overrides: numericOverrides(),
+      frames: frameTokens(),
     });
-    sendAction({ action: "ssi_runtime_frames", frames: frameTokens() });
-    sendAction({ action: "ssi_runtime_apply" });
     setRuntimeStatus("Applying at an idle SSI frame boundary...", "#dcdcaa");
   });
 
   document.getElementById("ssi-runtime-run").addEventListener("click", () => {
+    if (!genericSsiLoaded) {
+      setRuntimeStatus("Load the generic SSI pair before running it.", "#f38ba8");
+      return;
+    }
+    if (runRequestInFlight || genericSsiRunInFlight) {
+      setRuntimeStatus("A paired run is already in progress.", "#f38ba8");
+      return;
+    }
     const steps = Math.max(100, Math.min(
       200000,
       Number(document.getElementById("ssi-runtime-run-steps").value) || 20000,
     ));
-    sendAction({
+    const request_id = "ssi-runtime-run-" + nextRunRequestId++;
+    const sent = sendAction({
       action: "run_multicore",
       core: "pru1",
       partner: "pru0",
       max_steps: Math.trunc(steps),
       capture: true,
-      request_id: "ssi-runtime-run",
+      request_id,
     });
+    genericSsiRunInFlight = sent;
+    runRequestInFlight = sent;
     setRuntimeStatus("Running paired SSI cores...", "#888");
   });
 
@@ -4567,7 +4710,10 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
   const originalRender = window.renderSsiRuntimeState;
   window.renderSsiRuntimeState = function (msg) {
     window.ssiRuntimeProfileCatalog = msg.profiles || window.ssiRuntimeProfileCatalog || [];
+    const newlyLoaded = msg.loaded === true && !genericSsiLoaded;
+    genericSsiLoaded = msg.loaded === true;
     originalRender(msg);
+    if (newlyLoaded) selectGenericSsiPartner();
   };
 })();
 

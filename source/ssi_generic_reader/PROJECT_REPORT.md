@@ -64,7 +64,9 @@ buffer `0x0400` relative to the ABI base.
 The dashboard loads this program on PRU1, the generic emulator on PRU0, and
 installs the two virtual wires. The Generic SSI Runtime panel stages a
 configuration, semantic positions or raw frames, and capture settings before
-the ordered stage -> frame-slot -> Apply workflow.
+one validated configuration/frame Apply transaction. Generic loading replaces
+stale GPIO wires; the pair-aware toolbar and register view keep PRU1 as the
+reader/master instead of defaulting to RTU0.
 
 Important files:
 
@@ -96,7 +98,7 @@ Run the focused tests with:
 python -m pytest -q tests/test_ssi_config_abi_generated.py tests/test_ssi_runtime.py tests/test_ssi_generic_emulator.py tests/test_ssi_generic_reader.py tests/test_ssi_runtime_ui.py tests/test_ssi_runtime_trace.py tests/test_mcp_server.py
 ```
 
-The current focused result is 92 passing tests. One unrelated peripheral
+The current focused result is 96 passing tests. One unrelated peripheral
 drift experiment remains a pre-existing failure in the complete repository
 suite.
 

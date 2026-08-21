@@ -26,6 +26,13 @@ roles: PRU0 is the emulator and PRU1 is the reader/master.
   alignment, padding, status fields, and range validation.
 - [x] Add synchronous formation gating and `Tp` validation.
 - [x] Add seqlock mailbox, trace ring, MCP operations, and dashboard controls.
+- [x] Make dashboard Apply a single validated configuration/frame transaction.
+- [x] Replace stale GPIO topology on generic load and display the actual
+  PRU1-clock/PRU0-data bindings.
+- [x] Make toolbar Run/Step/SIM/Reset pair-aware for the loaded generic SSI
+  runtime and select PRU1 in the second register panel.
+- [x] Add request IDs and view-baseline resets to both memory panels so late
+  responses cannot replace a newer absolute-address window.
 - [x] Add parent CCS PRU0/PRU1 projects and the R5 staged-apply/UART layer.
 - [x] Keep staged edits separate from active mailbox/trace decoding until both
   PRU acknowledgements complete; validate `tv < sample < high` in both hosts.
@@ -46,7 +53,7 @@ The focused simulator suite and parent static contract suite must pass before
 the hardware handoff. A complete simulator run is also required; unrelated
 pre-existing failures must be recorded separately instead of being hidden.
 
-Latest repository validation: 92 SSI-focused simulator tests pass, 1,337
+Latest repository validation: 96 SSI-focused simulator tests pass, 1,342
 tests pass in the complete simulator suite, and the only failure is the
 pre-existing peripheral drift experiment documented in the session report.
 

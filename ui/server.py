@@ -166,6 +166,15 @@ def _load_ssi_runtime_pair() -> dict:
     reader_source = SSI_RUNTIME_READER.read_text(encoding="utf-8")
     emulator_source = SSI_RUNTIME_EMULATOR.read_text(encoding="utf-8")
 
+    # Loading the generic pair establishes its complete topology.  Remove
+    # stale user-created wires first; leaving one connected to an SSI input
+    # makes the result depend on whatever project was loaded previously.
+    for wire in sim.list_gpio_wires():
+        sim.remove_gpio_wire(
+            wire["src_core"], wire["src_pin"],
+            wire["dst_core"], wire["dst_pin"],
+        )
+
     errors = sim.load("pru1", reader_source, [str(SOURCE_DIR)])
     if errors:
         raise RuntimeError("PRU1 generic reader failed to load: " + "; ".join(errors))
@@ -523,7 +532,23 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
                     continue
                 try:
-                    _ssi_runtime.apply(int(msg.get("timeout_steps", 200_000)))
+                    transaction_keys = {"profile", "overrides", "frames"}
+                    if transaction_keys.intersection(msg):
+                        profile = msg.get("profile") or None
+                        overrides = msg.get("overrides", {})
+                        if not isinstance(overrides, dict):
+                            raise ValueError("SSI runtime overrides must be an object")
+                        frame_values = None
+                        if "frames" in msg:
+                            frame_values = _parse_ssi_frame_values(msg["frames"])
+                        _ssi_runtime.stage_and_apply(
+                            profile,
+                            frame_values=frame_values,
+                            timeout_steps=int(msg.get("timeout_steps", 200_000)),
+                            **overrides,
+                        )
+                    else:
+                        _ssi_runtime.apply(int(msg.get("timeout_steps", 200_000)))
                     await websocket.send_json({
                         "type": "ssi_runtime_state",
                         **_ssi_runtime_state(),
@@ -606,6 +631,11 @@ async def websocket_endpoint(websocket: WebSocket):
                                 "tag": tag,
                                 "addr": getattr(websocket, addr_attr),
                                 "length": getattr(websocket, len_attr),
+                                "request_id": getattr(
+                                    websocket,
+                                    "_mem_request_id2" if tag == "mem2" else "_mem_request_id",
+                                    None,
+                                ),
                                 "data": list(data),
                             })
                         except ValueError:
@@ -632,9 +662,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 if tag == "mem2":
                     websocket._mem_addr2 = addr
                     websocket._mem_len2 = length
+                    websocket._mem_request_id2 = msg.get("request_id")
                 elif tag == "mem1":
                     websocket._mem_addr = addr
                     websocket._mem_len = length
+                    websocket._mem_request_id = msg.get("request_id")
                 try:
                     data = sim.memory_read(addr, length)
                     await websocket.send_json({
@@ -642,6 +674,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         "tag": tag,
                         "addr": addr,
                         "length": length,
+                        "request_id": msg.get("request_id"),
                         "data": list(data),
                     })
                 except ValueError as ve:
@@ -742,6 +775,11 @@ async def websocket_endpoint(websocket: WebSocket):
                                     "type": "memory", "tag": tag,
                                     "addr": getattr(websocket, addr_attr),
                                     "length": getattr(websocket, len_attr),
+                                    "request_id": getattr(
+                                        websocket,
+                                        "_mem_request_id2" if tag == "mem2" else "_mem_request_id",
+                                        None,
+                                    ),
                                     "data": list(pdata),
                                 })
                             except ValueError:

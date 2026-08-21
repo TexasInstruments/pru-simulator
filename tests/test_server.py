@@ -235,3 +235,33 @@ def test_gpio_wires_propagate_reciprocally_between_cores(fresh_sim):
     sim.cores["pru1"].io_port.write_r30(0)
     assert sim.cores["pru1"].io_port.get_gpi_pins()[16] == 0
     assert sim.cores["pru0"].io_port.get_gpi_pins()[8] == 0
+
+
+def test_memory_read_echoes_panel_request_and_absolute_region(fresh_sim):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({
+            "action": "read_memory", "addr": 0x00000000,
+            "length": 4, "tag": "mem1", "request_id": 11,
+        })
+        first = ws.receive_json()
+        assert first["tag"] == "mem1"
+        assert first["request_id"] == 11
+        assert first["addr"] == 0x00000000
+
+        ws.send_json({
+            "action": "read_memory", "addr": 0x00002000,
+            "length": 4, "tag": "mem1", "request_id": 12,
+        })
+        second = ws.receive_json()
+        assert second["tag"] == "mem1"
+        assert second["request_id"] == 12
+        assert second["addr"] == 0x00002000
+
+        ws.send_json({
+            "action": "read_memory", "addr": 0x00010000,
+            "length": 4, "tag": "mem2", "request_id": 13,
+        })
+        shared = ws.receive_json()
+        assert shared["tag"] == "mem2"
+        assert shared["request_id"] == 13
+        assert shared["addr"] == 0x00010000

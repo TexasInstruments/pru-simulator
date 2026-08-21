@@ -49,11 +49,34 @@ trace overwrite/overrun accounting are implemented.
 3. Select a profile and set frame/timing/formation fields.
 4. Enter natural positions, optionally set Gray-excess count/offset, and
    click **Pack positions**. The default positions are already filled in.
-5. Choose the capture mode, click **Stage**, then **Apply atomically**.
-6. Enable Signal Graph recording when waveforms are needed, click **Run
-   pair**, and click **Refresh** to inspect mailbox and trace counters.
-7. Change one staged setting at a time and repeat Stage/Apply. A value that
-   exceeds the selected resolution is rejected rather than truncated.
+5. Choose the capture mode. **Stage** only stages a proposal for inspection;
+   **Apply atomically** sends the complete layout and raw-frame sequence in
+   one transaction. The server validates the whole request before changing
+   the active generation. A value that exceeds the selected resolution is
+   rejected rather than truncated.
+6. Click **Multi-core** if you want both register panels. Loading the generic
+   pair selects **PRU1** as the second panel automatically, so the pair view
+   shows the reader and emulator rather than the unrelated RTU0 core.
+7. Enable Signal Graph recording when waveforms are needed, click **Run pair**
+   or the toolbar **Run**, and click **Refresh** to inspect mailbox and trace
+   counters. The toolbar Run/Step/SIM/Reset actions use the PRU1-reader /
+   PRU0-emulator pair while the generic pair is loaded.
+8. The two memory panels use absolute/global addresses: PRU0 DRAM is
+   `0x00000000`, PRU1 DRAM is `0x00002000`, and shared RAM is `0x00010000`.
+   Reads carry a panel request ID, so switching regions cannot be overwritten
+   by a late response from the previous region.
+
+Loading also removes any stale manually-created GPIO wires before installing
+the exact default pair:
+
+```text
+PRU1:GPO0 -> PRU0:GPI8    SSI clock
+PRU0:GPO0 -> PRU1:GPI16   SSI data
+```
+
+The Generic SSI Runtime panel displays the active wire list. If a hard reset
+is needed, its button reloads the generic pair afterward; a normal Reset
+resets both PRUs without discarding the runtime configuration.
 
 ## MCP/API procedure
 
@@ -82,9 +105,10 @@ the physical BP.11/BP.51 and BP.33/BP.57 wiring with a logic analyzer.
 
 ## Verification snapshot
 
-The focused simulator/runtime/UI suite currently passes 92 tests. JavaScript
-syntax validation also passes with `node --check ui/static/app.js`. The full
-simulator suite has one unrelated pre-existing failure in
+The focused simulator/runtime/UI suite currently passes 96 tests, including
+25 dashboard/server regressions. JavaScript syntax validation also passes with
+`node --check ui/static/app.js`. The full simulator suite has one unrelated
+pre-existing failure in
 `tests/test_perif_drift_experiment.py::test_roundtrip_with_no_host_register_setup`;
 the SSI-focused tests pass.
 
