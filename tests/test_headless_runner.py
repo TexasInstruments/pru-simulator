@@ -1,6 +1,7 @@
 """Acceptance tests for the deterministic headless JSON runner."""
 
 import json
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -58,8 +59,44 @@ def test_tracked_reference_elf_executes_to_halt():
     assert result.returncode == 0
     assert payload["input"]["format"] == "elf"
     assert payload["reason"] == "halted"
-    assert payload["state"]["steps"] == 555
-    assert payload["state"]["cycles"] == 665
+    assert payload["state"]["steps"] == 560
+    assert payload["state"]["cycles"] == 670
+
+
+def test_elf_entry_point_is_applied(tmp_path):
+    elf = bytearray((ROOT / "references" / "isa_execution_test.out").read_bytes())
+    struct.pack_into("<I", elf, 24, 573 * 4)
+    path = tmp_path / "entry-at-halt.out"
+    path.write_bytes(elf)
+
+    result, payload = invoke("--elf", path, "--max-steps", 2)
+
+    assert result.returncode == 0
+    assert payload["reason"] == "halted"
+    assert payload["state"]["pc"] == 573
+    assert payload["state"]["steps"] == 1
+
+
+def test_elf_rejects_non_executable_and_truncated_section_table(tmp_path):
+    fixture = (ROOT / "references" / "isa_execution_test.out").read_bytes()
+    cases = []
+    non_exec = bytearray(fixture)
+    struct.pack_into("<H", non_exec, 16, 1)
+    cases.append(("non-exec.out", non_exec, "ET_EXEC"))
+    truncated = bytearray(fixture)
+    struct.pack_into("<I", truncated, 32, len(truncated) - 1)
+    cases.append(("truncated.out", truncated, "section header table is truncated"))
+
+    for filename, contents, message in cases:
+        path = tmp_path / filename
+        path.write_bytes(contents)
+        result, payload = invoke("--elf", path)
+
+        assert result.returncode == 2
+        assert result.stderr == ""
+        assert result.stdout.count("\n") == 1
+        assert payload["reason"] == "load_error"
+        assert message in payload["errors"][0]
 
 
 def test_step_budget_is_a_failing_condition(tmp_path):
@@ -83,8 +120,15 @@ def test_cycle_budget_is_hard_even_when_condition_is_unmet(tmp_path):
     )
 
     assert result.returncode == 3
-    assert payload["reason"] == "cycle_budget_exceeded"
-    assert payload["state"]["cycles"] == 3
+    assert payload["reason"] == "cycle_budget_pre_instruction_refusal"
+    assert payload["state"]["cycles"] == 2
+    assert payload["state"]["steps"] == 2
+    assert payload["budget_refusal"] == {
+        "cycles_before": 2,
+        "kind": "pre_instruction",
+        "next_instruction_cycles": {"maximum": 1, "minimum": 1},
+        "remaining_cycles": 0,
+    }
 
 
 def test_program_end_without_requested_condition_is_unmet(tmp_path):
