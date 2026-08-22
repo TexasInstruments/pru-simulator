@@ -105,8 +105,12 @@ stdout format when `--json` is omitted; the flag makes the CI contract explicit.
 ## Running Tests
 
 ```bash
-python -m pytest --tb=short -q
+python -m pytest tests --tb=short -q
 ```
+
+The maintained test suite lives under `tests/`.  Files under `references/` are
+standalone experiments and may require optional packages (for example,
+`matplotlib`); they are not part of the CI test suite.
 
 ## Version
 
