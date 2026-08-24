@@ -4769,8 +4769,9 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
   window.renderSsiRuntimeState = function (msg) {
     renderRuntimeProfiles(msg.profiles);
     const staged = msg.staged || msg.active || {};
-    if (msg.selected_profile && [...profileSelect.options].some((o) => o.value === msg.selected_profile)) {
-      profileSelect.value = msg.selected_profile;
+    const profileName = msg.staged_profile || msg.selected_profile;
+    if (profileName && [...profileSelect.options].some((o) => o.value === profileName)) {
+      profileSelect.value = profileName;
     }
     setRuntimeFields(staged);
 

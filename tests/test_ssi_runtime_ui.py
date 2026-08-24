@@ -163,7 +163,7 @@ def test_generic_ssi_panel_identifies_the_live_shared_memory_region():
     assert 'value="0x00010200">SSI mailbox (global 0x00010200)</option>' in html
     assert 'id="ssi-runtime-memory-hint"' in html
     assert "PRU0/PRU1 DRAM are not written by this pair" in html
-    assert '/static/app.js?v=20260824' in html
+    assert '/static/app.js?v=20260824-1' in html
 
 
 def test_profile_catalog_is_safe_for_ui_and_contains_default_and_documented_profiles():
@@ -288,6 +288,12 @@ def test_dashboard_websocket_runs_generic_ssi_pair_and_applies_raw_frames(fresh_
         readback = ws.receive_json()
         assert readback["mailbox"]["frame_counter"] >= 0
         assert readback["trace"]["write_index"] >= 0
+
+
+def test_profile_dropdown_prefers_staged_profile_after_stage():
+    js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert "const profileName = msg.staged_profile || msg.selected_profile;" in js
 
 
 def test_dashboard_generic_pair_run_completes_with_reader_as_lead(fresh_sim):

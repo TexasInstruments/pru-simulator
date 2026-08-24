@@ -53,7 +53,9 @@ trace overwrite/overrun accounting are implemented.
    **Apply atomically** sends the complete layout and raw-frame sequence in
    one transaction. The server validates the whole request before changing
    the active generation. A value that exceeds the selected resolution is
-   rejected rather than truncated.
+   rejected rather than truncated. After Stage, the profile selector and
+   numeric fields show the staged proposal; the active generation and PRU
+   acknowledgements remain unchanged until Apply succeeds.
 6. Click **Multi-core** if you want both register panels. Loading the generic
    pair selects **PRU1** as the second panel automatically, so the pair view
    shows the reader and emulator rather than the unrelated RTU0 core.
