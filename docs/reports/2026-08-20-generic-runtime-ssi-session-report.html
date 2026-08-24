@@ -447,7 +447,7 @@ python -m pytest tests/test_ssi_runtime_ui.py tests/test_ui_startup_assets.py te
       <li>Start the dashboard: <code>python ui/server.py</code></li>
       <li>Load <code>source/ssi_generic_emulator/ssi_generic_emulator.asm</code> on PRU0</li>
       <li>Load <code>source/ssi_generic_reader/ssi_generic_reader.asm</code> on PRU1</li>
-      <li>Wire GPIO: PRU1 GPO0 (clock out) → PRU0 GPI16 (clock in); PRU0 GPO0 (data out) → PRU1 GPI8 (data in) — same convention as the fixed firmware</li>
+      <li>Wire GPIO: PRU1 GPO0 (clock out) → PRU0 GPI8 (clock in); PRU0 GPO0 (data out) → PRU1 GPI16 (data in) — same convention as the fixed firmware</li>
       <li>Alongside the dashboard, in Python: <code>rt = SSIRuntime(sim)</code>, then <code>rt.stage("AFS_AFM60_MULTITURN_30BIT")</code> / <code>rt.apply()</code> to push a named profile into the same shared memory the UI is showing</li>
       <li>Inject a frame value into a slot via <code>ssi_config_abi.pack_frame_slot(...)</code>, run, and watch the clock/data lanes in the dashboard</li>
       <li>Cross-check with <code>rt.read_mailbox()</code> / <code>rt.read_trace()</code> (or the equivalent MCP tools) that the decoded position matches what was injected</li>
@@ -459,6 +459,29 @@ ssi_stage(profile="ATM60_90")
 ssi_apply()
 ssi_read_mailbox()
 ssi_read_trace(newest_first=True, limit=50)</div>
+  </section>
+
+  <section id="reliability-follow-up">
+    <h2><span class="num">7</span> Dashboard Reliability Follow-up — 2026-08-21</h2>
+    <p>Paired capture batches now carry a shared timeline key and are
+    interleaved by <code>runStep</code> before entering the graph's circular
+    buffer. This preserves the PRU0 and PRU1 clock/data lanes during long
+    captures. Memory Auto refresh is bounded to one outstanding read per panel,
+    with later updates coalesced rather than queued.</p>
+    <p>Run request ownership is tracked in the browser. Stop, Reset, Hard Reset,
+    and reconnect discard abandoned request state, so a late completion cannot
+    clear a newer run or leave Run pair locked. The emulator also clears the
+    destination register before one-byte formation-mode reads; the default
+    asynchronous profile no longer inserts a false formation pause or returns
+    alternating all-ones frames.</p>
+    <p>The generic pair writes its live configuration, mailbox, and optional
+    trace to Shared RAM. The memory controls now provide an <code>SSI mailbox
+    (global 0x00010200)</code> quick-jump and explain that the unused PRU-local
+    DRAM windows can remain zero.</p>
+    <p>Regression coverage includes paired capture grouping, consecutive
+    default SSI frame validity, memory/run UI contracts, and JavaScript syntax.
+    The corrected default trace retains all four loopback lanes and reports the
+    configured sequence without alternating invalid frames.</p>
   </section>
 
   <div class="statgrid">

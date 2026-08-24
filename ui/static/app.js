@@ -12,8 +12,13 @@ let running = false;
 let runInterval = null;
 let runRequestInFlight = false;
 let nextRunRequestId = 1;
+const pendingRunRequestIds = new Set();
+const abandonedRunRequestIds = new Set();
+let activeToolbarRequestId = null;
+let activeSimRequestId = null;
 let genericSsiLoaded = false;
 let genericSsiRunInFlight = false;
+let genericSsiRequestId = null;
 let simRunning = false;
 let simTimer = null;
 let _flashTimer = null;
@@ -78,6 +83,10 @@ const signalGraph = {
   view: null,      // null = full range; { minStep, maxStep } = zoomed
   _dragStart: null, // { clientX, fracX, view } for pan tracking
 };
+// Paired multicore captures arrive as one message per core. Hold the two
+// batches briefly so they can be merged by run step before entering the one
+// circular graph buffer; otherwise the second batch evicts the first core.
+const pendingGraphCaptures = new Map();
 
 // ---- DOM references -------------------------------------------------------
 const coreSelect    = document.getElementById("core-select");
@@ -351,8 +360,12 @@ function connect() {
   ws.onclose = () => {
     wsStatus.textContent = "Disconnected";
     wsStatus.className = "error";
-    runRequestInFlight = false;
-    genericSsiRunInFlight = false;
+    cancelAllRunRequests();
+    pendingGraphCaptures.clear();
+    memReadInFlight = false;
+    memReadInFlight2 = false;
+    memReadPending = false;
+    memReadPending2 = false;
     stopRun();
     // Attempt reconnect after 2 s
     setTimeout(connect, 2000);
@@ -381,10 +394,12 @@ function connect() {
         else if (msg.tag && msg.tag.startsWith("graph-")) { graphHandleMemory(msg); requestGraphDraw(); }
         else renderMemory(msg);
       } else if (msg.type === "run_done") {
-        runRequestInFlight = false;
         const requestId = String(msg.request_id ?? "");
-        if (requestId.startsWith("ssi-runtime-")) {
+        const currentRequest = completeRunRequest(requestId);
+        if (!currentRequest) return;
+        if (requestId === genericSsiRequestId) {
           genericSsiRunInFlight = false;
+          genericSsiRequestId = null;
           sendAction({ action: "ssi_runtime_read" });
         }
       } else if (msg.type === "uart_inject_ok") {
@@ -426,11 +441,14 @@ function connect() {
       } else if (msg.type === "error") {
         if (msg.tag && msg.tag.startsWith("graph-")) graphMarkChannelError(msg.tag);
         else {
+          if (msg.tag === "mem1") finishMemoryRequest(1);
+          if (msg.tag === "mem2") finishMemoryRequest(2);
           if (msg.request_id !== undefined) {
-            runRequestInFlight = false;
             const requestId = String(msg.request_id);
-            if (requestId.startsWith("ssi-runtime-")) {
+            const currentRequest = completeRunRequest(requestId);
+            if (currentRequest && requestId === genericSsiRequestId) {
               genericSsiRunInFlight = false;
+              genericSsiRequestId = null;
             }
           }
           if (msg.code === "multicore_sync") {
@@ -452,6 +470,44 @@ function sendAction(obj) {
     return true;
   }
   return false;
+}
+
+function trackRunRequest(requestId, owner = null) {
+  if (requestId === undefined || requestId === null) return;
+  const key = String(requestId);
+  pendingRunRequestIds.add(key);
+  if (owner === "toolbar") activeToolbarRequestId = key;
+  if (owner === "sim") activeSimRequestId = key;
+  runRequestInFlight = true;
+}
+
+function completeRunRequest(requestId) {
+  const key = String(requestId ?? "");
+  const abandoned = abandonedRunRequestIds.delete(key);
+  pendingRunRequestIds.delete(key);
+  if (activeToolbarRequestId === key) activeToolbarRequestId = null;
+  if (activeSimRequestId === key) activeSimRequestId = null;
+  runRequestInFlight = pendingRunRequestIds.size > 0;
+  return !abandoned;
+}
+
+function abandonRunRequest(requestId) {
+  if (requestId === undefined || requestId === null) return;
+  const key = String(requestId);
+  if (pendingRunRequestIds.delete(key)) abandonedRunRequestIds.add(key);
+  if (activeToolbarRequestId === key) activeToolbarRequestId = null;
+  if (activeSimRequestId === key) activeSimRequestId = null;
+  runRequestInFlight = pendingRunRequestIds.size > 0;
+}
+
+function cancelAllRunRequests() {
+  for (const requestId of pendingRunRequestIds) abandonedRunRequestIds.add(requestId);
+  pendingRunRequestIds.clear();
+  activeToolbarRequestId = null;
+  activeSimRequestId = null;
+  genericSsiRequestId = null;
+  genericSsiRunInFlight = false;
+  runRequestInFlight = false;
 }
 
 function canStartRunRequest(inFlight) {
@@ -1311,7 +1367,8 @@ function graphSample(state) {
  * Wire format is packed ints, see _capture_sample() in ui/server.py:
  *   [step, r30(20 bits), gpi bits, perif out bits, out_en bits, clk bits, run_step]
  */
-function graphHandleCapture(msg) {
+function graphHandleCaptureLegacy(msg) {
+  return graphHandleCapture(msg); /* legacy implementation retained below for reference
   if (!signalGraph.recording) return;
   const mode = msg.mode || "gpio";
   const core = msg.core || "pru0";
@@ -1319,7 +1376,7 @@ function graphHandleCapture(msg) {
   // fills the whole window within a few ms of wall clock and a rolling buffer
   // would just blur — evicting the transmission before anyone could look at it.
   // Fill once, then stop recording, the way a logic analyzer does. GP-mode
-  // captures are decimated 100:1 and keep rolling as before.
+  // captures use fixed-stride sampling and keep rolling as before.
   const singleShot = mode === "perif";
   for (const s of (msg.samples || [])) {
     if (singleShot && signalGraph.fill >= signalGraph.windowSize) {
@@ -1338,6 +1395,70 @@ function graphHandleCapture(msg) {
       perifOe: [0, 1, 2].map(i => (oeBits >> i) & 1),
       perifClk: [0, 1, 2].map(i => (clkBits >> i) & 1),
     });
+  }
+*/
+}
+
+function graphAppendCaptureSample(msg, s) {
+  if (!signalGraph.recording) return false;
+  const mode = msg.mode || "gpio";
+  const core = msg.core || "pru0";
+  const singleShot = mode === "perif";
+  // Peripheral captures are intentionally single-shot: sampling every
+  // instruction would otherwise roll the transmission out of view quickly.
+  if (singleShot && signalGraph.fill >= signalGraph.windowSize) {
+    graphSetRecording(false);
+    return false;
+  }
+  const [step, r30, gpiBits, outBits, oeBits, clkBits, runStep] = s;
+  graphPushSample({
+    step,
+    runStep: runStep ?? step,
+    mode,
+    core,
+    gpo: Array.from({ length: 20 }, (_, i) => (r30 >> i) & 1),
+    gpi: Array.from({ length: 20 }, (_, i) => (gpiBits >> i) & 1),
+    perif: [0, 1, 2].map(i => (outBits >> i) & 1),
+    perifOe: [0, 1, 2].map(i => (oeBits >> i) & 1),
+    perifClk: [0, 1, 2].map(i => (clkBits >> i) & 1),
+  });
+  return true;
+}
+
+function graphHandleCapture(msg) {
+  if (!signalGraph.recording) return;
+  const groupId = msg.capture_group;
+  if (groupId === undefined || groupId === null) {
+    for (const sample of (msg.samples || [])) {
+      if (!graphAppendCaptureSample(msg, sample)) break;
+    }
+    return;
+  }
+
+  let group = pendingGraphCaptures.get(String(groupId));
+  if (!group) {
+    group = new Map();
+    pendingGraphCaptures.set(String(groupId), group);
+  }
+  group.set(msg.core || "pru0", msg);
+  if (group.size < 2) return;
+  pendingGraphCaptures.delete(String(groupId));
+
+  // Both cores use the same runStep values. Interleave by that shared time
+  // axis so the circular buffer retains both cores' recent history.
+  const merged = [];
+  for (const batch of group.values()) {
+    for (const sample of (batch.samples || [])) {
+      merged.push({ core: batch.core || "pru0", batch, sample });
+    }
+  }
+  merged.sort((a, b) => {
+    const aStep = a.sample[6] ?? a.sample[0];
+    const bStep = b.sample[6] ?? b.sample[0];
+    return aStep - bStep || a.core.localeCompare(b.core);
+  });
+  for (const item of merged) {
+    if (!graphAppendCaptureSample(item.batch, item.sample)) break;
   }
 }
 
@@ -1981,9 +2102,9 @@ coreSelect.addEventListener("change", () => {
 btnStep.addEventListener("click", () => {
   stopRun(); stopSim();
   if (genericSsiLoaded) {
-    if (runRequestInFlight) return;
+    if (genericSsiRunInFlight) return;
     const request_id = "ssi-runtime-step-" + nextRunRequestId++;
-    runRequestInFlight = sendAction({
+    const sent = sendAction({
       action: "run_multicore",
       core: "pru1",
       partner: "pru0",
@@ -1991,6 +2112,11 @@ btnStep.addEventListener("click", () => {
       capture: signalGraph.recording,
       request_id,
     });
+    if (sent) {
+      genericSsiRunInFlight = true;
+      genericSsiRequestId = request_id;
+      trackRunRequest(request_id);
+    }
   } else if (multiCoreMode) {
     sendAction({ action: "step", core: "pru0", count: 1 });
     sendAction({ action: "step", core: mcPartner, count: 1 });
@@ -2010,6 +2136,7 @@ btnRun.addEventListener("click", () => {
 
 btnReset.addEventListener("click", () => {
   stopRun(); stopSim();
+  cancelAllRunRequests();
   graphClear();
   clearErrors();
   prevRegisters = new Array(32).fill("0x00000000");
@@ -2037,6 +2164,7 @@ btnReset.addEventListener("click", () => {
 
 btnHardReset.addEventListener("click", () => {
   stopRun(); stopSim();
+  cancelAllRunRequests();
   graphClear();
   clearErrors();
   prevRegisters = new Array(32).fill("0x00000000");
@@ -2129,6 +2257,7 @@ btnLoad.addEventListener("click", async () => {
 
 function graphSetRecording(on) {
   signalGraph.recording = on;
+  if (!on) pendingGraphCaptures.clear();
   const btn = document.getElementById("graph-rec-btn");
   const dot = document.getElementById("graph-rec-dot");
   if (btn) btn.classList.toggle("rec-on", on);
@@ -2140,6 +2269,7 @@ function graphClear() {
   signalGraph.head = 0;
   signalGraph.fill = 0;
   signalGraph.view = null;
+  pendingGraphCaptures.clear();
   const exportRow = document.getElementById("graph-export-row");
   if (exportRow) exportRow.style.display = "none";
 }
@@ -2645,8 +2775,8 @@ function startRun() {
   runInterval = setInterval(() => {
     // While recording, the server samples the graph inside its run loop and
     // ships the batch as a "capture" message (per instruction in perif mode,
-    // 100:1 otherwise). The chunk size no longer sets the sample rate, so it
-    // stays at the fast 1000.
+    // fixed-stride sampling otherwise). The chunk size no longer sets the
+    // sample rate, so it stays at the fast 1000.
     const capture = signalGraph.recording;
     const max_steps = 1000;
     if (!canStartRunRequest(runRequestInFlight)) return;
@@ -2665,7 +2795,7 @@ function startRun() {
       sent = sendAction({ action: "run", core: currentCore, max_steps, capture,
                           request_id });
     }
-    runRequestInFlight = sent;
+    if (sent) trackRunRequest(request_id, "toolbar");
   }, 10);
 }
 
@@ -2678,6 +2808,14 @@ function stopRun() {
   if (runInterval !== null) {
     clearInterval(runInterval);
     runInterval = null;
+  }
+  if (activeToolbarRequestId !== null) {
+    const requestId = activeToolbarRequestId;
+    abandonRunRequest(requestId);
+    if (requestId === genericSsiRequestId) {
+      genericSsiRunInFlight = false;
+      genericSsiRequestId = null;
+    }
   }
 }
 
@@ -2692,7 +2830,7 @@ function startSim() {
     if (genericSsiLoaded) {
       if (runRequestInFlight) return;
       const request_id = "ssi-runtime-sim-" + nextRunRequestId++;
-      runRequestInFlight = sendAction({
+      const sent = sendAction({
         action: "run_multicore",
         core: "pru1",
         partner: "pru0",
@@ -2700,6 +2838,11 @@ function startSim() {
         capture: signalGraph.recording,
         request_id,
       });
+      if (sent) {
+        genericSsiRunInFlight = true;
+        genericSsiRequestId = request_id;
+        trackRunRequest(request_id, "sim");
+      }
     } else if (multiCoreMode) {
       sendAction({ action: "step", core: "pru0", count: 1 });
       sendAction({ action: "step", core: mcPartner, count: 1 });
@@ -2718,6 +2861,14 @@ function stopSim() {
   if (simTimer !== null) {
     clearInterval(simTimer);
     simTimer = null;
+  }
+  if (activeSimRequestId !== null) {
+    const requestId = activeSimRequestId;
+    abandonRunRequest(requestId);
+    if (requestId === genericSsiRequestId) {
+      genericSsiRunInFlight = false;
+      genericSsiRequestId = null;
+    }
   }
 }
 
@@ -2900,6 +3051,9 @@ let memAutoRefresh = false;
 let _memAutoLastFetch = 0;
 let memRequestId = 0;
 let memViewKey = "";
+let memReadInFlight = false;
+let memReadPending = false;
+let memReadPendingAuto = false;
 
 // ---- Memory panel 2 -------------------------------------------------------
 const memAddrInput2  = document.getElementById("mem-addr-input-2");
@@ -2916,6 +3070,9 @@ let memAutoRefresh2 = false;
 let _memAutoLastFetch2 = 0;
 let memRequestId2 = 0;
 let memViewKey2 = "";
+let memReadInFlight2 = false;
+let memReadPending2 = false;
+let memReadPendingAuto2 = false;
 
 // Auto-refresh: throttled trigger on every simulation "state" update (near
 // real-time while stepping/running), plus a 1 s floor interval that catches
@@ -2927,11 +3084,11 @@ function memAutoOnStateChange() {
   const now = Date.now();
   if (memAutoRefresh && now - _memAutoLastFetch >= MEM_AUTO_THROTTLE_MS) {
     _memAutoLastFetch = now;
-    refreshMemory();
+    refreshMemory(true);
   }
   if (memAutoRefresh2 && now - _memAutoLastFetch2 >= MEM_AUTO_THROTTLE_MS) {
     _memAutoLastFetch2 = now;
-    refreshMemory2();
+    refreshMemory2(true);
   }
 }
 
@@ -2939,22 +3096,34 @@ setInterval(() => {
   const now = Date.now();
   if (memAutoRefresh && now - _memAutoLastFetch >= 1000) {
     _memAutoLastFetch = now;
-    refreshMemory();
+    refreshMemory(true);
   }
   if (memAutoRefresh2 && now - _memAutoLastFetch2 >= 1000) {
     _memAutoLastFetch2 = now;
-    refreshMemory2();
+    refreshMemory2(true);
   }
 }, 1000);
 
 memAutoRefreshBox.addEventListener("change", () => {
   memAutoRefresh = memAutoRefreshBox.checked;
-  if (memAutoRefresh) { _memAutoLastFetch = Date.now(); refreshMemory(); }
+  if (memAutoRefresh) {
+    _memAutoLastFetch = Date.now();
+    refreshMemory(true);
+  } else if (memReadPendingAuto) {
+    memReadPending = false;
+    memReadPendingAuto = false;
+  }
 });
 
 memAutoRefreshBox2.addEventListener("change", () => {
   memAutoRefresh2 = memAutoRefreshBox2.checked;
-  if (memAutoRefresh2) { _memAutoLastFetch2 = Date.now(); refreshMemory2(); }
+  if (memAutoRefresh2) {
+    _memAutoLastFetch2 = Date.now();
+    refreshMemory2(true);
+  } else if (memReadPendingAuto2) {
+    memReadPending2 = false;
+    memReadPendingAuto2 = false;
+  }
 });
 
 btnMemRefresh2.addEventListener("click", refreshMemory2);
@@ -2993,7 +3162,26 @@ document.getElementById("mem-end-group-2").addEventListener("click", (e) => {
   if (prevMemData2.length > 0) renderMemory2({ tag: "mem2", addr: memBaseAddr2, data: prevMemData2 });
 });
 
-function refreshMemory2() {
+function finishMemoryRequest(panel) {
+  const second = panel === 2;
+  const pending = second ? memReadPending2 : memReadPending;
+  const pendingAuto = second ? memReadPendingAuto2 : memReadPendingAuto;
+  const autoEnabled = second ? memAutoRefresh2 : memAutoRefresh;
+  if (second) {
+    memReadInFlight2 = false;
+    memReadPending2 = false;
+    memReadPendingAuto2 = false;
+  } else {
+    memReadInFlight = false;
+    memReadPending = false;
+    memReadPendingAuto = false;
+  }
+  if (pending && (!pendingAuto || autoEnabled)) {
+    setTimeout(() => second ? refreshMemory2(pendingAuto) : refreshMemory(pendingAuto), 0);
+  }
+}
+
+function refreshMemory2(fromAuto = false) {
   const raw = memAddrInput2.value.trim();
   let addr;
   if (regionMap[raw] !== undefined) {
@@ -3006,13 +3194,25 @@ function refreshMemory2() {
   const viewKey = `${addr}:${length}`;
   if (viewKey !== memViewKey2) prevMemData2 = [];
   memViewKey2 = viewKey;
+  if (memReadInFlight2) {
+    memReadPending2 = true;
+    memReadPendingAuto2 = fromAuto;
+    return;
+  }
   const request_id = ++memRequestId2;
-  sendAction({ action: "read_memory", addr, length, tag: "mem2", request_id });
+  memReadInFlight2 = sendAction({
+    action: "read_memory", addr, length, tag: "mem2", request_id,
+  });
 }
 
 function renderMemory2(msg) {
   if (msg.request_id !== undefined && msg.request_id !== null &&
       msg.request_id !== memRequestId2) return;
+  if (msg.request_id !== undefined && msg.request_id !== null) {
+    finishMemoryRequest(2);
+    const responseKey = `${msg.addr}:${msg.length ?? (msg.data || []).length}`;
+    if (responseKey !== memViewKey2) return;
+  }
   const addr = msg.addr;
   const data = msg.data;
   memBaseAddr2 = addr;
@@ -3336,7 +3536,7 @@ document.getElementById("mem-end-group").addEventListener("click", (e) => {
   if (prevMemData.length > 0) renderMemory({ addr: memBaseAddr, data: prevMemData });
 });
 
-function refreshMemory() {
+function refreshMemory(fromAuto = false) {
   const raw = memAddrInput.value.trim();
   let addr;
   if (regionMap[raw] !== undefined) {
@@ -3349,8 +3549,15 @@ function refreshMemory() {
   const viewKey = `${addr}:${length}`;
   if (viewKey !== memViewKey) prevMemData = [];
   memViewKey = viewKey;
+  if (memReadInFlight) {
+    memReadPending = true;
+    memReadPendingAuto = fromAuto;
+    return;
+  }
   const request_id = ++memRequestId;
-  sendAction({ action: "read_memory", addr, length, tag: "mem1", request_id });
+  memReadInFlight = sendAction({
+    action: "read_memory", addr, length, tag: "mem1", request_id,
+  });
 }
 
 async function loadRegions() {
@@ -3403,6 +3610,11 @@ function assembleBytes(data, offset, wordSize) {
 function renderMemory(msg) {
   if (msg.request_id !== undefined && msg.request_id !== null &&
       msg.request_id !== memRequestId) return;
+  if (msg.request_id !== undefined && msg.request_id !== null) {
+    finishMemoryRequest(1);
+    const responseKey = `${msg.addr}:${msg.length ?? (msg.data || []).length}`;
+    if (responseKey !== memViewKey) return;
+  }
   const addr = msg.addr;
   const data = msg.data;
   memBaseAddr = addr;
@@ -4625,9 +4837,9 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
 
   loadBtn.addEventListener("click", () => {
     genericSsiLoaded = false;
-    genericSsiRunInFlight = false;
     stopRun();
     stopSim();
+    cancelAllRunRequests();
     graphClear();
     clearErrors();
     setRuntimeStatus("Loading generic PRU0 emulator / PRU1 reader...", "#888");
@@ -4663,7 +4875,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
       setRuntimeStatus("Load the generic SSI pair before Apply.", "#f38ba8");
       return;
     }
-    if (runRequestInFlight || genericSsiRunInFlight) {
+    if (running || genericSsiRunInFlight) {
       setRuntimeStatus("Wait for the current paired run to finish before Apply.", "#f38ba8");
       return;
     }
@@ -4683,7 +4895,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
       setRuntimeStatus("Load the generic SSI pair before running it.", "#f38ba8");
       return;
     }
-    if (runRequestInFlight || genericSsiRunInFlight) {
+    if (running || genericSsiRunInFlight) {
       setRuntimeStatus("A paired run is already in progress.", "#f38ba8");
       return;
     }
@@ -4701,7 +4913,10 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
       request_id,
     });
     genericSsiRunInFlight = sent;
-    runRequestInFlight = sent;
+    if (sent) {
+      genericSsiRequestId = request_id;
+      trackRunRequest(request_id);
+    }
     setRuntimeStatus("Running paired SSI cores...", "#888");
   });
 

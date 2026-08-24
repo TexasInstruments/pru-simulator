@@ -71,6 +71,26 @@ def test_multicore_capture_run_steps_are_absolute_across_chunks(fresh_sim):
     assert second_steps[0] > first_steps[-1]
 
 
+def test_multicore_capture_batches_share_a_group_for_client_interleaving(fresh_sim):
+    """Paired capture batches identify one timeline before the UI merges them."""
+    assert fresh_sim.load("pru0", _LOOP) == []
+    assert fresh_sim.load("pru1", _LOOP) == []
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({
+            "action": "run_multicore",
+            "core": "pru0",
+            "partner": "pru1",
+            "max_steps": 120,
+            "capture": True,
+        })
+        messages = _receive_multicore_messages(ws)
+
+    captures = [message for message in messages if message["type"] == "capture"]
+    assert {message["core"] for message in captures} == {"pru0", "pru1"}
+    assert len({message["capture_group"] for message in captures}) == 1
+
+
 def test_multicore_run_acknowledges_request_for_ui_backpressure(fresh_sim):
     """A run request can signal completion without changing legacy replies."""
     assert fresh_sim.load("pru0", _LOOP) == []

@@ -874,10 +874,25 @@ async def websocket_endpoint(websocket: WebSocket):
                     if request_id is not None:
                         await websocket.send_json({"type": "run_done", "request_id": request_id})
                     continue
+                # The two capture messages belong to one shared instruction
+                # timeline.  Give the browser a stable group key so it can
+                # interleave them before writing to its single graph buffer;
+                # sending one complete core batch after the other would evict
+                # the first core from that buffer.
+                capture_group = None
+                if samples and partner_samples:
+                    capture_group = (
+                        f"{core}:{partner}:{lead_pru.counters.instruction_count}"
+                    )
                 if samples:
-                    await _send_capture(websocket, core, samples)
+                    await _send_capture(
+                        websocket, core, samples, capture_group=capture_group
+                    )
                 if partner_samples:
-                    await _send_capture(websocket, partner, partner_samples)
+                    await _send_capture(
+                        websocket, partner, partner_samples,
+                        capture_group=capture_group,
+                    )
                 await _send_state(websocket, core, at_breakpoint=lead_bp,
                                   captured=capture)
                 await _send_state(websocket, partner, at_breakpoint=partner_bp,
@@ -1138,14 +1153,17 @@ def _capture_sample(c, run_step: int = 0) -> list[int]:
             gpi_bits, out_bits, oe_bits, clk_bits, run_step]
 
 
-async def _send_capture(ws, core, samples):
+async def _send_capture(ws, core, samples, capture_group=None):
     """Ship a run loop's per-instruction Signal Graph samples in one message."""
-    await ws.send_json({
+    message = {
         "type": "capture",
         "core": core,
         "mode": _io_mode(core),
         "samples": samples,
-    })
+    }
+    if capture_group is not None:
+        message["capture_group"] = capture_group
+    await ws.send_json(message)
 
 
 async def _send_state(ws, core, at_breakpoint=False, captured=False):

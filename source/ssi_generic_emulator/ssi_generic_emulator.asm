@@ -210,6 +210,9 @@ l_restart_sync:
     ; The synchronous master already guarantees a valid high idle interval
     ; (Tp > formation pause). Avoid spending the asynchronous qualification
     ; polls a second time on this deterministic request-relative path.
+    ; LBCO of one byte updates only the low byte of the destination register.
+    ; Clear the word first so stale scratch bits cannot turn formation mode on.
+    ldi   TMP, 0
     lbco  &TMP, c28, SSI_CONFIG_FORMATION_MODE_OFF, 1
     qbne  l_wait_falling_edge, TMP, 0
     mov   LOOPCNT, DEBOUNCE_THRESH
@@ -422,6 +425,9 @@ l_hold_finish:
 ; completes before its next falling edge, so no mixed-generation frame can
 ; be observed. Asynchronous profiles keep the existing shortest path.
 l_formation_gate:
+    ; LBCO of one byte preserves the upper register bytes on PRU hardware.
+    ; Clear them before testing the byte-valued formation mode.
+    ldi   TMP, 0
     lbco  &TMP, c28, SSI_CONFIG_FORMATION_MODE_OFF, 1
     qbeq  l_load_active_slot, TMP, 0
     lbco  &TMP, c28, SSI_CONFIG_FORMATION_PAUSE_OUTER_ITERS_OFF, 4

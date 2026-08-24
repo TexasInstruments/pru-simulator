@@ -181,6 +181,33 @@ def test_default_behavior_matches_fixed_12bit_4mhz():
     assert mb["frame_counter"] == 3
 
 
+def test_default_loopback_does_not_drop_every_other_frame():
+    """The default pair must return one valid value for every SSI request."""
+    sim = make_paired_sim()
+    runtime = SSIRuntime(sim)
+    frames = (0xABC, 0xAAA, 0xBCA, 0x12A, 0xCC2)
+    runtime.set_raw_frames(list(frames))
+    runtime.apply()
+
+    previous_counter = read_mailbox(sim)["frame_counter"]
+    observed = []
+    for _ in range(40_000):
+        sim.step_paced("pru1", "pru0")
+        mailbox = read_mailbox(sim)
+        if mailbox["frame_counter"] == previous_counter:
+            continue
+        previous_counter = mailbox["frame_counter"]
+        observed.append(mailbox["raw_frame"])
+        if len(observed) == len(frames):
+            break
+
+    assert observed
+    assert all(value in frames for value in observed)
+    for previous, current in zip(observed, observed[1:]):
+        next_index = (frames.index(previous) + 1) % len(frames)
+        assert current == frames[next_index]
+
+
 # ---------------------------------------------------------------------------
 # Named profiles end-to-end: stage -> apply -> inject -> read -> decode.
 # ---------------------------------------------------------------------------

@@ -22,6 +22,9 @@ work exactly as before.
   stability-debounced falling-edge detector (debounce threshold derived from
   `tm_pause_outer_iters`, documented at the top of the `.asm` file next to
   `DEBOUNCE_MULTIPLIER_SHIFT`/`DEBOUNCE_POLL_CAP`).
+  Byte-valued `formation_mode` reads clear the destination register before
+  `LBCO`; asynchronous mode therefore does not inherit stale upper scratch
+  bits and does not insert an unintended formation pause between frames.
 * **Sequencing:** advances through up to 16 prepacked frame slots per
   `sequence_hold_mode` (frame-count or estimated-time hold) /
   `sequence_hold_count`, with a per-slot `hold_override_cycles_or_frames`
@@ -99,10 +102,22 @@ reader without manual assembly loading or memory pokes:
    (reader) together with PRU0 (emulator).
 6. Click **Run pair**, optionally after enabling Signal Graph recording, then
    click **Refresh** to inspect the latest mailbox and trace counters.
+   Paired capture batches are merged by their shared run-step axis, so PRU0
+   and PRU1 clock/data lanes remain visible together in the graph.
 7. The memory panels use absolute/global addresses. Use `0x00000000` for
    PRU0 DRAM, `0x00002000` for PRU1 DRAM, and `0x00010000` for shared RAM.
+   The generic SSI pair stores its live configuration, mailbox, and optional
+   trace in Shared RAM; it does not write either local DRAM window, so those
+   two local regions can correctly remain all-zero. The dashboard provides an
+   `SSI mailbox (global 0x00010200)` quick-jump for the changing sample fields.
    Each read carries a panel request ID, so an older response cannot replace a
-   newer address window.
+   newer address window. Auto-refresh keeps one read in flight per panel and
+   coalesces later state updates, preventing the memory grids from saturating
+   the dashboard while the pair runs.
+
+Stopping the toolbar Run, resetting, or reconnecting clears stale client run
+ownership. A previously completed or stopped request therefore cannot leave
+**Run pair** disabled.
 
 Loading the generic pair removes stale user-created GPIO wires and installs
 only the two documented loopback wires. The panel displays the actual wiring
