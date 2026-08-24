@@ -1826,7 +1826,7 @@ Example:
               <button id="ssi-runtime-run" class="graph-btn">&#9654; Run pair</button>
             </div>
             <div class="uart-hint" style="margin-top:5px;">Run pair advances PRU1 (clock/reader) and PRU0 (emulator). Use the Signal Graph REC control for waveform capture.</div>
-            <div id="ssi-runtime-memory-hint" class="uart-hint" style="margin-top:4px;">Live SSI results are in the Shared RAM mailbox at <code>0x00010200</code>. PRU0/PRU1 DRAM are not written by this pair and remain zero.</div>
+            <div id="ssi-runtime-memory-hint" class="uart-hint" style="margin-top:4px;">Live SSI results are in the Shared RAM mailbox at <code>0x00010200</code>. PRU0/PRU1 DRAM are not written by this pair and remain zero. The mailbox uses a seqlock: a stable even sequence means the snapshot is coherent.</div>
             <pre id="ssi-runtime-mailbox" class="uart-hint" style="white-space:pre-wrap;margin:5px 0 0;">Mailbox: —</pre>
             <pre id="ssi-runtime-trace" class="uart-hint" style="white-space:pre-wrap;margin:0;">Trace: —</pre>
           </div>
@@ -2142,6 +2142,6 @@ Example:
   </div>
 
   <script src="/static/layout.js"></script>
-  <script src="/static/app.js?v=20260823"></script>
+  <script src="/static/app.js?v=20260824"></script>
 </body>
 </html>

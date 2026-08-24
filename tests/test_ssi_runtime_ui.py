@@ -23,6 +23,81 @@ def fresh_sim(monkeypatch):
     return fresh
 
 
+def _load_runtime_pair(ws):
+    """Load the pair and consume the two source-state refresh messages."""
+    ws.send_json({"action": "ssi_runtime_load"})
+    loaded = ws.receive_json()
+    assert loaded["type"] == "ssi_runtime_state"
+    states = [ws.receive_json(), ws.receive_json()]
+    assert {state["type"] for state in states} == {"state"}
+    assert {state["core"] for state in states} == {"pru0", "pru1"}
+    assert all(state["instructions"] for state in states)
+    return loaded
+
+
+def test_generic_load_publishes_source_state_for_both_cores(fresh_sim, monkeypatch):
+    published = []
+
+    async def record_state(_ws, core, at_breakpoint=False, captured=False):
+        published.append(core)
+
+    monkeypatch.setattr(srv, "_send_state", record_state)
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "ssi_runtime_load"})
+        loaded = ws.receive_json()
+
+    assert loaded["loaded"] is True
+    assert published == ["pru0", "pru1"]
+
+
+def test_generic_ssi_state_exposes_address_labeled_mailbox_debug_data(fresh_sim):
+    with client.websocket_connect("/ws") as ws:
+        loaded = _load_runtime_pair(ws)
+
+    fields = loaded["mailbox_layout"]["fields"]
+    assert fields["sequence"] == abi.MAILBOX_BASE + abi.MAILBOX_SEQ_OFF
+    assert fields["raw_frame"] == abi.MAILBOX_BASE + abi.MAILBOX_RAW_FRAME_OFF
+    assert fields["raw_position"] == abi.MAILBOX_BASE + abi.MAILBOX_POSITION_VALUE_OFF
+    assert fields["position"] == fields["raw_position"]
+    assert fields["timestamp"] == abi.MAILBOX_BASE + abi.MAILBOX_TIMESTAMP_CYCLES_OFF
+    assert len(loaded["mailbox_display"]["raw_frame"]) == 18
+    assert len(loaded["mailbox_display"]["timestamp"]) == 18
+
+    display = srv._ssi_mailbox_display({
+        "seq": 0x19E,
+        "raw_frame": 0x123456789ABCDEF0,
+        "raw_position_value": 0xCC2,
+        "position_value": 0xCC2,
+        "status_bits": 0,
+        "frame_counter": 205,
+        "timestamp_cycles": 0x0000000000F53D4,
+    })
+    assert display["raw_frame"] == "0x123456789ABCDEF0"
+    assert display["timestamp"] == "0x00000000000F53D4"
+
+
+def test_generic_ssi_mailbox_panel_uses_named_addresses_and_seqlock_labels():
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert "Shared RAM mailbox (seqlock snapshot)" in js
+    for label in (
+        "sequence",
+        "raw frame",
+        "raw position",
+        "position",
+        "status",
+        "frame counter",
+        "timestamp",
+        "Trace counters",
+    ):
+        assert label in js, label
+    assert "mailbox_layout" in js
+    assert "trace_layout" in js
+    assert "Seqlock" in html or "seqlock" in html
+
+
 def test_generic_ssi_runtime_panel_exposes_load_configure_and_observe_controls():
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
@@ -88,7 +163,7 @@ def test_generic_ssi_panel_identifies_the_live_shared_memory_region():
     assert 'value="0x00010200">SSI mailbox (global 0x00010200)</option>' in html
     assert 'id="ssi-runtime-memory-hint"' in html
     assert "PRU0/PRU1 DRAM are not written by this pair" in html
-    assert '/static/app.js?v=20260823' in html
+    assert '/static/app.js?v=20260824' in html
 
 
 def test_profile_catalog_is_safe_for_ui_and_contains_default_and_documented_profiles():
@@ -164,9 +239,7 @@ def test_runtime_frame_writer_populates_slots_and_clears_the_rest():
 
 def test_dashboard_websocket_runs_generic_ssi_pair_and_applies_raw_frames(fresh_sim):
     with client.websocket_connect("/ws") as ws:
-        ws.send_json({"action": "ssi_runtime_load"})
-        loaded = ws.receive_json()
-        assert loaded["type"] == "ssi_runtime_state"
+        loaded = _load_runtime_pair(ws)
         assert loaded["loaded"] is True
         assert loaded["selected_profile"] == "CUSTOM_LEGACY_12BIT_4MHZ"
         assert loaded["effective_clock_hz"] == loaded["active"]["effective_clock_hz"]
@@ -219,8 +292,7 @@ def test_dashboard_websocket_runs_generic_ssi_pair_and_applies_raw_frames(fresh_
 
 def test_dashboard_generic_pair_run_completes_with_reader_as_lead(fresh_sim):
     with client.websocket_connect("/ws") as ws:
-        ws.send_json({"action": "ssi_runtime_load"})
-        loaded = ws.receive_json()
+        loaded = _load_runtime_pair(ws)
         assert loaded["loaded"] is True
 
         ws.send_json({
@@ -252,8 +324,7 @@ def test_generic_load_replaces_stale_gpio_wires(fresh_sim):
     fresh_sim.add_gpio_wire("pru0", 1, "pru1", 2)
 
     with client.websocket_connect("/ws") as ws:
-        ws.send_json({"action": "ssi_runtime_load"})
-        loaded = ws.receive_json()
+        loaded = _load_runtime_pair(ws)
 
     assert loaded["wires"] == [
         {"src_core": "pru1", "src_pin": 0, "dst_core": "pru0", "dst_pin": 8},
@@ -263,8 +334,7 @@ def test_generic_load_replaces_stale_gpio_wires(fresh_sim):
 
 def test_dashboard_apply_is_transactional_when_frame_validation_fails(fresh_sim):
     with client.websocket_connect("/ws") as ws:
-        ws.send_json({"action": "ssi_runtime_load"})
-        loaded = ws.receive_json()
+        loaded = _load_runtime_pair(ws)
         original_generation = loaded["active"]["requested_generation"]
         original_frames = loaded["frames"]
 
@@ -292,8 +362,7 @@ def test_dashboard_apply_is_transactional_when_frame_validation_fails(fresh_sim)
 
 def test_dashboard_apply_commits_one_complete_transaction(fresh_sim):
     with client.websocket_connect("/ws") as ws:
-        ws.send_json({"action": "ssi_runtime_load"})
-        loaded = ws.receive_json()
+        loaded = _load_runtime_pair(ws)
         original_generation = loaded["active"]["requested_generation"]
 
         ws.send_json({
@@ -318,8 +387,7 @@ def test_dashboard_apply_commits_one_complete_transaction(fresh_sim):
 
 def test_dashboard_websocket_rejects_frame_that_exceeds_staged_width(fresh_sim):
     with client.websocket_connect("/ws") as ws:
-        ws.send_json({"action": "ssi_runtime_load"})
-        ws.receive_json()
+        _load_runtime_pair(ws)
         ws.send_json({
             "action": "ssi_runtime_stage",
             "profile": "CUSTOM_LEGACY_12BIT_4MHZ",

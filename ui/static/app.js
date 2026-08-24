@@ -4001,11 +4001,10 @@ document.getElementById("btn-reset-layout").addEventListener("click", resetLayou
 const mcPartnerSelect = document.getElementById("mc-partner-select");
 
 function selectGenericSsiPartner() {
-  const changed = mcPartner !== "pru1";
   mcPartner = "pru1";
   if (mcPartnerSelect) mcPartnerSelect.value = "pru1";
   applyMCPartnerLabels();
-  if (changed && multiCoreMode) {
+  if (multiCoreMode) {
     mcPrevRegs.rtu0 = new Array(32).fill("0x00000000");
     mcLastSourceKey.rtu0 = "";
     mcBreakpoints.rtu0 = new Set();
@@ -4734,6 +4733,39 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     }
   }
 
+  function formatDebugHex(value, width) {
+    if (value === null || value === undefined) return "\u2014";
+    try {
+      return "0x" + BigInt(String(value)).toString(16).toUpperCase().padStart(width, "0");
+    } catch (_) {
+      return "\u2014";
+    }
+  }
+
+  function mailboxAddress(msg, field, fallback) {
+    const layout = msg.mailbox_layout && msg.mailbox_layout.fields;
+    return formatDebugHex(layout && layout[field] !== undefined ? layout[field] : fallback, 8);
+  }
+
+  function traceAddress(msg, field, fallback) {
+    const layout = msg.trace_layout && msg.trace_layout.fields;
+    return formatDebugHex(layout && layout[field] !== undefined ? layout[field] : fallback, 8);
+  }
+
+  function mailboxValue(msg, field, fallback, width) {
+    const display = msg.mailbox_display && msg.mailbox_display[field];
+    return display !== undefined && display !== null
+      ? display
+      : formatDebugHex(fallback, width);
+  }
+
+  function traceValue(msg, field, fallback) {
+    const display = msg.trace_display && msg.trace_display[field];
+    return display !== undefined && display !== null
+      ? display
+      : formatDebugHex(fallback, 8);
+  }
+
   window.renderSsiRuntimeState = function (msg) {
     renderRuntimeProfiles(msg.profiles);
     const staged = msg.staged || msg.active || {};
@@ -4763,25 +4795,59 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     const mailbox = document.getElementById("ssi-runtime-mailbox");
     if (mailbox) {
       const mb = msg.mailbox;
-      const decodedPosition = mb && mb.position_value !== null && mb.position_value !== undefined
-        ? "0x" + Number(mb.position_value).toString(16).toUpperCase()
-        : "invalid for active width";
-      const rawPosition = mb && mb.raw_position_value !== undefined
-        ? " raw_position=0x" + Number(mb.raw_position_value).toString(16).toUpperCase()
-        : "";
-      mailbox.textContent = mb
-        ? "Mailbox: position=" + decodedPosition + rawPosition +
-          " raw=0x" + BigInt(mb.raw_frame || 0).toString(16).toUpperCase() +
-          " status=0x" + Number(mb.status_bits || 0).toString(16).toUpperCase() +
-          " frame=" + (mb.frame_counter || 0)
-        : "Mailbox: —";
+      if (!mb) {
+        mailbox.textContent = "Mailbox: —";
+      } else {
+        const position = mailboxValue(msg, "position", mb.position_value, 8) ||
+          "invalid for active width";
+        const frameCounter = msg.mailbox_display &&
+          msg.mailbox_display.frame_counter_decimal !== undefined
+          ? msg.mailbox_display.frame_counter_decimal
+          : (mb.frame_counter || 0);
+        mailbox.textContent = [
+          "Shared RAM mailbox (seqlock snapshot)",
+          "sequence       [" + mailboxAddress(msg, "sequence", 0x00010200) + "] = " +
+            mailboxValue(msg, "sequence", mb.seq, 8),
+          "raw frame      [" + mailboxAddress(msg, "raw_frame", 0x00010204) + "] = " +
+            mailboxValue(msg, "raw_frame", mb.raw_frame, 16),
+          "raw position   [" + mailboxAddress(msg, "raw_position", 0x0001020C) + "] = " +
+            mailboxValue(msg, "raw_position", mb.raw_position_value, 8),
+          "position       [" + mailboxAddress(msg, "position", 0x0001020C) + "] = " +
+            position + " (decoded)",
+          "status         [" + mailboxAddress(msg, "status", 0x00010210) + "] = " +
+            mailboxValue(msg, "status", mb.status_bits, 8),
+          "frame counter  [" + mailboxAddress(msg, "frame_counter", 0x00010214) + "] = " +
+            mailboxValue(msg, "frame_counter", mb.frame_counter, 8) +
+            " (" + frameCounter + ")",
+          "timestamp      [" + mailboxAddress(msg, "timestamp", 0x00010218) + "] = " +
+            mailboxValue(msg, "timestamp", mb.timestamp_cycles, 16),
+        ].join("\n");
+      }
     }
     const trace = document.getElementById("ssi-runtime-trace");
     if (trace) {
       const tr = msg.trace;
-      trace.textContent = tr
-        ? "Trace: " + tr.write_index + " records · " + tr.overrun_count + " overruns"
-        : "Trace: —";
+      if (!tr) {
+        trace.textContent = "Trace: —";
+      } else {
+        const records = msg.trace_display &&
+          msg.trace_display.write_index_decimal !== undefined
+          ? msg.trace_display.write_index_decimal
+          : tr.write_index;
+        const overruns = msg.trace_display &&
+          msg.trace_display.overrun_count_decimal !== undefined
+          ? msg.trace_display.overrun_count_decimal
+          : tr.overrun_count;
+        trace.textContent = [
+          "Trace counters",
+          "write index    [" + traceAddress(msg, "write_index", 0x00010240) + "] = " +
+            traceValue(msg, "write_index", tr.write_index) +
+            " (" + records + " records)",
+          "overruns       [" + traceAddress(msg, "overrun_count", 0x00010244) + "] = " +
+            traceValue(msg, "overrun_count", tr.overrun_count) +
+            " (" + overruns + ")",
+        ].join("\n");
+      }
     }
     if (Array.isArray(msg.frames) && msg.frames.length) {
       const frames = msg.frames.map((value) => BigInt(value).toString(16).toUpperCase());

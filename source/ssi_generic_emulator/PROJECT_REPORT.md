@@ -73,6 +73,15 @@ configuration/frame transaction and validates it before publishing a new
 generation. Generic loading replaces stale GPIO wires, and the toolbar pair
 controls use PRU1 as the reader and PRU0 as the emulator.
 
+The load response now also publishes ordinary state messages for both cores.
+This keeps the two Multi-core source listings synchronized immediately after
+a generic load. The runtime panel exposes the mailbox with absolute addresses
+(`0x00010200` sequence, `0x00010204` raw frame, `0x0001020C` position,
+`0x00010210` status, `0x00010214` frame counter, and `0x00010218` timestamp)
+and shows trace counters at `0x00010240` and `0x00010244`. Fixed-width host
+formatting preserves 64-bit raw frames and timestamps for direct comparison
+with the memory panels.
+
 Important files:
 
 | File | Purpose |

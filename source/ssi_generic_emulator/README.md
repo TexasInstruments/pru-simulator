@@ -115,6 +115,31 @@ reader without manual assembly loading or memory pokes:
    coalesces later state updates, preventing the memory grids from saturating
    the dashboard while the pair runs.
 
+The runtime panel also renders the live mailbox as an address-labeled
+seqlock snapshot. The addresses below are absolute Shared RAM addresses, so
+they can be checked directly in either memory panel:
+
+| Field | Address | Meaning |
+|---|---:|---|
+| `sequence` | `0x00010200` | Even and unchanged before/after a read means the snapshot is coherent |
+| `raw frame` | `0x00010204` | Complete MSB-first wire frame, up to 64 bits |
+| `raw position` | `0x0001020C` | Position field exactly as stored in the mailbox |
+| `position` | `0x0001020C` | The same field after the active encoding is decoded |
+| `status` | `0x00010210` | Extracted status/error bits |
+| `frame counter` | `0x00010214` | Number of completed reader frames |
+| `timestamp` | `0x00010218` | Reader timestamp in PRU cycles |
+
+The trace counters are shown below the mailbox at `0x00010240`
+(`write index`) and `0x00010244` (`overrun count`). The UI uses fixed-width
+hex strings, including 64-bit raw frames and timestamps, so leading zeroes
+and values above JavaScript's safe integer range are preserved. A decoded
+position marked `invalid for active width` means the raw field did not fit
+the active semantic layout; it is not a transport failure.
+
+Loading the generic pair publishes a normal source/register state for both
+PRUs immediately. In Multi-core mode this fills the PRU0 emulator and PRU1
+reader source tabs without requiring a switch to Single-core and back.
+
 Stopping the toolbar Run, resetting, or reconnecting clears stale client run
 ownership. A previously completed or stopped request therefore cannot leave
 **Run pair** disabled.

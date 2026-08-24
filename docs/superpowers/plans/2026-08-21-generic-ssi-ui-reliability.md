@@ -24,12 +24,36 @@ run request marked as active. The emulator also treated asynchronous
 - [x] Add regressions for paired capture grouping and consecutive default SSI
       frame validity.
 
+## Follow-up: source refresh and mailbox debugging (2026-08-24)
+
+- [x] Publish ordinary `state` messages for PRU0 and PRU1 immediately after
+      `ssi_runtime_load`, so Multi-core source tabs do not depend on a later
+      mode switch or manual refresh.
+- [x] Refresh both source states whenever the generic SSI partner is selected
+      while Multi-core mode is active, including repeated loads.
+- [x] Replace the compact mailbox summary with an address-labeled seqlock
+      snapshot showing raw frame, raw/decoded position, status, frame counter,
+      timestamp, and trace counters.
+- [x] Preserve fixed-width 64-bit display strings in the server response so
+      the UI can compare raw frames and timestamps with Shared RAM directly.
+
+Verification for this follow-up:
+
+```text
+python -m pytest -q tests/test_ssi_runtime_ui.py
+python -m pytest -q tests/test_mcp_server.py tests/test_ssi_runtime.py tests/test_ssi_runtime_ui.py
+node --check ui/static/app.js
+```
+
 ## Expected result
 
 With the default loopback, the graph retains PRU1 GPO0 (clock), PRU0 GPI8
 (clock), PRU0 GPO0 (data), and PRU1 GPI16 (data). The emulator returns the
 configured sequence without alternating all-ones frames. Auto-refresh remains
 responsive, and a stopped toolbar run cannot block a later Run pair action.
+After generic load, both Multi-core source tabs show the loaded PRU programs
+immediately. The runtime panel labels every mailbox field with its absolute
+Shared RAM address, and its fixed-width values match the memory grid.
 
 ## Verification
 

@@ -105,12 +105,80 @@ def _effective_ssi_clock_hz(fields: dict) -> int:
     return int(300_000_000 / (high + low + CLOCK_LOOP_OVERHEAD_CYCLES))
 
 
+def _ssi_mailbox_layout() -> dict:
+    """Return absolute Shared RAM addresses for the live SSI mailbox."""
+    base = ssi_abi.MAILBOX_BASE
+    return {
+        "base": base,
+        "fields": {
+            "sequence": base + ssi_abi.MAILBOX_SEQ_OFF,
+            "raw_frame": base + ssi_abi.MAILBOX_RAW_FRAME_OFF,
+            # The wire-format position is decoded in place by the host.
+            "raw_position": base + ssi_abi.MAILBOX_POSITION_VALUE_OFF,
+            "position": base + ssi_abi.MAILBOX_POSITION_VALUE_OFF,
+            "status": base + ssi_abi.MAILBOX_STATUS_BITS_OFF,
+            "frame_counter": base + ssi_abi.MAILBOX_FRAME_COUNTER_OFF,
+            "timestamp": base + ssi_abi.MAILBOX_TIMESTAMP_CYCLES_OFF,
+        },
+    }
+
+
+def _ssi_trace_layout() -> dict:
+    """Return absolute Shared RAM addresses for trace ring counters."""
+    base = ssi_abi.CAPTURE_BASE
+    return {
+        "base": base,
+        "fields": {
+            "write_index": base + ssi_abi.CAPTURE_TRACE_WRITE_INDEX_OFF,
+            "overrun_count": base + ssi_abi.CAPTURE_TRACE_OVERRUN_COUNT_OFF,
+        },
+        "records_base": ssi_abi.TRACE_BASE,
+        "record_size": ssi_abi.TRACE_RECORD_SIZE,
+        "record_count": 1024,
+    }
+
+
+def _ssi_hex(value, width: int) -> str | None:
+    """Format a mailbox integer without losing 64-bit precision in JSON UI code."""
+    if value is None:
+        return None
+    mask = (1 << (width * 4)) - 1
+    return f"0x{int(value) & mask:0{width}X}"
+
+
+def _ssi_mailbox_display(mailbox: dict) -> dict:
+    """Return fixed-width display strings for the address-labeled UI view."""
+    return {
+        "sequence": _ssi_hex(mailbox.get("seq"), 8),
+        "raw_frame": _ssi_hex(mailbox.get("raw_frame"), 16),
+        "raw_position": _ssi_hex(mailbox.get("raw_position_value"), 8),
+        "position": _ssi_hex(mailbox.get("position_value"), 8),
+        "status": _ssi_hex(mailbox.get("status_bits"), 8),
+        "frame_counter": _ssi_hex(mailbox.get("frame_counter"), 8),
+        "timestamp": _ssi_hex(mailbox.get("timestamp_cycles"), 16),
+        "frame_counter_decimal": int(mailbox.get("frame_counter", 0)),
+        "position_decode_error": mailbox.get("position_decode_error"),
+    }
+
+
+def _ssi_trace_display(trace: dict) -> dict:
+    """Return fixed-width display strings for trace ring counters."""
+    return {
+        "write_index": _ssi_hex(trace.get("write_index"), 8),
+        "overrun_count": _ssi_hex(trace.get("overrun_count"), 8),
+        "write_index_decimal": int(trace.get("write_index", 0)),
+        "overrun_count_decimal": int(trace.get("overrun_count", 0)),
+    }
+
+
 def _ssi_runtime_state() -> dict:
     """Return the current generic SSI state in a dashboard-safe shape."""
     if _ssi_runtime is None:
         return {
             "loaded": False,
             "profiles": _ssi_profile_catalog(),
+            "mailbox_layout": _ssi_mailbox_layout(),
+            "trace_layout": _ssi_trace_layout(),
             "status": "Load the generic SSI PRU pair first",
         }
 
@@ -133,6 +201,8 @@ def _ssi_runtime_state() -> dict:
     active["effective_clock_hz"] = _effective_ssi_clock_hz(active)
     staged = dict(_ssi_runtime._staged or {})
     staged["effective_clock_hz"] = _effective_ssi_clock_hz(staged)
+    mailbox = _ssi_runtime.read_mailbox()
+    trace = {"write_index": write_index, "overrun_count": overrun_count}
     return {
         "loaded": True,
         "profiles": _ssi_profile_catalog(),
@@ -153,8 +223,12 @@ def _ssi_runtime_state() -> dict:
         "pru0_ack_generation": active["pru0_ack_generation"],
         "pru1_ack_generation": active["pru1_ack_generation"],
         "frames": _ssi_runtime.read_raw_frames(),
-        "mailbox": _ssi_runtime.read_mailbox(),
-        "trace": {"write_index": write_index, "overrun_count": overrun_count},
+        "mailbox": mailbox,
+        "mailbox_layout": _ssi_mailbox_layout(),
+        "mailbox_display": _ssi_mailbox_display(mailbox),
+        "trace": trace,
+        "trace_layout": _ssi_trace_layout(),
+        "trace_display": _ssi_trace_display(trace),
         "wires": sim.list_gpio_wires(),
         "status": "Generic PRU0 emulator / PRU1 reader loaded",
     }
@@ -444,6 +518,12 @@ async def websocket_endpoint(websocket: WebSocket):
                         "type": "ssi_runtime_state",
                         **state,
                     })
+                    # Loading the pair changes both source listings.  Publish
+                    # normal core-state messages immediately so multi-core
+                    # panels do not depend on a later mode switch or manual
+                    # get_state request to populate their source tabs.
+                    await _send_state(websocket, "pru0")
+                    await _send_state(websocket, "pru1")
                 except Exception as exc:
                     _ssi_runtime = None
                     await websocket.send_json({
