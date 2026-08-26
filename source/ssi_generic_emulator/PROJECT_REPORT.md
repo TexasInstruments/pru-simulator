@@ -81,6 +81,18 @@ placement and zero padding. Fractional positions, nonzero status/error fields,
 and Gray-excess/Tannenbaum metadata are rejected with an explicit status bit.
 Static mode still shifts the complete prepacked 1..64-bit frame path.
 
+### 2.8 Ring-overrun recovery
+
+The producer ring is intentionally finite. PRU0 compares the newest stable
+sample sequence with the last accepted sequence and increments the overrun
+counter when the producer has advanced by at least one full ring. The newest
+sample and its predecessor are still sufficient for request-time estimation,
+so the consumer proceeds with that pair and advances its accepted sequence.
+This turns an overrun into a measurable recovery event instead of repeatedly
+rejecting the same head forever. A successful recovery leaves the live status
+clear; `DYN_STATUS_MISSED_PREP` is not retained merely because older samples
+were overwritten.
+
 ## 3. Signal and memory contract
 
 | Signal | PRU0 role | Connection |
@@ -145,7 +157,7 @@ The focused SSI/runtime/UI suite covers:
 - 960 ns producer publication versus approximately 16 us SSI requests;
 - timestamped binary/Gray packing with explicit offsets, right alignment,
   zero padding, and 64-bit raw-frame placement;
-- stale stop fallback, generation switching, ring-wrap overrun detection,
+- stale stop fallback, generation switching, ring-wrap overrun recovery,
   fractional/unsupported-layout rejection, and IEP low-word rollover;
 - exact paired 4 MHz phase widths and an 18-cycle measured PRU0 edge-to-first-
   data transition in the steady timestamped path;

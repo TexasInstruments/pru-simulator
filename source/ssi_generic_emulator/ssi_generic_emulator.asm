@@ -417,19 +417,26 @@ l_dyn_head_good:
     ; A latest/predecessor pair is sufficient for interpolation, but a
     ; producer can still lap the consumer by more than one complete ring
     ; while PRU0 is between frame preparations.  Keep the last accepted head
-    ; sequence and reject a jump of >=256 samples before reading a new pair.
-    ; This is constant time and uses the producer's monotonic 64-bit sample
-    ; sequence; no ring scan is needed.  An apply reset clears the valid flag,
-    ; so the first pair of a new configuration is not penalized.
+    ; sequence and count a jump of >=256 samples as an overwrite.  Do not
+    ; reject the newest pair: it is still coherent and is exactly the pair
+    ; needed to resume interpolation.  This is constant time and uses the
+    ; producer's monotonic 64-bit sample sequence; no ring scan is needed.
+    ; An apply reset clears the valid flag, so the first pair of a new
+    ; configuration is not penalized.
     lbbo  &r0, r14, DYN_HAVE_ACCEPTED, 4
     qbeq  l_dyn_progress_checked, r0, 0
     lbbo  &r0, r14, DYN_HEAD_SAMPLE_LO, 8
     lbbo  &r2, r14, DYN_LAST_ACCEPTED_LO, 8
     sub   r5, r0, r2
     suc   r6, r1, r3
-    qbne  l_dyn_fail_overrun, r6, 0
+    qbne  l_dyn_progress_overrun, r6, 0
     ldi   r2, 512
-    qble  l_dyn_fail_overrun, r5, r2
+    qble  l_dyn_progress_overrun, r5, r2
+    qba   l_dyn_progress_checked
+l_dyn_progress_overrun:
+    lbbo  &r0, r14, DYN_OVERRUN, 4
+    add   r0, r0, 1
+    sbbo  &r0, r14, DYN_OVERRUN, 4
 l_dyn_progress_checked:
 
     ; -- current slot: sequence, payload, sequence --

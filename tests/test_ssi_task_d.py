@@ -367,7 +367,7 @@ def test_generation_switch_never_emits_a_mixed_generation_frame():
     assert diagnostics["status"] == 0
 
 
-def test_ring_overrun_holds_last_frame_and_reports_overrun():
+def test_ring_overrun_resynchronizes_to_newest_frame_and_reports_recovery():
     sim, runtime = make_pair()
     configure_timestamped(runtime, producer_sample_age_limit_iep_ticks=100_000)
     runtime.producer.configure(
@@ -394,12 +394,12 @@ def test_ring_overrun_holds_last_frame_and_reports_overrun():
     later = run_next_frames(sim, before[-1]["frame_counter"], 2)
     diagnostics = runtime.read_producer_diagnostics()
 
-    assert [frame["position_value"] for frame in later] == [0x345, 0x345]
-    # One preparation may already have been in flight when the producer was
-    # stopped and the ring was filled; that prepared result is still valid.
-    # Once the new head is observed, no further estimate is accepted.
-    assert diagnostics["accepted_count"] <= accepted_before + 1
-    assert diagnostics["status"] & 0x20  # DYN_STATUS_OVERRUN
+    # The current prepared frame may be used once, but the next preparation
+    # must recover to the newest coherent pair rather than remain stuck on the
+    # old frame after the ring has wrapped.
+    assert later[-1]["position_value"] == 0x456
+    assert diagnostics["accepted_count"] >= accepted_before + 1
+    assert diagnostics["status"] == 0
     assert diagnostics["ring_overrun_count"] > 0
 
 

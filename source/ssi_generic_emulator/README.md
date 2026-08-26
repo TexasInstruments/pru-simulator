@@ -214,10 +214,19 @@ runtime.producer.start()        # explicit timestamped publication
 ```
 
 `runtime.producer.stop()` stops new samples without clearing the ring. PRU0
-then holds the last prepared frame. Stale, horizon, generation, coherence,
-overflow, missed-preparation, and ring-overrun reasons are exposed in the
-estimator status word. The default static sequence supplies the initial
-fallback frame.
+then holds the last prepared frame until a fresh pair is available. If the
+producer has wrapped the 256-entry ring, PRU0 records the event in
+`ring_overrun_count`, resynchronizes to the newest coherent pair, and resumes
+without permanently latching `DYN_STATUS_OVERRUN | DYN_STATUS_MISSED_PREP`.
+Stale, horizon, generation, coherence, overflow, missed-preparation, and
+other reasons are exposed in the estimator status word. The default static
+sequence supplies the initial fallback frame.
+
+The simulator producer may publish at a 288-IEP-tick target, but the target is
+not a promise that an ARM/FreeRTOS task can run every 960 ns. A real producer
+must timestamp each value at its formation instant. The checked-in bring-up
+producer models that rule by skipping late deadlines instead of backfilling a
+burst of timestamps that is already stale to PRU0.
 
 The MCP surface exposes the same controls through
 `ssi_producer_configure`, `ssi_producer_start`, `ssi_producer_stop`,
