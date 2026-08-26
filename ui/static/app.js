@@ -4698,6 +4698,8 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     fault_mode: "ssi-runtime-fault",
     fault_argument: "ssi-runtime-fault-argument",
     fault_repeat_count: "ssi-runtime-fault-repeat",
+    producer_mode: "ssi-runtime-producer-mode",
+    producer_period_iep_ticks: "ssi-runtime-producer-period",
   };
 
   function setRuntimeStatus(text, color) {
@@ -4736,7 +4738,9 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
   function formatDebugHex(value, width) {
     if (value === null || value === undefined) return "\u2014";
     try {
-      return "0x" + BigInt(String(value)).toString(16).toUpperCase().padStart(width, "0");
+      const bits = width * 4;
+      return "0x" + BigInt.asUintN(bits, BigInt(String(value)))
+        .toString(16).toUpperCase().padStart(width, "0");
     } catch (_) {
       return "\u2014";
     }
@@ -4850,6 +4854,37 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
         ].join("\n");
       }
     }
+    const producerDiagnostics = document.getElementById("ssi-runtime-producer-diagnostics");
+    if (producerDiagnostics) {
+      const producer = msg.producer;
+      const diag = msg.producer_diagnostics;
+      if (!producer || !diag) {
+        producerDiagnostics.textContent = "Timestamped producer: —";
+      } else {
+        producerDiagnostics.textContent = [
+          "Timestamped ARM producer / PRU0 estimator",
+          "state          = " + (producer.running ? "RUNNING" : "stopped") +
+            " · " + producer.trajectory + " · " + producer.period_iep_ticks +
+            " ticks (" + producer.period_ns + " ns)",
+          "published      = " + producer.published_count +
+            " · skipped/overwritten=" + producer.skipped_overwritten_count,
+          "latest seq     [0x00018400] = " + formatDebugHex(diag.latest_write_seq, 16),
+          "accepted       [0x00018408] = " + diag.accepted_count,
+          "coherence retry[0x0001840C] = " + diag.coherence_retry_count,
+          "stale          [0x00018410] = " + diag.stale_sample_count,
+          "ring overrun   [0x00018414] = " + diag.ring_overrun_count,
+          "request time   [0x00018418] = " + formatDebugHex(diag.last_request_timestamp_iep, 16),
+          "estimate Q31.32[0x00018420] = " + formatDebugHex(diag.last_estimate_position_q31_32, 16),
+          "status         [0x00018428] = " + formatDebugHex(diag.status, 8),
+          "generation     [0x0001842C] = " + formatDebugHex(diag.generation, 8),
+          "head seq       [0x00018430] = " + formatDebugHex(diag.head_seq, 8),
+          "latest slot    [0x00018434] = " + diag.latest_slot_index,
+          "sample seq     [0x00018438] = " + formatDebugHex(diag.latest_stable_sample_seq, 16),
+        ].join("\n");
+        const trajectory = document.getElementById("ssi-runtime-producer-trajectory");
+        if (trajectory && document.activeElement !== trajectory) trajectory.value = producer.trajectory;
+      }
+    }
     if (Array.isArray(msg.frames) && msg.frames.length) {
       const frames = msg.frames.map((value) => BigInt(value).toString(16).toUpperCase());
       document.getElementById("ssi-runtime-frames").value = frames.join(", ");
@@ -4935,6 +4970,31 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
       overrides: numericOverrides(),
     });
     setRuntimeStatus("Configuration staged; press Apply atomically.", "#dcdcaa");
+  });
+
+  document.getElementById("ssi-runtime-producer-configure").addEventListener("click", () => {
+    sendAction({
+      action: "ssi_runtime_producer_configure",
+      trajectory: document.getElementById("ssi-runtime-producer-trajectory").value,
+      initial_position: document.getElementById("ssi-runtime-producer-initial").value,
+      velocity_counts_per_second: document.getElementById("ssi-runtime-producer-velocity").value,
+      triangle_low: document.getElementById("ssi-runtime-producer-low").value,
+      triangle_high: document.getElementById("ssi-runtime-producer-high").value,
+      period_iep_ticks: Math.trunc(Number(document.getElementById("ssi-runtime-producer-period").value)),
+    });
+    setRuntimeStatus("Timestamped producer configured; Start when ready.", "#dcdcaa");
+  });
+
+  document.getElementById("ssi-runtime-producer-start").addEventListener("click", () => {
+    sendAction({ action: "ssi_runtime_producer_start" });
+  });
+
+  document.getElementById("ssi-runtime-producer-stop").addEventListener("click", () => {
+    sendAction({ action: "ssi_runtime_producer_stop" });
+  });
+
+  document.getElementById("ssi-runtime-producer-step").addEventListener("click", () => {
+    sendAction({ action: "ssi_runtime_producer_step" });
   });
 
   document.getElementById("ssi-runtime-apply").addEventListener("click", () => {

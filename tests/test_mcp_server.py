@@ -7,6 +7,7 @@ from mcp_server.server import PRUSimulatorMCP
 
 
 SOURCE_DIR = Path(__file__).parent.parent / "source"
+AM243X_CONFIG = Path(__file__).parent.parent / "config" / "memory_am243x.cfg"
 SSI_READER_SRC = (SOURCE_DIR / "ssi_generic_reader" / "ssi_generic_reader.asm").read_text()
 SSI_EMULATOR_SRC = (SOURCE_DIR / "ssi_generic_emulator" / "ssi_generic_emulator.asm").read_text()
 
@@ -18,7 +19,7 @@ SSI_EMULATOR_DATA_OUT_PIN = 0
 
 class TestMCPTools:
     def setup_method(self):
-        self.mcp = PRUSimulatorMCP(config_path="nonexistent.cfg")
+        self.mcp = PRUSimulatorMCP(config_path=str(AM243X_CONFIG))
 
     def test_pru_load(self):
         result = self.mcp.pru_load(source="ldi r0, 42\nhalt", core="pru0")
@@ -191,3 +192,42 @@ class TestMCPTools:
         )
         assert result["status"] == "success"
         assert result["frames"] == [0xABC, 0x12A]
+
+    def test_ssi_timestamped_producer_controls_run_through_mcp(self):
+        self._load_ssi_paired()
+        assert self.mcp.ssi_stage(
+            profile="CUSTOM_LEGACY_12BIT_4MHZ",
+            overrides_json=json.dumps({
+                "producer_mode": 1,
+                "producer_sample_age_limit_iep_ticks": 100_000,
+                "producer_prediction_horizon_limit_iep_ticks": 100_000,
+            }),
+        )["status"] == "success"
+        assert self.mcp.ssi_apply()["status"] == "success"
+
+        configured = self.mcp.ssi_producer_configure(
+            trajectory="linear",
+            initial_position="0x400",
+            velocity_counts_per_second=250_000.0,
+            period_iep_ticks=288,
+        )
+        assert configured["status"] == "success"
+        assert configured["producer"]["trajectory"] == "linear"
+        assert self.mcp.ssi_producer_start()["running"] is True
+
+        mailbox = None
+        for step in range(30_000):
+            self.mcp.sim.step_paced("pru1", "pru0")
+            if step % 100 == 0:
+                mailbox = self.mcp.ssi_read_mailbox()
+                if mailbox["frame_counter"] >= 4:
+                    break
+
+        state = self.mcp.ssi_producer_read()
+        assert mailbox is not None and mailbox["frame_counter"] >= 4
+        assert mailbox["position_value"] != 0xABC
+        assert state["running"] is True
+        assert state["published_count"] > 1
+        assert state["diagnostics"]["accepted_count"] >= 2
+        assert state["diagnostics"]["status"] == 0
+        assert self.mcp.ssi_producer_stop()["running"] is False

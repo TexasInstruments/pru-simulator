@@ -37,10 +37,44 @@ work exactly as before.
   valid frames once it elapses.
 * **Topology:** when `topology == 1` (reader-only), this program simply isn't
   loaded at all — there is no runtime special-case for it in the assembly.
+* **Timestamped producer mode:** when `producer_mode == 1`, PRU0 consumes the
+  coherent producer head at shared `0x00018430`, reads only the newest sample
+  and its predecessor from the ring at `0x00016400`, and prepares the next
+  frame during the idle `tm` interval. The falling edge then only captures the
+  IEP request timestamp and enters the existing deterministic `tv`/bit loop.
+  A 960 ns producer cadence (288 IEP ticks) can therefore feed SSI requests
+  that arrive roughly every 16 us without scanning or emitting every sample.
+
+The timestamped implementation deliberately has a safe bounded subset:
+binary or reflected Gray encoding, integer-aligned Q31.32 positions up to 31
+bits, and any 1..64-bit frame. Position fields may use an explicit MSB-side
+offset or right alignment, and configured zero-padding is preserved. The
+timestamped sample ABI has no per-sample status value, so nonzero status/error
+fields and Gray-excess metadata are rejected with a diagnostic status rather
+than guessed or silently truncated. Unsupported fractional payloads also hold
+the last prepared frame. Static mode retains the full prepacked 64-bit frame
+path and remains the default.
 
 See the `.asm` file's own header comment for the full register map (which
 registers are persistent config cache vs. per-frame scratch) and a detailed
 rationale for the debounce/hold-time approximations used.
+
+## Timestamped producer memory
+
+The normal ABI is mapped through `c28`: configuration is at `0x00010000`,
+frames at `0x00010100`, mailbox at `0x00010200`, capture at `0x00010240`, and
+trace records at `0x00010400`. Timestamped producer storage is outside that
+first 1 KiB window:
+
+| Region | Absolute address | Purpose |
+|---|---:|---|
+| Producer sample ring | `0x00016400` | 256 × 32-byte timestamped Q31.32 samples |
+| Producer head / diagnostics | `0x00018400` | Live producer head at `+0x30..+0x3F`; PRU0 diagnostics at `+0x00..+0x2F` |
+| PRU0 estimator state | PRU0 local DRAM `0x00000000..0x00000098` | Prepared frame, request period, accepted sequence, and bounded state |
+
+The producer owns the live head fields at `0x00018430`, `0x00018434`, and
+`0x00018438`. PRU0 reads them but does not rewrite them while publishing its
+own diagnostics, avoiding a producer/consumer race.
 
 ## Pins (virtual loopback convention)
 
@@ -114,6 +148,12 @@ reader without manual assembly loading or memory pokes:
    newer address window. Auto-refresh keeps one read in flight per panel and
    coalesces later state updates, preventing the memory grids from saturating
    the dashboard while the pair runs.
+8. For timestamped motion, select **Timestamped producer** as the position
+   source and click **Apply atomically**. Set `288` IEP ticks (960 ns), choose
+   Constant, Linear, or Triangle motion, click **Configure producer**, then
+   **Start**. The diagnostics panel shows the producer head and PRU0 estimator
+   counters at `0x00018400..0x0001843F`. **Stop** holds the last prepared SSI
+   frame; **Step once** publishes one sample manually.
 
 The runtime panel also renders the live mailbox as an address-labeled
 seqlock snapshot. The addresses below are absolute Shared RAM addresses, so
@@ -152,6 +192,43 @@ Natural positions and complete raw wire frames are rejected when they do not
 fit the selected resolution; the UI never silently truncates them. Detailed
 manual examples are in `docs/handoff/2026-08-20-generic-runtime-ssi.md`.
 
+### Timestamped producer mode in the simulator
+
+The simulator runtime deliberately separates configuration from publication:
+
+```python
+runtime.stage(
+    "CUSTOM_LEGACY_12BIT_4MHZ",
+    producer_mode=1,
+    producer_period_iep_ticks=288,
+    producer_sample_age_limit_iep_ticks=100_000,
+    producer_prediction_horizon_limit_iep_ticks=100_000,
+)
+runtime.apply()                 # does not start the producer
+runtime.producer.configure(
+    mode=1, trajectory="linear",
+    initial_position_q31_32=0x800 << 32,
+    velocity_q31_32_per_iep_tick=1 << 28,
+)
+runtime.producer.start()        # explicit timestamped publication
+```
+
+`runtime.producer.stop()` stops new samples without clearing the ring. PRU0
+then holds the last prepared frame. Stale, horizon, generation, coherence,
+overflow, missed-preparation, and ring-overrun reasons are exposed in the
+estimator status word. The default static sequence supplies the initial
+fallback frame.
+
+The MCP surface exposes the same controls through
+`ssi_producer_configure`, `ssi_producer_start`, `ssi_producer_stop`,
+`ssi_producer_step`, and `ssi_producer_read`. These operations use encoder
+counts/counts-per-second at the control boundary and convert to Q31.32 per IEP
+tick inside the runtime. The engineering trajectory is evaluated continuously
+but each published sample is rounded to an integer encoder count, matching the
+R5 `publish_count_at()` path and the current PRU0 fast estimator subset. This
+also permits velocities below one count per 960-ns producer period without
+publishing unsupported fractional wire positions.
+
 ### Pairing with a fixed reader
 
 This program can also be paired with the existing fixed
@@ -163,7 +240,8 @@ anything beyond the legacy default profile needs the generic reader instead.
 ### Automated tests
 
 ```bash
-python -m pytest tests/test_ssi_generic_emulator.py -v
+python -m pytest -q tests/test_ssi_task_d.py
+python -m pytest -q tests/test_ssi_generic_emulator.py tests/test_ssi_generic_reader.py
 ```
 
 ### Runtime/profile layer
@@ -174,4 +252,10 @@ The config block this program reads is generated from
 named encoder profiles, staged-then-validated configuration, frame packing,
 and atomic apply. See
 `docs/superpowers/specs/2026-08-19-generic-runtime-ssi-design.md` for the
-full memory map and design rationale.
+full existing memory map and design rationale. The timestamped producer
+contract is generated from `schema/ssi_config_abi.json`; host publication is
+implemented by `pru_io/ssi_position_producer.py`, while the PRU0 consumer and
+estimator are implemented in this assembly file. `tests/test_ssi_task_d.py`
+covers positive and negative motion, 960 ns publication, fallback, generation,
+ring-wrap, rollover, measured 4 MHz loopback timing, dashboard controls, and
+MCP control/readback parity.

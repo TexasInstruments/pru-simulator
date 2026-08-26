@@ -48,6 +48,16 @@ acknowledgement in loopback mode, applies the complete new configuration,
 then acknowledges its own generation. Reader-only mode skips the PRU0 wait.
 This keeps a frame on one generation and avoids mixed timing/layout fields.
 
+### 2.6 Shared IEP timebase for the timestamped PRU0 estimator (Task D)
+
+PRU1 remains the sole startup owner of the IEP timebase. Before configuration
+acknowledgement it holds SSI clock high, writes `IEPCLK.OCP_EN=1` through
+`c4 + 0x30`, and writes `0x11` through `c26 + 0x00` to enable IEP0 with
+increment 1. At the AM243x 300 MHz OCP clock this produces one IEP tick per
+PRU cycle. PRU0 reads COUNT_LO followed by the latched COUNT_HI only in its
+timestamped idle/edge path; the reader does not consume or modify the producer
+ring.
+
 ## 3. Signal and memory contract
 
 | Signal | PRU1 role | Connection |
@@ -91,21 +101,19 @@ The focused SSI/runtime/UI suite covers:
   formation timing;
 - generation switching, reader-only operation, mailbox seqlock coherence,
   trace wrap/overrun, MCP parity, and dashboard parity.
+- paired Task D coverage verifies the timestamped producer cadence, estimator
+  fallback/generation/rollover behavior, and the unchanged 4 MHz clock shape.
 
 Run the focused tests with:
 
 ```text
-python -m pytest -q tests/test_ssi_config_abi_generated.py tests/test_ssi_runtime.py tests/test_ssi_generic_emulator.py tests/test_ssi_generic_reader.py tests/test_ssi_runtime_ui.py tests/test_ssi_runtime_trace.py tests/test_mcp_server.py
+python -m pytest -q tests/test_ssi_config_abi_generated.py tests/test_ssi_position_estimator.py tests/test_ssi_runtime.py tests/test_ssi_generic_emulator.py tests/test_ssi_generic_reader.py tests/test_ssi_runtime_ui.py tests/test_ssi_runtime_trace.py tests/test_mcp_server.py
+python -m pytest -q tests/test_ssi_task_d.py tests/test_ssi_position_producer.py tests/test_iep_timebase.py
 ```
-
-The current focused result is 96 passing tests. One unrelated peripheral
-drift experiment remains a pre-existing failure in the complete repository
-suite.
 
 ## 6. Hardware adaptation
 
-The matching CCS/R5 project is in
-`encoder-workspace/firmware/ccs-tests/ssi_test`: PRU1 is the reader/master
-and PRU0 is the emulator, both targeted at 300 MHz. The ABI snapshot and R5
-staging API are present there. TI compiler/SDK build and physical LaunchPad
-acceptance remain to be run in CCS.
+The generator can export matching C and PRU assembly snapshots to a companion
+CCS/R5 workspace with `--parent-include-dir`. This simulator repository has no
+dependency on that parent workspace. TI compiler/SDK build and physical
+LaunchPad acceptance remain separate hardware steps.

@@ -7,7 +7,9 @@ reading memory, and querying I/O state.
 import configparser
 import os
 import re
+from typing import Callable
 
+from core.iep import IEPClockRegisterRegion, IEPRegisterRegion, IEPTimebase
 from core.pru_core import PRUCore
 from mem.memory_bus import MemoryBus
 from mem.regions import MemoryRegion
@@ -82,24 +84,57 @@ class Simulator:
     """Orchestrates two PRU cores (PRU0, RTU0) sharing a memory bus and XFR bus."""
 
     def __init__(self, config_path: str = "memory.cfg"):
+        self._hard_reset_hooks: list[Callable[[], None]] = []
         self.xfr = XFRBus()
         self.memory = self._load_memory(config_path)
         self.constant_table = self._load_constants(config_path)
+        dev = self._get_device_config(config_path)
+        target = str(dev.get("target", "")).strip().lower()
+        is_am243x = target == "am243x"
+        default_clock_mhz = "300" if is_am243x else "200"
+        pru_clock_mhz = float(dev.get("pru_clock_mhz", default_clock_mhz))
+        pru1_clock_mhz = float(dev.get("pru1_clock_mhz", str(pru_clock_mhz)))
+
+        if is_am243x:
+            self.constant_table.set(26, IEPRegisterRegion.BASE_ADDR)
+            self.constant_table.set(28, 0x00010000)
+            core_clocks = {
+                "pru0": pru_clock_mhz,
+                "rtu0": pru_clock_mhz,
+                "pru1": pru1_clock_mhz,
+            }
+            self.iep = IEPTimebase(
+                external_clock_mhz=float(dev.get("iep_clock_mhz", "200")),
+                ocp_clock_mhz=pru_clock_mhz,
+                core_clocks_mhz=core_clocks,
+            )
+            self.iep_counter = self.iep
+            self.memory.add_region(IEPRegisterRegion(self.iep))
+            self.memory.add_region(IEPClockRegisterRegion(self.iep))
+
+        def cycle_observer(name: str):
+            if not is_am243x:
+                return None
+            return lambda cycles: self.iep.observe_core_cycles(name, cycles)
+
         io_pru0 = IOPort()
         io_rtu0 = IOPort()
         io_pru1 = IOPort()
         self.cores: dict[str, PRUCore] = {
-            "pru0": PRUCore("PRU0", self.memory, self.xfr, io_pru0, self.constant_table),
-            "rtu0": PRUCore("RTU0", self.memory, self.xfr, io_rtu0, self.constant_table),
+            "pru0": PRUCore(
+                "PRU0", self.memory, self.xfr, io_pru0, self.constant_table,
+                cycle_observer=cycle_observer("pru0"),
+            ),
+            "rtu0": PRUCore(
+                "RTU0", self.memory, self.xfr, io_rtu0, self.constant_table,
+                cycle_observer=cycle_observer("rtu0"),
+            ),
             "pru1": PRUCore("PRU1", self.memory, self.xfr, io_pru1, self.constant_table,
-                            dram_swap=True),
+                            dram_swap=True, cycle_observer=cycle_observer("pru1")),
         }
         self._gpio_wires: list[dict] = []
 
         # Wire SD filters to each core's IOPort (PRU1 runs on its own clock)
-        dev = self._get_device_config(config_path)
-        pru_clock_mhz = float(dev.get("pru_clock_mhz", "200"))
-        pru1_clock_mhz = float(dev.get("pru1_clock_mhz", str(pru_clock_mhz)))
         self._pru_clock_mhz = pru_clock_mhz
         self._pru1_clock_mhz = pru1_clock_mhz
         core_clocks = {"pru0": pru_clock_mhz, "rtu0": pru_clock_mhz,
@@ -186,11 +221,18 @@ class Simulator:
         return bus
 
     def _load_constants(self, config_path: str) -> ConstantTable:
-        """Load constant table from constants_am243x.cfg alongside the project root."""
+        """Load constants from a project root or its config directory."""
         table = ConstantTable()
         project_root = os.path.dirname(os.path.abspath(config_path))
-        constants_path = os.path.join(project_root, "config", "constants_am243x.cfg")
-        if not os.path.exists(constants_path):
+        candidates = (
+            os.path.join(project_root, "config", "constants_am243x.cfg"),
+            os.path.join(project_root, "constants_am243x.cfg"),
+        )
+        constants_path = next(
+            (path for path in candidates if os.path.exists(path)),
+            None,
+        )
+        if constants_path is None:
             return table
         cfg = configparser.ConfigParser()
         cfg.read(constants_path)
@@ -449,6 +491,22 @@ class Simulator:
     def reset(self, core: str) -> None:
         """Reset *core* to its initial state (registers, counters, PC, halted flag)."""
         self._get_core(core).reset()
+        if hasattr(self, "iep"):
+            self.iep.rebase_core(core)
+
+    def add_hard_reset_hook(self, callback: Callable[[], None]) -> None:
+        """Register owner cleanup that must run before a full hardware reset."""
+        if not callable(callback):
+            raise TypeError("hard-reset hook must be callable")
+        if callback not in self._hard_reset_hooks:
+            self._hard_reset_hooks.append(callback)
+
+    def remove_hard_reset_hook(self, callback: Callable[[], None]) -> None:
+        """Remove a previously registered full-reset cleanup callback."""
+        try:
+            self._hard_reset_hooks.remove(callback)
+        except ValueError:
+            pass
 
     def hard_reset(self) -> None:
         """Full hardware reset: reset all cores, clear all SPAD banks, and reset XFR config.
@@ -457,10 +515,16 @@ class Simulator:
         (TX/RX FIFOs, overrun/underrun, RX valid/overflow, busy, line history),
         so the UI's status bits start clean.  Configuration entered in the UI --
         perif config registers, GPCFG mux, loopback parameters -- is kept.
+        Registered component hooks run first to unregister live callbacks and
+        clear memory owned by those components.
         """
+        for callback in tuple(self._hard_reset_hooks):
+            callback()
         for core in self.cores.values():
             core.reset()
         self.xfr.reset()
+        if hasattr(self, "iep"):
+            self.iep.hardware_reset()
 
     def uart_inject(
         self,

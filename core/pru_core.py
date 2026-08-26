@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import re
 import struct
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,8 @@ class PRUCore:
 
     def __init__(self, name: str, memory: MemoryBus, xfr: XFRBus, io_port: IOPort,
                  constant_table: ConstantTable | None = None,
-                 dram_swap: bool = False):
+                 dram_swap: bool = False,
+                 cycle_observer: Callable[[int], None] | None = None):
         self.name = name
         self.registers = RegisterFile()
         self.counters = CycleCounters()
@@ -47,6 +49,7 @@ class PRUCore:
         # PRU1 sees its own DRAM (DRAM1) at core-local 0x0000 and DRAM0 at
         # 0x2000 -- the reverse of PRU0. See _map_data_addr.
         self.dram_swap = dram_swap
+        self._cycle_observer = cycle_observer
         self.pc: int = 0
         self.halted: bool = False
         self.instructions: list[Instruction] = []
@@ -512,6 +515,8 @@ class PRUCore:
 
         # ---- Count instruction cycle ------------------------------------
         self.counters.tick()
+        if self._cycle_observer is not None:
+            self._cycle_observer(self.counters.cycles)
 
     def run(self, max_steps: int = 100_000) -> int:
         """Run until halted or max_steps reached. Returns steps executed."""

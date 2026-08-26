@@ -1819,6 +1819,35 @@ Example:
               <input id="ssi-runtime-gray-excess-offset" class="uart-inj-num" type="number" min="0" max="4294967295" placeholder="center" title="Optional Gray-excess code-window offset" />
               <button id="ssi-runtime-pack" class="graph-btn">Pack positions</button>
             </div>
+            <div class="uart-controls" style="margin-top:7px;">
+              <span class="uart-label">Position source:</span>
+              <select id="ssi-runtime-producer-mode" class="uart-inj-select" title="Static frame sequence or timestamped ARM sample ring">
+                <option value="0">Static frames</option>
+                <option value="1">Timestamped producer</option>
+              </select>
+              <span class="uart-label">Period (IEP ticks):</span>
+              <input id="ssi-runtime-producer-period" class="uart-inj-num" type="number" min="1" max="4294967295" value="288" title="288 ticks at 300 MHz = 960 ns" />
+              <span class="uart-label">Trajectory:</span>
+              <select id="ssi-runtime-producer-trajectory" class="uart-inj-select">
+                <option value="constant">Constant</option>
+                <option value="linear">Linear</option>
+                <option value="triangle">Triangle</option>
+              </select>
+            </div>
+            <div class="uart-controls" style="margin-top:5px;">
+              <span class="uart-label">Initial count:</span>
+              <input id="ssi-runtime-producer-initial" class="uart-inj-input" style="width:76px;" value="0x345" title="Signed encoder count; decimal or 0x-prefixed" />
+              <span class="uart-label">Velocity (counts/s):</span>
+              <input id="ssi-runtime-producer-velocity" class="uart-inj-input" style="width:92px;" value="0" />
+              <span class="uart-label">Triangle low/high:</span>
+              <input id="ssi-runtime-producer-low" class="uart-inj-input" style="width:64px;" value="0" />
+              <input id="ssi-runtime-producer-high" class="uart-inj-input" style="width:64px;" value="4095" />
+              <button id="ssi-runtime-producer-configure" class="graph-btn">Configure producer</button>
+              <button id="ssi-runtime-producer-start" class="graph-btn">Start</button>
+              <button id="ssi-runtime-producer-stop" class="graph-btn">Stop</button>
+              <button id="ssi-runtime-producer-step" class="graph-btn">Step once</button>
+            </div>
+            <div class="uart-hint" style="margin-top:4px;">For timestamped mode: select it here, Apply atomically, configure the trajectory, then Start. Generated trajectories are quantized to integer encoder counts at each publication, matching the hardware producer API; PRU0 estimates the request-time position from the two newest coherent samples.</div>
             <div class="uart-controls" style="margin-top:6px;">
               <button id="ssi-runtime-stage" class="graph-btn">Stage</button>
               <button id="ssi-runtime-apply" class="graph-btn" style="color:var(--accent);border-color:#3a5a8a;">Apply atomically</button>
@@ -1829,6 +1858,7 @@ Example:
             <div id="ssi-runtime-memory-hint" class="uart-hint" style="margin-top:4px;">Live SSI results are in the Shared RAM mailbox at <code>0x00010200</code>. PRU0/PRU1 DRAM are not written by this pair and remain zero. The mailbox uses a seqlock: a stable even sequence means the snapshot is coherent.</div>
             <pre id="ssi-runtime-mailbox" class="uart-hint" style="white-space:pre-wrap;margin:5px 0 0;">Mailbox: —</pre>
             <pre id="ssi-runtime-trace" class="uart-hint" style="white-space:pre-wrap;margin:0;">Trace: —</pre>
+            <pre id="ssi-runtime-producer-diagnostics" class="uart-hint" style="white-space:pre-wrap;margin:0;">Timestamped producer: —</pre>
           </div>
 
         </div>
@@ -2142,6 +2172,6 @@ Example:
   </div>
 
   <script src="/static/layout.js"></script>
-  <script src="/static/app.js?v=20260824-1"></script>
+  <script src="/static/app.js?v=20260825-1"></script>
 </body>
 </html>

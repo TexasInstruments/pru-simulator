@@ -42,7 +42,7 @@ def make_paired_sim():
     emulator on pru0, wired exactly like the fixed reader/emulator pairing
     in test_ssi_generic_emulator.py: pru1's CLK out -> pru0's CLK in, pru0's
     DATA out -> pru1's DATA in."""
-    sim = Simulator(config_path="nonexistent.cfg")
+    sim = Simulator(config_path=str(ROOT / "config" / "memory_am243x.cfg"))
     assert sim.load("pru1", READER_SRC, include_paths=[str(SOURCE_DIR)]) == []
     assert sim.load("pru0", EMULATOR_SRC, include_paths=[str(SOURCE_DIR)]) == []
     sim.add_gpio_wire("pru1", READER_CLK_PIN, "pru0", EMULATOR_CLK_IN_PIN)
@@ -53,7 +53,7 @@ def make_paired_sim():
 
 def make_reader_only_sim():
     """A fresh Simulator with only the reader loaded, on pru1."""
-    sim = Simulator(config_path="nonexistent.cfg")
+    sim = Simulator(config_path=str(ROOT / "config" / "memory_am243x.cfg"))
     assert sim.load("pru1", READER_SRC, include_paths=[str(SOURCE_DIR)]) == []
     sim.hard_reset()
     return sim

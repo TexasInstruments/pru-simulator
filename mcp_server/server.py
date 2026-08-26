@@ -352,6 +352,64 @@ class PRUSimulatorMCP:
             "write_index": write_index,
         }
 
+    def ssi_producer_configure(
+        self,
+        trajectory: str = "constant",
+        initial_position: str = "0",
+        velocity_counts_per_second: float = 0.0,
+        triangle_low: str = "0",
+        triangle_high: str = "4095",
+        period_iep_ticks: int = 288,
+    ) -> dict:
+        """Configure the timestamped ARM producer model in encoder-count units."""
+        runtime = self._get_runtime()
+
+        def parse_count(value, name):
+            if isinstance(value, bool):
+                raise ValueError(f"{name} must be an integer count")
+            if isinstance(value, int):
+                return value
+            return int(str(value).strip(), 0)
+
+        try:
+            state = runtime.configure_producer_engineering(
+                trajectory=trajectory,
+                initial_position=parse_count(initial_position, "initial_position"),
+                velocity_counts_per_second=velocity_counts_per_second,
+                triangle_low=parse_count(triangle_low, "triangle_low"),
+                triangle_high=parse_count(triangle_high, "triangle_high"),
+                period_iep_ticks=period_iep_ticks,
+            )
+        except (ArithmeticError, TypeError, ValueError) as exc:
+            return {"status": "error", "error": str(exc)}
+        return {"status": "success", "producer": state}
+
+    def ssi_producer_start(self) -> dict:
+        """Start automatic timestamped publication at the configured cadence."""
+        runtime = self._get_runtime()
+        runtime.start_producer()
+        return runtime.producer_state()
+
+    def ssi_producer_stop(self) -> dict:
+        """Stop automatic publication while preserving the last coherent sample."""
+        runtime = self._get_runtime()
+        runtime.stop_producer()
+        return runtime.producer_state()
+
+    def ssi_producer_step(self, timestamp_iep: int = -1) -> dict:
+        """Publish one timestamped sample manually, using current IEP time by default."""
+        runtime = self._get_runtime()
+        sample = runtime.step_producer(None if timestamp_iep < 0 else timestamp_iep)
+        return {"sample": sample, "producer": runtime.producer_state()}
+
+    def ssi_producer_read(self) -> dict:
+        """Read producer controls, counters, and PRU0 estimator diagnostics."""
+        runtime = self._get_runtime()
+        return {
+            **runtime.producer_state(),
+            "diagnostics": runtime.read_producer_diagnostics(),
+        }
+
     def pru_status(self) -> dict:
         """Return a status snapshot for all cores."""
         return {"cores": self.sim.status()}
@@ -413,7 +471,7 @@ def run_stdio_server():
             method = getattr(mcp_wrapper, name, None)
             if method is None:
                 raise ValueError(f"Unknown tool: {name}")
-            # Claude Code may wrap arguments as {"kwargs": "<json-string>"}.
+            # Some MCP clients may wrap arguments as {"kwargs": "<json-string>"}.
             # Unwrap that form so individual parameters reach the method.
             if list(arguments.keys()) == ["kwargs"]:
                 real_args = json.loads(arguments["kwargs"])

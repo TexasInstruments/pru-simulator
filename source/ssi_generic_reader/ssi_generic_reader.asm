@@ -153,6 +153,13 @@ CLOCK_LOOP_OVERHEAD_CYCLES .set 15
 
 main:
     set   r30, r30, CLK_PIN      ; idle SSI clock HIGH before anything else
+    ; PRU1 owns one-time IEP startup.  Select the ICSS OCP clock, enable the
+    ; free-running counter, and use increment 1 so c26 timestamps are in
+    ; 300-MHz PRU-cycle ticks.  PRU0 only reads c26 after this point.
+    ldi   TMP, 1
+    sbco  &TMP, c4, 0x30, 4       ; IEPCLK.OCP_EN
+    ldi   TMP, 0x11
+    sbco  &TMP, c26, 0x00, 4      ; CNT_ENABLE | DEFAULT_INC=1
     ldi   TRACE_WRITE_IDX, 0     ; boot-once: persists across every future
     ldi   TRACE_OVERRUN, 0       ; l_apply_config (capture history and
     ldi   SEQ, 0                 ; mailbox freshness outlive a profile switch)

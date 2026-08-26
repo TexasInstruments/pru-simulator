@@ -26,11 +26,16 @@ derived from `tm_pause_outer_iters` and then waits for the next falling edge.
 The threshold uses a shift (`tm * 16`) and is capped at 4000 polls, avoiding
 a runtime divide while bounding worst-case synchronization latency.
 
-### 2.3 Pure wire-bit shifter
+### 2.3 Pure wire-bit shifter and bounded dynamic packing
 
-PRU0 does not convert natural positions to Gray, Gray-excess, Tannenbaum, or
-other encodings. The host packs the frame slots and rejects values that do
-not fit. This keeps the edge-driven path short and deterministic.
+Static frame slots remain prepacked by the host, so the edge-driven path is a
+pure 64-bit MSB-first shifter. Timestamped mode adds a bounded preparation
+step during `tm`: binary and reflected Gray encoding are constant-time
+shift/xor operations, and the result is placed into the configured 1..64-bit
+frame using two 32-bit words. Explicit MSB-side offsets, right alignment, and
+zero padding are supported. Gray-excess/Tannenbaum semantic rules and
+per-sample status values are not present in the 32-byte sample ABI and are
+therefore rejected rather than guessed.
 
 ### 2.4 Sequence and faults
 
@@ -52,6 +57,30 @@ The idle-edge poll is bounded and rechecks the requested generation. A config
 change cannot park PRU0 waiting for an edge that PRU1 will not generate until
 PRU0 acknowledges the same change.
 
+### 2.7 Timestamped producer consumer and request-time estimator (Task D)
+
+The generated shared ABI reserves a 256-entry, 32-byte producer-sample ring at
+relative offset `0x6400`. Each entry carries an odd/even publication sequence,
+a 64-bit IEP timestamp, signed Q31.32 position, generation, and flags. The
+producer head occupies diagnostics bytes `0x30..0x3F` and remains producer-
+owned. PRU0 reads that head and exactly the latest sample plus its predecessor;
+it never scans the ring.
+
+During `tm`, PRU0 measures the observed SSI request period, validates sample
+age/horizon/generation/coherence, computes a bounded signed estimate, and
+commits a prepared raw frame. The falling edge only reads COUNT_LO then the
+latched COUNT_HI through `c26` and enters the existing bit loop. A failed
+preparation holds the previous prepared frame and publishes a reason bit plus
+the missed-preparation bit after the first accepted estimate. The producer head
+is not rewritten by PRU0 diagnostics, because those fields are the live input
+seqlock.
+
+The safe PRU arithmetic subset is binary or Gray, integer-aligned Q31.32
+positions up to 31 bits, and 1..64-bit frames with explicit/right-aligned
+placement and zero padding. Fractional positions, nonzero status/error fields,
+and Gray-excess/Tannenbaum metadata are rejected with an explicit status bit.
+Static mode still shifts the complete prepacked 1..64-bit frame path.
+
 ## 3. Signal and memory contract
 
 | Signal | PRU0 role | Connection |
@@ -61,7 +90,11 @@ PRU0 acknowledges the same change.
 
 The program maps the shared ABI through `c28`. Configuration is at `0x0000`,
 prepacked frames at `0x0100`, mailbox at `0x0200`, capture counters at
-`0x0240`, and trace records at `0x0400` relative to the ABI base.
+`0x0240`, and trace records at `0x0400` relative to the ABI base. The
+timestamped producer ring is at relative `0x6400` (`0x00016400` absolute),
+with its 256-entry head/diagnostics block at relative `0x8400`
+(`0x00018400` absolute). The producer owns the live head at `+0x30..+0x3F`;
+PRU0's estimator counters occupy `+0x00..+0x2F`.
 
 ## 4. Dashboard and files
 
@@ -81,6 +114,12 @@ a generic load. The runtime panel exposes the mailbox with absolute addresses
 and shows trace counters at `0x00010240` and `0x00010244`. Fixed-width host
 formatting preserves 64-bit raw frames and timestamps for direct comparison
 with the memory panels.
+
+Timestamped producer controls now share that panel. The user explicitly
+applies timestamped mode, configures a constant/linear/triangle producer in
+encoder-count units, and starts, stops, or manually steps publication. The
+panel labels the PRU0 estimator diagnostics with their absolute shared-memory
+addresses. MCP exposes equivalent configure/start/stop/step/read operations.
 
 Important files:
 
@@ -102,6 +141,14 @@ The focused SSI/runtime/UI suite covers:
   status fields, and overflow rejection;
 - frame-count/time holds, synchronous formation, all eight fault modes, and
   finite fault recovery;
+- timestamped constant and positive/negative linear motion;
+- 960 ns producer publication versus approximately 16 us SSI requests;
+- timestamped binary/Gray packing with explicit offsets, right alignment,
+  zero padding, and 64-bit raw-frame placement;
+- stale stop fallback, generation switching, ring-wrap overrun detection,
+  fractional/unsupported-layout rejection, and IEP low-word rollover;
+- exact paired 4 MHz phase widths and an 18-cycle measured PRU0 edge-to-first-
+  data transition in the steady timestamped path;
 - generation changes at idle boundaries, mailbox seqlock publication, trace
   wrap/overrun, MCP parity, dashboard stage/apply/readback, stale-wire
   replacement, and request-tagged memory reads.
@@ -109,18 +156,12 @@ The focused SSI/runtime/UI suite covers:
 Run the focused tests with:
 
 ```text
-python -m pytest -q tests/test_ssi_config_abi_generated.py tests/test_ssi_runtime.py tests/test_ssi_generic_emulator.py tests/test_ssi_generic_reader.py tests/test_ssi_runtime_ui.py tests/test_ssi_runtime_trace.py tests/test_mcp_server.py
+python -m pytest -q tests/test_ssi_task_d.py tests/test_ssi_config_abi_generated.py tests/test_ssi_position_estimator.py tests/test_ssi_position_producer.py tests/test_ssi_runtime.py tests/test_ssi_generic_emulator.py tests/test_ssi_generic_reader.py tests/test_iep_timebase.py
 ```
-
-The current focused result is 96 passing tests. The complete repository
-result is recorded in the dated session report; one unrelated peripheral
-drift experiment remains a pre-existing failure.
 
 ## 6. Hardware adaptation
 
-The matching CCS/R5 project is in
-`encoder-workspace/firmware/ccs-tests/ssi_test`: PRU0 is the emulator and
-PRU1 is the reader, both targeted at 300 MHz. The simulator ABI snapshot and
-the R5 staging/packing layer are checked in there. Building the TI assembly,
-generating firmware headers, and validating the LaunchPad still require the
-TI CCS/SDK installation and physical wiring.
+The generator can export matching C and PRU assembly snapshots to a companion
+CCS/R5 workspace with `--parent-include-dir`. This simulator repository has no
+dependency on that parent workspace. Building TI assembly and validating a
+LaunchPad require a separate TI CCS/SDK installation and physical wiring.

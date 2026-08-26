@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>SSI Timestamped Producer Integration Report</title>
+  <style>
+    body{font:15px/1.55 system-ui,sans-serif;max-width:1050px;margin:36px auto;padding:0 24px;color:#20242a}
+    h1,h2{color:#17365d} code{background:#eef2f6;padding:2px 5px;border-radius:3px}
+    table{border-collapse:collapse;width:100%}th,td{border:1px solid #c9d2dc;padding:7px;text-align:left}
+    .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.card{background:#eef5fb;padding:12px;border-radius:6px}
+  </style>
+</head>
+<body>
+  <h1>SSI Timestamped Producer Integration</h1>
+  <p><b>Date:</b> 2026-08-25 &nbsp; <b>Target:</b> AM243x ICSSG, 300 MHz</p>
+
+  <h2>Project overview</h2>
+  <p>The ARM application can form encoder positions every 960 ns while SSI
+  requests are slower. This work adds a coherent timestamped ring, a shared
+  IEP timebase, and a bounded PRU0 estimator that prepares the position for the
+  next SSI frame without adding estimator work to the data-edge bit path.</p>
+
+  <h2>Initial request</h2>
+  <p>Publish timestamped ARM positions at approximately 960 ns, interpolate or
+  extrapolate when the SSI clock restarts after <code>tm</code>, keep the PRU
+  implementation fast and deterministic, support simulator and real AM243x
+  hardware, validate through the Python MCP interface, and document the
+  workflow. The final PWM producer remains external to this project.</p>
+
+  <h2>Design choices</h2>
+  <ul>
+    <li>256 entries of 32 bytes in ICSSG shared RAM, with per-entry seqlocks.</li>
+    <li>Constant-time producer head; PRU0 reads only two slots.</li>
+    <li>300 MHz IEP0 initialized by PRU1 and read coherently through c26.</li>
+    <li>Estimator runs during idle time; the request edge captures IEP and shifts.</li>
+    <li>Timestamped binary/Gray packing supports explicit/right-aligned placement,
+      zero padding, and 1..64-bit raw frames without changing the bit loop.</li>
+    <li>UI/MCP trajectories publish integer encoder counts while retaining continuous engineering motion.</li>
+    <li>Hold-last fallback with explicit status/counters on invalid input.</li>
+    <li>Static prepacked frames remain the default and retain 64-bit support.</li>
+  </ul>
+
+  <h2>Files and surfaces</h2>
+  <table>
+    <tr><th>Area</th><th>Result</th></tr>
+    <tr><td>Schema/generated ABI</td><td>Producer mode, timing limits, ring, head, diagnostics</td></tr>
+    <tr><td>Simulator core</td><td>IEP register model and deterministic position producer</td></tr>
+    <tr><td>PRU assembly</td><td>PRU0 estimator and PRU1 IEP initialization</td></tr>
+    <tr><td>Dashboard/MCP</td><td>Configure, start, stop, step, and diagnostics readback</td></tr>
+    <tr><td>CCS/R5</td><td>Publication API, synthetic test source, UART controls</td></tr>
+    <tr><td>Documentation</td><td>Protocol, simulator, CCS, UART UI, plan and design</td></tr>
+  </table>
+
+  <h2>Validation</h2>
+  <div class="grid">
+    <div class="card"><b>Producer cadence</b><br>288 IEP ticks = 960 ns</div>
+    <div class="card"><b>Clock</b><br>4 MHz legacy shape retained</div>
+    <div class="card"><b>Edge path</b><br>18 measured simulator cycles</div>
+    <div class="card"><b>Fallback</b><br>stale/overrun/coherence hold last</div>
+  </div>
+  <p>Automated coverage includes IEP behavior, sample publication ordering,
+    signed estimator arithmetic, paired PRU execution, rollover, generation
+    changes, stale and overrun fallback, dashboard WebSocket actions, MCP
+    operations, the new timestamped layout/Gray cases, and parent CCS source
+    contracts. The focused SSI suite passed 148 tests, the parent suite passed
+    27 tests, and the UI/MCP subset passed 56 tests. Physical LaunchPad build and
+    logic-analyzer acceptance remain the hardware verification step.</p>
+  <p>A live WebSocket/MCP-equivalent run of the 12-bit/4 MHz profile used a
+  288-tick producer period and a 250,000-count/s linear trajectory. PRU0
+  accepted coherent estimates with status zero and PRU1 published the dynamic
+  value in the mailbox. The in-app visual browser was unavailable for this
+  session, so the browser rendering itself remains a manual visual check.</p>
+
+  <h2>Manual simulator flow</h2>
+  <ol>
+    <li>Load the Generic SSI pair.</li>
+    <li>Select Timestamped producer and Apply atomically.</li>
+    <li>Configure a constant, linear, or triangle trajectory at 288 ticks.</li>
+    <li>Start publication, run the pair, and inspect mailbox and producer diagnostics.</li>
+    <li>Stop publication to verify stale hold-last behavior.</li>
+  </ol>
+
+  <footer><p>Engineering session report generated from the verified workspace state.</p></footer>
+</body>
+</html>

@@ -40,7 +40,7 @@ def make_paired_sim():
     emulator on pru0, wired exactly like Tasks 3/4's own paired tests. Loaded
     and hard_reset() *before* SSIRuntime is ever constructed on it -- see
     ssi_runtime.py's module docstring precondition."""
-    sim = Simulator(config_path="nonexistent.cfg")
+    sim = Simulator(config_path=str(ROOT / "config" / "memory_am243x.cfg"))
     assert sim.load("pru1", READER_SRC, include_paths=[str(SOURCE_DIR)]) == []
     assert sim.load("pru0", EMULATOR_SRC, include_paths=[str(SOURCE_DIR)]) == []
     sim.add_gpio_wire("pru1", READER_CLK_PIN, "pru0", EMULATOR_CLK_IN_PIN)
@@ -51,7 +51,7 @@ def make_paired_sim():
 
 def make_reader_only_sim():
     """A fresh Simulator with only the generic reader loaded, on pru1."""
-    sim = Simulator(config_path="nonexistent.cfg")
+    sim = Simulator(config_path=str(ROOT / "config" / "memory_am243x.cfg"))
     assert sim.load("pru1", READER_SRC, include_paths=[str(SOURCE_DIR)]) == []
     sim.hard_reset()
     return sim

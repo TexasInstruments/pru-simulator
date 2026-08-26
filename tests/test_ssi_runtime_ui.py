@@ -1,6 +1,7 @@
 """Tests for the browser-facing generic SSI runtime contract."""
 
 from pathlib import Path
+import traceback
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,6 +14,16 @@ from pru_io.ssi_runtime import SSIRuntime
 
 STATIC_DIR = Path(__file__).parents[1] / "ui" / "static"
 client = TestClient(srv.app)
+
+
+def test_normal_websocket_disconnect_is_not_reported_as_server_error(monkeypatch):
+    reported = []
+    monkeypatch.setattr(traceback, "print_exc", lambda: reported.append(True))
+
+    with client.websocket_connect("/ws"):
+        pass
+
+    assert reported == []
 
 
 @pytest.fixture
@@ -134,6 +145,15 @@ def test_generic_ssi_runtime_panel_exposes_load_configure_and_observe_controls()
         "ssi-runtime-wires",
         "ssi-runtime-mailbox",
         "ssi-runtime-trace",
+        "ssi-runtime-producer-mode",
+        "ssi-runtime-producer-period",
+        "ssi-runtime-producer-trajectory",
+        "ssi-runtime-producer-initial",
+        "ssi-runtime-producer-velocity",
+        "ssi-runtime-producer-start",
+        "ssi-runtime-producer-stop",
+        "ssi-runtime-producer-step",
+        "ssi-runtime-producer-diagnostics",
     ):
         assert f'id="{element_id}"' in html, element_id
 
@@ -143,6 +163,10 @@ def test_generic_ssi_runtime_panel_exposes_load_configure_and_observe_controls()
         "ssi_runtime_positions",
         "ssi_runtime_apply",
         "ssi_runtime_read",
+        "ssi_runtime_producer_configure",
+        "ssi_runtime_producer_start",
+        "ssi_runtime_producer_stop",
+        "ssi_runtime_producer_step",
     ):
         assert action in js, action
 
@@ -157,13 +181,55 @@ def test_generic_ssi_runtime_panel_exposes_load_configure_and_observe_controls()
     assert "abandonedRunRequestIds" in js
 
 
+def test_dashboard_timestamped_producer_controls_and_diagnostics(fresh_sim):
+    with client.websocket_connect("/ws") as ws:
+        _load_runtime_pair(ws)
+        ws.send_json({
+            "action": "ssi_runtime_apply",
+            "profile": "CUSTOM_LEGACY_12BIT_4MHZ",
+            "overrides": {
+                "producer_mode": abi.SSI_PRODUCER_MODE_TIMESTAMPED,
+                "producer_sample_age_limit_iep_ticks": 100_000,
+                "producer_prediction_horizon_limit_iep_ticks": 100_000,
+            },
+        })
+        applied = ws.receive_json()
+        assert applied["active"]["producer_mode"] == 1
+
+        ws.send_json({
+            "action": "ssi_runtime_producer_configure",
+            "trajectory": "constant",
+            "initial_position": "0x345",
+            "velocity_counts_per_second": 0,
+            "period_iep_ticks": 288,
+        })
+        configured = ws.receive_json()
+        assert configured["producer"]["trajectory"] == "constant"
+
+        ws.send_json({"action": "ssi_runtime_producer_start"})
+        started = ws.receive_json()
+        assert started["producer"]["running"] is True
+
+        for _ in range(400):
+            fresh_sim.step_paced("pru1", "pru0")
+
+        ws.send_json({"action": "ssi_runtime_read"})
+        state = ws.receive_json()
+        assert state["producer"]["published_count"] > 1
+        assert "last_request_timestamp_iep" in state["producer_diagnostics"]
+
+        ws.send_json({"action": "ssi_runtime_producer_stop"})
+        stopped = ws.receive_json()
+        assert stopped["producer"]["running"] is False
+
+
 def test_generic_ssi_panel_identifies_the_live_shared_memory_region():
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 
     assert 'value="0x00010200">SSI mailbox (global 0x00010200)</option>' in html
     assert 'id="ssi-runtime-memory-hint"' in html
     assert "PRU0/PRU1 DRAM are not written by this pair" in html
-    assert '/static/app.js?v=20260824-1' in html
+    assert '/static/app.js?v=20260825-1' in html
 
 
 def test_profile_catalog_is_safe_for_ui_and_contains_default_and_documented_profiles():

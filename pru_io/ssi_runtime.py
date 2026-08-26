@@ -27,8 +27,10 @@ on a `sim` with no PRU core loaded at all raises ``TimeoutError`` from inside
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal, ROUND_HALF_EVEN
 
 from pru_io import ssi_config_abi as abi
+from pru_io.ssi_position_producer import SSIPositionProducer
 
 
 # Real (non-header, non-handshake) config-block fields a Profile describes.
@@ -61,6 +63,10 @@ _REAL_CONFIG_FIELD_NAMES = (
     "sequence_hold_count",
     "fault_argument",
     "fault_repeat_count",
+    "producer_mode",
+    "producer_period_iep_ticks",
+    "producer_sample_age_limit_iep_ticks",
+    "producer_prediction_horizon_limit_iep_ticks",
 )
 
 # Sentinel for "no error field" (matches SSI_CONFIG_ABI's error_offset_bits
@@ -115,6 +121,14 @@ class Profile:
     sequence_hold_count: int = 1
     fault_argument: int = 0
     fault_repeat_count: int = 0
+    producer_mode: int = abi.SSI_PRODUCER_MODE_STATIC_SEQUENCE
+    producer_period_iep_ticks: int = abi.DEFAULT_PRODUCER_PERIOD_IEP_TICKS
+    producer_sample_age_limit_iep_ticks: int = (
+        abi.DEFAULT_PRODUCER_SAMPLE_AGE_LIMIT_IEP_TICKS
+    )
+    producer_prediction_horizon_limit_iep_ticks: int = (
+        abi.DEFAULT_PRODUCER_PREDICTION_HORIZON_LIMIT_IEP_TICKS
+    )
     max_clock_hz: int = 1_500_000
 
     def as_dict(self) -> dict[str, int]:
@@ -367,6 +381,10 @@ class SSIRuntime:
         self._active_profile: Profile | None = None
         self._staged_profile: Profile | None = None
         self._active_config: dict[str, int] | None = None
+        # The simulator-side producer is the same control-plane boundary that
+        # the R5 firmware will expose.  It is deliberately constructed in
+        # static mode; Apply never starts it implicitly.
+        self.producer = SSIPositionProducer(sim)
         # Gray-excess selects a product-specific window in the full Gray
         # code. The fixed shared ABI carries the wire frame, while this
         # host-side metadata keeps packing and semantic readback paired.
@@ -559,6 +577,25 @@ class SSIRuntime:
             if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= maximum:
                 raise ValueError(f"{name}={value!r} is outside the supported range 0..{maximum}")
 
+        producer_mode = fields.get(
+            "producer_mode", abi.SSI_PRODUCER_MODE_STATIC_SEQUENCE
+        )
+        if producer_mode not in (
+            abi.SSI_PRODUCER_MODE_STATIC_SEQUENCE,
+            abi.SSI_PRODUCER_MODE_TIMESTAMPED,
+        ):
+            raise ValueError(f"producer_mode={producer_mode!r} is unsupported")
+        for name in (
+            "producer_period_iep_ticks",
+            "producer_sample_age_limit_iep_ticks",
+            "producer_prediction_horizon_limit_iep_ticks",
+        ):
+            value = fields.get(name, 0)
+            if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 0xFFFF_FFFF:
+                raise ValueError(f"{name} must be an unsigned 32-bit integer")
+        if fields["producer_period_iep_ticks"] == 0:
+            raise ValueError("producer_period_iep_ticks must be non-zero")
+
         if fields["formation_mode"] == 1 and tp_pause <= formation_pause:
             raise ValueError(
                 "tp_pause_outer_iters must be greater than "
@@ -636,6 +673,19 @@ class SSIRuntime:
         self._active_gray_excess_offset = getattr(
             self, "_gray_excess_offset", None
         )
+        producer = getattr(self, "producer", None)
+        if producer is not None:
+            producer.configure(
+                mode=fields["producer_mode"],
+                period_iep_ticks=fields["producer_period_iep_ticks"],
+                sample_age_limit_iep_ticks=fields[
+                    "producer_sample_age_limit_iep_ticks"
+                ],
+                prediction_horizon_limit_iep_ticks=fields[
+                    "producer_prediction_horizon_limit_iep_ticks"
+                ],
+                generation=new_gen,
+            )
 
     def stage_and_apply(
         self,
@@ -902,6 +952,154 @@ class SSIRuntime:
             records = records[:limit]
 
         return records
+
+    def read_producer_diagnostics(self) -> dict[str, int]:
+        """Read the fixed Task D producer-estimator diagnostics block."""
+        data = self.sim.memory_read(
+            abi.PRODUCER_SAMPLE_DIAGNOSTICS_BASE,
+            abi.PRODUCER_SAMPLE_DIAGNOSTICS_SIZE,
+        )
+
+        def u32(offset: int) -> int:
+            return int.from_bytes(data[offset:offset + 4], "little")
+
+        def u64(offset: int) -> int:
+            return int.from_bytes(data[offset:offset + 8], "little")
+
+        raw_position = u64(
+            abi.PRODUCER_SAMPLE_DIAGNOSTICS_LAST_ESTIMATE_POSITION_Q31_32_OFF
+        )
+        if raw_position & (1 << 63):
+            raw_position -= 1 << 64
+        return {
+            "latest_write_seq": u64(
+                abi.PRODUCER_SAMPLE_DIAGNOSTICS_LATEST_WRITE_SEQ_OFF
+            ),
+            "accepted_count": u32(
+                abi.PRODUCER_SAMPLE_DIAGNOSTICS_ACCEPTED_COUNT_OFF
+            ),
+            "coherence_retry_count": u32(
+                abi.PRODUCER_SAMPLE_DIAGNOSTICS_COHERENCE_RETRY_COUNT_OFF
+            ),
+            "stale_sample_count": u32(
+                abi.PRODUCER_SAMPLE_DIAGNOSTICS_STALE_SAMPLE_COUNT_OFF
+            ),
+            "ring_overrun_count": u32(
+                abi.PRODUCER_SAMPLE_DIAGNOSTICS_RING_OVERRUN_COUNT_OFF
+            ),
+            "last_request_timestamp_iep": u64(
+                abi.PRODUCER_SAMPLE_DIAGNOSTICS_LAST_REQUEST_TIMESTAMP_IEP_OFF
+            ),
+            "last_estimate_position_q31_32": raw_position,
+            "status": u32(abi.PRODUCER_SAMPLE_DIAGNOSTICS_STATUS_OFF),
+            "generation": u32(abi.PRODUCER_SAMPLE_DIAGNOSTICS_GENERATION_OFF),
+            "head_seq": u32(abi.PRODUCER_SAMPLE_DIAGNOSTICS_HEAD_SEQ_OFF),
+            "latest_slot_index": u32(
+                abi.PRODUCER_SAMPLE_DIAGNOSTICS_LATEST_SLOT_INDEX_OFF
+            ),
+            "latest_stable_sample_seq": u64(
+                abi.PRODUCER_SAMPLE_DIAGNOSTICS_LATEST_STABLE_SAMPLE_SEQ_OFF
+            ),
+        }
+
+    def start_producer(self) -> bool:
+        """Explicitly start the timestamped producer after Apply."""
+        return self.producer.start()
+
+    def stop_producer(self) -> None:
+        """Stop timestamped publication without changing the active SSI config."""
+        self.producer.stop()
+
+    def step_producer(self, timestamp_iep: int | None = None) -> dict:
+        """Publish one producer sample and return its JSON-safe fields."""
+        sample = self.producer.step(timestamp_iep)
+        return {
+            "write_seq": sample.write_seq,
+            "timestamp_iep": sample.timestamp_iep,
+            "position_q31_32": sample.position_q31_32,
+            "generation": sample.generation,
+            "flags": sample.flags,
+        }
+
+    def configure_producer_engineering(
+        self,
+        *,
+        trajectory: str | None = None,
+        initial_position: int | None = None,
+        velocity_counts_per_second: int | float | str | None = None,
+        triangle_low: int | None = None,
+        triangle_high: int | None = None,
+        period_iep_ticks: int | None = None,
+    ) -> dict:
+        """Configure the simulator-side producer in encoder-count units.
+
+        Shared-memory samples remain signed Q31.32 and velocities remain
+        Q31.32 counts per 300-MHz IEP tick.  This control-plane helper keeps
+        those representation details out of UI and MCP clients.
+        """
+        q_one = 1 << abi.PRODUCER_SAMPLE_Q_FRACTION_BITS
+        kwargs = {}
+        if trajectory is not None:
+            kwargs["trajectory"] = trajectory
+        if initial_position is not None:
+            kwargs["initial_position_q31_32"] = int(initial_position) * q_one
+        if velocity_counts_per_second is not None:
+            scaled = (
+                Decimal(str(velocity_counts_per_second))
+                * Decimal(q_one)
+                / Decimal(abi.IEP_TICK_HZ)
+            )
+            kwargs["velocity_q31_32_per_iep_tick"] = int(
+                scaled.to_integral_value(rounding=ROUND_HALF_EVEN)
+            )
+        if triangle_low is not None:
+            kwargs["triangle_low_q31_32"] = int(triangle_low) * q_one
+        if triangle_high is not None:
+            kwargs["triangle_high_q31_32"] = int(triangle_high) * q_one
+        if period_iep_ticks is not None:
+            kwargs["period_iep_ticks"] = int(period_iep_ticks)
+        # The hardware producer receives discrete encoder counts from the R5.
+        # Keep UI/MCP-generated trajectories on that same integer-count
+        # contract even when their engineering velocity is fractional per
+        # 960-ns publication interval.
+        kwargs["quantize_generated_positions"] = True
+        self.producer.configure(**kwargs)
+        return self.producer_state()
+
+    def producer_state(self) -> dict:
+        """Return control state and counters for UI/MCP diagnostics."""
+        config = self.producer.configuration()
+        q_one = 1 << abi.PRODUCER_SAMPLE_Q_FRACTION_BITS
+        velocity_per_second = (
+            Decimal(config.velocity_q31_32_per_iep_tick)
+            * Decimal(abi.IEP_TICK_HZ)
+            / Decimal(q_one)
+        )
+        error = self.producer.error_state
+        return {
+            "running": self.producer.running,
+            "mode": config.mode,
+            "period_iep_ticks": config.period_iep_ticks,
+            "period_ns": config.period_iep_ticks * 1_000_000_000 // abi.IEP_TICK_HZ,
+            "sample_age_limit_iep_ticks": config.sample_age_limit_iep_ticks,
+            "prediction_horizon_limit_iep_ticks": (
+                config.prediction_horizon_limit_iep_ticks
+            ),
+            "trajectory": config.trajectory,
+            "initial_position": config.initial_position_q31_32 / q_one,
+            "velocity_counts_per_second": float(velocity_per_second),
+            "triangle_low": config.triangle_low_q31_32 / q_one,
+            "triangle_high": config.triangle_high_q31_32 / q_one,
+            "integer_samples": config.quantize_generated_positions,
+            "generation": self.producer.generation,
+            "published_count": self.producer.published_count,
+            "skipped_overwritten_count": self.producer.skipped_overwritten_count,
+            "error": None if error is None else {
+                "type": error.error_type,
+                "message": error.message,
+                "timestamp_iep": error.timestamp_iep,
+            },
+        }
 
     # ------------------------------------------------------------------
     # Semantic position encoding/packing

@@ -5,13 +5,18 @@ These guard the invariant that `schema/ssi_config_abi.json` is the single
 source of truth for `source/ssi_config_abi.inc` and `pru_io/ssi_config_abi.py`
 — a schema edit that forgets to re-run `tools/gen_ssi_abi.py` must fail here.
 """
+import json
 import struct
 from pathlib import Path
 
+import pytest
+
 from tools.gen_ssi_abi import (
+    C_PATH,
     SCHEMA_PATH,
     INC_PATH,
     PY_PATH,
+    generate_c,
     load_schema,
     generate_inc,
     generate_python,
@@ -26,12 +31,76 @@ def test_generated_files_match_schema():
 
     expected_inc = generate_inc(schema)
     expected_py = generate_python(schema)
+    expected_c = generate_c(schema)
 
     actual_inc = Path(INC_PATH).read_text(encoding="utf-8")
     actual_py = Path(PY_PATH).read_text(encoding="utf-8")
+    actual_c = Path(C_PATH).read_text(encoding="utf-8")
 
     assert actual_inc == expected_inc
     assert actual_py == expected_py
+    assert actual_c == expected_c
+
+
+def test_timestamped_sample_ring_layout_is_generated_from_schema():
+    schema = load_schema(SCHEMA_PATH)
+    sample = schema["producer_sample"]
+
+    assert sample["base"] == 0x6400
+    assert sample["count"] == 256
+    assert sample["stride"] == 32
+    assert [field["name"] for field in sample["fields"]] == [
+        "write_seq",
+        "timestamp_iep",
+        "position_q31_32",
+        "generation",
+        "flags",
+    ]
+
+
+def test_pru_assembly_snapshot_contains_generated_mode_and_validity_definitions():
+    generated = Path(INC_PATH).read_text(encoding="utf-8")
+    assert "SSI_PRODUCER_MODE_STATIC_SEQUENCE .set 0" in generated
+    assert "SSI_PRODUCER_MODE_TIMESTAMPED .set 1" in generated
+    assert "SSI_PRODUCER_SAMPLE_FLAG_VALID .set 1" in generated
+
+
+def test_all_shared_memory_sections_are_non_overlapping_and_in_64kib():
+    schema = load_schema(SCHEMA_PATH)
+    intervals = []
+    for name, section in schema.items():
+        if name.startswith("_") or "base" not in section:
+            continue
+        coverage = section.get("stride", max(
+            field["offset"] + field["size"] for field in section["fields"]
+        ))
+        coverage *= section.get("count", 1)
+        intervals.append((section["base"], section["base"] + coverage, name))
+
+    intervals.sort()
+    assert intervals[-1][1] <= 0x10000
+    for previous, current in zip(intervals, intervals[1:]):
+        assert previous[1] <= current[0]
+
+
+def test_generator_rejects_global_section_overlap(tmp_path):
+    raw = json.loads(Path(SCHEMA_PATH).read_text(encoding="utf-8"))
+    raw["producer_sample"]["base"] = "0x6300"
+    path = tmp_path / "overlap.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="overlap"):
+        load_schema(path)
+
+
+def test_generator_rejects_section_past_shared_memory_end(tmp_path):
+    raw = json.loads(Path(SCHEMA_PATH).read_text(encoding="utf-8"))
+    raw["producer_sample_diagnostics"]["base"] = "0xFFF0"
+    path = tmp_path / "out-of-bounds.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="0x10000"):
+        load_schema(path)
 
 
 def test_config_round_trip():

@@ -62,7 +62,7 @@ FAST_TEST_PROFILE = Profile(
 
 def make_reader_only_sim():
     """A fresh Simulator with only the generic reader loaded, on pru1."""
-    sim = Simulator(config_path="nonexistent.cfg")
+    sim = Simulator(config_path=str(ROOT / "config" / "memory_am243x.cfg"))
     assert sim.load("pru1", READER_SRC, include_paths=[str(SOURCE_DIR)]) == []
     sim.hard_reset()
     return sim

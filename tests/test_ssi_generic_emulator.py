@@ -43,7 +43,7 @@ def test_synchronous_formation_gate_is_part_of_the_emulator_idle_path():
 
 def make_sim():
     """A fresh Simulator with only the generic emulator loaded on pru0."""
-    sim = Simulator(config_path="nonexistent.cfg")
+    sim = Simulator(config_path=str(ROOT / "config" / "memory_am243x.cfg"))
     errors = sim.load("pru0", EMULATOR_SRC, include_paths=[str(SOURCE_DIR)])
     assert errors == []
     sim.hard_reset()
@@ -145,7 +145,7 @@ def run_single_slot(sim, frame_bits, width=12, **fault_fields):
 
 def test_normal_transmission_matches_reader_capture():
     """A plain (no-fault) frame decodes correctly through the fixed 4 MHz reader."""
-    sim = Simulator(config_path="nonexistent.cfg")
+    sim = Simulator(config_path=str(ROOT / "config" / "memory_am243x.cfg"))
     assert sim.load("pru1", READER_SRC) == []
     assert sim.load("pru0", EMULATOR_SRC, include_paths=[str(SOURCE_DIR)]) == []
     sim.add_gpio_wire("pru1", 0, "pru0", CLK_PIN)
@@ -363,7 +363,7 @@ def test_generation_change_during_idle_gap_after_debounce_does_not_deadlock():
     pru1_ack_generation must reach the new generation, AND a real frame must
     complete under the new configuration afterward.
     """
-    sim = Simulator(config_path="nonexistent.cfg")
+    sim = Simulator(config_path=str(ROOT / "config" / "memory_am243x.cfg"))
     assert sim.load("pru1", GENERIC_READER_SRC, include_paths=[str(SOURCE_DIR)]) == []
     assert sim.load("pru0", EMULATOR_SRC, include_paths=[str(SOURCE_DIR)]) == []
     sim.add_gpio_wire("pru1", 0, "pru0", CLK_PIN)     # reader CLK out -> this program's CLK in

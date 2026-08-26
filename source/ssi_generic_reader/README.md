@@ -31,6 +31,10 @@ untouched and still works exactly as before.
 * **Topology:** when `topology == 1` (reader-only), this program skips
   waiting for `pru0_ack_generation` entirely — it can run with no PRU0 core
   loaded at all.
+* **IEP timebase:** PRU1 owns startup ordering. It holds the SSI clock high,
+  enables `IEPCLK.OCP_EN` through `c4 + 0x30`, then enables IEP0 through `c26`
+  with increment 1 (`0x11`). This gives both paired programs a shared 300 MHz
+  tick source; PRU0 only reads the latched counter during timestamped mode.
 
 See the `.asm` file's own header comment for the full register map, including
 which registers are reused across a frame's phases and why.
@@ -119,6 +123,7 @@ and reader-only-ack tests, and by `sim.ssi_inject`-driven single-core tests.
 
 ```bash
 python -m pytest tests/test_ssi_generic_reader.py -v
+python -m pytest -q tests/test_ssi_task_d.py
 ```
 
 ### Runtime/profile layer
@@ -129,4 +134,7 @@ The config block this program reads is generated from
 named encoder profiles, staged-then-validated configuration, atomic apply,
 frame packing, mailbox/trace read helpers, and position decode. See
 `docs/superpowers/specs/2026-08-19-generic-runtime-ssi-design.md` for the
-full memory map and design rationale.
+full existing memory map and design rationale. The timestamped producer
+sample ABI is consumed by the PRU0 estimator; this reader only initializes the
+shared IEP timebase and generates the SSI request clock. Producer and paired
+estimator coverage is in `tests/test_ssi_task_d.py`.

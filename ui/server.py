@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import base64
 
-from fastapi import FastAPI, Request, WebSocket
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from simulator import Simulator
@@ -95,6 +95,18 @@ def _parse_ssi_frame_values(values) -> list[int]:
 def _parse_ssi_position_values(values) -> list[int]:
     """Parse natural positions for semantic frame packing."""
     return _parse_ssi_frame_values(values)
+
+
+def _parse_ssi_count(value, name: str) -> int:
+    """Parse one signed encoder count from an integer or 0x-prefixed string."""
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer count")
+    if isinstance(value, int):
+        return value
+    try:
+        return int(str(value).strip(), 0)
+    except (TypeError, ValueError):
+        raise ValueError(f"invalid {name}: {value!r}") from None
 
 
 def _effective_ssi_clock_hz(fields: dict) -> int:
@@ -229,6 +241,8 @@ def _ssi_runtime_state() -> dict:
         "trace": trace,
         "trace_layout": _ssi_trace_layout(),
         "trace_display": _ssi_trace_display(trace),
+        "producer": _ssi_runtime.producer_state(),
+        "producer_diagnostics": _ssi_runtime.read_producer_diagnostics(),
         "wires": sim.list_gpio_wires(),
         "status": "Generic PRU0 emulator / PRU1 reader loaded",
     }
@@ -649,6 +663,67 @@ async def websocket_endpoint(websocket: WebSocket):
                     "type": "ssi_runtime_state",
                     **_ssi_runtime_state(),
                 })
+            elif action == "ssi_runtime_producer_configure":
+                if _ssi_runtime is None:
+                    await websocket.send_json({
+                        "type": "ssi_runtime_error",
+                        "error": "Load the generic SSI PRU pair first",
+                    })
+                    continue
+                try:
+                    _ssi_runtime.configure_producer_engineering(
+                        trajectory=msg.get("trajectory", "constant"),
+                        initial_position=_parse_ssi_count(
+                            msg.get("initial_position", 0), "initial_position"
+                        ),
+                        velocity_counts_per_second=msg.get(
+                            "velocity_counts_per_second", 0
+                        ),
+                        triangle_low=_parse_ssi_count(
+                            msg.get("triangle_low", 0), "triangle_low"
+                        ),
+                        triangle_high=_parse_ssi_count(
+                            msg.get("triangle_high", 4095), "triangle_high"
+                        ),
+                        period_iep_ticks=int(msg.get("period_iep_ticks", 288)),
+                    )
+                    await websocket.send_json({
+                        "type": "ssi_runtime_state",
+                        **_ssi_runtime_state(),
+                    })
+                except (ArithmeticError, TypeError, ValueError) as exc:
+                    await websocket.send_json({
+                        "type": "ssi_runtime_error", "error": str(exc)
+                    })
+            elif action in {
+                "ssi_runtime_producer_start",
+                "ssi_runtime_producer_stop",
+                "ssi_runtime_producer_step",
+            }:
+                if _ssi_runtime is None:
+                    await websocket.send_json({
+                        "type": "ssi_runtime_error",
+                        "error": "Load the generic SSI PRU pair first",
+                    })
+                    continue
+                try:
+                    if action == "ssi_runtime_producer_start":
+                        if not _ssi_runtime.start_producer():
+                            raise ValueError(
+                                "Apply timestamped producer mode before Start"
+                            )
+                    elif action == "ssi_runtime_producer_stop":
+                        _ssi_runtime.stop_producer()
+                    else:
+                        _ssi_runtime.step_producer()
+                    await websocket.send_json({
+                        "type": "ssi_runtime_state",
+                        **_ssi_runtime_state(),
+                    })
+                except (ArithmeticError, RuntimeError, ValueError) as exc:
+                    await websocket.send_json({
+                        "type": "ssi_runtime_error", "error": str(exc)
+                    })
             elif action == "load":
                 _ssi_runtime = None
                 _history[core].clear()
@@ -1067,7 +1142,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     "clk_pin": clk_pin,
                     "data_pin": data_pin,
                 }))
-    except Exception as e:
+    except WebSocketDisconnect:
+        pass
+    except Exception:
         import traceback
         traceback.print_exc()
 
