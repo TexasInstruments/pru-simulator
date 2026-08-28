@@ -304,11 +304,32 @@ class TestClockPeriods:
         # 250 MHz / 2 = 125 MHz → 8 ns
         assert ch.tx_clock_period_ns() == pytest.approx(8.0)
 
-    def test_frac_divider(self):
+    def test_frac_divider_is_a_half_step_not_a_doubling(self):
+        """div16fr: FRAC adds 0.5 to the divider (TRM 6.4.5.2.2.3.6.3.1).
+
+        Table 6-82 lists a fractional divider of 1.5, which a (frac+1)
+        multiplier cannot express at all.
+        """
         r = mk_regs()
-        set_txcfg(r, clk_sel=1, div=0, frac=1)  # N=2 via frac
+        set_txcfg(r, clk_sel=1, div=0, frac=1)          # N = 1 + 0.5 = 1.5
         ch = PerifChannel(0, r, core_clock_mhz=200.0)
-        assert ch.tx_clock_period_ns() == pytest.approx(10.0)  # 100 MHz
+        assert ch.tx_clock_period_ns() == pytest.approx(1000.0 / (200.0 / 1.5))
+
+    def test_oversample_ratio_matches_sample_size_with_ti_driver_divisors(self):
+        """The TRM invariant, using the divisors bissc_drv.c actually computes.
+
+        "The OS clock rate divided by the 1x clock rate must equal
+        PRU0_ED_RX_SAMPLE_SIZE." For 200 MHz / 2 MHz the driver computes
+        rx_div = 11.5 and tx_div = 99, which must land on exactly 8x. A
+        (frac+1) doubling gives 4x and dropping the fraction gives 8.33x -
+        both slip the receiver off the bit cell.
+        """
+        r = mk_regs()
+        set_txcfg(r, clk_sel=1, div=99, frac=0)
+        set_rxcfg(r, clk_sel=1, div=11, frac=1, sample_size=7)
+        ch = PerifChannel(0, r, core_clock_mhz=200.0)
+        ratio = ch.tx_clock_period_ns() / ch.rx_clock_period_ns()
+        assert ratio == pytest.approx(8.0)
 
 
 # ---------------------------------------------------------------------------
