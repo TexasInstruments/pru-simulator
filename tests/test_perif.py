@@ -506,3 +506,63 @@ class TestHardwareReset:
         assert p.registers.get_tx_wire_delay(1) == 100
         assert p.registers.get_tx_frame_size(1) == 6
         assert p.registers.get_rx_frame_size(1) == 4
+
+
+# ---------------------------------------------------------------------------
+class TestClockOutputRate:
+    """PERIF<m>_CLK must run at the PROGRAMMED frequency, not half of it.
+
+    Spec 4.4 defines the clock frequency as source/((frac+1)*(div_factor+1)),
+    so `tx_clock_period_ns()` is the period of one full cycle and the pin has
+    to toggle twice within it. Toggling once per period halves the output rate
+    AND stretches every bit cell to two clock periods, which a receiver then
+    oversamples into two FIFO bytes per wire bit.
+    """
+
+    def _run(self, cycles):
+        r = mk_regs()
+        set_txcfg(r, clk_sel=1, div=9, frac=0)          # N = 10
+        set_ch_cfg0(r, 0, tx_frame=0)                   # continuous
+        ch = PerifChannel(0, r, core_clock_mhz=200.0)
+        for _ in range(4):
+            ch.push_tx(0xAA)
+        ch.tx_go(0.0)
+        period = ch.tx_clock_period_ns()
+
+        edges, prev, t = 0, ch.tx_clk_pin, 0.0
+        for _ in range(cycles * 2):
+            t += period / 2.0
+            ch.advance(t)
+            if ch.tx_clk_pin != prev:
+                if prev == 0:
+                    edges += 1                          # rising edge
+                prev = ch.tx_clk_pin
+        return ch, period, edges
+
+    def test_one_full_cycle_per_clock_period(self):
+        cycles = 16
+        ch, period, rising = self._run(cycles)
+        # 4 bytes = 32 bits of data, so 16 cycles is well inside the frame.
+        assert rising >= cycles - 1, (
+            f"only {rising} rising edges in {cycles} clock periods - "
+            "the clock is running at half the programmed rate")
+
+    def test_one_data_bit_per_full_cycle(self):
+        """The bit cell must be one clock period, not two."""
+        r = mk_regs()
+        set_txcfg(r, clk_sel=1, div=9, frac=0)
+        set_ch_cfg0(r, 0, tx_frame=0)
+        ch = PerifChannel(0, r, core_clock_mhz=200.0)
+        ch.push_tx(0b10101010)
+        ch.push_tx(0b11001100)
+        ch.tx_go(0.0)
+        period = ch.tx_clock_period_ns()
+
+        seen, t = [ch.tx_data_pin], 0.0
+        for _ in range(8):
+            t += period
+            ch.advance(t)
+            seen.append(ch.tx_data_pin)
+        # 8 clock periods must have walked 8 data bits, i.e. all of byte 0
+        # and onto byte 1 - not half of byte 0.
+        assert seen[:8] == [1, 0, 1, 0, 1, 0, 1, 0]

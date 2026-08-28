@@ -60,6 +60,7 @@ class PerifChannel:
         self._frame_bits: list[int] = []   # bit sequence still to send (MSB-first)
         self._bit_index = 0
         self._phase_end_ns = 0.0           # end of the current wire/tst phase
+        self._tx_half_toggles = 0          # half-period toggles since transmit
         self._go_ns = 0.0
 
         # Continuous mode (tx_frame_size == 0): live byte-at-a-time FIFO
@@ -191,6 +192,7 @@ class PerifChannel:
     def _enter_transmit(self, now_ns: float) -> None:
         self.fsm = TRANSMIT
         self._phase_end_ns = now_ns
+        self._tx_half_toggles = 0
         self.tx_out_en = 1
         if self.regs.get_tx_frame_size(self.index) == 0:
             self._cont_bit_idx = 0
@@ -293,13 +295,26 @@ class PerifChannel:
         """
         if self.fsm != TRANSMIT:
             return self.tx_data_pin
+        self._tx_advance_data()
+        if self.fsm == TRANSMIT:
+            self.tx_clk_pin ^= 1
+        return self.tx_data_pin
+
+    def _tx_advance_data(self) -> int:
+        """Advance the serializer by one DATA bit, without touching the clock.
+
+        Split out from `tx_bit_edge` so the ns-timeline path can drive the
+        clock at its own (half-period) granularity while still emitting
+        exactly one data bit per full clock cycle.
+        """
+        if self.fsm != TRANSMIT:
+            return self.tx_data_pin
         if self.regs.get_tx_frame_size(self.index) == 0:
             return self._tx_bit_edge_continuous()
         # bit 0 is already on the wire (set on entering TRANSMIT); advance first.
         self._bit_index += 1
         if self._bit_index < len(self._frame_bits):
             self.tx_data_pin = self._frame_bits[self._bit_index]
-            self.tx_clk_pin ^= 1
         else:
             self._finish_frame()
         return self.tx_data_pin
@@ -308,17 +323,18 @@ class PerifChannel:
         """Continuous-mode bit edge: shift the current byte, then pop the
         next one from the (live) FIFO once 8 bits are out. Ends the frame
         if the FIFO has run dry (spec: software must refill by half-empty)."""
+        # Data only - the clock is toggled by the caller (`tx_bit_edge` for the
+        # edge-level API, `advance()` for the ns timeline), so that one data
+        # bit corresponds to exactly one full clock cycle in both paths.
         self._cont_bit_idx += 1
         if self._cont_bit_idx < 8:
             self.tx_data_pin = (self._cont_byte >> (7 - self._cont_bit_idx)) & 1
-            self.tx_clk_pin ^= 1
         else:
             nxt = self._pop_tx_byte()
             if nxt is not None:
                 self._cont_byte = nxt
                 self._cont_bit_idx = 0
                 self.tx_data_pin = (nxt >> 7) & 1
-                self.tx_clk_pin ^= 1
             else:
                 self._finish_frame()
         return self.tx_data_pin
@@ -409,11 +425,20 @@ class PerifChannel:
             self._enter_transmit(now_ns)
 
         # --- TX transmit: emit bits at the TX sample-clock rate ---
+        # PERIF<m>_CLK frequency is source/((frac+1)*(div_factor+1)) (spec 4.4),
+        # so a full cycle takes tx_clock_period_ns() and the pin must toggle
+        # TWICE in that time. Toggling once per period emits a square wave at
+        # half the programmed rate and stretches every bit cell to two clock
+        # periods, which the receiver then oversamples into two FIFO bytes.
+        # The data bit still advances once per full cycle.
         if self.fsm == TRANSMIT:
-            period = self.tx_clock_period_ns()
-            while self.fsm == TRANSMIT and now_ns >= self._phase_end_ns + period:
-                self._phase_end_ns += period
-                self.tx_bit_edge()
+            half = self.tx_clock_period_ns() / 2.0
+            while self.fsm == TRANSMIT and now_ns >= self._phase_end_ns + half:
+                self._phase_end_ns += half
+                self._tx_half_toggles += 1
+                self.tx_clk_pin ^= 1
+                if self._tx_half_toggles % 2 == 0:
+                    self._tx_advance_data()      # one data bit per full cycle
                 self._record_line(self._phase_end_ns)
 
         # --- RX: sample the input line at the RX oversample-clock rate ---
