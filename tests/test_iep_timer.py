@@ -1,0 +1,217 @@
+"""IEP timer: counter, compare, and the TRM bitfield semantics.
+
+Every expectation here is taken from the AM243x TRM (SPRUIM2J §6.4.13), not
+from another simulator's behaviour.
+"""
+
+import pytest
+
+from perif.iep import (
+    IepTimer,
+    GLOBAL_CFG,
+    COUNT_REG0,
+    COUNT_REG1,
+    CMP_CFG,
+    CMP_STATUS,
+    CMP0_REG0,
+)
+
+
+def w32(iep, off, val):
+    iep.write(off, val.to_bytes(4, "little"))
+
+
+def r32(iep, off):
+    return int.from_bytes(iep.read(off, 4), "little")
+
+
+@pytest.fixture
+def iep():
+    return IepTimer()
+
+
+# --- counter ---------------------------------------------------------------
+
+def test_counter_does_not_run_until_cnt_enable(iep):
+    """IEP_GLOBAL_CFG_REG[0] CNT_ENABLE gates the counter."""
+    w32(iep, GLOBAL_CFG, 0x10)          # DEFAULT_INC=1, CNT_ENABLE=0
+    for _ in range(10):
+        iep.tick()
+    assert r32(iep, COUNT_REG0) == 0
+
+    w32(iep, GLOBAL_CFG, 0x11)          # DEFAULT_INC=1, CNT_ENABLE=1
+    for _ in range(10):
+        iep.tick()
+    assert r32(iep, COUNT_REG0) == 10
+
+
+def test_default_inc_is_the_step_size(iep):
+    """IEP_GLOBAL_CFG_REG[7:4] DEFAULT_INC, not a hardcoded +1."""
+    w32(iep, GLOBAL_CFG, (5 << 4) | 1)
+    for _ in range(4):
+        iep.tick()
+    assert r32(iep, COUNT_REG0) == 20
+
+
+def test_default_inc_zero_does_not_advance(iep):
+    w32(iep, GLOBAL_CFG, 0x01)           # CNT_ENABLE=1, DEFAULT_INC=0
+    for _ in range(8):
+        iep.tick()
+    assert r32(iep, COUNT_REG0) == 0
+
+
+def test_counter_is_64_bit_across_the_register_pair(iep):
+    w32(iep, GLOBAL_CFG, 0x11)
+    w32(iep, COUNT_REG0, 0xFFFFFFFE)
+    w32(iep, COUNT_REG1, 0x00000007)
+    iep.tick()
+    iep.tick()
+    assert r32(iep, COUNT_REG0) == 0
+    assert r32(iep, COUNT_REG1) == 8
+
+
+# --- compare ---------------------------------------------------------------
+
+def test_cmp_en_starts_at_bit_1(iep):
+    """IEP_CMP_CFG_REG[16:1] CMP_EN - bit 1 maps to CMP0, bit 0 is RST_CNT_EN."""
+    w32(iep, GLOBAL_CFG, 0x11)
+    w32(iep, CMP0_REG0, 5)
+
+    w32(iep, CMP_CFG, 0x1)               # RST_CNT_EN only, CMP0 NOT enabled
+    for _ in range(8):
+        iep.tick()
+    assert r32(iep, CMP_STATUS) == 0, "CMP0 fired with CMP_EN clear"
+
+    iep.reset()
+    w32(iep, GLOBAL_CFG, 0x11)
+    w32(iep, CMP0_REG0, 5)
+    w32(iep, CMP_CFG, 0x2)               # CMP_EN[0] set, RST_CNT_EN clear
+    for _ in range(8):
+        iep.tick()
+    assert r32(iep, CMP_STATUS) & 0x1, "CMP0 did not fire with CMP_EN set"
+
+
+def test_cmp0_rst_cnt_en_controls_auto_reset(iep):
+    """Auto-reset is configuration, not implicit on a CMP0 hit."""
+    # enabled, no reset -> counter runs past the compare
+    w32(iep, GLOBAL_CFG, 0x11)
+    w32(iep, CMP0_REG0, 5)
+    w32(iep, CMP_CFG, 0x2)
+    for _ in range(8):
+        iep.tick()
+    assert r32(iep, COUNT_REG0) == 8
+
+    # enabled, with reset -> counter wraps at the compare
+    iep.reset()
+    w32(iep, GLOBAL_CFG, 0x11)
+    w32(iep, CMP0_REG0, 5)
+    w32(iep, CMP_CFG, 0x3)               # RST_CNT_EN | CMP_EN[0]
+    for _ in range(8):
+        iep.tick()
+    assert r32(iep, COUNT_REG0) == 3      # 1..5 -> 0, then 1,2,3
+
+
+def test_cmp_status_is_write_one_to_clear(iep):
+    """IEP_CMP_STATUS_REG: 16 status bits, write 1h to clear."""
+    w32(iep, GLOBAL_CFG, 0x11)
+    w32(iep, CMP0_REG0, 2)
+    w32(iep, CMP_CFG, 0x2)
+    iep.tick()
+    iep.tick()
+    assert r32(iep, CMP_STATUS) & 0x1
+
+    w32(iep, CMP_STATUS, 0x0)             # writing 0 must NOT clear
+    assert r32(iep, CMP_STATUS) & 0x1
+    w32(iep, CMP_STATUS, 0x1)             # writing 1 clears
+    assert r32(iep, CMP_STATUS) & 0x1 == 0
+
+
+def test_compare_registers_are_64_bit_pairs(iep):
+    """"16x 64-bit compare registers: IEP_CMPj_REG0/IEP_CMPj_REG1".
+
+    So 0x4C is the UPPER half of CMP0, and CMP1_REG0 is at 0x50. A model that
+    treats 0x4C as CMP1 would let this test's CMP1 write land in CMP0's high
+    word - and would then never match.
+    """
+    w32(iep, CMP0_REG0 + 4, 0xDEADBEEF)   # CMP0_REG1
+    assert iep.compare[0] == 0xDEADBEEF << 32
+    assert iep.compare[1] == 0
+
+    w32(iep, CMP0_REG0 + 8, 0x1234)       # CMP1_REG0
+    assert iep.compare[1] == 0x1234
+    assert iep.compare[0] == 0xDEADBEEF << 32
+
+
+def test_higher_compares_set_their_own_status_bit(iep):
+    w32(iep, GLOBAL_CFG, 0x11)
+    w32(iep, CMP0_REG0 + 8 * 3, 4)        # CMP3
+    w32(iep, CMP_CFG, 1 << 4)             # CMP_EN[3] -> bit 4
+    for _ in range(6):
+        iep.tick()
+    assert r32(iep, CMP_STATUS) == 1 << 3
+
+
+def test_unimplemented_offsets_do_not_fault(iep):
+    w32(iep, 0xF0, 0x1234)                # capture region, not modelled
+    assert r32(iep, 0xF0) == 0
+
+
+# --- integration: firmware polling the IEP through the constant table -------
+
+class TestIepThroughFirmware:
+    """The acceptance case: firmware that polls IEP_COUNT_REG0 must terminate.
+
+    This is the pattern every ICSSG timing block uses - set CMP0 to the period,
+    enable the counter, then spin on the count. Before the IEP existed in this
+    simulator the LBCO returned a constant and the spin never ended.
+    """
+
+    def _sim(self):
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from simulator import Simulator
+        sim = Simulator(config_path="nonexistent.cfg")
+        sim.constant_table.set(26, 0x0002E000)
+        return sim
+
+    def test_poll_on_count_terminates(self):
+        sim = self._sim()
+        # CNT_ENABLE | DEFAULT_INC=1, then spin until COUNT reaches 20.
+        errors = sim.load("pru0", "\n".join([
+            "ldi32 r1, 0x11",
+            "sbco &r1, c26, 0x00, 4",
+            "wait:",
+            "lbco &r2, c26, 0x0c, 4",
+            "qbgt wait, r2, 20",
+            "halt",
+        ]))
+        assert errors == []
+        sim.cores["pru0"].run(max_steps=500)
+        assert sim.cores["pru0"].halted
+        assert sim.registers("pru0")[2] >= 20
+
+    def test_cmp0_period_boundary_is_visible_to_firmware(self):
+        sim = self._sim()
+        errors = sim.load("pru0", "\n".join([
+            "ldi32 r1, 40",
+            "sbco &r1, c26, 0x48, 4",     # CMP0 = period
+            "ldi32 r1, 0x3",
+            "sbco &r1, c26, 0x40, 4",     # RST_CNT_EN | CMP_EN[0]
+            "ldi32 r1, 0x11",
+            "sbco &r1, c26, 0x00, 4",     # CNT_ENABLE, DEFAULT_INC=1
+            "wait:",
+            "lbco &r2, c26, 0x44, 4",     # poll CMP_STATUS
+            "qbbc wait, r2, 0",
+            "halt",
+        ]))
+        assert errors == []
+        sim.cores["pru0"].run(max_steps=500)
+        assert sim.cores["pru0"].halted, "firmware never saw the CMP0 period boundary"
+        # auto-reset means the counter wrapped rather than running away
+        assert sim.iep.count < 40
+
+    def test_counter_does_not_run_without_firmware_enabling_it(self):
+        sim = self._sim()
+        sim.load("pru0", "ldi r0, 1\nldi r0, 2\nldi r0, 3\nhalt")
+        sim.cores["pru0"].run(max_steps=50)
+        assert sim.iep.count == 0
