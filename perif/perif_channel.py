@@ -35,7 +35,10 @@ _FIFO_DEPTH = 4
 _UART_CLOCK_MHZ = 192.0
 
 # TX FSM states
-IDLE, WIRE, TST, TRANSMIT = "IDLE", "WIRE", "TST", "TRANSMIT"
+# CLKRUN: TX data is exhausted but PERIF<m>_CLK is still free-running. Required
+# by clk_mode 0/1/2 (TRM 6.4.5.2.2.3.6.3.3) — the clock is NOT stopped by the
+# transmitter running out of data, it is stopped by the RX frame counter.
+IDLE, WIRE, TST, TRANSMIT, CLKRUN = "IDLE", "WIRE", "TST", "TRANSMIT", "CLKRUN"
 
 
 class PerifChannel:
@@ -222,13 +225,12 @@ class PerifChannel:
         return val
 
     def _finish_frame(self) -> None:
-        """Frame data done: drop out_en, apply clock-mode stop level.
+        """TX data done. Whether the CLOCK stops here depends on clk_mode.
 
         Preload-and-go mode flushes the FIFO (spec 7.1). Continuous mode
         never snapshots the FIFO, so it is already at its true live depth —
         any bytes pushed right at the end stay queued for the next go.
         """
-        self.fsm = IDLE
         self.busy = False
         self.tx_out_en = 0
         if self.regs.get_tx_frame_size(self.index) == 0:
@@ -237,7 +239,25 @@ class PerifChannel:
         else:
             self.tx_fifo = []
             self._frame_bits = []
-        # Clock-mode stop level (spec 7.6): mode 0 stops low, others high.
+
+        # TRM 6.4.5.2.2.3.6.3.3, "Stop Conditions", r30[20:19]:
+        #   0  free-running, stop LOW  on last RX frame
+        #   1  free-running, stop HIGH on last RX frame   (reset default)
+        #   2  free-run (only a reinit leaves this mode)
+        #   3  stop HIGH on last TX bit
+        # Only mode 3 stops the clock when the transmitter runs out of data.
+        # In 0/1/2 the clock keeps running so the far end can be clocked in —
+        # which is the whole point for a read transaction, where the master
+        # sends a short request and then clocks a long response back.
+        if self.clk_mode == 3:
+            self.fsm = IDLE
+            self.tx_clk_pin = 1          # stop high on last TX bit
+        else:
+            self.fsm = CLKRUN            # keep PERIF<m>_CLK free-running
+
+    def _stop_clock_on_rx_frame(self) -> None:
+        """Modes 0/1 stop condition: the RX frame counter completed."""
+        self.fsm = IDLE
         self.tx_clk_pin = 0 if self.clk_mode == 0 else 1
 
     def tx_reinit(self) -> None:
@@ -389,6 +409,12 @@ class PerifChannel:
         if frame_size != 0 and self._rx_byte_cnt >= frame_size:
             self.rx_eof = True
             self._rx_byte_cnt = 0
+            # TRM stop condition for clk_mode 0/1: "the clock will remain
+            # free-running until the receive module has received the number of
+            # bits indicated in rx_frame_counter". Mode 2 free-runs until a
+            # reinit; mode 3 already stopped on the last TX bit.
+            if self.fsm == CLKRUN and self.clk_mode in (0, 1):
+                self._stop_clock_on_rx_frame()
 
     # ==================================================================
     # ns-timeline advance (used by the loopback / core step)
@@ -415,6 +441,16 @@ class PerifChannel:
                 self._phase_end_ns += period
                 self.tx_bit_edge()
                 self._record_line(self._phase_end_ns)
+
+        # --- Free-running clock after TX data is exhausted (clk_mode 0/1/2) ---
+        # The RX oversampler below consumes these edges; without them a read
+        # transaction can never clock its response in and the RX frame counter
+        # never reaches its stop condition.
+        if self.fsm == CLKRUN:
+            period = self.tx_clock_period_ns()
+            while self.fsm == CLKRUN and now_ns >= self._phase_end_ns + period:
+                self._phase_end_ns += period
+                self.tx_clk_pin ^= 1
 
         # --- RX: sample the input line at the RX oversample-clock rate ---
         if self.rx_en:
