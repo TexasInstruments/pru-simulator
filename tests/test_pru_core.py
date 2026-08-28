@@ -629,3 +629,44 @@ class TestSubRegisters:
         core = make_core(asm)
         run_to_halt(core)
         assert reg(core, 0) & 0xFFFF == 150
+
+
+# ---------------------------------------------------------------------------
+# R31 byte / half-word selection
+# ---------------------------------------------------------------------------
+
+class TestR31SubRegisterSelection:
+    """R31 is read live and written to hardware, but the operand's byte or
+    half-word selection still applies.
+
+    R31.b3 is the standard idiom for the Peripheral Interface valid/overflow
+    flags (bits [31:24]); R30 in the same function already derives its write
+    strobe from offset/width, so the two paths disagreed.
+    """
+
+    @staticmethod
+    def _reg(offset, width):
+        from core.operands import Register
+        return Register(index=31, offset=offset, width=width)
+
+    def _core(self):
+        mem = MemoryBus()
+        mem.add_region(MemoryRegion("DRAM0", 0x0000, 0x2000, 2, 1, 0))
+        return PRUCore("PRU0", mem, XFRBus(), IOPort())
+
+    def test_read_honours_byte_selection(self):
+        core = self._core()
+        core.io_port.read_r31 = lambda: 0xAABBCCDD
+        b3, b0, full = self._reg(24, 8), self._reg(0, 8), self._reg(0, 32)
+        assert core._read_operand(b3) == 0xAA
+        assert core._read_operand(b0) == 0xDD
+        assert core._read_operand(full) == 0xAABBCCDD
+
+    def test_write_honours_byte_selection(self):
+        core = self._core()
+        seen = []
+        core.io_port.write_r31 = seen.append
+        core._write_operand(self._reg(24, 8), 0x01)
+        core._write_operand(self._reg(0, 8), 0x01)
+        core._write_operand(self._reg(0, 32), 0x12345678)
+        assert seen == [0x01000000, 0x00000001, 0x12345678]

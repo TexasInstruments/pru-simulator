@@ -538,7 +538,13 @@ class PRUCore:
         """Read the value of an operand."""
         if isinstance(op, Register):
             if op.index == 31:
-                return self.io_port.read_r31()
+                # R31 is read live from the I/O port, but the operand's byte /
+                # half-word selection still applies. Returning the full word
+                # for `r31.b3` silently reads bits [7:0] instead of [31:24].
+                val = self.io_port.read_r31()
+                if op.width >= 32 and op.offset == 0:
+                    return val
+                return (val >> op.offset) & ((1 << op.width) - 1)
             return self.registers.read(op.index, op.offset, op.width)
         if isinstance(op, Immediate):
             return op.value
@@ -553,7 +559,12 @@ class PRUCore:
         """Write *value* to an operand destination."""
         if isinstance(op, Register):
             if op.index == 31:
-                # R31 is write-only to hardware (command register) — do not store in register file
+                # R31 is write-only to hardware (command register) - do not
+                # store in the register file. The operand's byte / half-word
+                # selection still applies: `MOV r31.b3, rX.b0` targets bits
+                # [31:24]. R30 below already derives its strobe this way.
+                if op.width < 32 or op.offset:
+                    value = (value & ((1 << op.width) - 1)) << op.offset
                 self.io_port.write_r31(value)
                 return
             self.registers.write(op.index, op.offset, op.width, value)
