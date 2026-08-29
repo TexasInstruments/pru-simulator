@@ -152,8 +152,11 @@ def test_higher_compares_set_their_own_status_bit(iep):
 
 
 def test_unimplemented_offsets_do_not_fault(iep):
-    w32(iep, 0xF0, 0x1234)                # capture region, not modelled
-    assert r32(iep, 0xF0) == 0
+    # 0x20 is IEP_CAPR0_REG0. Capture is deliberately out of scope, so it must
+    # read back zero rather than fault - firmware touching it does not crash, it
+    # simply sees the feature do nothing.
+    w32(iep, 0x20, 0x1234)
+    assert r32(iep, 0x20) == 0
 
 
 # --- integration: firmware polling the IEP through the constant table -------
@@ -181,7 +184,7 @@ class TestIepThroughFirmware:
             "ldi32 r1, 0x11",
             "sbco &r1, c26, 0x00, 4",
             "wait:",
-            "lbco &r2, c26, 0x0c, 4",
+            "lbco &r2, c26, 0x10, 4",
             "qbgt wait, r2, 20",
             "halt",
         ]))
@@ -194,13 +197,13 @@ class TestIepThroughFirmware:
         sim = self._sim()
         errors = sim.load("pru0", "\n".join([
             "ldi32 r1, 40",
-            "sbco &r1, c26, 0x48, 4",     # CMP0 = period
+            "sbco &r1, c26, 0x78, 4",     # CMP0_REG0 = period
             "ldi32 r1, 0x3",
-            "sbco &r1, c26, 0x40, 4",     # RST_CNT_EN | CMP_EN[0]
+            "sbco &r1, c26, 0x70, 4",     # CMP_CFG: RST_CNT_EN | CMP_EN[0]
             "ldi32 r1, 0x11",
             "sbco &r1, c26, 0x00, 4",     # CNT_ENABLE, DEFAULT_INC=1
             "wait:",
-            "lbco &r2, c26, 0x44, 4",     # poll CMP_STATUS
+            "lbco &r2, c26, 0x74, 4",     # poll CMP_STATUS
             "qbbc wait, r2, 0",
             "halt",
         ]))

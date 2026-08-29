@@ -8,13 +8,22 @@ Register map (offsets from the IEP base), per the TRM:
 
     0x00  IEP_GLOBAL_CFG_REG   [0] CNT_ENABLE, [7:4] DEFAULT_INC
     0x04  IEP_GLOBAL_STATUS_REG
-    0x0C  IEP_COUNT_REG0       counter, lower 32 bits
-    0x10  IEP_COUNT_REG1       counter, upper 32 bits
-    0x40  IEP_CMP_CFG_REG      [0] CMP0_RST_CNT_EN, [16:1] CMP_EN (bit 1 -> CMP0)
-    0x44  IEP_CMP_STATUS_REG   [15:0] CMP_STATUS, write 1 to clear
-    0x48  IEP_CMP0_REG0        compare 0, lower 32 bits
-    0x4C  IEP_CMP0_REG1        compare 0, upper 32 bits
-    0x50  IEP_CMP1_REG0        ... CMPj_REG0 at 0x48 + 8*j
+    0x0C  IEP_SLOW_COMPEN_REG  (NOT the counter - see below)
+    0x10  IEP_COUNT_REG0       counter, lower 32 bits
+    0x14  IEP_COUNT_REG1       counter, upper 32 bits
+    0x18  IEP_CAP_CFG_REG
+    0x1C  IEP_CAP_STATUS_REG
+    0x20  IEP_CAPR0_REG0       capture registers 0x20..0x6C
+    0x70  IEP_CMP_CFG_REG      [0] CMP0_RST_CNT_EN, [16:1] CMP_EN (bit 1 -> CMP0)
+    0x74  IEP_CMP_STATUS_REG   [15:0] CMP_STATUS, write 1 to clear
+    0x78  IEP_CMP0_REG0        compare 0, lower 32 bits
+    0x7C  IEP_CMP0_REG1        compare 0, upper 32 bits
+    0x80  IEP_CMP1_REG0        ... CMPj_REG0 at 0x78 + 8*j
+
+Offsets are from Table 14-10902, TRM pages 6902/6905. An earlier revision of this
+file used 0x0C for the counter and 0x40/0x44/0x48 for the compare block - the
+AM335x-era PRU-ICSS layout, not ICSSG. 0x0C is SLOW_COMPEN and 0x40-0x6C are
+capture registers, so that firmware polls the wrong registers entirely.
 
 Two TRM details are easy to get wrong and are called out because at least one
 other PRU simulator gets them wrong:
@@ -35,11 +44,11 @@ them does not fault - it simply sees a counter that ignores those features.
 
 GLOBAL_CFG = 0x00
 GLOBAL_STATUS = 0x04
-COUNT_REG0 = 0x0C
-COUNT_REG1 = 0x10
-CMP_CFG = 0x40
-CMP_STATUS = 0x44
-CMP0_REG0 = 0x48
+COUNT_REG0 = 0x10
+COUNT_REG1 = 0x14
+CMP_CFG = 0x70
+CMP_STATUS = 0x74
+CMP0_REG0 = 0x78
 
 NUM_COMPARE = 16
 IEP_SIZE = 0x100
