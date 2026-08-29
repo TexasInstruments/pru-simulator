@@ -215,3 +215,55 @@ class TestIepThroughFirmware:
         sim.load("pru0", "ldi r0, 1\nldi r0, 2\nldi r0, 3\nhalt")
         sim.cores["pru0"].run(max_steps=50)
         assert sim.iep.count == 0
+
+
+# --- compare semantics: equality, not threshold ----------------------------
+# Raised in adversarial review 2026-08-28. Pinned here as a deliberate choice
+# rather than left implicit, because either reading has a failure mode and the
+# TRM text quoted in perif/iep.py does not settle it in one sentence.
+
+def test_compare_is_equality_so_a_stepped_over_value_never_fires(iep):
+    """DEFAULT_INC > 1 steps over a compare that is not on an increment boundary.
+
+    The IEP compare is a match on the counter value, so firmware must program
+    compares consistent with its increment. Modelling this as `>=` instead would
+    re-assert the event on every cycle past the threshold, which is a different
+    and worse wrong answer. This test exists so the choice is visible and cannot
+    be changed silently.
+    """
+    w32(iep, GLOBAL_CFG, (2 << 4) | 1)      # DEFAULT_INC=2
+    w32(iep, CMP0_REG0 + 8, 5)              # CMP1 = 5, an odd value
+    w32(iep, CMP_CFG, 1 << 2)               # CMP_EN[1]
+    for _ in range(10):
+        iep.tick()
+    assert r32(iep, COUNT_REG0) == 20
+    assert r32(iep, CMP_STATUS) == 0, "counter stepped 4 -> 6; an equality compare must not fire"
+
+    # On an increment boundary it fires exactly once.
+    iep.reset()
+    w32(iep, GLOBAL_CFG, (2 << 4) | 1)
+    w32(iep, CMP0_REG0 + 8, 6)
+    w32(iep, CMP_CFG, 1 << 2)
+    for _ in range(10):
+        iep.tick()
+    assert r32(iep, CMP_STATUS) == (1 << 1)
+
+
+def test_compare_matches_on_the_full_64_bit_value(iep):
+    """A compare whose high word differs must not fire on a low-word match."""
+    w32(iep, GLOBAL_CFG, 0x11)
+    w32(iep, CMP0_REG0 + 8, 4)              # CMP1_REG0 = 4
+    w32(iep, CMP0_REG0 + 12, 1)             # CMP1_REG1 = 1  -> compare is 2^32 + 4
+    w32(iep, CMP_CFG, 1 << 2)
+    for _ in range(8):
+        iep.tick()
+    assert r32(iep, COUNT_REG0) == 8
+    assert r32(iep, CMP_STATUS) == 0, "low-word match fired despite a differing high word"
+
+
+def test_counter_carries_into_the_high_word(iep):
+    w32(iep, GLOBAL_CFG, 0x11)
+    w32(iep, COUNT_REG0, 0xFFFFFFFF)
+    iep.tick()
+    assert r32(iep, COUNT_REG0) == 0
+    assert r32(iep, COUNT_REG1) == 1
