@@ -463,8 +463,31 @@ class PRUCore:
             fill_data = bytes([0xFF] * length)
             self._write_registers_from_bytes(start_reg, fill_data, start_byte)
 
-        elif op in ("WBS", "WBC", "NOP"):
-            # Simplified: no-op
+        elif op in ("WBS", "WBC"):
+            # WBS/WBC stall the core until the selected bit is set/clear.
+            # Treating them as no-ops lets peripheral-driven firmware fall
+            # straight through its status polls: it never yields the simulated
+            # time the peripheral needs to produce data, so every transaction
+            # times out and retries forever. Re-executing the instruction (by
+            # suppressing the PC advance) is what makes the wait observable,
+            # because PRUCore.step() advances the peripheral each step.
+            # Two operand forms reach here: the disassembler emits
+            # (source, bit) — WBS/WBC are QBBS/QBBC with a zero branch offset,
+            # i.e. branch-to-self — while the assembler's mnemonic takes the
+            # bit alone and implies R31.
+            ops = instr.operands
+            if len(ops) >= 2:
+                value, bit_op = self._read_operand(ops[0]), ops[1]
+            else:
+                value, bit_op = self.io_port.read_r31(), ops[0]
+            bit = self._read_operand(bit_op) & 0x1F
+            is_set = (value >> bit) & 1
+            waiting = (op == "WBS" and not is_set) or (op == "WBC" and is_set)
+            if waiting:
+                branch_taken = True          # hold PC: re-execute the wait
+                self.counters.stall_cycles += 1
+
+        elif op == "NOP":
             pass
 
         # Unknown opcodes are silently ignored (or could raise)
