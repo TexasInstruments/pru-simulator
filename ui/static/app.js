@@ -19,11 +19,23 @@ let activeSimRequestId = null;
 let genericSsiLoaded = false;
 let genericSsiRunInFlight = false;
 let genericSsiRequestId = null;
+const SSI_RUNTIME_READ_THROTTLE_MS = 250;
+let ssiRuntimeReadTimer = null;
+let ssiRuntimeReadQueued = false;
+let ssiRuntimeLastReadAt = 0;
 let simRunning = false;
 let simTimer = null;
 let _flashTimer = null;
 let clientBreakpoints = new Set();
-let _lastSourceKey = '';
+let _lastSourceBreakpointKey = null;
+let _currentSourceLine = null;
+let _sourceInstructions = [];
+let _sourceLabels = {};
+let _renderedSourceInstructions = null;
+let _renderedSourceLabels = null;
+let panelVisibilityButtons = null;
+let protocolPanelButtons = null;
+let protocolPanelVisibleKeys = new Set(["i2c"]);
 
 // ---- Multi-core state ------------------------------------------------------
 let multiCoreMode = false;
@@ -33,7 +45,12 @@ let mcPrevRegs = {
   rtu0: new Array(32).fill("0x00000000"),
   pru1: new Array(32).fill("0x00000000"),
 };
-let mcLastSourceKey = { pru0: '', rtu0: '', pru1: '' };
+let mcLastSourceBreakpointKey = { pru0: null, rtu0: null, pru1: null };
+let mcCurrentSourceLine = { pru0: null, rtu0: null, pru1: null };
+let mcSourceInstructions = { pru0: [], rtu0: [], pru1: [] };
+let mcSourceLabels = { pru0: {}, rtu0: {}, pru1: {} };
+let mcRenderedSourceInstructions = { pru0: null, rtu0: null, pru1: null };
+let mcRenderedSourceLabels = { pru0: null, rtu0: null, pru1: null };
 let mcBreakpoints   = { pru0: new Set(), rtu0: new Set(), pru1: new Set() };
 let mcHaltedState   = { pru0: false, rtu0: false, pru1: false };
 let mcBreakState    = { pru0: false, rtu0: false, pru1: false };
@@ -126,6 +143,15 @@ const pruSpeedSelect  = document.getElementById("pru-speed-select");
 const configError     = document.getElementById("config-error");
 const btnConfigSave   = document.getElementById("btn-config-save");
 const btnConfigCancel = document.getElementById("btn-config-cancel");
+
+function setButtonLabel(button, label) {
+  const text = button && button.querySelector(".text");
+  if (text) {
+    text.textContent = label;
+  } else if (button) {
+    button.textContent = label;
+  }
+}
 
 // ---- Editor dirty tracking -----------------------------------------------
 asmSource.addEventListener('input', () => {
@@ -327,14 +353,278 @@ function buildPinGrid(container, count, cssClass, clickHandler) {
   }
 }
 
+function initTabList(tabListId, initialTabId, onActivate = null) {
+  const tabList = document.getElementById(tabListId);
+  if (!tabList) return null;
+
+  const tabs = Array.from(tabList.querySelectorAll('[role="tab"]'));
+
+  function activateTab(tab, focus = false) {
+    if (!tab) return;
+    tabs.forEach(candidate => {
+      const selected = candidate === tab;
+      candidate.setAttribute("aria-selected", selected ? "true" : "false");
+      candidate.tabIndex = selected ? 0 : -1;
+      const panel = document.getElementById(candidate.getAttribute("aria-controls"));
+      if (panel) {
+        panel.hidden = !selected;
+        panel.setAttribute("aria-hidden", selected ? "false" : "true");
+      }
+    });
+    if (onActivate) onActivate(tab);
+    if (focus) tab.focus();
+  }
+
+  tabList.addEventListener("click", (event) => {
+    const tab = event.target.closest('[role="tab"]');
+    if (tab && tabs.includes(tab)) activateTab(tab);
+  });
+
+  tabList.addEventListener("keydown", (event) => {
+    const tab = event.target.closest('[role="tab"]');
+    if (!tab || !tabs.includes(tab)) return;
+
+    // Keep the simulator's document-level Space/arrow shortcuts from seeing
+    // keyboard interaction that belongs to an application tab.
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      event.stopPropagation();
+      activateTab(tab);
+      return;
+    }
+
+    let nextIndex = -1;
+    const currentIndex = tabs.indexOf(tab);
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      nextIndex = (currentIndex + 1) % tabs.length;
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = tabs.length - 1;
+    }
+
+    if (nextIndex >= 0) {
+      event.preventDefault();
+      event.stopPropagation();
+      activateTab(tabs[nextIndex], true);
+    }
+  });
+
+  activateTab(document.getElementById(initialTabId) || tabs[0]);
+  return activateTab;
+}
+
+function syncWorkspaceSubnav(tab) {
+  const isSimulator = tab?.getAttribute("aria-controls") === "simulator-view";
+  const panelVisibility = document.getElementById("panel-visibility");
+  const protocolToolTabs = document.getElementById("protocol-tool-tabs");
+
+  if (panelVisibility) {
+    panelVisibility.hidden = !isSimulator;
+    panelVisibility.setAttribute("aria-hidden", isSimulator ? "false" : "true");
+  }
+  if (protocolToolTabs) {
+    protocolToolTabs.hidden = isSimulator;
+    protocolToolTabs.setAttribute("aria-hidden", isSimulator ? "true" : "false");
+  }
+}
+
+const PROTOCOL_PANEL_VISIBILITY_KEY = "pru-protocol-panel-visibility";
+const PROTOCOL_PANEL_DEFS = [
+  { key: "i2c", label: "I2C", panelId: "protocol-i2c-panel", buttonId: "protocol-tab-i2c" },
+  { key: "uart", label: "UART", panelId: "protocol-uart-panel", buttonId: "protocol-tab-uart" },
+  { key: "ssi", label: "SSI", panelId: "protocol-ssi-panel", buttonId: "protocol-tab-ssi" },
+];
+
+function loadProtocolPanelVisibility() {
+  try {
+    const raw = localStorage.getItem(PROTOCOL_PANEL_VISIBILITY_KEY);
+    const saved = raw ? JSON.parse(raw) : null;
+    const allowed = new Set(PROTOCOL_PANEL_DEFS.map(definition => definition.key));
+    const visible = Array.isArray(saved)
+      ? saved.filter(key => allowed.has(key))
+      : [];
+    return new Set(visible.length ? visible : ["i2c"]);
+  } catch (e) {
+    return new Set(["i2c"]);
+  }
+}
+
+function saveProtocolPanelVisibility() {
+  try {
+    localStorage.setItem(
+      PROTOCOL_PANEL_VISIBILITY_KEY,
+      JSON.stringify(Array.from(protocolPanelVisibleKeys)),
+    );
+  } catch (e) { /* quota exceeded — ignore */ }
+}
+
+function applyProtocolPanelVisibility() {
+  for (const definition of PROTOCOL_PANEL_DEFS) {
+    const visible = protocolPanelVisibleKeys.has(definition.key);
+    const panel = document.getElementById(definition.panelId);
+    const button = document.getElementById(definition.buttonId);
+    if (panel) {
+      panel.hidden = !visible;
+      panel.setAttribute("aria-hidden", visible ? "false" : "true");
+    }
+    if (button) {
+      button.setAttribute("aria-pressed", visible ? "true" : "false");
+      button.title = visible
+        ? `Hide ${definition.label} panel`
+        : `Show ${definition.label} panel`;
+    }
+  }
+}
+
+function initProtocolPanelControls() {
+  protocolPanelButtons = document.getElementById("protocol-tool-tabs");
+  if (!protocolPanelButtons) return;
+
+  protocolPanelVisibleKeys = loadProtocolPanelVisibility();
+  protocolPanelButtons.querySelectorAll("[data-protocol-panel]").forEach(button => {
+    button.addEventListener("click", () => {
+      const key = button.dataset.protocolPanel;
+      if (!PROTOCOL_PANEL_DEFS.some(definition => definition.key === key)) return;
+
+      if (protocolPanelVisibleKeys.has(key)) {
+        if (protocolPanelVisibleKeys.size === 1) {
+          flashStatus("Keep one protocol panel visible", "halted");
+          return;
+        }
+        protocolPanelVisibleKeys.delete(key);
+      } else {
+        protocolPanelVisibleKeys.add(key);
+      }
+
+      saveProtocolPanelVisibility();
+      applyProtocolPanelVisibility();
+    });
+  });
+
+  applyProtocolPanelVisibility();
+}
+
+function initProtocolTools() {
+  initTabList("view-tabs", "tab-simulator", syncWorkspaceSubnav);
+
+  const protocolSlots = {
+    i2c: ["i2c-attach-strip", "i2c-interface"],
+    uart: ["uart-decoder", "uart-rx-inject"],
+    ssi: ["ssi-inject", "ssi-runtime"],
+  };
+
+  for (const [slotName, elementIds] of Object.entries(protocolSlots)) {
+    const slot = document.querySelector(`[data-protocol-slot="${slotName}"]`);
+    if (!slot) continue;
+    for (const elementId of elementIds) {
+      const element = document.getElementById(elementId);
+      if (element && !slot.contains(element)) slot.appendChild(element);
+    }
+  }
+
+  // The protocol sections are now owned by Protocol Tools. Remove only the
+  // separators left behind in the simulator's I/O observation panel.
+  const ioBody = document.querySelector("#io-panel .panel-body");
+  ioBody?.querySelectorAll(".uart-divider").forEach(separator => separator.remove());
+
+  initProtocolPanelControls();
+}
+
+const PANEL_TOGGLE_DEFS = [
+  {
+    key: "source",
+    label: "Source / Disassembly",
+    icon: "\u25a4",
+    ids: () => multiCoreMode ? ["mc-pru0-source", "mc-rtu0-source"] : ["source"],
+  },
+  {
+    key: "registers",
+    label: "Registers",
+    icon: "\u25a6",
+    ids: () => multiCoreMode ? ["mc-pru0-registers", "mc-rtu0-registers"] : ["registers"],
+  },
+  { key: "io", label: "I/O Pins", icon: "\u2194", ids: () => ["io"] },
+  { key: "signal-graph", label: "Signal Graph", icon: "\u223f", ids: () => ["signal-graph"] },
+  { key: "mem-graph", label: "Memory Graph", icon: "\u2336", ids: () => ["mem-graph"] },
+  { key: "memory1", label: "Memory 1", icon: "M1", ids: () => ["memory1"] },
+  { key: "memory2", label: "Memory 2", icon: "M2", ids: () => ["memory2"] },
+  { key: "editor", label: "Assembly Editor", icon: "\u270e", ids: () => ["editor"] },
+];
+
+function panelToggleState(panelIds) {
+  const visibleCount = panelIds.filter(panelId => getPanelVisibility(panelId)).length;
+  if (visibleCount === 0) return "hidden";
+  if (visibleCount === panelIds.length) return "visible";
+  return "partial";
+}
+
+function updatePanelVisibilityButtons() {
+  if (!panelVisibilityButtons) return;
+
+  panelVisibilityButtons.querySelectorAll("[data-panel-toggle]").forEach(button => {
+    const definition = PANEL_TOGGLE_DEFS.find(
+      candidate => candidate.key === button.dataset.panelToggle,
+    );
+    if (!definition) return;
+    const state = panelToggleState(definition.ids());
+    const selected = state !== "hidden";
+    button.setAttribute("aria-pressed", selected ? "true" : "false");
+    button.title = selected ? `Hide ${definition.label} panel` : `Show ${definition.label} panel`;
+    if (state === "partial") button.dataset.partial = "true";
+    else delete button.dataset.partial;
+  });
+}
+
+function initPanelVisibilityControls() {
+  panelVisibilityButtons = document.getElementById("panel-visibility-buttons");
+  if (!panelVisibilityButtons) return;
+
+  for (const definition of PANEL_TOGGLE_DEFS) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "panel-toggle";
+    button.dataset.panelToggle = definition.key;
+    button.setAttribute("aria-pressed", "true");
+
+    const icon = document.createElement("span");
+    icon.className = "panel-toggle-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = definition.icon;
+
+    const label = document.createElement("span");
+    label.className = "panel-toggle-label";
+    label.textContent = definition.label;
+
+    button.append(icon, label);
+    button.addEventListener("click", () => {
+      const panelIds = definition.ids();
+      const show = panelToggleState(panelIds) === "hidden";
+      const changed = setPanelsVisibility(panelIds, show);
+      if (!changed && !show) flashStatus("Keep one panel visible", "halted");
+      updatePanelVisibilityButtons();
+    });
+    panelVisibilityButtons.appendChild(button);
+  }
+
+  document.addEventListener("pru-layout-changed", updatePanelVisibilityButtons);
+  updatePanelVisibilityButtons();
+}
+
 function initUI() {
   initSpadState();
   buildRegTable();
   buildPinGrid(gpoGrid, 20, "gpo", null);
   buildPinGrid(gpiGrid, 20, "gpi", handleGpiClick);
+  initProtocolTools();
+  initPanelVisibilityControls();
   initLayout('sc');
+  updatePanelVisibilityButtons();
   initEditorTabs();
 }
+
 
 // ---- WebSocket setup ------------------------------------------------------
 
@@ -366,6 +656,7 @@ function connect() {
     memReadInFlight2 = false;
     memReadPending = false;
     memReadPending2 = false;
+    cancelQueuedSsiRuntimeRead();
     stopRun();
     // Attempt reconnect after 2 s
     setTimeout(connect, 2000);
@@ -400,7 +691,10 @@ function connect() {
         if (requestId === genericSsiRequestId) {
           genericSsiRunInFlight = false;
           genericSsiRequestId = null;
-          sendAction({ action: "ssi_runtime_read" });
+          // A toolbar Run/SIM request can complete every few milliseconds.
+          // Do not put a full SSI status/render pass behind every one.  A
+          // standalone SSI run still gets an immediate final read.
+          queueSsiRuntimeRead(!(running || simRunning));
         }
       } else if (msg.type === "uart_inject_ok") {
         const st = document.getElementById("uart-inj-status");
@@ -470,6 +764,36 @@ function sendAction(obj) {
     return true;
   }
   return false;
+}
+
+function queueSsiRuntimeRead(force = false) {
+  ssiRuntimeReadQueued = true;
+  if (force && ssiRuntimeReadTimer !== null) {
+    clearTimeout(ssiRuntimeReadTimer);
+    ssiRuntimeReadTimer = null;
+  }
+  if (ssiRuntimeReadTimer !== null) return;
+
+  const elapsed = Date.now() - ssiRuntimeLastReadAt;
+  const delay = force
+    ? 0
+    : Math.max(0, SSI_RUNTIME_READ_THROTTLE_MS - elapsed);
+  ssiRuntimeReadTimer = setTimeout(() => {
+    ssiRuntimeReadTimer = null;
+    if (!ssiRuntimeReadQueued) return;
+    ssiRuntimeReadQueued = false;
+    if (sendAction({ action: "ssi_runtime_read" })) {
+      ssiRuntimeLastReadAt = Date.now();
+    }
+  }, delay);
+}
+
+function cancelQueuedSsiRuntimeRead() {
+  if (ssiRuntimeReadTimer !== null) {
+    clearTimeout(ssiRuntimeReadTimer);
+    ssiRuntimeReadTimer = null;
+  }
+  ssiRuntimeReadQueued = false;
 }
 
 function trackRunRequest(requestId, owner = null) {
@@ -557,8 +881,13 @@ function updateUI(state) {
   updateRegisters(state.registers, state.carry);
   updateSpad(state.spad);
 
-  // Source listing
-  updateSource(state.instructions, state.pc, state.labels || {});
+  // Source text is included only when it changes; retain it for lightweight
+  // state packets that only carry the live CPU values.
+  if (Array.isArray(state.instructions)) {
+    _sourceInstructions = state.instructions;
+    _sourceLabels = state.labels || {};
+  }
+  updateSource(_sourceInstructions, state.pc, _sourceLabels);
 
   // IO pins
   updatePins(state.io);
@@ -622,8 +951,11 @@ function updateSpad(spad) {
 function renderBpBar(prefix, core, breakpoints) {
   const listEl = document.getElementById(`${prefix}bp-chip-list`);
   if (!listEl) return;
-  listEl.innerHTML = "";
   const addrs = [...breakpoints].sort((a, b) => a - b);
+  const key = addrs.join(",");
+  if (listEl.dataset?.bpKey === key) return;
+  if (listEl.dataset) listEl.dataset.bpKey = key;
+  listEl.innerHTML = "";
   if (addrs.length === 0) {
     const empty = document.createElement("span");
     empty.className = "bp-empty";
@@ -667,20 +999,24 @@ function wireBpBar(prefix, coreOf) {
 }
 
 function updateSource(instructions, pc, labels) {
-  // Build addr -> [sorted label names] map
-  const addrToLabels = {};
-  for (const [name, addr] of Object.entries(labels)) {
-    if (!addrToLabels[addr]) addrToLabels[addr] = [];
-    addrToLabels[addr].push(name);
-  }
-  for (const addr of Object.keys(addrToLabels)) addrToLabels[addr].sort();
-
-  // Rebuild when instruction set or label set changes
-  const newKey = instructions.map(i => i.addr + ':' + i.text).join('|')
-               + '|' + Object.entries(labels).sort().join('|');
-  if (newKey !== _lastSourceKey) {
-    _lastSourceKey = newKey;
+  // State packets reuse the same source objects until a load changes them.
+  // Compare those references instead of hashing every instruction on every
+  // live PC update.
+  const sourceChanged = instructions !== _renderedSourceInstructions ||
+    labels !== _renderedSourceLabels;
+  if (sourceChanged) {
+    _renderedSourceInstructions = instructions;
+    _renderedSourceLabels = labels;
+    _lastSourceBreakpointKey = null;
+    _currentSourceLine = null;
     sourceList.innerHTML = "";
+
+    const addrToLabels = {};
+    for (const [name, addr] of Object.entries(labels)) {
+      if (!addrToLabels[addr]) addrToLabels[addr] = [];
+      addrToLabels[addr].push(name);
+    }
+    for (const addr of Object.keys(addrToLabels)) addrToLabels[addr].sort();
 
     instructions.forEach((instr) => {
       // Insert a label row for each label pointing to this address
@@ -724,21 +1060,67 @@ function updateSource(instructions, pc, labels) {
     });
   }
 
-  // Update breakpoint markers (instruction lines only)
-  sourceList.querySelectorAll("li[id^='src-line-']").forEach(li => {
-    const addr = +li.id.slice(9);
-    li.classList.toggle("has-bp", clientBreakpoints.has(addr));
-  });
-
-  // Update current-pc highlight
-  document.querySelectorAll("#source-list li.current-pc").forEach(el => el.classList.remove("current-pc"));
-  const currentLine = document.getElementById(`src-line-${pc}`);
-  if (currentLine) {
-    currentLine.classList.add("current-pc");
-    currentLine.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  // Update breakpoint markers only when the breakpoint set or source list
+  // changed; rebuilding these classes on every state packet is expensive.
+  const breakpointKey = [...clientBreakpoints].sort((a, b) => a - b).join(",");
+  if (breakpointKey !== _lastSourceBreakpointKey) {
+    sourceList.querySelectorAll("li[id^='src-line-']").forEach(li => {
+      const addr = +li.id.slice(9);
+      li.classList.toggle("has-bp", clientBreakpoints.has(addr));
+    });
+    _lastSourceBreakpointKey = breakpointKey;
   }
 
+  // Update current-pc highlight
+  const currentLine = document.getElementById(`src-line-${pc}`);
+  if (_currentSourceLine && _currentSourceLine !== currentLine) {
+    _currentSourceLine.classList.remove("current-pc");
+  }
+  if (currentLine && currentLine !== _currentSourceLine) {
+    currentLine.classList.add("current-pc");
+    queueSourceLineScroll("main", sourceList, currentLine);
+  }
+  _currentSourceLine = currentLine;
+
   renderBpBar("", currentCore, clientBreakpoints);
+}
+
+function sourceLineNeedsScroll(lineTop, lineBottom, viewportTop, viewportBottom) {
+  return lineTop < viewportTop || lineBottom > viewportBottom;
+}
+
+const pendingSourceScrolls = new Map();
+
+function queueSourceLineScroll(key, listEl, line) {
+  const pending = pendingSourceScrolls.get(key);
+  if (pending) {
+    pending.line = line;
+    return;
+  }
+
+  const request = { listEl, line };
+  pendingSourceScrolls.set(key, request);
+  const schedule = typeof requestAnimationFrame === "function"
+    ? requestAnimationFrame
+    : (callback) => setTimeout(callback, 0);
+  schedule(() => {
+    const current = pendingSourceScrolls.get(key);
+    pendingSourceScrolls.delete(key);
+    if (!current || !current.line || !current.line.isConnected) return;
+
+    const scroller = current.listEl.parentElement;
+    if (!scroller || scroller.clientHeight <= 0) return;
+    const lineRect = current.line.getBoundingClientRect();
+    const viewportRect = scroller.getBoundingClientRect();
+    if (sourceLineNeedsScroll(
+      lineRect.top,
+      lineRect.bottom,
+      viewportRect.top,
+      viewportRect.bottom,
+    )) {
+      current.line.scrollIntoView({ block: "nearest", behavior: "auto" });
+    }
+  });
 }
 
 function updatePins(io) {
@@ -794,9 +1176,9 @@ function updateSDPanel(io) {
   // R30 decode
   const r30El = document.getElementById('sd-r30-decode');
   if (r30El) {
-    r30El.innerHTML = '<span style="color:#ce93d8;">R30:</span> ' +
+    r30El.innerHTML = '<span style="color:var(--accent);">R30:</span> ' +
       `<span class="sd-r30-field">[29:26] ch_sel=<b>${sd.ch_sel}</b></span>` +
-      `<span class="sd-r30-field">[25] sd_en=<b style="color:#66bb6a;">${sd.sd_en ? 1 : 0}</b></span>` +
+      `<span class="sd-r30-field">[25] sd_en=<b style="color:var(--accent);">${sd.sd_en ? 1 : 0}</b></span>` +
       `<span class="sd-r30-field">[24] snoop=<b>${sd.snoop ? 1 : 0}</b></span>` +
       `<span class="sd-r30-field">[23] data_sel=<b>${sd.data_sel ? 1 : 0}</b></span>`;
   }
@@ -811,8 +1193,8 @@ function updateSDPanel(io) {
       const cfg = ch.config || {};
       const accName = _ACC_SEL_NAMES[cfg.acc_sel || 0] || 'sinc3';
       const clkName = _CLK_SEL_NAMES[cfg.clk_sel || 0] || 'own';
-      const titleColor = ch.selected ? '#4fc3f7' : '#888';
-      const dotColor = ch.valid ? '#66bb6a' : '#666';
+      const titleColor = ch.selected ? 'var(--accent)' : 'var(--text-dim)';
+      const dotColor = ch.valid ? 'var(--accent)' : 'var(--text-dim)';
       card.innerHTML = `
         <div class="sd-channel-title" style="color:${titleColor};">
           CH ${ch.id} <span style="color:${dotColor};">●</span>${ch.selected ? ' <span style="font-size:9px;">★</span>' : ''}
@@ -822,8 +1204,8 @@ function updateSDPanel(io) {
         <div class="sd-acc-row">acc2: <span class="sd-acc-val">0x${(ch.acc2 || 0).toString(16).toUpperCase().padStart(4,'0')}</span></div>
         <div class="sd-acc-row">acc3: <span class="sd-acc-val">0x${(ch.acc3 || 0).toString(16).toUpperCase().padStart(6,'0')}</span></div>
         <div class="sd-status">
-          <div style="color:${ch.valid ? '#ffb74d' : '#555'};">ovf=${ch.ovf ? 1 : 0} valid=<b style="color:${ch.valid ? '#66bb6a' : '#666'};">${ch.valid ? 1 : 0}</b></div>
-          <div style="color:#fff;">data=0x${(ch.shadow_acc3 || 0).toString(16).toUpperCase().padStart(7,'0')}</div>
+          <div style="color:${ch.valid ? 'var(--accent)' : 'var(--text-dim)'};">ovf=${ch.ovf ? 1 : 0} valid=<b style="color:${ch.valid ? 'var(--accent)' : 'var(--text-dim)'};">${ch.valid ? 1 : 0}</b></div>
+          <div style="color:var(--text);">data=0x${(ch.shadow_acc3 || 0).toString(16).toUpperCase().padStart(7,'0')}</div>
         </div>`;
       chContainer.appendChild(card);
     });
@@ -922,7 +1304,7 @@ function updateSDPanel(io) {
 // ---- Peripheral Interface (3-channel) panel --------------------------------
 
 function _fifoHex(arr) {
-  if (!arr || !arr.length) return '<span style="color:#555;">empty</span>';
+  if (!arr || !arr.length) return '<span style="color:var(--text-dim);">empty</span>';
   return arr.map(b => '0x' + b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
 }
 
@@ -958,7 +1340,7 @@ function updatePerifPanel(io) {
   const dec = document.getElementById('perif-r30-decode');
   if (dec) {
     const sh = p.shared || {};
-    dec.innerHTML = '<span style="color:#ce93d8;">shared:</span> ' +
+    dec.innerHTML = '<span style="color:var(--accent);">shared:</span> ' +
       `<span class="perif-r30-field">tx_clk_sel=<b>${sh.tx_clk_sel ?? 0}</b></span>` +
       `<span class="perif-r30-field">tx_div=<b>${sh.tx_div_factor ?? 0}</b></span>` +
       `<span class="perif-r30-field">rx_clk_sel=<b>${sh.rx_clk_sel ?? 0}</b></span>` +
@@ -1080,11 +1462,19 @@ function updateI2CPanel(io) {
   document.getElementById('i2c-attach-btn')?.classList.toggle('active', !!(io && io.i2c));
 
   const i2c = io && io.i2c;
+  const emptyState = document.getElementById('i2c-empty-state');
   if (!i2c || !i2c.saw_start) {
     section.style.display = 'none';
+    if (emptyState) {
+      emptyState.textContent = i2c
+        ? 'Waiting for a valid I2C START on the attached TCA9538 interface.'
+        : 'Attach TCA9538 to monitor I2C transactions.';
+      emptyState.style.display = '';
+    }
     return;
   }
   section.style.display = '';
+  if (emptyState) emptyState.style.display = 'none';
 
   const infoEl = document.getElementById('i2c-mode-info');
   if (infoEl) {
@@ -2095,6 +2485,10 @@ coreSelect.addEventListener("change", () => {
   document.querySelectorAll('#loopback-strip .lb-btn').forEach(b => b.classList.remove('active'));
   initSpadState();
   sourceList.innerHTML = "";
+  _sourceInstructions = [];
+  _sourceLabels = {};
+  _lastSourceBreakpointKey = null;
+  _currentSourceLine = null;
   sendAction({ action: "get_state", core: currentCore });
   updateCtableForCore();
 });
@@ -2118,8 +2512,8 @@ btnStep.addEventListener("click", () => {
       trackRunRequest(request_id);
     }
   } else if (multiCoreMode) {
-    sendAction({ action: "step", core: "pru0", count: 1 });
-    sendAction({ action: "step", core: mcPartner, count: 1 });
+    sendAction({ action: "run_multicore", core: "pru0", partner: mcPartner,
+                 max_steps: 1 });
   } else {
     sendAction({ action: "step", core: currentCore, count: 1 });
   }
@@ -2242,12 +2636,17 @@ btnLoad.addEventListener("click", async () => {
   if (multiCoreMode) {
     const targetCore = mcLoadCore.value || "pru0";
     mcPrevRegs[targetCore] = new Array(32).fill("0x00000000");
-    mcLastSourceKey[targetCore] = '';
+    mcSourceInstructions[targetCore] = [];
+    mcSourceLabels[targetCore] = {};
+    mcLastSourceBreakpointKey[targetCore] = null;
     const srcList = document.getElementById(`mc-${targetCore}-source-list`);
     if (srcList) srcList.innerHTML = "";
     sendAction({ action: "load", core: targetCore, source, filename });
   } else {
     prevRegisters = new Array(32).fill("0x00000000");
+    _sourceInstructions = [];
+    _sourceLabels = {};
+    _lastSourceBreakpointKey = null;
     sourceList.innerHTML = "";
     sendAction({ action: "load", core: currentCore, source, filename });
   }
@@ -2492,25 +2891,25 @@ btnFile.addEventListener("click", async () => {
 
   const menu = document.createElement("div");
   menu.id = "_src-menu";
-  menu.style.cssText = "position:fixed;background:#252526;border:1px solid #3c3c3c;border-radius:4px;z-index:2000;min-width:200px;max-height:300px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,.6);font-size:12px;";
+  menu.style.cssText = "position:fixed;background:var(--panel);border:1px solid var(--border);border-radius:5px;z-index:2000;min-width:200px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.55);font-size:12px;";
   const rect = btnFile.getBoundingClientRect();
   menu.style.left = rect.left + "px";
   menu.style.top  = (rect.bottom + 4) + "px";
 
   // "Browse..." item at top — opens native file picker for .asm/.out files
   const browseItem = document.createElement("div");
-  browseItem.style.cssText = "padding:6px 12px;cursor:pointer;color:#569cd6;border-bottom:1px solid #3c3c3c;font-style:italic;";
+  browseItem.style.cssText = "padding:6px 12px;cursor:pointer;color:var(--accent);border-bottom:1px solid var(--border);font-style:italic;";
   browseItem.textContent = "Browse file system...";
-  browseItem.addEventListener("mouseover", () => browseItem.style.background = "#094771");
+  browseItem.addEventListener("mouseover", () => browseItem.style.background = "var(--highlight)");
   browseItem.addEventListener("mouseout",  () => browseItem.style.background = "");
   browseItem.addEventListener("click", () => { menu.remove(); fileInput.click(); });
   menu.appendChild(browseItem);
 
   allFiles.forEach(path => {
     const item = document.createElement("div");
-    item.style.cssText = "padding:6px 12px;cursor:pointer;color:#d4d4d4;";
+    item.style.cssText = "padding:6px 12px;cursor:pointer;color:var(--text);";
     item.textContent = path;
-    item.addEventListener("mouseover", () => item.style.background = "#094771");
+    item.addEventListener("mouseover", () => item.style.background = "var(--highlight)");
     item.addEventListener("mouseout",  () => item.style.background = "");
     item.addEventListener("click", async () => {
       menu.remove();
@@ -2563,6 +2962,13 @@ fileInput.addEventListener("change", (e) => {
         ? document.getElementById("mc-load-core").value
         : currentCore;
       graphClear();
+      if (multiCoreMode) {
+        mcSourceInstructions[core] = [];
+        mcSourceLabels[core] = {};
+      } else {
+        _sourceInstructions = [];
+        _sourceLabels = {};
+      }
       sendAction({ action: "load_elf", core, data: b64 });
       // Show loaded filename in source panel title
       const srcTitle = document.querySelector('#source-panel .panel-title');
@@ -2633,16 +3039,16 @@ btnOpenProject.addEventListener("click", async () => {
 
   const menu = document.createElement("div");
   menu.id = "_proj-menu";
-  menu.style.cssText = "position:fixed;background:#252526;border:1px solid #3c3c3c;border-radius:4px;z-index:2000;min-width:200px;max-height:300px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,.6);font-size:12px;";
+  menu.style.cssText = "position:fixed;background:var(--panel);border:1px solid var(--border);border-radius:5px;z-index:2000;min-width:200px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.55);font-size:12px;";
   const rect = btnOpenProject.getBoundingClientRect();
   menu.style.left = rect.left + "px";
   menu.style.top  = (rect.bottom + 4) + "px";
 
   projectNames.forEach(projName => {
     const item = document.createElement("div");
-    item.style.cssText = "padding:6px 12px;cursor:pointer;color:#d4d4d4;";
+    item.style.cssText = "padding:6px 12px;cursor:pointer;color:var(--text);";
     item.textContent = projName;
-    item.addEventListener("mouseover", () => item.style.background = "#094771");
+    item.addEventListener("mouseover", () => item.style.background = "var(--highlight)");
     item.addEventListener("mouseout",  () => item.style.background = "");
     item.addEventListener("click", async () => {
       menu.remove();
@@ -2769,14 +3175,10 @@ document.addEventListener("keydown", (e) => {
 function startRun() {
   stopSim();
   running = true;
-  btnRun.textContent = "Stop";
+  setButtonLabel(btnRun, "Stop");
   btnRun.classList.add("btn-reset");
   btnRun.classList.remove("btn-run");
   runInterval = setInterval(() => {
-    // While recording, the server samples the graph inside its run loop and
-    // ships the batch as a "capture" message (per instruction in perif mode,
-    // fixed-stride sampling otherwise). The chunk size no longer sets the
-    // sample rate, so it stays at the fast 1000.
     const capture = signalGraph.recording;
     const max_steps = 1000;
     if (!canStartRunRequest(runRequestInFlight)) return;
@@ -2802,7 +3204,7 @@ function startRun() {
 function stopRun() {
   if (!running) return;
   running = false;
-  btnRun.textContent = "Run";
+  setButtonLabel(btnRun, "Run");
   btnRun.classList.add("btn-run");
   btnRun.classList.remove("btn-reset");
   if (runInterval !== null) {
@@ -2817,12 +3219,13 @@ function stopRun() {
       genericSsiRequestId = null;
     }
   }
+  if (genericSsiLoaded) queueSsiRuntimeRead(true);
 }
 
 function startSim() {
   stopRun();
   simRunning = true;
-  btnSim.textContent = "Stop SIM";
+  setButtonLabel(btnSim, "Stop SIM");
   btnSim.classList.add("btn-reset");
   btnSim.classList.remove("btn-sim");
   const ms = Math.round((parseFloat(simIntervalInput.value) || 1.0) * 1000);
@@ -2855,7 +3258,7 @@ function startSim() {
 function stopSim() {
   if (!simRunning) return;
   simRunning = false;
-  btnSim.textContent = "SIM";
+  setButtonLabel(btnSim, "SIM");
   btnSim.classList.remove("btn-reset");
   btnSim.classList.add("btn-sim");
   if (simTimer !== null) {
@@ -2870,6 +3273,7 @@ function stopSim() {
       genericSsiRequestId = null;
     }
   }
+  if (genericSsiLoaded) queueSsiRuntimeRead(true);
 }
 
 btnSim.addEventListener("click", () => {
@@ -2889,6 +3293,13 @@ function handleGpiClick(pinIndex, pinEl) {
 // ---- GPIO Wires -----------------------------------------------------------
 
 const WIRE_CORES = ["pru0", "rtu0", "pru1"];
+let renderedWireKey = null;
+
+function wireListKey(wires) {
+  return (wires || []).map(w =>
+    `${w.src_core}:${w.src_pin}->${w.dst_core}:${w.dst_pin}`
+  ).join("|");
+}
 
 function buildPinSelect(selectedPin, type) {
   // type: "gpo" (0-19) or "gpi" (0-19)
@@ -2919,6 +3330,10 @@ function renderWires(wires) {
   const tbody = document.getElementById("wire-tbody");
   const empty = document.getElementById("wire-empty");
   if (!tbody) return;
+  const key = wireListKey(wires);
+  if (key === renderedWireKey) return;
+  renderedWireKey = key;
+  wires = wires || [];
   tbody.innerHTML = "";
   if (empty) empty.style.display = wires.length === 0 ? "" : "none";
 
@@ -3047,7 +3462,7 @@ let memBaseAddr = 0;
 let memFormat = "32b";
 let memMsbFirst = false;
 let regionMap = {};  // name -> base address
-let memAutoRefresh = false;
+let memAutoRefresh = memAutoRefreshBox.checked;
 let _memAutoLastFetch = 0;
 let memRequestId = 0;
 let memViewKey = "";
@@ -3066,7 +3481,7 @@ let prevMemData2 = [];
 let memBaseAddr2 = 0x00010000;  // default: Shared RAM (C28)
 let memFormat2   = "32b";
 let memMsbFirst2 = false;
-let memAutoRefresh2 = false;
+let memAutoRefresh2 = memAutoRefreshBox2.checked;
 let _memAutoLastFetch2 = 0;
 let memRequestId2 = 0;
 let memViewKey2 = "";
@@ -3205,6 +3620,15 @@ function refreshMemory2(fromAuto = false) {
   });
 }
 
+function memoryBytesEqual(left, right) {
+  if (left === right) return true;
+  if (!left || !right || left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i++) {
+    if (left[i] !== right[i]) return false;
+  }
+  return true;
+}
+
 function renderMemory2(msg) {
   if (msg.request_id !== undefined && msg.request_id !== null &&
       msg.request_id !== memRequestId2) return;
@@ -3215,6 +3639,10 @@ function renderMemory2(msg) {
   }
   const addr = msg.addr;
   const data = msg.data;
+  const isReadResponse = msg.request_id !== undefined && msg.request_id !== null;
+  if (isReadResponse && addr === memBaseAddr2 && memoryBytesEqual(prevMemData2, data)) {
+    return;
+  }
   memBaseAddr2 = addr;
 
   const { wordSize, wordsPerRow } = MEM_FORMATS[memFormat2];
@@ -3275,7 +3703,7 @@ function editWord2(el, absoluteAddr, wordSize) {
   const maxLen = wordSize * 2;
   const oldVal = el.textContent;
   const input = document.createElement("input");
-  input.style.cssText = `width:${Math.max(56, maxLen * 8)}px;font-size:13px;text-align:center;background:#1a1a1a;color:#fff;border:1px solid var(--accent);padding:0;font-family:inherit;`;
+  input.style.cssText = `width:${Math.max(56, maxLen * 8)}px;font-size:13px;text-align:center;background:var(--panel-inset);color:var(--text);border:1px solid var(--accent);padding:0;font-family:inherit;`;
   input.value = oldVal;
   input.maxLength = maxLen;
   el.textContent = "";
@@ -3344,7 +3772,7 @@ function drawWavePreview() {
   fillWaveCanvas.height = H;
 
   const ctx = fillWaveCanvas.getContext("2d");
-  ctx.fillStyle = "#1a1a1a";
+  ctx.fillStyle = getThemeColor("--graph-bg", "#ffffff");
   ctx.fillRect(0, 0, W, H);
 
   // ---- Compute y range from current parameters ----------------------------
@@ -3372,13 +3800,15 @@ function drawWavePreview() {
   // ---- Y reference lines --------------------------------------------------
   ctx.lineWidth = 1;
   for (const [py, bright] of [[yTopPx, false], [midY, true], [yBotPx, false]]) {
-    ctx.strokeStyle = bright ? "#3c3c3c" : "#262626";
+    ctx.strokeStyle = bright
+      ? getThemeColor("--graph-grid-strong", "#c2cbd4")
+      : getThemeColor("--graph-grid", "#d8dee5");
     ctx.beginPath(); ctx.moveTo(Y_MAR, py); ctx.lineTo(W, py); ctx.stroke();
   }
 
   // ---- Y-axis labels -------------------------------------------------------
   ctx.font      = "9px Consolas, monospace";
-  ctx.fillStyle = "#858585";
+  ctx.fillStyle = getThemeColor("--graph-label", "#53616d");
   ctx.textAlign = "right";
   ctx.fillText(fmtYLabel(yMax), Y_MAR - 4, yTopPx + 4);
   ctx.fillText(fmtYLabel(yMid), Y_MAR - 4, midY   + 3);
@@ -3386,7 +3816,7 @@ function drawWavePreview() {
 
   // ---- Waveform -----------------------------------------------------------
   const cycles = parseFloat(fillWaveCycles.value) || 1;
-  ctx.strokeStyle = "#569cd6";
+  ctx.strokeStyle = getThemeColor("--graph-wave", "#b6202b");
   ctx.lineWidth   = 1.5;
   ctx.beginPath();
   for (let xi = 0; xi < WAVE_W; xi++) {
@@ -3407,13 +3837,13 @@ function drawWavePreview() {
   const nTicks = 5;
 
   ctx.font      = "9px Consolas, monospace";
-  ctx.fillStyle = "#858585";
+  ctx.fillStyle = getThemeColor("--graph-label", "#53616d");
   for (let i = 0; i <= nTicks; i++) {
     const frac  = i / nTicks;
     const px    = Y_MAR + Math.round(frac * WAVE_W);
     const label = Math.round(frac * nElems).toString();
 
-    ctx.strokeStyle = "#555";
+    ctx.strokeStyle = getThemeColor("--graph-grid-strong", "#c2cbd4");
     ctx.lineWidth   = 1;
     ctx.beginPath(); ctx.moveTo(px + 0.5, WAVE_H); ctx.lineTo(px + 0.5, WAVE_H + 3); ctx.stroke();
 
@@ -3617,6 +4047,10 @@ function renderMemory(msg) {
   }
   const addr = msg.addr;
   const data = msg.data;
+  const isReadResponse = msg.request_id !== undefined && msg.request_id !== null;
+  if (isReadResponse && addr === memBaseAddr && memoryBytesEqual(prevMemData, data)) {
+    return;
+  }
   memBaseAddr = addr;
 
   const { wordSize, wordsPerRow } = MEM_FORMATS[memFormat];
@@ -3666,7 +4100,7 @@ function editWord(el, absoluteAddr, wordSize) {
   const maxLen = wordSize * 2;
   const oldVal = el.textContent;
   const input = document.createElement("input");
-  input.style.cssText = `width:80px;font-size:13px;text-align:center;background:#1a1a1a;color:#fff;border:1px solid var(--accent);padding:0;font-family:inherit;`;
+  input.style.cssText = `width:80px;font-size:13px;text-align:center;background:var(--panel-inset);color:var(--text);border:1px solid var(--accent);padding:0;font-family:inherit;`;
   input.value = oldVal;
   input.maxLength = maxLen;
   el.textContent = "";
@@ -3701,7 +4135,7 @@ function editWord(el, absoluteAddr, wordSize) {
 function editRegister(valEl, index) {
   const oldVal = valEl.textContent;
   const input = document.createElement("input");
-  input.style.cssText = "width:88px;font-size:13px;text-align:right;background:#1a1a1a;color:#fff;border:1px solid var(--accent);padding:0 2px;font-family:inherit;";
+  input.style.cssText = "width:88px;font-size:13px;text-align:right;background:var(--panel-inset);color:var(--text);border:1px solid var(--accent);padding:0 2px;font-family:inherit;";
   input.value = oldVal.slice(2);  // strip leading "0x"
   input.maxLength = 8;
   valEl.textContent = "";
@@ -4006,7 +4440,9 @@ function selectGenericSsiPartner() {
   applyMCPartnerLabels();
   if (multiCoreMode) {
     mcPrevRegs.rtu0 = new Array(32).fill("0x00000000");
-    mcLastSourceKey.rtu0 = "";
+    mcSourceInstructions.rtu0 = [];
+    mcSourceLabels.rtu0 = {};
+    mcLastSourceBreakpointKey.rtu0 = null;
     mcBreakpoints.rtu0 = new Set();
     mcHaltedState.rtu0 = false;
     mcBreakState.rtu0 = false;
@@ -4028,14 +4464,15 @@ function applyMCPartnerLabels() {
 
 mcPartnerSelect.addEventListener("change", () => {
   stopRun(); stopSim();
-  graphSetRecording(false);
   graphClear();
   mcPartner = mcPartnerSelect.value;
   applyMCPartnerLabels();
   if (multiCoreMode) {
     // Reset the partner DOM slot and re-request state for the new core.
     mcPrevRegs.rtu0 = new Array(32).fill("0x00000000");
-    mcLastSourceKey.rtu0 = '';
+    mcSourceInstructions.rtu0 = [];
+    mcSourceLabels.rtu0 = {};
+    mcLastSourceBreakpointKey.rtu0 = null;
     mcBreakpoints.rtu0 = new Set();
     mcHaltedState.rtu0 = false;
     mcBreakState.rtu0 = false;
@@ -4048,7 +4485,6 @@ mcPartnerSelect.addEventListener("change", () => {
 function toggleMultiCore() {
   multiCoreMode = !multiCoreMode;
   stopRun(); stopSim();
-  graphSetRecording(false);
   graphClear();
 
   if (multiCoreMode) {
@@ -4145,7 +4581,7 @@ function buildMCRegTable(core) {
 function editMCRegister(valEl, core, index) {
   const oldVal = valEl.textContent;
   const input = document.createElement("input");
-  input.style.cssText = "width:88px;font-size:13px;text-align:right;background:#1a1a1a;color:#fff;border:1px solid var(--accent);padding:0 2px;font-family:inherit;";
+  input.style.cssText = "width:88px;font-size:13px;text-align:right;background:var(--panel-inset);color:var(--text);border:1px solid var(--accent);padding:0 2px;font-family:inherit;";
   input.value = oldVal.slice(2);
   input.maxLength = 8;
   valEl.textContent = "";
@@ -4197,8 +4633,12 @@ function updateMCUI(state) {
   // Registers
   updateMCRegisters(core, state.registers);
 
-  // Source listing
-  updateMCSource(core, state.instructions, state.pc, state.labels || {});
+  // Source text is included only when it changes; retain it between ticks.
+  if (Array.isArray(state.instructions)) {
+    mcSourceInstructions[core] = state.instructions;
+    mcSourceLabels[core] = state.labels || {};
+  }
+  updateMCSource(core, mcSourceInstructions[core], state.pc, mcSourceLabels[core]);
 
   // Breakpoints
   if (state.breakpoints) mcBreakpoints[core] = new Set(state.breakpoints);
@@ -4287,19 +4727,22 @@ function updateMCSource(core, instructions, pc, labels) {
   const listEl = document.getElementById(`mc-${core}-source-list`);
   if (!listEl) return;
 
-  const addrToLabels = {};
-  for (const [name, addr] of Object.entries(labels)) {
-    if (!addrToLabels[addr]) addrToLabels[addr] = [];
-    addrToLabels[addr].push(name);
-  }
-  for (const addr of Object.keys(addrToLabels)) addrToLabels[addr].sort();
-
-  const newKey = instructions.map(i => i.addr + ':' + i.text).join('|')
-               + '|' + Object.entries(labels).sort().join('|');
-
-  if (newKey !== mcLastSourceKey[core]) {
-    mcLastSourceKey[core] = newKey;
+  // State packets reuse the same source objects until a load changes them.
+  const sourceChanged = instructions !== mcRenderedSourceInstructions[core] ||
+    labels !== mcRenderedSourceLabels[core];
+  if (sourceChanged) {
+    mcRenderedSourceInstructions[core] = instructions;
+    mcRenderedSourceLabels[core] = labels;
+    mcLastSourceBreakpointKey[core] = null;
+    mcCurrentSourceLine[core] = null;
     listEl.innerHTML = "";
+
+    const addrToLabels = {};
+    for (const [name, addr] of Object.entries(labels)) {
+      if (!addrToLabels[addr]) addrToLabels[addr] = [];
+      addrToLabels[addr].push(name);
+    }
+    for (const addr of Object.keys(addrToLabels)) addrToLabels[addr].sort();
 
     instructions.forEach((instr) => {
       (addrToLabels[instr.addr] || []).forEach(name => {
@@ -4334,19 +4777,27 @@ function updateMCSource(core, instructions, pc, labels) {
     });
   }
 
-  // Breakpoint markers
-  listEl.querySelectorAll(`li[id^='mc-${core}-src-line-']`).forEach(li => {
-    const addr = parseInt(li.id.replace(`mc-${core}-src-line-`, ""), 10);
-    li.classList.toggle("has-bp", mcBreakpoints[core].has(addr));
-  });
+  // Breakpoint markers only need to be touched when the set or source list
+  // changes; doing this for every state packet makes the source view lag.
+  const breakpointKey = [...mcBreakpoints[core]].sort((a, b) => a - b).join(",");
+  if (breakpointKey !== mcLastSourceBreakpointKey[core]) {
+    listEl.querySelectorAll(`li[id^='mc-${core}-src-line-']`).forEach(li => {
+      const addr = parseInt(li.id.replace(`mc-${core}-src-line-`, ""), 10);
+      li.classList.toggle("has-bp", mcBreakpoints[core].has(addr));
+    });
+    mcLastSourceBreakpointKey[core] = breakpointKey;
+  }
 
   // Current PC highlight
-  listEl.querySelectorAll("li.current-pc").forEach(el => el.classList.remove("current-pc"));
   const currentLine = document.getElementById(`mc-${core}-src-line-${pc}`);
-  if (currentLine) {
-    currentLine.classList.add("current-pc");
-    currentLine.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  if (mcCurrentSourceLine[core] && mcCurrentSourceLine[core] !== currentLine) {
+    mcCurrentSourceLine[core].classList.remove("current-pc");
   }
+  if (currentLine && currentLine !== mcCurrentSourceLine[core]) {
+    currentLine.classList.add("current-pc");
+    queueSourceLineScroll(`mc-${core}`, listEl, currentLine);
+  }
+  mcCurrentSourceLine[core] = currentLine;
 
   // "rtu0" is this panel's fixed DOM slot; the core actually loaded into it
   // (RTU0 or PRU1) is whatever mcPartner currently points at.
@@ -4426,6 +4877,7 @@ document.addEventListener("keydown", (e) => {
   } else if (e.key === "ArrowLeft") {
     e.preventDefault();
     stopRun(); stopSim();
+    graphClear();
     if (multiCoreMode) {
       sendAction({ action: "step_back", core: "pru0" });
       sendAction({ action: "step_back", core: mcPartner });
@@ -4451,7 +4903,7 @@ document.getElementById("uart-decode-btn").addEventListener("click", () => {
   };
 
   if (samples.length === 0) {
-    return showHint("Use Signal Graph ● REC to capture GPO0 first");
+    return showHint("Run or step the simulator to capture GPO0 first");
   }
 
   const { bytes, tBit, error } = decodeUART(samples);
@@ -4473,7 +4925,7 @@ document.getElementById("uart-decode-btn").addEventListener("click", () => {
 document.getElementById("uart-clear-btn").addEventListener("click", () => {
   document.getElementById("uart-status").style.display = "none";
   document.getElementById("uart-output").style.display = "none";
-  document.getElementById("uart-hint").textContent = "Use Signal Graph ● REC to capture GPO0 first";
+  document.getElementById("uart-hint").textContent = "Run or step the simulator to capture GPO0 first";
   document.getElementById("uart-hint").style.display = "";
 });
 
@@ -4566,7 +5018,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
 
     if (!bytes || bytes.length === 0) {
       statusEl.textContent = "\u2717 Invalid payload \u2014 enter space-separated hex bytes or ASCII text";
-      statusEl.style.color = "#f38ba8";
+      statusEl.style.color = "var(--halted)";
       statusEl.style.display = "";
       return;
     }
@@ -4575,7 +5027,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     const baudMb = parseFloat(baudStr);
     if (isNaN(baudMb) || baudMb <= 0 || baudMb > 10) {
       statusEl.textContent = "\u2717 Baud must be between 0.01 and 10.00 Mb";
-      statusEl.style.color = "#f38ba8";
+      statusEl.style.color = "var(--halted)";
       statusEl.style.display = "";
       return;
     }
@@ -4584,7 +5036,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     const framesVal = parseInt(document.getElementById("uart-inj-frames").value, 10);
     if (isNaN(framesVal) || framesVal < 1 || framesVal > 100) {
       statusEl.textContent = "\u2717 Frames must be between 1 and 100";
-      statusEl.style.color = "#f38ba8";
+      statusEl.style.color = "var(--halted)";
       statusEl.style.display = "";
       return;
     }
@@ -4601,7 +5053,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     });
 
     statusEl.textContent = "\u231B Arming...";
-    statusEl.style.color = "#888";
+    statusEl.style.color = "var(--text-dim)";
     statusEl.style.display = "";
   });
 })();
@@ -4643,7 +5095,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
 
     if (isNaN(value) || value < 0 || value > maxVal) {
       statusEl.textContent = "✗ Value must be 0–" + (ssiMode === "hex" ? maxVal.toString(16).toUpperCase() : maxVal) + " (" + bits + " bits)";
-      statusEl.style.color = "#f38ba8";
+      statusEl.style.color = "var(--halted)";
       statusEl.style.display = "";
       return;
     }
@@ -4661,7 +5113,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     });
 
     statusEl.textContent = "⏳ Arming...";
-    statusEl.style.color = "#888";
+    statusEl.style.color = "var(--text-dim)";
     statusEl.style.display = "";
   });
 })();
@@ -4714,13 +5166,19 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     Object.entries(fieldIds).forEach(([key, id]) => {
       const el = document.getElementById(id);
       if (el && values[key] !== undefined && document.activeElement !== el) {
-        el.value = values[key];
+        const value = String(values[key]);
+        if (el.value !== value) el.value = value;
       }
     });
   }
 
   function renderRuntimeProfiles(profiles) {
     if (!profileSelect || !Array.isArray(profiles)) return;
+    const profileKey = profiles.map((profile) =>
+      `${profile.name}:${profile.frame_width_bits}:${profile.clock_hz}`
+    ).join("|");
+    if (profileSelect.dataset.profileKey === profileKey) return;
+
     const selected = profileSelect.value;
     profileSelect.innerHTML = "";
     profiles.forEach((profile) => {
@@ -4733,6 +5191,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     if (selected && profiles.some((p) => p.name === selected)) {
       profileSelect.value = selected;
     }
+    profileSelect.dataset.profileKey = profileKey;
   }
 
   function formatDebugHex(value, width) {
@@ -4785,7 +5244,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
         " ack " + msg.pru0_ack_generation + "/" + msg.pru1_ack_generation +
         " · " + (Number(msg.effective_clock_hz || 0) / 1e6).toFixed(3) + " MHz"
       : "";
-    setRuntimeStatus(status + generation, msg.loaded ? "#6a9955" : "#888");
+    setRuntimeStatus(status + generation, msg.loaded ? "#6a9955" : "var(--text-dim)");
 
     const wires = document.getElementById("ssi-runtime-wires");
     if (wires) {
@@ -4794,14 +5253,14 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
       );
       wires.textContent = wireText.length
         ? "Wires: " + wireText.join(" | ")
-        : "Wires: —";
+        : "Wires: ...";
     }
 
     const mailbox = document.getElementById("ssi-runtime-mailbox");
     if (mailbox) {
       const mb = msg.mailbox;
       if (!mb) {
-        mailbox.textContent = "Mailbox: —";
+        mailbox.textContent = "Mailbox: ...";
       } else {
         const position = mailboxValue(msg, "position", mb.position_value, 8) ||
           "invalid for active width";
@@ -4833,7 +5292,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     if (trace) {
       const tr = msg.trace;
       if (!tr) {
-        trace.textContent = "Trace: —";
+        trace.textContent = "Trace: ...";
       } else {
         const records = msg.trace_display &&
           msg.trace_display.write_index_decimal !== undefined
@@ -4859,7 +5318,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
       const producer = msg.producer;
       const diag = msg.producer_diagnostics;
       if (!producer || !diag) {
-        producerDiagnostics.textContent = "Timestamped producer: —";
+        producerDiagnostics.textContent = "Timestamped producer: ...";
       } else {
         producerDiagnostics.textContent = [
           "Timestamped ARM producer / PRU0 estimator",
@@ -4954,7 +5413,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
 
   document.getElementById("ssi-runtime-pack").addEventListener("click", () => {
     sendPositionPacking();
-    setRuntimeStatus("Natural positions packed into staged frame slots.", "#dcdcaa");
+    setRuntimeStatus("Natural positions packed into staged frame slots.", "var(--accent)");
   });
 
   profileSelect.addEventListener("change", () => {
@@ -4969,7 +5428,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
       profile: selectedProfile(),
       overrides: numericOverrides(),
     });
-    setRuntimeStatus("Configuration staged; press Apply atomically.", "#dcdcaa");
+    setRuntimeStatus("Configuration staged; press Apply atomically.", "var(--accent)");
   });
 
   document.getElementById("ssi-runtime-producer-configure").addEventListener("click", () => {
@@ -4982,7 +5441,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
       triangle_high: document.getElementById("ssi-runtime-producer-high").value,
       period_iep_ticks: Math.trunc(Number(document.getElementById("ssi-runtime-producer-period").value)),
     });
-    setRuntimeStatus("Timestamped producer configured; Start when ready.", "#dcdcaa");
+    setRuntimeStatus("Timestamped producer configured; Start when ready.", "var(--accent)");
   });
 
   document.getElementById("ssi-runtime-producer-start").addEventListener("click", () => {
@@ -4999,13 +5458,14 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
 
   document.getElementById("ssi-runtime-apply").addEventListener("click", () => {
     if (!genericSsiLoaded) {
-      setRuntimeStatus("Load the generic SSI pair before Apply.", "#f38ba8");
+      setRuntimeStatus("Load the generic SSI pair before Apply.", "var(--halted)");
       return;
     }
     if (running || genericSsiRunInFlight) {
-      setRuntimeStatus("Wait for the current paired run to finish before Apply.", "#f38ba8");
+      setRuntimeStatus("Wait for the current paired run to finish before Apply.", "var(--halted)");
       return;
     }
+    graphClear();
     // Send one complete transaction.  The server validates the layout and
     // every frame before publishing a new generation.
     sendAction({
@@ -5014,16 +5474,16 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
       overrides: numericOverrides(),
       frames: frameTokens(),
     });
-    setRuntimeStatus("Applying at an idle SSI frame boundary...", "#dcdcaa");
+    setRuntimeStatus("Applying at an idle SSI frame boundary...", "var(--accent)");
   });
 
   document.getElementById("ssi-runtime-run").addEventListener("click", () => {
     if (!genericSsiLoaded) {
-      setRuntimeStatus("Load the generic SSI pair before running it.", "#f38ba8");
+      setRuntimeStatus("Load the generic SSI pair before running it.", "var(--halted)");
       return;
     }
     if (running || genericSsiRunInFlight) {
-      setRuntimeStatus("A paired run is already in progress.", "#f38ba8");
+      setRuntimeStatus("A paired run is already in progress.", "var(--halted)");
       return;
     }
     const steps = Math.max(100, Math.min(
@@ -5036,7 +5496,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
       core: "pru1",
       partner: "pru0",
       max_steps: Math.trunc(steps),
-      capture: true,
+      capture: signalGraph.recording,
       request_id,
     });
     genericSsiRunInFlight = sent;
@@ -5065,6 +5525,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
   if (!sel) return;
   sel.addEventListener("change", () => {
     const mux = parseInt(sel.value, 10) || 0;
+    graphClear();
     sendAction({ action: "gpcfg_write", core: currentCore, mux_sel: mux });
   });
 })();

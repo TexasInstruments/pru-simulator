@@ -7,6 +7,7 @@ import os
 import pathlib
 import re
 import sys
+import uuid
 
 # Ensure project root is on path so simulator can be imported
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -22,8 +23,10 @@ from perif.gpcfg import MUX_SD
 from xfr.xfr_bus import SPAD_BANK0, SPAD_BANK1, SPAD_BANK2, IPC_SPAD
 from pru_io import ssi_config_abi as ssi_abi
 from pru_io.ssi_runtime import CLOCK_LOOP_OVERHEAD_CYCLES, PROFILES, SSIRuntime
+from ui.trace_log import MAX_PAGE_SAMPLES, TraceLogError, TraceLogManager
 
 app = FastAPI(title="PRU Simulator Dashboard")
+trace_logs = TraceLogManager()
 
 MAX_BREAKPOINTS = 64
 
@@ -365,6 +368,100 @@ def _restore(core: str, snap: dict) -> None:
     if snap.get("i2c") is not None and c.io_port.i2c_device is not None:
         c.io_port.i2c_device.restore(snap["i2c"])
 
+
+def _trace_download_url(session_id: str) -> str:
+    return f"/trace-logs/{session_id}/download"
+
+
+def _trace_state_for_ui(state: dict | None) -> dict:
+    state = dict(state or {
+        "active": False,
+        "session_id": "",
+        "sample_count": 0,
+        "started_at": "",
+        "download_url": None,
+    })
+    if state.get("session_id") and not state.get("active"):
+        state["download_url"] = _trace_download_url(state["session_id"])
+    return state
+
+
+async def _finalize_trace_log(websocket, reason: str):
+    owner = getattr(websocket, "_trace_owner", None)
+    if owner is None:
+        return None
+    try:
+        state = trace_logs.stop(owner)
+    except TraceLogError as exc:
+        await websocket.send_json({"type": "trace_log_error", "error": str(exc)})
+        return None
+    if state is not None:
+        payload = _trace_state_for_ui(state)
+        payload["reason"] = reason
+        await websocket.send_json({"type": "trace_log_state", **payload})
+    return state
+
+
+def _trace_sequences_for_batches(batches, sequences):
+    """Map manager-wide sorted sequence values back to capture batch order."""
+    entries = []
+    aligned = [[] for _ in batches]
+    for batch_index, batch in enumerate(batches):
+        samples = batch.get("samples", [])
+        aligned[batch_index] = [None] * len(samples)
+        for sample_index, sample in enumerate(samples):
+            if len(sample) < 7:
+                raise TraceLogError("capture sample must contain seven packed values")
+            run_step = sample[6] if sample[6] is not None else sample[0]
+            entries.append((
+                int(run_step),
+                str(batch.get("core", "pru0")),
+                batch_index,
+                sample_index,
+            ))
+    if len(entries) != len(sequences):
+        raise TraceLogError("trace sequence count does not match capture batch")
+    for sequence, entry in zip(sequences, sorted(entries, key=lambda item: item[:2])):
+        _, _, batch_index, sample_index = entry
+        aligned[batch_index][sample_index] = sequence
+    return aligned
+
+
+def _trace_mode_segments(batch):
+    """Split an internal capture batch at mode transitions for logging."""
+    samples = list(batch.get("samples", []))
+    if not samples:
+        return []
+    modes = batch.get("_sample_modes")
+    if modes is None:
+        return [{**batch, "samples": samples, "_wire_start": 0,
+                 "_wire_end": len(samples), "_wire_batch": batch}]
+    modes = list(modes)
+    if len(modes) != len(samples):
+        raise TraceLogError("capture mode count does not match capture batch")
+
+    segments = []
+    start = 0
+    for index in range(1, len(modes) + 1):
+        if index < len(modes) and modes[index] == modes[start]:
+            continue
+        segment = {
+            **batch,
+            "mode": modes[start],
+            "samples": samples[start:index],
+            "_wire_start": start,
+            "_wire_end": index,
+            "_wire_batch": batch,
+        }
+        if "captured_at_ms" in batch:
+            segment["captured_at_ms"] = list(
+                batch.get("captured_at_ms", [])
+            )[start:index]
+        segments.append(segment)
+        start = index
+    return segments
+
+
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -450,6 +547,54 @@ async def put_config(request: Request):
             return JSONResponse({"error": str(e)}, status_code=400)
 
 
+@app.get("/trace-logs/{session_id}/samples")
+async def get_trace_samples(session_id: str, request: Request):
+    trace_logs.cleanup()
+    query = request.query_params
+
+    def parse_integer(name: str, default=None):
+        raw = query.get(name)
+        if raw is None or raw == "":
+            return default
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"{name} must be an integer") from None
+
+    try:
+        before = parse_integer("before")
+        after = parse_integer("after")
+        limit = parse_integer("limit", 1000)
+        if (before is None) == (after is None):
+            raise ValueError("provide exactly one of before or after")
+        if limit < 1 or limit > MAX_PAGE_SAMPLES:
+            raise ValueError(
+                f"limit must be between 1 and {MAX_PAGE_SAMPLES}"
+            )
+        page = trace_logs.page(
+            session_id, before=before, after=after, limit=limit
+        )
+    except KeyError:
+        return JSONResponse({"error": "trace session not found"}, status_code=404)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return page
+
+
+@app.get("/trace-logs/{session_id}/download")
+async def download_trace_log(session_id: str):
+    trace_logs.cleanup()
+    try:
+        path = trace_logs.file_path(session_id)
+    except KeyError:
+        return JSONResponse({"error": "trace session not found"}, status_code=404)
+    return FileResponse(
+        path,
+        media_type="text/csv",
+        filename=f"trace-{session_id}.csv",
+    )
+
+
 ALLOWED_CLOCK_MHZ = {200, 225, 250, 300, 333}
 
 
@@ -513,6 +658,7 @@ async def put_clock_speed(request: Request):
 async def websocket_endpoint(websocket: WebSocket):
     global _ssi_runtime
     await websocket.accept()
+    websocket._trace_owner = uuid.uuid4().hex
     try:
         while True:
             data = await websocket.receive_text()
@@ -520,12 +666,32 @@ async def websocket_endpoint(websocket: WebSocket):
             action = msg.get("action")
             core = msg.get("core", "pru0")
 
-            if action == "ssi_runtime_profiles":
+            if action == "trace_log_start":
+                trace_logs.cleanup()
+                try:
+                    state = trace_logs.start(websocket._trace_owner)
+                    await websocket.send_json({
+                        "type": "trace_log_state",
+                        **_trace_state_for_ui(state),
+                    })
+                except TraceLogError as exc:
+                    await websocket.send_json({
+                        "type": "trace_log_error", "error": str(exc),
+                    })
+            elif action == "trace_log_stop":
+                state = await _finalize_trace_log(websocket, "user")
+                if state is None:
+                    await websocket.send_json({
+                        "type": "trace_log_state",
+                        **_trace_state_for_ui(None),
+                    })
+            elif action == "ssi_runtime_profiles":
                 await websocket.send_json({
                     "type": "ssi_runtime_state",
                     **_ssi_runtime_state(),
                 })
             elif action == "ssi_runtime_load":
+                await _finalize_trace_log(websocket, "ssi_runtime_load")
                 try:
                     state = _load_ssi_runtime_pair()
                     await websocket.send_json({
@@ -619,6 +785,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         "error": str(exc),
                     })
             elif action == "ssi_runtime_apply":
+                await _finalize_trace_log(websocket, "ssi_runtime_apply")
                 if _ssi_runtime is None:
                     await websocket.send_json({
                         "type": "ssi_runtime_error",
@@ -725,6 +892,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         "type": "ssi_runtime_error", "error": str(exc)
                     })
             elif action == "load":
+                await _finalize_trace_log(websocket, "load")
                 _ssi_runtime = None
                 _history[core].clear()
                 filename = msg.get("filename")
@@ -744,6 +912,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json({"type": "error", "errors": errors})
                 await _send_state(websocket, core)
             elif action == "load_elf":
+                await _finalize_trace_log(websocket, "load_elf")
                 _ssi_runtime = None
                 _history[core].clear()
                 # ELF binary sent as base64-encoded string
@@ -762,14 +931,44 @@ async def websocket_endpoint(websocket: WebSocket):
                 if len(_history[core]) > _MAX_HISTORY:
                     _history[core].pop(0)
                 at_breakpoint = False
+                capture = bool(msg.get("capture", False))
+                count = int(msg.get("count", 1))
+                samples = []
+                captured_at_ms = []
+                trace_active = bool(
+                    capture and trace_logs.is_active(
+                        getattr(websocket, "_trace_owner", "")
+                    )
+                )
+                sample_modes = [] if trace_active else None
+                pru = sim.cores[core]
                 try:
-                    sim.step(core, msg.get("count", 1))
-                    pru = sim.cores[core]
+                    if capture:
+                        for _ in range(count):
+                            sim.step(core, 1)
+                            run_step = pru.counters.instruction_count
+                            samples.append(_capture_sample(pru, run_step=run_step))
+                            captured_at_ms.append(_capture_time_ms(core, pru))
+                            if trace_active:
+                                sample_modes.append(_io_mode(core))
+                    else:
+                        sim.step(core, count)
                     if pru.pc in pru.breakpoints:
                         at_breakpoint = True
                 except ValueError as ve:
                     await websocket.send_json({"type": "error", "errors": [str(ve)]})
-                await _send_state(websocket, core, at_breakpoint=at_breakpoint)
+                if samples:
+                    await _publish_capture_batches(websocket, [{
+                        "core": core,
+                        "samples": samples,
+                        "captured_at_ms": captured_at_ms,
+                        "_sample_modes": sample_modes,
+                    }])
+                await _send_state(
+                    websocket, core, at_breakpoint=at_breakpoint,
+                    captured=capture,
+                    captured_at_ms=(captured_at_ms[-1] if captured_at_ms else None),
+                )
                 # Auto-refresh both memory panels if client has set addresses
                 for tag, addr_attr, len_attr in [
                     ("mem1", "_mem_addr",  "_mem_len"),
@@ -796,10 +995,12 @@ async def websocket_endpoint(websocket: WebSocket):
                         except ValueError:
                             pass
             elif action == "reset":
+                await _finalize_trace_log(websocket, "reset")
                 _history[core].clear()
                 sim.reset(core)
                 await _send_state(websocket, core)
             elif action == "hard_reset":
+                await _finalize_trace_log(websocket, "hard_reset")
                 _ssi_runtime = None
                 for k in _history:
                     _history[k].clear()
@@ -809,7 +1010,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 sim.set_input(core, msg["pin"], bool(msg["value"]))
                 await _send_state(websocket, core)
             elif action == "get_state":
-                await _send_state(websocket, core)
+                await _send_state(websocket, core, include_source=True)
             elif action == "read_memory":
                 addr = int(msg.get("addr", 0))
                 length = int(msg.get("length", 128))
@@ -853,6 +1054,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     c.io_port.set_gpi_word(val)
                 await _send_state(websocket, core)
             elif action == "step_back":
+                await _finalize_trace_log(websocket, "step_back")
                 if _history[core]:
                     _restore(core, _history[core].pop())
                 await _send_state(websocket, core)
@@ -951,20 +1153,47 @@ async def websocket_endpoint(websocket: WebSocket):
                 pru = sim.cores[core]
                 at_breakpoint = False
                 samples = []
+                captured_at_ms = []
+                trace_active = bool(
+                    capture and trace_logs.is_active(
+                        getattr(websocket, "_trace_owner", "")
+                    )
+                )
+                sample_modes = [] if trace_active else None
+                previous_capture_signature = None
                 try:
                     steps = 0
                     while steps < max_steps and not pru.halted and pru.pc < len(pru.instructions):
                         pru.step()
                         steps += 1
-                        if capture and _capture_due(pru, steps):
-                            samples.append(_capture_sample(pru, run_step=pru.counters.instruction_count))
+                        if capture:
+                            current_capture_sample, previous_capture_signature = (
+                                _capture_sample_if_needed(
+                                    pru,
+                                    steps,
+                                    run_step=pru.counters.instruction_count,
+                                    previous_signature=previous_capture_signature,
+                                )
+                            )
+                            if current_capture_sample is not None:
+                                samples.append(current_capture_sample)
+                                captured_at_ms.append(
+                                    _capture_time_ms(core, pru)
+                                )
+                                if trace_active:
+                                    sample_modes.append(_io_mode(core))
                         if pru.pc in pru.breakpoints:
                             at_breakpoint = True
                             break
                 except ValueError as ve:
                     await websocket.send_json({"type": "error", "errors": [str(ve)]})
                 if samples:
-                    await _send_capture(websocket, core, samples)
+                    await _publish_capture_batches(websocket, [{
+                        "core": core,
+                        "samples": samples,
+                        "captured_at_ms": captured_at_ms,
+                        "_sample_modes": sample_modes,
+                    }])
                 await _send_state(websocket, core, at_breakpoint=at_breakpoint,
                                   captured=capture)
                 if request_id is not None:
@@ -979,6 +1208,17 @@ async def websocket_endpoint(websocket: WebSocket):
                 lead_bp = partner_bp = False
                 samples = []
                 partner_samples = []
+                captured_at_ms = []
+                partner_captured_at_ms = []
+                trace_active = bool(
+                    capture and trace_logs.is_active(
+                        getattr(websocket, "_trace_owner", "")
+                    )
+                )
+                sample_modes = [] if trace_active else None
+                partner_sample_modes = [] if trace_active else None
+                previous_lead_capture_signature = None
+                previous_partner_capture_signature = None
                 sync_error = _multicore_sync_error(core, partner)
                 if sync_error:
                     error = {
@@ -1013,10 +1253,38 @@ async def websocket_endpoint(websocket: WebSocket):
                         # lead's absolute instruction count so the browser's
                         # horizontal axis remains monotonic across Run chunks.
                         run_step = lead_pru.counters.instruction_count
-                        if capture and _capture_due(lead_pru, steps):
-                            samples.append(_capture_sample(lead_pru, run_step=run_step))
-                        if capture and _capture_due(partner_pru, steps):
-                            partner_samples.append(_capture_sample(partner_pru, run_step=run_step))
+                        if capture:
+                            lead_capture_sample, previous_lead_capture_signature = (
+                                _capture_sample_if_needed(
+                                    lead_pru,
+                                    steps,
+                                    run_step=run_step,
+                                    previous_signature=previous_lead_capture_signature,
+                                )
+                            )
+                            if lead_capture_sample is not None:
+                                samples.append(lead_capture_sample)
+                                captured_at_ms.append(
+                                    _capture_time_ms(core, lead_pru)
+                                )
+                                if trace_active:
+                                    sample_modes.append(_io_mode(core))
+
+                            partner_capture_sample, previous_partner_capture_signature = (
+                                _capture_sample_if_needed(
+                                    partner_pru,
+                                    steps,
+                                    run_step=run_step,
+                                    previous_signature=previous_partner_capture_signature,
+                                )
+                            )
+                            if partner_capture_sample is not None:
+                                partner_samples.append(partner_capture_sample)
+                                partner_captured_at_ms.append(
+                                    _capture_time_ms(partner, partner_pru)
+                                )
+                                if trace_active:
+                                    partner_sample_modes.append(_io_mode(partner))
                         if lead_pru.pc in lead_pru.breakpoints:
                             lead_bp = True
                             break
@@ -1039,15 +1307,25 @@ async def websocket_endpoint(websocket: WebSocket):
                     capture_group = (
                         f"{core}:{partner}:{lead_pru.counters.instruction_count}"
                     )
+                capture_batches = []
                 if samples:
-                    await _send_capture(
-                        websocket, core, samples, capture_group=capture_group
-                    )
+                    capture_batches.append({
+                        "core": core,
+                        "samples": samples,
+                        "captured_at_ms": captured_at_ms,
+                        "_sample_modes": sample_modes,
+                        "capture_group": capture_group,
+                    })
                 if partner_samples:
-                    await _send_capture(
-                        websocket, partner, partner_samples,
-                        capture_group=capture_group,
-                    )
+                    capture_batches.append({
+                        "core": partner,
+                        "samples": partner_samples,
+                        "captured_at_ms": partner_captured_at_ms,
+                        "_sample_modes": partner_sample_modes,
+                        "capture_group": capture_group,
+                    })
+                if capture_batches:
+                    await _publish_capture_batches(websocket, capture_batches)
                 await _send_state(websocket, core, at_breakpoint=lead_bp,
                                   captured=capture)
                 await _send_state(websocket, partner, at_breakpoint=partner_bp,
@@ -1077,6 +1355,7 @@ async def websocket_endpoint(websocket: WebSocket):
             elif action == "get_wires":
                 await websocket.send_text(json.dumps({"type": "wires", "wires": sim.list_gpio_wires()}))
             elif action == "gpcfg_write":
+                await _finalize_trace_log(websocket, "gpcfg_write")
                 sim.gpcfg_write(core, int(msg.get("mux_sel", 0)))
                 await _send_state(websocket, core)
             elif action == "write_perif_register":
@@ -1147,6 +1426,11 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception:
         import traceback
         traceback.print_exc()
+    finally:
+        try:
+            trace_logs.disconnect(websocket._trace_owner)
+        except TraceLogError:
+            pass
 
 
 def _read_mac(core) -> dict:
@@ -1257,7 +1541,8 @@ def _multicore_step_sync_error(core: str, partner: str) -> str | None:
     return None
 
 
-# One Signal Graph sample per this many instructions, outside peripheral mode.
+# One periodic Signal Graph sample per this many instructions, outside
+# peripheral mode. Digital edges between those points are added separately.
 # SSI at 4 MHz / 300 MHz PRU = 75 cycles per half-bit.  With stride 10 we get
 # ~7-8 samples per half-bit — enough to see rising/falling edges clearly.
 # UART at 4 Mb/s = 75 cycles/bit so the bit period is still resolvable (7+ pts).
@@ -1266,7 +1551,7 @@ CAPTURE_STRIDE_GP = 10
 
 
 def _capture_due(c, steps: int) -> bool:
-    """Whether to take a graph sample after instruction `steps` of this chunk.
+    """Whether to take the periodic graph sample at this chunk step.
 
     Decided per instruction rather than once per chunk because firmware enables
     peripheral mode from inside the run — `perif_duty_cycle_sweep.asm` writes
@@ -1310,20 +1595,156 @@ def _capture_sample(c, run_step: int = 0) -> list[int]:
             gpi_bits, out_bits, oe_bits, clk_bits, run_step]
 
 
-async def _send_capture(ws, core, samples, capture_group=None):
+def _capture_signature(c) -> tuple[int, int, int, int, int]:
+    """Read the digital lanes without allocating a full graph sample."""
+    perif = c.io_port.perif
+    out_bits = oe_bits = clk_bits = 0
+    if perif is not None and perif.enabled:
+        for i, ch in enumerate(perif.channels[:3]):
+            if ch.tx_line_value():
+                out_bits |= 1 << i
+            if ch.tx_out_en:
+                oe_bits |= 1 << i
+            if ch.tx_clk_pin:
+                clk_bits |= 1 << i
+    return (
+        c.registers.read_full(30) & 0xFFFFF,
+        c.io_port.gpi & 0xFFFFF,
+        out_bits,
+        oe_bits,
+        clk_bits,
+    )
+
+
+def _capture_signature_for_sample(
+    c, sample: list[int]
+) -> tuple[int, int, int, int, int]:
+    """Normalize a full sample to the lanes checked between samples."""
+    if c.io_port.perif is not None and c.io_port.perif.enabled:
+        return tuple(sample[1:6])
+    return (sample[1], sample[2], 0, 0, 0)
+
+
+def _capture_sample_if_needed(
+    c,
+    steps: int,
+    run_step: int,
+    previous_signature: tuple[int, int, int, int, int] | None,
+) -> tuple[list[int] | None, tuple[int, int, int, int, int]]:
+    """Take a periodic sample, or a full sample when a digital lane changes."""
+    if _capture_due(c, steps):
+        sample = _capture_sample(c, run_step=run_step)
+        return sample, _capture_signature_for_sample(c, sample)
+
+    signature = _capture_signature(c)
+    if previous_signature is None or signature == previous_signature:
+        return None, signature
+
+    sample = _capture_sample(c, run_step=run_step)
+    return sample, _capture_signature_for_sample(c, sample)
+
+
+def _capture_time_ms(core_name: str, core) -> float:
+    """Return acquisition time derived from the core's virtual clock."""
+    mhz = sim._pru1_clock_mhz if core_name == "pru1" else sim._pru_clock_mhz
+    return core.counters.cycles / (float(mhz) * 1000.0)
+
+
+async def _send_capture(ws, core, samples, captured_at_ms=None,
+                        sequences=None, capture_group=None, modes=None):
     """Ship a run loop's per-instruction Signal Graph samples in one message."""
+    if captured_at_ms is None:
+        captured_at_ms = [
+            _capture_time_ms(core, sim.cores[core]) for _ in samples
+        ]
     message = {
         "type": "capture",
         "core": core,
         "mode": _io_mode(core),
         "samples": samples,
+        "captured_at_ms": captured_at_ms,
     }
+    if sequences is not None:
+        message["sequences"] = sequences
+    if modes is not None:
+        message["modes"] = modes
     if capture_group is not None:
         message["capture_group"] = capture_group
     await ws.send_json(message)
 
 
-async def _send_state(ws, core, at_breakpoint=False, captured=False):
+async def _publish_capture_batches(ws, batches):
+    """Publish complete capture batches while preserving each time array."""
+    owner = getattr(ws, "_trace_owner", None)
+    if owner is not None and trace_logs.is_active(owner):
+        for batch in batches:
+            batch.setdefault("mode", _io_mode(batch["core"]))
+        try:
+            trace_batches = []
+            mode_change = False
+            pending_modes = {}
+            for batch in batches:
+                for segment in _trace_mode_segments(batch):
+                    previous_mode = pending_modes.get(segment["core"])
+                    if previous_mode is None:
+                        previous_mode = trace_logs.last_mode(
+                            owner, segment["core"]
+                        )
+                    if (previous_mode is not None and
+                            previous_mode != segment["mode"]):
+                        mode_change = True
+                        break
+                    pending_modes[segment["core"]] = segment["mode"]
+                    trace_batches.append(segment)
+                if mode_change:
+                    break
+
+            if trace_batches:
+                result = trace_logs.append(owner, trace_batches)
+                if result is not None:
+                    sequence_batches = _trace_sequences_for_batches(
+                        trace_batches, result["sequences"]
+                    )
+                    for segment, sequences in zip(
+                            trace_batches, sequence_batches):
+                        original = segment["_wire_batch"]
+                        start = segment["_wire_start"]
+                        end = segment["_wire_end"]
+                        if start == 0:
+                            original["sequences"] = sequences
+                        elif end == len(original.get("samples", [])):
+                            original["sequences"] = sequences
+            if mode_change:
+                await _finalize_trace_log(ws, "mode_change")
+
+        except TraceLogError as exc:
+            try:
+                state = trace_logs.stop(owner)
+                if state is not None:
+                    payload = _trace_state_for_ui(state)
+                    payload["reason"] = "write_error"
+                    await ws.send_json({
+                        "type": "trace_log_state", **payload,
+                    })
+            except TraceLogError:
+                pass
+            await ws.send_json({"type": "trace_log_error", "error": str(exc)})
+    for batch in batches:
+        if not batch.get("samples"):
+            continue
+        await _send_capture(
+            ws,
+            batch["core"],
+            batch["samples"],
+            captured_at_ms=batch.get("captured_at_ms"),
+            sequences=batch.get("sequences"),
+            capture_group=batch.get("capture_group"),
+            modes=batch.get("_sample_modes"),
+        )
+
+
+async def _send_state(ws, core, at_breakpoint=False, captured=False,
+                      captured_at_ms=None, include_source=False):
     c = sim.cores[core]
     # R31 display reflects live GPI state (registers.regs[31] is never updated by set_gpi_pin)
     regs = list(c.registers.regs)
@@ -1362,17 +1783,37 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False):
         "registers": [f"0x{r:08X}" for r in regs],
         "carry": c.registers.carry,
         "cycles": c.counters.cycles,
+        "captured_at_ms": (
+            _capture_time_ms(core, c)
+            if captured_at_ms is None else float(captured_at_ms)
+        ),
         "stall_cycles": c.counters.stall_cycles,
         "instruction_count": c.counters.instruction_count,
         "ipc": round(c.counters.ipc, 3),
         "io": io_section,
-        "instructions": [{"addr": i.address, "text": i.source_text} for i in c.instructions],
-        "labels": dict(c._parser.labels),   # name -> word address
         "spad": _read_spad(sim),
         "xfr_shift_en": sim.xfr.xfr_shift_en,
         "mac": _read_mac(c),
         "wires": sim.list_gpio_wires(),
     }
+
+    # Source text is static between loads, but it can be several hundred
+    # instructions long.  Keep it in the browser after the first state packet
+    # instead of serializing and parsing it on every simulation tick.
+    source_cache = getattr(ws, "_source_state_cache", None)
+    if source_cache is None:
+        source_cache = {}
+        ws._source_state_cache = source_cache
+    cached_source = source_cache.get(core)
+    if (include_source or cached_source is None or
+            cached_source[0] is not c.instructions or
+            cached_source[1] is not c._parser.labels):
+        state["instructions"] = [
+            {"addr": i.address, "text": i.source_text} for i in c.instructions
+        ]
+        state["labels"] = dict(c._parser.labels)  # name -> word address
+        source_cache[core] = (c.instructions, c._parser.labels)
+
     await ws.send_json(state)
 
 

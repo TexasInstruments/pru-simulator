@@ -229,7 +229,7 @@ def test_generic_ssi_panel_identifies_the_live_shared_memory_region():
     assert 'value="0x00010200">SSI mailbox (global 0x00010200)</option>' in html
     assert 'id="ssi-runtime-memory-hint"' in html
     assert "PRU0/PRU1 DRAM are not written by this pair" in html
-    assert '/static/app.js?v=20260825-1' in html
+    assert '/static/app.js?v=20260902-1' in html
 
 
 def test_profile_catalog_is_safe_for_ui_and_contains_default_and_documented_profiles():
@@ -474,3 +474,27 @@ def test_dashboard_websocket_rejects_frame_that_exceeds_staged_width(fresh_sim):
         error = ws.receive_json()
         assert error["type"] == "ssi_runtime_error"
         assert "does not fit in 8 bits" in error["error"]
+
+
+def test_dashboard_only_requests_capture_when_recording():
+    js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    run_section = js[js.index("function startRun"):js.index("function stopRun")]
+    sim_section = js[js.index("function startSim"):js.index("function stopSim")]
+    step_section = js[js.index("btnStep.addEventListener"):js.index("btnRun.addEventListener")]
+
+    assert "const capture = signalGraph.recording" in run_section
+    assert "capture, request_id" in run_section
+    assert "capture: signalGraph.recording" in sim_section
+    assert 'action: "step", core: currentCore, count: 1 });' in step_section
+    assert 'capture: true' not in step_section
+    assert 'action: "run_multicore"' in step_section
+
+
+def test_dashboard_throttles_runtime_and_profile_dom_work_during_runs():
+    js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    run_done_section = js[js.index('msg.type === "run_done"'):js.index('msg.type === "uart_inject_ok"')]
+
+    assert "function queueSsiRuntimeRead(force = false)" in js
+    assert "const SSI_RUNTIME_READ_THROTTLE_MS = 250;" in js
+    assert "queueSsiRuntimeRead(!(running || simRunning))" in run_done_section
+    assert "profileSelect.dataset.profileKey === profileKey" in js

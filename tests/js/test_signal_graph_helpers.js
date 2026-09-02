@@ -102,6 +102,30 @@ vm.runInNewContext(
 );
 const canStartRunRequest = runGateContext.canStartRunRequest;
 
+const memoryEqualSource = extractFunction(appSource, "memoryBytesEqual");
+const memoryEqualContext = {};
+vm.runInNewContext(
+  `${memoryEqualSource}\nthis.memoryBytesEqual = memoryBytesEqual;`,
+  memoryEqualContext,
+);
+const memoryBytesEqual = memoryEqualContext.memoryBytesEqual;
+
+const sourceVisibilitySource = extractFunction(appSource, "sourceLineNeedsScroll");
+const sourceVisibilityContext = {};
+vm.runInNewContext(
+  `${sourceVisibilitySource}\nthis.sourceLineNeedsScroll = sourceLineNeedsScroll;`,
+  sourceVisibilityContext,
+);
+const sourceLineNeedsScroll = sourceVisibilityContext.sourceLineNeedsScroll;
+
+const wireKeySource = extractFunction(appSource, "wireListKey");
+const wireKeyContext = {};
+vm.runInNewContext(
+  `${wireKeySource}\nthis.wireListKey = wireListKey;`,
+  wireKeyContext,
+);
+const wireListKey = wireKeyContext.wireListKey;
+
 function bucketAt(buckets, x) {
   const bucket = buckets.find(candidate => candidate.x === x);
   assert.ok(bucket, `expected a bucket at pixel ${x}`);
@@ -316,6 +340,28 @@ function testRunRequestGatePreventsBacklog() {
   assert.match(appSource, /type === "run_done"/);
 }
 
+function testUnchangedMemorySnapshotsAreRecognized() {
+  assert.equal(memoryBytesEqual([], []), true);
+  assert.equal(memoryBytesEqual([0, 1, 255], [0, 1, 255]), true);
+  assert.equal(memoryBytesEqual([0, 1], [0, 2]), false);
+  assert.equal(memoryBytesEqual([0], [0, 1]), false);
+}
+
+function testSourceScrollOnlyHappensOutsideTheViewport() {
+  assert.equal(sourceLineNeedsScroll(20, 30, 0, 100), false);
+  assert.equal(sourceLineNeedsScroll(-1, 10, 0, 100), true);
+  assert.equal(sourceLineNeedsScroll(95, 105, 0, 100), true);
+}
+
+function testUnchangedWireListsHaveTheSameRenderKey() {
+  const wires = [{ src_core: "pru1", src_pin: 0, dst_core: "pru0", dst_pin: 8 }];
+  assert.equal(wireListKey(wires), wireListKey(structuredClone(wires)));
+  assert.notEqual(
+    wireListKey(wires),
+    wireListKey([{ src_core: "pru1", src_pin: 1, dst_core: "pru0", dst_pin: 8 }]),
+  );
+}
+
 testTwoEdgePulseInsideOnePixel();
 testAdjacentSubPixelPulsesRemainVisible();
 testZoomedOrdinaryWaveformKeepsLevelSequence();
@@ -332,5 +378,8 @@ testResolutionWarnsForSubPixelRuns();
 testResolutionDoesNotTreatClippedFirstRunAsObserved();
 testResolutionDoesNotWarnWhenZoomedIn();
 testRunRequestGatePreventsBacklog();
+testUnchangedMemorySnapshotsAreRecognized();
+testSourceScrollOnlyHappensOutsideTheViewport();
+testUnchangedWireListsHaveTheSameRenderKey();
 
 console.log("signal graph helper tests passed");

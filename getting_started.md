@@ -31,7 +31,8 @@ The dashboard is divided into resizable panels. You can drag panel title bars to
 | **Editor** | Text editor for writing or loading `.asm` files |
 | **Registers** | R0–R31 live values; double-click any value to edit inline |
 | **Memory** | Hex dump of DRAM0/DRAM1/ICSS_SHARED; double-click a cell to edit |
-| **IO** | GPO (R30) and GPI (R31) pin controls; loopback strip; UART decoder; SD filter panel |
+| **IO** | GPO (R30) and GPI (R31) pin controls; loopback strip; SD filter panel |
+| **Protocol Tools** | I2C tooling, UART decoder and RX inject, and SSI encoder tooling |
 | **Signal Graph** | Logic analyzer + analog scope; records GPO/GPI (GP mode), Peripheral Interface out/out_en/clock lanes (perif mode), and memory channels |
 | **Memory Graph** | Analog waveform view for memory buffer channels |
 | **Counters** | Cycle count, instruction count, stall cycles, IPC |

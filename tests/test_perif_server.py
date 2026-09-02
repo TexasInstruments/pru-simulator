@@ -164,7 +164,7 @@ def test_run_capture_samples_every_instruction_for_the_graph():
 
 
 def test_run_capture_decimates_in_gp_mode():
-    """GP-mode traces are firmware-paced at a 10:1 stride.
+    """GP-mode traces keep 10:1 timing samples plus digital edge samples.
     Sampling every instruction would shrink the window's time span 10x
     and break the UART decoder's bit-period detection (Example 5 records a
     115200-baud frame, ~1736 core cycles per bit, over a Run)."""
@@ -184,14 +184,54 @@ def test_run_capture_decimates_in_gp_mode():
         cap = ws.receive_json()
         assert cap["type"] == "capture"
         assert cap["mode"] == "gpio"
-        assert len(cap["samples"]) == 100, "expected 1000 instructions / stride 10"
-        assert [s[0] for s in cap["samples"]] == [10 * i for i in range(1, 101)]
+        assert len(cap["samples"]) >= 100, "expected the 10:1 GP sample points"
+        stride_steps = [s[0] for s in cap["samples"] if s[0] % 10 == 0]
+        assert stride_steps == [10 * i for i in range(1, 101)]
+        assert any(s[0] % 10 != 0 for s in cap["samples"])
         ws.receive_json()   # closing state push
 
         ws.send_json({"action": "gpcfg_write", "core": "pru0", "mux_sel": 0})
         ws.receive_json()
         ws.send_json({"action": "reset", "core": "pru0"})
         ws.receive_json()
+
+
+def test_run_capture_preserves_gpio_edges_between_decimated_samples():
+    """A fast GPIO waveform must not alias away in Run-mode capture.
+
+    The regular GP sample points below all land on the same low level.  The
+    graph still needs the intervening set/clear edges so the UI can render the
+    waveform that is visible in the live GPIO panel.
+    """
+    fast_gpio = """
+loop:
+    set r30, r30, 0
+    nop
+    clr r30, r30, 0
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    qba loop
+"""
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "gpcfg_write", "core": "pru0", "mux_sel": 0})
+        ws.receive_json()
+        ws.send_json({"action": "reset", "core": "pru0"})
+        ws.receive_json()
+        ws.send_json({"action": "load", "core": "pru0", "source": fast_gpio})
+        ws.receive_json()
+
+        ws.send_json({"action": "run", "core": "pru0",
+                      "max_steps": 30, "capture": True})
+        cap = ws.receive_json()
+        assert cap["type"] == "capture"
+        values = [(sample[1] >> 0) & 1 for sample in cap["samples"]]
+        assert set(values) == {0, 1}
+        assert any(sample[0] % 10 != 0 for sample in cap["samples"])
+        ws.receive_json()  # closing state push
 
 
 def test_run_multicore_paces_perif_demo():

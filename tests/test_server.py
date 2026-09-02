@@ -2,6 +2,7 @@
 import pytest
 from fastapi.testclient import TestClient
 from ui.server import app
+from ui.trace_log import TraceLogManager
 from simulator import Simulator
 
 
@@ -115,6 +116,22 @@ def test_gpo_zero_after_reset(fresh_sim):
         assert state["registers"][30] == "0x00000000"
 
 
+def test_repeated_state_reuses_unchanged_source_payload(fresh_sim):
+    """Instruction text need not cross the websocket on every state tick."""
+    assert fresh_sim.load("pru0", _NOP_LOOP) == []
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "get_state", "core": "pru0"})
+        first = ws.receive_json()
+        ws.send_json({"action": "step", "core": "pru0", "count": 1})
+        second = ws.receive_json()
+
+    assert first["instructions"]
+    assert "labels" in first
+    assert "instructions" not in second
+    assert "labels" not in second
+
+
 # ---- run_multicore captures both cores ------------------------------------
 
 # Programs long enough to exceed CAPTURE_STRIDE_GP=10 so the server
@@ -190,6 +207,139 @@ def test_run_multicore_capture_sends_samples_for_lead(fresh_sim):
                 f"capture message for core={m.get('core')} has no samples"
         # The lead core (pru0) must have a capture
         assert any(m["core"] == "pru0" for m in captures)
+
+
+def test_step_capture_emits_one_instruction_and_virtual_time(fresh_sim):
+    assert fresh_sim.load("pru0", _NOP_LOOP) == []
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "step", "core": "pru0", "count": 1,
+                      "capture": True})
+        capture = ws.receive_json()
+        state = ws.receive_json()
+
+    assert capture["type"] == "capture"
+    assert len(capture["samples"]) == len(capture["captured_at_ms"]) == 1
+    assert len(capture["samples"][0]) == 7
+    assert state["type"] == "state"
+    assert state["captured"] is True
+    assert state["captured_at_ms"] == capture["captured_at_ms"][-1]
+
+
+def test_trace_log_websocket_lifecycle_and_download(fresh_sim, monkeypatch, tmp_path):
+    import ui.server as srv
+
+    monkeypatch.setattr(srv, "trace_logs", TraceLogManager(tmp_path))
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "trace_log_start"})
+        started = ws.receive_json()
+        assert started["type"] == "trace_log_state"
+        assert started["active"] is True
+
+        ws.send_json({"action": "step", "core": "pru0", "count": 1,
+                      "capture": True})
+        capture = ws.receive_json()
+        assert capture["type"] == "capture"
+        assert capture["sequences"] == [0]
+        assert ws.receive_json()["type"] == "state"
+
+        ws.send_json({"action": "trace_log_stop"})
+        stopped = ws.receive_json()
+
+    assert stopped["active"] is False
+    assert stopped["sample_count"] == 1
+    assert stopped["download_url"].endswith("/download")
+    session_id = stopped["session_id"]
+    page = client.get(f"/trace-logs/{session_id}/samples?after=-1&limit=10")
+    download = client.get(f"/trace-logs/{session_id}/download")
+    assert page.status_code == 200
+    assert page.json()["samples"][0]["sequence"] == 0
+    assert download.status_code == 200
+    assert "text/csv" in download.headers["content-type"]
+
+
+def test_trace_log_finalizes_before_a_capture_mode_transition(monkeypatch, tmp_path):
+    import asyncio
+    import ui.server as srv
+
+    manager = TraceLogManager(tmp_path)
+    monkeypatch.setattr(srv, "trace_logs", manager)
+    monkeypatch.setattr(srv, "_io_mode", lambda _core: "perif")
+
+    class FakeWebSocket:
+        _trace_owner = "socket-1"
+
+        def __init__(self):
+            self.messages = []
+
+        async def send_json(self, message):
+            self.messages.append(message)
+
+    ws = FakeWebSocket()
+    state = manager.start(ws._trace_owner)
+    batch = {
+        "core": "pru0",
+        "mode": "perif",
+        "samples": [
+            [0, 0, 0, 0, 0, 0, 0],
+            [1, 1, 0, 0, 0, 0, 1],
+        ],
+        "captured_at_ms": [0.0, 1.0],
+        "_sample_modes": ["gpio", "perif"],
+    }
+
+    asyncio.run(srv._publish_capture_batches(ws, [batch]))
+
+    assert ws.messages[0]["type"] == "trace_log_state"
+    assert ws.messages[0]["active"] is False
+    assert ws.messages[0]["reason"] == "mode_change"
+    assert ws.messages[0]["sample_count"] == 1
+    assert batch["sequences"] == [0]
+    page = manager.page(state["session_id"], after=-1, limit=10)
+    assert [row["mode"] for row in page["samples"]] == ["gpio"]
+
+
+def test_trace_log_page_rejects_ambiguous_cursors(monkeypatch, tmp_path):
+    import ui.server as srv
+
+    monkeypatch.setattr(srv, "trace_logs", TraceLogManager(tmp_path))
+    response = client.get("/trace-logs/not-real/samples?before=2&after=1")
+    assert response.status_code == 400
+
+
+def test_trace_log_page_rejects_oversized_limit(monkeypatch, tmp_path):
+    import ui.server as srv
+
+    monkeypatch.setattr(srv, "trace_logs", TraceLogManager(tmp_path))
+    response = client.get(
+        "/trace-logs/not-real/samples?after=-1&limit=50001"
+    )
+    assert response.status_code == 400
+
+
+def test_trace_log_unknown_session_is_not_a_filesystem_path(monkeypatch, tmp_path):
+    import ui.server as srv
+
+    monkeypatch.setattr(srv, "trace_logs", TraceLogManager(tmp_path))
+    response = client.get("/trace-logs/../../memory.cfg/download")
+    assert response.status_code in {400, 404}
+    assert not (tmp_path / "memory.cfg").exists()
+
+
+def test_trace_log_disconnect_finalizes_downloadable_session(
+    fresh_sim, monkeypatch, tmp_path
+):
+    import ui.server as srv
+
+    manager = TraceLogManager(tmp_path)
+    monkeypatch.setattr(srv, "trace_logs", manager)
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "trace_log_start"})
+        started = ws.receive_json()
+        session_id = started["session_id"]
+
+    assert manager.session(session_id).active is False
+    response = client.get(f"/trace-logs/{session_id}/download")
+    assert response.status_code == 200
 
 
 # ---- GPIO wire cross-core propagation ------------------------------------

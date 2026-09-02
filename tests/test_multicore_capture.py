@@ -91,6 +91,85 @@ def test_multicore_capture_batches_share_a_group_for_client_interleaving(fresh_s
     assert len({message["capture_group"] for message in captures}) == 1
 
 
+def test_multicore_capture_keeps_packed_wire_format_and_parallel_times(fresh_sim):
+    assert fresh_sim.load("pru0", _LOOP) == []
+    assert fresh_sim.load("pru1", _LOOP) == []
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "run_multicore", "core": "pru0",
+                      "partner": "pru1", "max_steps": 20, "capture": True})
+        messages = _receive_multicore_messages(ws)
+
+    captures = [message for message in messages if message["type"] == "capture"]
+    assert {message["core"] for message in captures} == {"pru0", "pru1"}
+    for message in captures:
+        assert all(len(sample) == 7 for sample in message["samples"])
+        assert len(message["samples"]) == len(message["captured_at_ms"])
+        assert all(sample[-1] >= 1 for sample in message["samples"])
+
+
+def test_stable_gpio_capture_does_not_materialize_every_instruction(
+    fresh_sim, monkeypatch
+):
+    """Stable GPIO capture should keep the periodic sampling stride."""
+    assert fresh_sim.load("pru0", _LOOP) == []
+    assert fresh_sim.load("pru1", _LOOP) == []
+
+    import ui.server as srv
+
+    original_capture_sample = srv._capture_sample
+    calls = []
+
+    def counted_capture_sample(core, run_step=0):
+        calls.append((core, run_step))
+        return original_capture_sample(core, run_step=run_step)
+
+    monkeypatch.setattr(srv, "_capture_sample", counted_capture_sample)
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({
+            "action": "run_multicore",
+            "core": "pru0",
+            "partner": "pru1",
+            "max_steps": 100,
+            "capture": True,
+        })
+        _receive_multicore_messages(ws)
+
+    expected_maximum = 2 * (100 // srv.CAPTURE_STRIDE_GP)
+    assert len(calls) <= expected_maximum
+
+
+def test_capture_without_trace_does_not_resolve_mode_per_sample(
+    fresh_sim, monkeypatch
+):
+    """Normal capture should not serialize full IO state for every sample."""
+    assert fresh_sim.load("pru0", _LOOP) == []
+    assert fresh_sim.load("pru1", _LOOP) == []
+
+    import ui.server as srv
+
+    original_io_mode = srv._io_mode
+    calls = []
+
+    def counted_io_mode(*args, **kwargs):
+        calls.append(args[0] if args else None)
+        return original_io_mode(*args, **kwargs)
+
+    monkeypatch.setattr(srv, "_io_mode", counted_io_mode)
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({
+            "action": "run_multicore",
+            "core": "pru0",
+            "partner": "pru1",
+            "max_steps": 100,
+            "capture": True,
+        })
+        _receive_multicore_messages(ws)
+
+    assert len(calls) <= 6
+
+
 def test_multicore_run_acknowledges_request_for_ui_backpressure(fresh_sim):
     """A run request can signal completion without changing legacy replies."""
     assert fresh_sim.load("pru0", _LOOP) == []

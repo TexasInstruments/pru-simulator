@@ -17,7 +17,7 @@ const SC_DEFAULT_TREE = {
       ]
     },
     {
-      type: 'split', dir: 'v', sizes: [40, 15, 45],
+    type: 'split', dir: 'v', sizes: [40, 20, 40],
       children: [
         { type: 'leaf', panelId: 'registers' },
         { type: 'leaf', panelId: 'io' },
@@ -81,6 +81,9 @@ let currentMode = 'sc';   // 'sc' | 'mc'
 let currentTree = null;
 let tileRoot    = null;
 let panelPool   = null;
+let hiddenPanelIds = new Set();
+const modePanelIds = { sc: [], mc: [] };
+const PANEL_VISIBILITY_KEY = 'pru-panel-visibility-';
 
 // ---- localStorage helpers --------------------------------------------------
 
@@ -99,6 +102,67 @@ function loadLayout(mode) {
   }
 }
 
+function loadHiddenPanels(mode) {
+  try {
+    const raw = localStorage.getItem(`${PANEL_VISIBILITY_KEY}${mode}`);
+    const ids = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(ids) ? ids.filter(id => typeof id === 'string') : []);
+  } catch (e) {
+    return new Set();
+  }
+}
+
+function saveHiddenPanels(mode) {
+  try {
+    localStorage.setItem(
+      `${PANEL_VISIBILITY_KEY}${mode}`,
+      JSON.stringify(Array.from(hiddenPanelIds)),
+    );
+  } catch (e) { /* quota exceeded — ignore */ }
+}
+
+function sanitizeHiddenPanels(mode) {
+  const allowed = new Set(modePanelIds[mode] || []);
+  hiddenPanelIds = new Set(Array.from(hiddenPanelIds).filter(id => allowed.has(id)));
+  const visibleIds = (modePanelIds[mode] || []).filter(id => !hiddenPanelIds.has(id));
+  if (visibleIds.length === 0 && modePanelIds[mode]?.length > 0) {
+    hiddenPanelIds.delete(modePanelIds[mode][0]);
+  }
+}
+
+function notifyLayoutChanged() {
+  document.dispatchEvent(new CustomEvent('pru-layout-changed', {
+    detail: { mode: currentMode },
+  }));
+}
+
+function getPanelVisibility(panelId) {
+  return !hiddenPanelIds.has(panelId);
+}
+
+function setPanelsVisibility(panelIds, visible) {
+  const activeIds = new Set(modePanelIds[currentMode] || []);
+  const validIds = Array.from(new Set(panelIds || []))
+    .filter(id => activeIds.has(id) && PANEL_REGISTRY[id]);
+  if (validIds.length === 0) return false;
+
+  if (!visible) {
+    const remaining = Array.from(activeIds).filter(
+      id => !hiddenPanelIds.has(id) && !validIds.includes(id),
+    );
+    if (remaining.length === 0) return false;
+  }
+
+  validIds.forEach(id => {
+    if (visible) hiddenPanelIds.delete(id);
+    else hiddenPanelIds.add(id);
+  });
+  saveHiddenPanels(currentMode);
+  render(currentTree);
+  notifyLayoutChanged();
+  return true;
+}
+
 function defaultTree(mode) {
   // Deep-clone so mutations don't corrupt the default
   return JSON.parse(JSON.stringify(mode === 'mc' ? MC_DEFAULT_TREE : SC_DEFAULT_TREE));
@@ -108,6 +172,8 @@ function defaultTree(mode) {
 
 function renderNode(node) {
   if (node.type === 'leaf') {
+    if (hiddenPanelIds.has(node.panelId)) return null;
+
     const leaf = document.createElement('div');
     leaf.className = 'tile-leaf';
     leaf.dataset.panelId = node.panelId;
@@ -149,18 +215,27 @@ function renderNode(node) {
     return leaf;
   }
 
-  // Split node
+  // Split node. Hidden leaves are omitted and their sibling dividers are
+  // rebuilt so the remaining panels reclaim the available space.
+  const renderedChildren = [];
+  node.children.forEach((child, i) => {
+    const rendered = renderNode(child);
+    if (rendered) renderedChildren.push({ rendered, size: node.sizes[i] });
+  });
+  if (renderedChildren.length === 0) return null;
+  if (renderedChildren.length === 1) return renderedChildren[0].rendered;
+
   const split = document.createElement('div');
   split.className = `tile-split tile-split-${node.dir}`;
 
-  node.children.forEach((child, i) => {
+  renderedChildren.forEach(({ rendered, size }, i) => {
     const wrapper = document.createElement('div');
     wrapper.className = 'tile-child';
-    wrapper.style.flex = node.sizes[i];
-    wrapper.appendChild(renderNode(child));
+    wrapper.style.flex = size;
+    wrapper.appendChild(rendered);
     split.appendChild(wrapper);
 
-    if (i < node.children.length - 1) {
+    if (i < renderedChildren.length - 1) {
       const div = document.createElement('div');
       div.className = `tile-divider${node.dir === 'v' ? ' tile-divider-v' : ''}`;
       div.dataset.splitDir = node.dir;
@@ -180,7 +255,8 @@ function render(tree) {
   // Clear tile root
   while (tileRoot.firstChild) tileRoot.removeChild(tileRoot.firstChild);
   // Render tree
-  tileRoot.appendChild(renderNode(tree));
+  const renderedTree = renderNode(tree);
+  if (renderedTree) tileRoot.appendChild(renderedTree);
 }
 
 // ---- Divider resize --------------------------------------------------------
@@ -258,16 +334,22 @@ function onDividerMouseup(e) {
 // Walk the tree and update sizes for the split node whose children match prev/next.
 function updateSizesInTree(node, prevEl, nextEl, prevPct, nextPct) {
   if (node.type === 'leaf') return;
-  for (let i = 0; i < node.children.length - 1; i++) {
-    const prevIds = getLeafIds(node.children[i]);
-    const nextIds = getLeafIds(node.children[i + 1]);
+  const visibleChildren = node.children.map((child, index) => ({
+    index,
+    ids: getVisibleLeafIds(child),
+  })).filter(child => child.ids.length > 0);
+  for (let i = 0; i < visibleChildren.length - 1; i++) {
+    const prevChild = visibleChildren[i];
+    const nextChild = visibleChildren[i + 1];
+    const prevIds = prevChild.ids;
+    const nextIds = nextChild.ids;
     const prevElIds = getRenderedLeafIds(prevEl);
     const nextElIds = getRenderedLeafIds(nextEl);
     if (arraysEqual(prevIds.sort(), prevElIds.sort()) &&
         arraysEqual(nextIds.sort(), nextElIds.sort())) {
-      const pairSum = node.sizes[i] + node.sizes[i + 1];
-      node.sizes[i]     = (prevPct / 100) * pairSum;
-      node.sizes[i + 1] = (nextPct / 100) * pairSum;
+      const pairSum = node.sizes[prevChild.index] + node.sizes[nextChild.index];
+      node.sizes[prevChild.index] = (prevPct / 100) * pairSum;
+      node.sizes[nextChild.index] = (nextPct / 100) * pairSum;
       return;
     }
   }
@@ -277,6 +359,13 @@ function updateSizesInTree(node, prevEl, nextEl, prevPct, nextPct) {
 function getLeafIds(node) {
   if (node.type === 'leaf') return [node.panelId];
   return node.children.flatMap(getLeafIds);
+}
+
+function getVisibleLeafIds(node) {
+  if (node.type === 'leaf') {
+    return hiddenPanelIds.has(node.panelId) ? [] : [node.panelId];
+  }
+  return node.children.flatMap(getVisibleLeafIds);
 }
 
 function getRenderedLeafIds(el) {
@@ -442,8 +531,18 @@ function initLayout(mode) {
     'mc-pru0-registers': document.getElementById('mc-pru0-reg-panel'),
     'mc-rtu0-source':    document.getElementById('mc-rtu0-source-panel'),
     'mc-rtu0-registers': document.getElementById('mc-rtu0-reg-panel'),
+    // These panels are shared by SC and MC layouts and must remain part of
+    // the MC registry so visibility controls and persistence cover the tree.
+    editor:       SC_PANELS.editor,
+    memory1:      SC_PANELS.memory1,
+    memory2:      SC_PANELS.memory2,
+    io:           SC_PANELS.io,
+    'signal-graph': SC_PANELS['signal-graph'],
+    'mem-graph':    SC_PANELS['mem-graph'],
   };
   Object.assign(PANEL_REGISTRY, SC_PANELS, MC_PANELS);
+  modePanelIds.sc = Object.keys(SC_PANELS);
+  modePanelIds.mc = Object.keys(MC_PANELS);
 
   // Invalidate saved layouts when panel set changes
   const LAYOUT_VERSION = 3;
@@ -454,6 +553,8 @@ function initLayout(mode) {
     localStorage.setItem('pru-layout-ver', String(LAYOUT_VERSION));
   }
 
+  hiddenPanelIds = loadHiddenPanels(currentMode);
+  sanitizeHiddenPanels(currentMode);
   currentTree = loadLayout(currentMode) || defaultTree(currentMode);
   render(currentTree);
 }
@@ -462,14 +563,20 @@ function switchLayoutMode(newMode) {
   // Save current layout
   saveLayout(currentMode, currentTree);
   currentMode = newMode;
+  hiddenPanelIds = loadHiddenPanels(currentMode);
+  sanitizeHiddenPanels(currentMode);
   currentTree = loadLayout(newMode) || defaultTree(newMode);
   render(currentTree);
+  notifyLayoutChanged();
 }
 
 function resetLayout() {
   localStorage.removeItem(`pru-layout-${currentMode}`);
+  hiddenPanelIds = new Set();
+  saveHiddenPanels(currentMode);
   currentTree = defaultTree(currentMode);
   render(currentTree);
+  notifyLayoutChanged();
 }
 
 // ---- Panel collapse/expand ---------------------------------------------------
