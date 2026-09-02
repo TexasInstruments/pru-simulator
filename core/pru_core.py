@@ -46,9 +46,12 @@ from xfr.mac_accelerator import MACAccelerator
 _UNINIT_SP_HINT = (
     "the base register is R2, the PRU ABI stack pointer, and it is either zero "
     "or has wrapped below zero - the signature of a stack that was never set "
-    "up. Images linked with `-e main` skip `_c_int00`, which is what "
-    "initialises R2 on hardware: set R2 to the top of the stack region before "
-    "running, or link with the default entry point."
+    "up. R2 is initialised by the C runtime entry `_c_int00`, so this happens "
+    "whenever execution starts somewhere else. Loaders that begin at address 0 "
+    "(PRUICSS_loadFirmware, and this simulator) will do that unless the entry "
+    "is placed there: `.text:_c_int00* > 0x0, PAGE 0` in the linker command "
+    "file puts the runtime at 0 so it runs first. Overriding the entry point "
+    "with `-e main` has the same effect and is the usual cause."
 )
 
 # A stack that grows down from an uninitialised R2 of 0 lands just below zero,
