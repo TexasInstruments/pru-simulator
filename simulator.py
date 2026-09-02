@@ -321,13 +321,13 @@ class Simulator:
         follow_pru = self._get_core(follow)
         lead_perif = self._perif.get(lead)
         follow_perif = self._perif.get(follow)
-        perif_active = (
-            lead_perif is not None and follow_perif is not None
-            and lead_perif.enabled and follow_perif.enabled
-        )
         for _ in range(count):
             if not lead_pru.halted and lead_pru.pc < len(lead_pru.instructions):
                 lead_pru.step()
+            perif_active = (
+                lead_perif is not None and follow_perif is not None
+                and lead_perif.enabled and follow_perif.enabled
+            )
             if perif_active:
                 target = lead_perif._now_ns - guard_ns
                 safety = 1000
