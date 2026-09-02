@@ -31,6 +31,44 @@ from xfr.accelerator import Accelerator
 from xfr.mac_accelerator import MACAccelerator
 
 
+# A memory fault whose base register is an uninitialised R2 is almost always
+# one thing, and the raw "no memory region mapped" message names none of it.
+#
+# R2 is the PRU ABI stack pointer and the stack grows DOWN, so an image whose
+# R2 is still zero stores its first register spill just below zero - which
+# wraps to the top of the address space and faults there. Images linked with
+# `-e main` never run `_c_int00`, which is what sets R2 up on hardware, and
+# that linker pattern is the one nearly every headless PRU example uses.
+#
+# The behaviour is correct and is deliberately unchanged. Only the diagnosis
+# is added, because without it the fault reads as a wild pointer bug in the
+# firmware rather than as a missing C runtime.
+_UNINIT_SP_HINT = (
+    "the base register is R2, the PRU ABI stack pointer, and it is either zero "
+    "or has wrapped below zero - the signature of a stack that was never set "
+    "up. Images linked with `-e main` skip `_c_int00`, which is what "
+    "initialises R2 on hardware: set R2 to the top of the stack region before "
+    "running, or link with the default entry point."
+)
+
+# A stack that grows down from an uninitialised R2 of 0 lands just below zero,
+# which wraps to the very top of the 32-bit space. That is what the fault
+# address looks like in practice: a frame setup emits `SUB r2, r2, <frame>`
+# before the spill, so by the time the store executes R2 is 0xFFFFFFxx rather
+# than 0 - checking only for zero would miss every real occurrence.
+_SP_WRAP_FLOOR = 0xFFFF0000
+
+
+def _stack_pointer_hint(core, base_op, addr) -> str:
+    """Return a trailing hint if this fault is the uninitialised-R2 trap."""
+    if not isinstance(base_op, Register) or base_op.index != 2:
+        return ""
+    sp = core.registers.regs[2]
+    if sp != 0 and not (sp >= _SP_WRAP_FLOOR or addr >= _SP_WRAP_FLOOR):
+        return ""
+    return "  HINT: " + _UNINIT_SP_HINT
+
+
 class PRUCore:
     """Simulates a single PRU core executing PRU assembly instructions."""
 
@@ -331,7 +369,8 @@ class PRUCore:
                 self._write_registers_from_bytes(start_reg, data, start_byte)
                 self.counters.stall(stalls)
             except ValueError as e:
-                logger.error(f"LBBO fault at 0x{addr:08X}: {e}")
+                logger.error(f"LBBO fault at 0x{addr:08X}: {e}"
+                             f"{_stack_pointer_hint(self, base_op, addr)}")
                 self.halted = True
 
         elif op == "LBCO":
@@ -382,7 +421,8 @@ class PRUCore:
                 stalls = self.memory.write(addr, data)
                 self.counters.stall(stalls)
             except ValueError as e:
-                logger.error(f"SBBO fault at 0x{addr:08X}: {e}")
+                logger.error(f"SBBO fault at 0x{addr:08X}: {e}"
+                             f"{_stack_pointer_hint(self, base_op, addr)}")
                 self.halted = True
 
         # ---- XFR ---------------------------------------------------------
