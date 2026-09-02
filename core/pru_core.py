@@ -42,6 +42,7 @@ class PRUCore:
         self.counters = CycleCounters()
         self.memory = memory
         self.xfr = xfr
+        self.iep = None          # set by Simulator when an IEP is present
         self.io_port = io_port
         self.constant_table: ConstantTable = constant_table if constant_table is not None else ConstantTable()
         # PRU1 sees its own DRAM (DRAM1) at core-local 0x0000 and DRAM0 at
@@ -114,6 +115,13 @@ class PRUCore:
         # Pre-tick: advance UART frame generator before instruction reads R31
         if self.io_port.uart_generator is not None:
             self.io_port.uart_generator.tick(self.counters.cycles)
+
+        # ---- Advance the IEP timer (if attached) --------------------------
+        # One ICSSG_IEP_CLK edge per core cycle. Firmware that polls
+        # IEP_COUNT_REG0 in a loop depends on this advancing; without it the
+        # poll never terminates.
+        if self.iep is not None:
+            self.iep.tick()
 
         instr = self.instructions[self.pc]
         branch_taken = False
