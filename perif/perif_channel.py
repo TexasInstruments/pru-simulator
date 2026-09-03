@@ -99,13 +99,26 @@ class PerifChannel:
     def _src_mhz(self, clk_sel: int) -> float:
         return self.core_clock_mhz if clk_sel == 1 else self.uart_clock_mhz
 
+    # The dividers are "div16fr" - a fractional divider whose FRAC bit adds a
+    # HALF step, not a doubling. TRM Table 6-82 lists an effective divider of
+    # 1.5, which a (frac+1) multiplier cannot express. Modelling FRAC as a x2
+    # breaks the invariant the TRM states normatively: "The OS clock rate
+    # divided by the 1x clock rate must equal PRU0_ED_RX_SAMPLE_SIZE". TI's
+    # own driver relies on the half step - bissc_drv.c computes
+    # rx_div = source/(baud*8) - 1, which is 11.5 for the 2 MHz case.
+    @staticmethod
+    def _divider(div_factor: int, frac: int) -> float:
+        return (div_factor + 1) + (0.5 if frac else 0.0)
+
     def tx_clock_period_ns(self) -> float:
-        n = (self.regs.get_tx_div_factor_frac() + 1) * (self.regs.get_tx_div_factor() + 1)
+        n = self._divider(self.regs.get_tx_div_factor(),
+                          self.regs.get_tx_div_factor_frac())
         f = self._src_mhz(self.regs.get_tx_clk_sel()) / n
         return 1000.0 / f
 
     def rx_clock_period_ns(self) -> float:
-        n = (self.regs.get_rx_div_factor_frac() + 1) * (self.regs.get_rx_div_factor() + 1)
+        n = self._divider(self.regs.get_rx_div_factor(),
+                          self.regs.get_rx_div_factor_frac())
         f = self._src_mhz(self.regs.get_rx_clk_sel()) / n
         return 1000.0 / f
 
