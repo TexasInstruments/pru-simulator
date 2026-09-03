@@ -50,6 +50,11 @@ _EXPECTED_OPS: dict[str, int | tuple[int, ...]] = {
 # Operand range constraints per opcode.
 # Each entry: list of (operand_index, max_value, description).
 # Only applied to Immediate operands; Registers/Labels are unchecked.
+# Opcodes whose constrained operand is a bit index or shift amount. These are
+# the only slots where a symbol cannot possibly be meant - everywhere else a
+# label or .set constant is ordinary assembler.
+_BIT_POSITION_OPCODES = frozenset({"LSL", "LSR", "SET", "CLR", "QBBS", "QBBC"})
+
 _OPERAND_RANGES: dict[str, list[tuple[int, int, str]]] = {
     # LDI: 16-bit immediate
     "LDI": [(1, 65535, "16-bit immediate (0-65535)")],
@@ -369,6 +374,19 @@ class Parser:
             if idx >= len(operands):
                 continue
             op = operands[idx]
+            # A symbol is legitimate in most constrained slots - a JMP target, a
+            # .set constant used as an LDI immediate or a memory offset. It is
+            # NEVER legitimate as a bit position or shift amount, and that is
+            # exactly where letting one through crashes the simulator: the
+            # operand arrives at core/branch.py as resolved_addr = -1 and
+            # `reg_val >> -1` raises a bare ValueError that escapes the run.
+            # So reject it only there, and leave every other slot alone.
+            if isinstance(op, Label) and opcode in _BIT_POSITION_OPCODES:
+                raise SyntaxError(
+                    f"line {source_line}: {opcode} operand {idx + 1} is the "
+                    f"symbol '{op.name}', but this operand must be a literal "
+                    f"{desc}"
+                    + ("" if op.resolved_addr >= 0 else " (symbol is undefined)"))
             if not isinstance(op, Immediate):
                 continue
             if op.value < 0 or op.value > max_val:

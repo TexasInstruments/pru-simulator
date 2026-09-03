@@ -40,6 +40,7 @@ class PRUCore:
         self.name = name
         self.registers = RegisterFile()
         self.counters = CycleCounters()
+        self.iep = None          # set by Simulator when an IEP is present
         self.memory = memory
         self.xfr = xfr
         self.io_port = io_port
@@ -514,6 +515,13 @@ class PRUCore:
         # ---- Advance Peripheral Interface timeline (if attached) --------
         if self.io_port.perif is not None:
             self.io_port.perif.advance_cycles(self.counters.cycles)
+
+        # ---- Advance the IEP timer (if attached) ------------------------
+        # One ICSSG_IEP_CLK edge per core cycle. Firmware that polls
+        # IEP_COUNT_REG0 in a loop depends on this advancing; without it the
+        # poll never terminates.
+        if self.iep is not None:
+            self.iep.tick()
 
         # ---- Count instruction cycle ------------------------------------
         self.counters.tick()
