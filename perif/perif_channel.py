@@ -80,6 +80,7 @@ class PerifChannel:
         self.rx_fifo: list[int] = []
         self.rx_valid = False
         self.rx_ovf = False
+        self.tx_out_en_transitions: list[tuple[float, int]] = []
         self.rx_eof = False
         self._rx_shift = 0
         self._rx_started = False
@@ -204,6 +205,7 @@ class PerifChannel:
         else:
             self._enter_transmit(now_ns)
         self.tx_out_en = 1
+        self._record_out_en(now_ns)
 
     def _enter_transmit(self, now_ns: float) -> None:
         self.fsm = TRANSMIT
@@ -239,6 +241,39 @@ class PerifChannel:
                 break
         return val
 
+    def _record_out_en(self, t_ns: float) -> None:
+        """Log a change of the transmit output-enable, with its timestamp.
+
+        Half-duplex protocols are specified on how fast the driver STOPS
+        driving, not only on the data it drove. Encoder protocols specify a release
+        window between one end finishing and the other starting; without a timestamped record of tx_out_en there is nothing to
+        measure that against.
+
+        `tx_out_en` is the peripheral's own drive state, asserted when the
+        transmitter enters TRANSMIT and cleared on the last TX bit. It is NOT an
+        external transceiver's direction-enable pin - that is a board-level
+        signal with its own propagation delay, and nothing here models it.
+        """
+        if self.tx_out_en_transitions and \
+                self.tx_out_en_transitions[-1][1] == self.tx_out_en:
+            return
+        self.tx_out_en_transitions.append((t_ns, self.tx_out_en))
+
+    def tx_release_ns(self) -> float | None:
+        """Time from the last transmitted data bit to the line being released.
+
+        Returns None if the transmitter never drove, or has not released yet.
+        """
+        falling = [t for t, v in self.tx_out_en_transitions if v == 0]
+        if not falling or not self.tx_transitions:
+            return None
+        release = falling[-1]
+        last_data = max((t for t, _ in self.tx_transitions if t <= release),
+                        default=None)
+        if last_data is None:
+            return None
+        return release - last_data
+
     def _finish_frame(self) -> None:
         """TX data done. Whether the CLOCK stops here depends on clk_mode.
 
@@ -248,6 +283,7 @@ class PerifChannel:
         """
         self.busy = False
         self.tx_out_en = 0
+        self._record_out_en(self._phase_end_ns)
         if self.regs.get_tx_frame_size(self.index) == 0:
             self._cont_byte = None
             self._cont_bit_idx = 0
@@ -306,6 +342,7 @@ class PerifChannel:
         self._phase_end_ns = 0.0
         self._go_ns = 0.0
         self.tx_transitions = [(0.0, 0)]
+        self.tx_out_en_transitions = []
 
         self.rx_en = False
         self.rx_fifo = []
