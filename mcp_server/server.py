@@ -7,6 +7,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from simulator import Simulator
+from mcp_server.vcd_export import export_pin_waveform
 
 
 class PRUSimulatorMCP:
@@ -69,6 +70,14 @@ class PRUSimulatorMCP:
         """Set a single GPI pin on the specified core's I/O port."""
         self.sim.set_input(core, pin, value)
         return {"ok": True}
+
+    def pru_vcd_export(self, path: str, core: str = "pru0", max_steps: int = 10000,
+                       pins: str = "0-19", include_gpi: bool = False) -> dict:
+        """Run a loaded core and export selected GPIO pins as deterministic VCD."""
+        return export_pin_waveform(
+            self.sim, core, path, max_steps=max_steps, pins=pins,
+            include_gpi=include_gpi,
+        )
 
     def pru_i2c_attach(self, core: str = "pru0", enabled: bool = True, address: int = 0x23) -> dict:
         """Attach or detach a TCA9538 I2C device model on SCL=bit0/SDA=bit1 of the specified core."""
