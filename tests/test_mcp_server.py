@@ -98,6 +98,25 @@ class TestMCPTools:
         assert result["captured"] == 0xABC
         assert result["frames_captured"] >= 1
 
+    def test_pru_foc_inject_bootstraps_runtime_and_returns_shared_state(self):
+        result = self.mcp.pru_foc_inject(
+            source="halt",
+            speed_rpm=400.0,
+            id_ref=0.0,
+            iq_ref=0.25,
+            ramp_rate=0.02,
+            max_steps=2,
+        )
+
+        assert result["status"] == "success"
+        assert result["control"]["speed_ref_q24"] == round(
+            0.4 * (1 << 24)
+        )
+        assert result["control"]["iq_ref_q24"] == round(
+            0.25 * (1 << 24)
+        )
+        assert "pwm" in result and "fb" in result
+
     def test_pru_i2c_attach(self):
         result = self.mcp.pru_i2c_attach(core="pru0", enabled=True, address=0x23)
         assert result["success"] is True

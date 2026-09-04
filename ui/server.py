@@ -21,7 +21,9 @@ from simulator import Simulator
 from core.branch import LoopState
 from perif.gpcfg import MUX_SD
 from xfr.xfr_bus import SPAD_BANK0, SPAD_BANK1, SPAD_BANK2, IPC_SPAD
+from pru_io import foc_abi
 from pru_io import ssi_config_abi as ssi_abi
+from pru_io.foc_runtime import FocRuntime
 from pru_io.ssi_runtime import CLOCK_LOOP_OVERHEAD_CYCLES, PROFILES, SSIRuntime
 from ui.trace_log import MAX_PAGE_SAMPLES, TraceLogError, TraceLogManager
 
@@ -43,6 +45,7 @@ SSI_RUNTIME_READER_DATA_PIN = 16
 SSI_RUNTIME_EMULATOR_CLK_PIN = 8
 SSI_RUNTIME_EMULATOR_DATA_PIN = 0
 _ssi_runtime: SSIRuntime | None = None
+foc_runtime: FocRuntime | None = None
 
 
 def _ssi_profile_catalog() -> list[dict]:
@@ -249,6 +252,79 @@ def _ssi_runtime_state() -> dict:
         "wires": sim.list_gpio_wires(),
         "status": "Generic PRU0 emulator / PRU1 reader loaded",
     }
+
+
+def _foc_layout() -> dict:
+    """Return absolute shared-memory addresses for the open-loop FOC blocks."""
+    return {
+        "shared_base": foc_abi.ICSS_SHARED_BASE,
+        "control": foc_abi.CONTROL_BASE,
+        "pwm_out": foc_abi.PWM_OUT_BASE,
+        "motor_fb": foc_abi.MOTOR_FB_BASE,
+        "sine_lut": foc_abi.SINE_LUT_BASE,
+    }
+
+
+def _foc_state() -> dict:
+    """Return a JSON-safe shared-memory and plant snapshot for the FOC tab."""
+    if foc_runtime is None:
+        return {
+            "type": "foc_state",
+            "loaded": False,
+            "control": None,
+            "pwm": None,
+            "fb": None,
+            "model": None,
+            "layout": _foc_layout(),
+            "status": "Load the open-loop FOC firmware first",
+        }
+    state = foc_runtime.state()
+    return {
+        "type": "foc_state",
+        "loaded": True,
+        "control": state["control"],
+        "pwm": state["pwm"],
+        "fb": state["fb"],
+        "model": state["model"],
+        "layout": _foc_layout(),
+        "status": "Open-loop FOC runtime loaded",
+    }
+
+
+def _drop_foc_runtime() -> None:
+    """Stop and detach the host FOC plant before replacing simulator state."""
+    global foc_runtime
+    if foc_runtime is None:
+        return
+    foc_runtime.model.stop()
+    sim.remove_hard_reset_hook(foc_runtime.model.reset)
+    foc_runtime = None
+
+
+def _load_foc_runtime(source: str | None = None, filename: str | None = None,
+                      core: str = "pru0") -> dict:
+    """Load one PRU FOC program and initialize its host-side runtime."""
+    global foc_runtime
+    _drop_foc_runtime()
+    sim.hard_reset()
+
+    if source is None:
+        candidate_name = filename or "foc_open_loop/foc_open_loop.asm"
+        candidate = _safe_source_subpath(candidate_name)
+        if candidate is None or not candidate.is_file():
+            raise RuntimeError(
+                "FOC firmware source was not supplied and the default program "
+                f"does not exist: {candidate_name}"
+            )
+        source = candidate.read_text(encoding="utf-8")
+
+    errors = sim.load(core, source, [str(SOURCE_DIR)])
+    if errors:
+        raise RuntimeError("FOC firmware failed to load: " + "; ".join(errors))
+    sim.iep.write_iepclk(1)
+    sim.iep.write_global_cfg(0x11)
+    foc_runtime = FocRuntime(sim)
+    return _foc_state()
 
 
 def _load_ssi_runtime_pair() -> dict:
@@ -628,7 +704,7 @@ async def get_clock_speed():
 
 @app.put("/config/clock_speed")
 async def put_clock_speed(request: Request):
-    global sim, _ssi_runtime
+    global sim, _ssi_runtime, foc_runtime
     body = await request.json()
     mhz = body.get("mhz")
     if mhz not in ALLOWED_CLOCK_MHZ:
@@ -646,6 +722,7 @@ async def put_clock_speed(request: Request):
                 f.write(text)
             sim = Simulator(config_path=config_path)
             _ssi_runtime = None
+            foc_runtime = None
             _history["pru0"].clear()
             _history["rtu0"].clear()
             _history["pru1"].clear()
@@ -656,7 +733,7 @@ async def put_clock_speed(request: Request):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    global _ssi_runtime
+    global _ssi_runtime, foc_runtime
     await websocket.accept()
     websocket._trace_owner = uuid.uuid4().hex
     try:
@@ -891,8 +968,68 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json({
                         "type": "ssi_runtime_error", "error": str(exc)
                     })
+            elif action == "foc_load":
+                await _finalize_trace_log(websocket, "foc_load")
+                try:
+                    state = _load_foc_runtime(
+                        source=msg.get("source"),
+                        filename=msg.get("filename"),
+                        core=core,
+                    )
+                    await websocket.send_json(state)
+                except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                    _drop_foc_runtime()
+                    await websocket.send_json({
+                        "type": "foc_error", "error": str(exc),
+                    })
+            elif action == "foc_set_reference":
+                if foc_runtime is None:
+                    await websocket.send_json({
+                        "type": "foc_error",
+                        "error": "Load the open-loop FOC firmware first",
+                    })
+                    continue
+                try:
+                    speed_rpm = float(msg.get("speed_rpm", msg.get("speed", 0.0)))
+                    foc_runtime.set_reference(
+                        speed=speed_rpm / foc_abi.SPEED_BASE_RPM,
+                        id=float(msg.get("id_ref", msg.get("id", 0.0))),
+                        iq=float(msg.get("iq_ref", msg.get("iq", 0.0))),
+                        ramp=float(msg.get("ramp_rate", msg.get("ramp", 0.0))),
+                    )
+                    await websocket.send_json(_foc_state())
+                except (TypeError, ValueError) as exc:
+                    await websocket.send_json({
+                        "type": "foc_error", "error": str(exc),
+                    })
+            elif action == "foc_start":
+                if foc_runtime is None:
+                    await websocket.send_json({
+                        "type": "foc_error",
+                        "error": "Load the open-loop FOC firmware first",
+                    })
+                    continue
+                try:
+                    foc_runtime.start()
+                    await websocket.send_json(_foc_state())
+                except (RuntimeError, ValueError) as exc:
+                    await websocket.send_json({
+                        "type": "foc_error", "error": str(exc),
+                    })
+            elif action == "foc_stop":
+                if foc_runtime is None:
+                    await websocket.send_json({
+                        "type": "foc_error",
+                        "error": "Load the open-loop FOC firmware first",
+                    })
+                    continue
+                foc_runtime.stop()
+                await websocket.send_json(_foc_state())
+            elif action == "foc_state":
+                await websocket.send_json(_foc_state())
             elif action == "load":
                 await _finalize_trace_log(websocket, "load")
+                _drop_foc_runtime()
                 _ssi_runtime = None
                 _history[core].clear()
                 filename = msg.get("filename")
@@ -913,6 +1050,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await _send_state(websocket, core)
             elif action == "load_elf":
                 await _finalize_trace_log(websocket, "load_elf")
+                _drop_foc_runtime()
                 _ssi_runtime = None
                 _history[core].clear()
                 # ELF binary sent as base64-encoded string
@@ -969,6 +1107,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     captured=capture,
                     captured_at_ms=(captured_at_ms[-1] if captured_at_ms else None),
                 )
+                if foc_runtime is not None:
+                    await websocket.send_json(_foc_state())
                 # Auto-refresh both memory panels if client has set addresses
                 for tag, addr_attr, len_attr in [
                     ("mem1", "_mem_addr",  "_mem_len"),
@@ -1001,6 +1141,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await _send_state(websocket, core)
             elif action == "hard_reset":
                 await _finalize_trace_log(websocket, "hard_reset")
+                _drop_foc_runtime()
                 _ssi_runtime = None
                 for k in _history:
                     _history[k].clear()
@@ -1185,6 +1326,8 @@ async def websocket_endpoint(websocket: WebSocket):
                         if pru.pc in pru.breakpoints:
                             at_breakpoint = True
                             break
+                        if foc_runtime is not None and steps % 32 == 0:
+                            await websocket.send_json(_foc_state())
                 except ValueError as ve:
                     await websocket.send_json({"type": "error", "errors": [str(ve)]})
                 if samples:
@@ -1196,6 +1339,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     }])
                 await _send_state(websocket, core, at_breakpoint=at_breakpoint,
                                   captured=capture)
+                if foc_runtime is not None:
+                    await websocket.send_json(_foc_state())
                 if request_id is not None:
                     await websocket.send_json({"type": "run_done", "request_id": request_id})
             elif action == "run_multicore":
@@ -1330,6 +1475,8 @@ async def websocket_endpoint(websocket: WebSocket):
                                   captured=capture)
                 await _send_state(websocket, partner, at_breakpoint=partner_bp,
                                   captured=capture)
+                if foc_runtime is not None:
+                    await websocket.send_json(_foc_state())
                 if request_id is not None:
                     await websocket.send_json({"type": "run_done", "request_id": request_id})
             elif action == "set_sd_modulator":

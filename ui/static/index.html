@@ -3354,9 +3354,9 @@
     #workspace-tools #view-tabs.glass-tab-group {
       position: relative;
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      flex: 0 1 214px;
-      width: 214px;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      flex: 0 1 320px;
+      width: 320px;
       min-width: 0;
       gap: 2px;
       overflow: hidden;
@@ -3377,7 +3377,7 @@
       top: 3px;
       bottom: 3px;
       left: 3px;
-      width: calc(50% - 4px);
+      width: calc(33.333% - 4px);
       border: 1px solid var(--border-strong);
       border-radius: 5px;
       background: var(--panel-raised);
@@ -3389,6 +3389,10 @@
 
     #workspace-tools #tab-protocol-tools[aria-selected="true"] ~ .view-tab-glider {
       transform: translateX(calc(100% + 2px));
+    }
+
+    #workspace-tools #tab-foc[aria-selected="true"] ~ .view-tab-glider {
+      transform: translateX(calc(200% + 4px));
     }
 
     #workspace-tools #view-tabs .view-tab {
@@ -3461,6 +3465,11 @@
       #workspace-tools #view-tabs.glass-tab-group {
         flex: 1 1 100%;
         width: 100%;
+      }
+
+      #workspace-tools #view-tabs .view-tab {
+        padding: 4px 6px;
+        font-size: clamp(9px, 2.3vw, 10px);
       }
 
       #workspace-tools #view-tabs .view-tab,
@@ -3852,6 +3861,377 @@
       }
     }
 
+    /* ---- Open-loop FOC workspace --------------------------------------- */
+    #foc-view {
+      display: flex;
+      flex-direction: column;
+      overflow: auto;
+      background: var(--bg);
+    }
+
+    .foc-header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 24px clamp(16px, 3vw, 42px) 18px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+
+    .foc-kicker,
+    .foc-eyebrow {
+      color: var(--accent2);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .foc-title {
+      margin-top: 5px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: clamp(20px, 2.4vw, 30px);
+      letter-spacing: -0.04em;
+    }
+
+    .foc-description {
+      max-width: 760px;
+      margin-top: 7px;
+      color: var(--text-dim);
+      font-size: 11px;
+      line-height: 1.55;
+    }
+
+    .foc-status,
+    .foc-inline-status {
+      color: var(--text-dim);
+      font-size: 10px;
+      line-height: 1.4;
+    }
+
+    .foc-status {
+      flex: 0 0 auto;
+      max-width: 220px;
+      padding: 7px 9px;
+      border: 1px solid var(--border-strong);
+      border-radius: 5px;
+      background: var(--panel-inset);
+      text-align: right;
+    }
+
+    .foc-workspace {
+      display: grid;
+      grid-template-columns: minmax(230px, 280px) minmax(0, 1fr);
+      align-items: start;
+      gap: 16px;
+      width: min(1500px, 100%);
+      margin: 0 auto;
+      padding: 18px clamp(16px, 3vw, 42px) 32px;
+    }
+
+    .foc-control-panel,
+    .foc-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+    }
+
+    .foc-control-panel {
+      position: sticky;
+      top: 0;
+      padding: 16px;
+    }
+
+    .foc-section-heading {
+      display: flex;
+      align-items: flex-start;
+      gap: 9px;
+      margin-bottom: 14px;
+    }
+
+    .foc-section-heading-readout {
+      margin-top: 21px;
+      margin-bottom: 10px;
+    }
+
+    .foc-section-index {
+      color: var(--accent2);
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1.5;
+    }
+
+    .foc-section-heading h2,
+    .foc-card-heading h2 {
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .foc-section-heading p {
+      margin-top: 3px;
+      color: var(--text-dim);
+      font-size: 10px;
+      line-height: 1.4;
+    }
+
+    #foc-reference-form {
+      display: grid;
+      gap: 6px;
+      margin-top: 14px;
+    }
+
+    #foc-reference-form label {
+      margin-top: 4px;
+      color: var(--text-dim);
+      font-size: 10px;
+      font-weight: 700;
+    }
+
+    #foc-reference-form label span {
+      color: var(--text-dim);
+      font-weight: 400;
+    }
+
+    #foc-reference-form input {
+      width: 100%;
+      min-height: 30px;
+      padding: 5px 8px;
+      background: var(--panel-inset);
+      border: 1px solid var(--border-strong);
+      border-radius: 4px;
+      color: var(--text);
+      font: inherit;
+      font-size: 12px;
+    }
+
+    #foc-reference-form input:focus-visible {
+      outline: 2px solid var(--accent2);
+      outline-offset: 1px;
+    }
+
+    .foc-input-wrap {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 7px;
+    }
+
+    .foc-input-wrap output {
+      min-width: 47px;
+      color: var(--accent2);
+      font-size: 10px;
+      text-align: right;
+    }
+
+    .foc-button {
+      min-height: 31px;
+      padding: 6px 9px;
+      border: 1px solid var(--border-strong);
+      border-radius: 5px;
+      background: var(--panel-raised);
+      color: var(--text);
+      font-size: 10px;
+      font-weight: 700;
+    }
+
+    .foc-button:hover:not(:disabled) {
+      border-color: var(--accent2);
+      background: var(--highlight);
+    }
+
+    .foc-button-primary {
+      border-color: var(--brand-red-bright);
+      background: var(--brand-red);
+      color: #fff;
+    }
+
+    .foc-button-stop {
+      border-color: var(--halted);
+      color: var(--halted);
+    }
+
+    .foc-button-secondary {
+      width: 100%;
+      margin-bottom: 4px;
+    }
+
+    #foc-apply {
+      margin-top: 7px;
+    }
+
+    .foc-action-row {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+      margin-top: 12px;
+    }
+
+    .foc-inline-status {
+      min-height: 16px;
+      margin-top: 8px;
+    }
+
+    .foc-readout {
+      display: grid;
+      gap: 7px;
+    }
+
+    .foc-readout div {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .foc-readout dt {
+      color: var(--text-dim);
+      font-size: 10px;
+    }
+
+    .foc-readout dd {
+      color: var(--text);
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+    }
+
+    .foc-memory-hint {
+      margin-top: 15px;
+      color: var(--text-dim);
+      font-size: 9px;
+      line-height: 1.5;
+    }
+
+    .foc-visual-panel {
+      display: grid;
+      grid-template-columns: minmax(230px, 0.82fr) minmax(0, 1.18fr);
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .foc-card {
+      min-width: 0;
+      padding: 13px;
+    }
+
+    .foc-card-heading {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+
+    .foc-card-heading h2 {
+      margin-top: 3px;
+      font-size: 14px;
+      letter-spacing: -0.02em;
+    }
+
+    .foc-card-meta {
+      color: var(--text-dim);
+      font-size: 9px;
+      white-space: nowrap;
+    }
+
+    .foc-dial-card {
+      grid-row: span 2;
+    }
+
+    #foc-rotor-dial {
+      display: block;
+      width: 100%;
+      height: 280px;
+    }
+
+    .foc-legend {
+      display: flex;
+      justify-content: center;
+      gap: 15px;
+      margin-top: 4px;
+      color: var(--text-dim);
+      font-size: 9px;
+    }
+
+    .foc-legend-dot {
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      margin-right: 4px;
+      border-radius: 50%;
+    }
+
+    .foc-legend-rotor { background: var(--accent2); }
+    .foc-legend-command { background: var(--accent); }
+
+    .foc-plot-card canvas {
+      display: block;
+      width: 100%;
+      height: 190px;
+      background: var(--panel-inset);
+      border-radius: 4px;
+    }
+
+    .foc-plot-grid {
+      display: grid;
+      grid-column: 1 / -1;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    @media (max-width: 960px) {
+      .foc-workspace,
+      .foc-visual-panel {
+        grid-template-columns: 1fr;
+      }
+
+      .foc-control-panel {
+        position: static;
+      }
+
+      .foc-dial-card {
+        grid-row: auto;
+      }
+    }
+
+    @media (max-width: 600px) {
+      .foc-header {
+        display: block;
+      }
+
+      .foc-status {
+        display: inline-block;
+        margin-top: 12px;
+        text-align: left;
+      }
+
+      .foc-workspace {
+        padding: 12px 10px 24px;
+      }
+
+      .foc-plot-grid {
+        grid-template-columns: 1fr;
+      }
+
+      #foc-rotor-dial {
+        height: 240px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .foc-button,
+      .foc-card,
+      .foc-control-panel {
+        transition: none;
+      }
+    }
+
   </style>
 </head>
 <body>
@@ -3927,6 +4307,8 @@
                 aria-selected="true" aria-controls="simulator-view" tabindex="0">Simulator</button>
         <button id="tab-protocol-tools" class="view-tab" type="button" role="tab"
                 aria-selected="false" aria-controls="protocol-tools-view" tabindex="-1">Protocol Tools</button>
+        <button id="tab-foc" class="view-tab" type="button" role="tab"
+                aria-selected="false" aria-controls="foc-view" tabindex="-1">Motor Control</button>
         <span class="view-tab-glider" aria-hidden="true"></span>
       </nav>
       <div id="workspace-secondary">
@@ -4645,6 +5027,87 @@ Example:
       </div><!-- /#main -->
     </section><!-- /#simulator-view -->
 
+    <!-- Open-loop FOC workspace. The panel remains mounted so its plots keep
+         their client-side history when the operator changes workspace. -->
+    <section id="foc-view" class="app-view" role="tabpanel"
+             aria-labelledby="tab-foc" aria-hidden="true" tabindex="-1" hidden>
+      <header class="foc-header">
+        <div>
+          <div class="foc-kicker">Single PRU0 · Q24 shared-memory co-simulation</div>
+          <h1 class="foc-title">Motor Control</h1>
+          <p class="foc-description">Open-loop field-oriented control: the firmware drives the voltage vector while the Python PMSM plant supplies rotor and current feedback.</p>
+        </div>
+        <div id="foc-runtime-status" class="foc-status" role="status" aria-live="polite">Firmware not loaded</div>
+      </header>
+
+      <div class="foc-workspace">
+        <aside class="foc-control-panel" aria-label="FOC reference controls">
+          <div class="foc-section-heading">
+            <span class="foc-section-index">01</span>
+            <div><h2>References</h2><p>Stage values, then start the open-loop ramp.</p></div>
+          </div>
+          <button id="foc-load" class="foc-button foc-button-secondary" type="button">Load firmware</button>
+          <form id="foc-reference-form">
+            <label for="foc-speed-rpm">SpeedRef <span>(RPM)</span></label>
+            <div class="foc-input-wrap"><input id="foc-speed-rpm" type="number" min="-1000" max="1000" step="1" value="400" /><output id="foc-speed-pu">0.400 pu</output></div>
+
+            <label for="foc-id-ref">IdRef <span>(pu)</span></label>
+            <input id="foc-id-ref" type="number" min="-1" max="1" step="0.001" value="0" />
+
+            <label for="foc-iq-ref">IqRef <span>(pu)</span></label>
+            <input id="foc-iq-ref" type="number" min="-1" max="1" step="0.001" value="0.25" />
+
+            <label for="foc-ramp-rate">Ramp rate <span>(pu / loop)</span></label>
+            <input id="foc-ramp-rate" type="number" min="0" max="1" step="0.001" value="0.02" />
+            <button id="foc-apply" class="foc-button" type="submit">Apply references</button>
+          </form>
+
+          <div class="foc-action-row" role="group" aria-label="FOC run controls">
+            <button id="foc-enable" class="foc-button foc-button-primary" type="button">Enable</button>
+            <button id="foc-start" class="foc-button foc-button-primary" type="button">Start</button>
+            <button id="foc-stop" class="foc-button foc-button-stop" type="button">Stop</button>
+          </div>
+          <p id="foc-control-status" class="foc-inline-status" role="status" aria-live="polite">Load firmware to begin.</p>
+
+          <div class="foc-section-heading foc-section-heading-readout">
+            <span class="foc-section-index">02</span>
+            <div><h2>Live readout</h2><p>Decoded from the coherent feedback block.</p></div>
+          </div>
+          <dl class="foc-readout">
+            <div><dt>Speed</dt><dd id="foc-speed-readout">— RPM</dd></div>
+            <div><dt>Rotor θ</dt><dd id="foc-theta-readout">—°</dd></div>
+            <div><dt>Duty span</dt><dd id="foc-duty-readout">— / — / —</dd></div>
+            <div><dt>IEP time</dt><dd id="foc-time-readout">—</dd></div>
+          </dl>
+          <p id="foc-memory-hint" class="foc-memory-hint">Shared RAM: control 0x00010000 · PWM 0x00010100 · feedback 0x00010200</p>
+        </aside>
+
+        <main class="foc-visual-panel">
+          <section class="foc-card foc-dial-card" aria-labelledby="foc-dial-title">
+            <div class="foc-card-heading"><div><span class="foc-eyebrow">Rotor observer</span><h2 id="foc-dial-title">Electrical position</h2></div><span id="foc-dial-state" class="foc-card-meta">waiting</span></div>
+            <canvas id="foc-rotor-dial" aria-label="Animated motor rotor showing measured and commanded electrical angle"></canvas>
+            <div class="foc-legend"><span><i class="foc-legend-dot foc-legend-rotor"></i>rotor</span><span><i class="foc-legend-dot foc-legend-command"></i>command</span></div>
+          </section>
+
+          <section class="foc-card foc-plot-card" aria-labelledby="foc-duty-title">
+            <div class="foc-card-heading"><div><span class="foc-eyebrow">PWM output</span><h2 id="foc-duty-title">Duty cycles</h2></div><span class="foc-card-meta">0 — 1 pu</span></div>
+            <canvas id="foc-duty-plot" aria-label="Live three-phase PWM duty waveform"></canvas>
+          </section>
+
+          <div class="foc-plot-grid">
+            <section class="foc-card foc-plot-card" aria-labelledby="foc-current-title">
+              <div class="foc-card-heading"><div><span class="foc-eyebrow">Motor feedback</span><h2 id="foc-current-title">Phase currents</h2></div><span class="foc-card-meta">A</span></div>
+              <canvas id="foc-current-plot" aria-label="Live three-phase current waveform"></canvas>
+            </section>
+            <section class="foc-card foc-plot-card" aria-labelledby="foc-voltage-title">
+              <div class="foc-card-heading"><div><span class="foc-eyebrow">Voltage vector</span><h2 id="foc-voltage-title">αβ components</h2></div><span class="foc-card-meta">pu</span></div>
+              <canvas id="foc-voltage-plot" aria-label="Live alpha beta voltage waveform"></canvas>
+            </section>
+          </div>
+        </main>
+      </div>
+    </section><!-- /#foc-view -->
+
     <!-- Protocol workflows stay mounted and are relocated here once during
          application initialization. The original element IDs are retained. -->
     <section id="protocol-tools-view" class="app-view" role="tabpanel"
@@ -4880,6 +5343,6 @@ Example:
   </div>
 
   <script src="/static/layout.js?v=20260831-3"></script>
-  <script src="/static/app.js?v=20260902-1"></script>
+  <script src="/static/app.js?v=20260904-1"></script>
 </body>
 </html>

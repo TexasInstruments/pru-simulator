@@ -580,6 +580,18 @@ class Simulator:
         generator.attach(pru.io_port)
         pru.io_port.ssi_generator = generator
 
+    def motor_attach(self):
+        """Attach and return the Python PMSM model used by open-loop FOC."""
+        from pru_io.foc_motor_model import FocMotorModel
+
+        previous = getattr(self, "foc_motor_model", None)
+        if previous is not None:
+            previous.stop()
+            self.remove_hard_reset_hook(previous.reset)
+        model = FocMotorModel(self)
+        self.foc_motor_model = model
+        return model
+
     def status(self) -> dict:
         """Return a status snapshot for all cores.
 

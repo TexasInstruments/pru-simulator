@@ -1,0 +1,93 @@
+{
+  "control": {
+    "base": "0x0000",
+    "stride": 36,
+    "fields": [
+      {"name": "abi_version", "offset": "0x00", "size": 4, "type": "u32",
+       "doc": "FOC shared-memory ABI version."},
+      {"name": "struct_size", "offset": "0x04", "size": 4, "type": "u32",
+       "doc": "Size of the control block in bytes."},
+      {"name": "enable", "offset": "0x08", "size": 4, "type": "u32",
+       "doc": "Non-zero enables the open-loop controller."},
+      {"name": "requested_generation", "offset": "0x0C", "size": 4, "type": "u32",
+       "doc": "Host generation published for the PRU to acknowledge."},
+      {"name": "pru_ack_generation", "offset": "0x10", "size": 4, "type": "u32",
+       "doc": "Most recent control generation consumed by the PRU."},
+      {"name": "speed_ref_q24", "offset": "0x14", "size": 4, "type": "i32",
+       "doc": "Signed per-unit speed reference in Q24."},
+      {"name": "id_ref_q24", "offset": "0x18", "size": 4, "type": "i32",
+       "doc": "D-axis voltage reference in Q24."},
+      {"name": "iq_ref_q24", "offset": "0x1C", "size": 4, "type": "i32",
+       "doc": "Q-axis voltage reference in Q24."},
+      {"name": "ramp_rate_q24", "offset": "0x20", "size": 4, "type": "i32",
+       "doc": "Per-loop signed speed slew limit in Q24."}
+    ]
+  },
+  "pwm_out": {
+    "base": "0x0100",
+    "stride": 40,
+    "fields": [
+      {"name": "seq", "offset": "0x00", "size": 4, "type": "u32",
+       "doc": "Seqlock sequence; odd while the block is being written."},
+      {"name": "ta_q24", "offset": "0x04", "size": 4, "type": "i32",
+       "doc": "Phase-A duty cycle in Q24."},
+      {"name": "tb_q24", "offset": "0x08", "size": 4, "type": "i32",
+       "doc": "Phase-B duty cycle in Q24."},
+      {"name": "tc_q24", "offset": "0x0C", "size": 4, "type": "i32",
+       "doc": "Phase-C duty cycle in Q24."},
+      {"name": "valpha_q24", "offset": "0x10", "size": 4, "type": "i32",
+       "doc": "Alpha voltage command in Q24."},
+      {"name": "vbeta_q24", "offset": "0x14", "size": 4, "type": "i32",
+       "doc": "Beta voltage command in Q24."},
+      {"name": "theta_cmd_u32", "offset": "0x18", "size": 4, "type": "u32",
+       "doc": "Commanded electrical angle as a full-turn phase accumulator."},
+      {"name": "loop_counter", "offset": "0x1C", "size": 4, "type": "u32",
+       "doc": "Controller loop counter."},
+      {"name": "timestamp_cycles", "offset": "0x20", "size": 8, "type": "u64",
+       "doc": "PRU cycle timestamp of the publication."}
+    ]
+  },
+  "motor_fb": {
+    "base": "0x0200",
+    "stride": 40,
+    "fields": [
+      {"name": "seq", "offset": "0x00", "size": 4, "type": "u32",
+       "doc": "Seqlock sequence; odd while the block is being written."},
+      {"name": "ia_q24", "offset": "0x04", "size": 4, "type": "i32",
+       "doc": "Phase-A current in Q24 per-unit form."},
+      {"name": "ib_q24", "offset": "0x08", "size": 4, "type": "i32",
+       "doc": "Phase-B current in Q24 per-unit form."},
+      {"name": "ic_q24", "offset": "0x0C", "size": 4, "type": "i32",
+       "doc": "Phase-C current in Q24 per-unit form."},
+      {"name": "id_meas_q24", "offset": "0x10", "size": 4, "type": "i32",
+       "doc": "Measured d-axis current in Q24 per-unit form."},
+      {"name": "iq_meas_q24", "offset": "0x14", "size": 4, "type": "i32",
+       "doc": "Measured q-axis current in Q24 per-unit form."},
+      {"name": "rotor_theta_u32", "offset": "0x18", "size": 4, "type": "u32",
+       "doc": "Electrical rotor angle as a full-turn phase accumulator."},
+      {"name": "speed_rpm_q24", "offset": "0x1C", "size": 4, "type": "i32",
+       "doc": "Mechanical speed in RPM represented in Q24."},
+      {"name": "timestamp", "offset": "0x20", "size": 8, "type": "u64",
+       "doc": "IEP timestamp of the feedback publication."}
+    ]
+  },
+  "sine_lut": {
+    "base": "0x1000",
+    "count": 2048,
+    "stride": 4,
+    "fields": [
+      {"name": "value", "offset": "0x00", "size": 4, "type": "u32",
+       "doc": "One signed Q24 sine sample stored as two's complement."}
+    ]
+  },
+  "constants": {
+    "abi_version": 1,
+    "q_fraction_bits": 24,
+    "iep_tick_hz": 300000000,
+    "sine_lut_entries": 2048,
+    "speed_scale": 2863312,
+    "speed_base_rpm": 1000,
+    "control_loop_hz": 100000,
+    "current_base_a": 10
+  }
+}

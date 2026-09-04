@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Open-loop FOC Simulator</title>
+<style>
+  :root {
+    --bg: #F0F3F1;
+    --surface: #FFFFFF;
+    --surface-2: #E7ECE9;
+    --border: #D3DBD6;
+    --text: #16201C;
+    --text-muted: #55645C;
+    --text-faint: #7C8A82;
+    --accent: #B25C25;
+    --accent-strong: #8F481B;
+    --good: #2E8B67;
+    --warn: #B23B3B;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #101512;
+      --surface: #171D1A;
+      --surface-2: #1E2622;
+      --border: #2B3530;
+      --text: #E8EDEA;
+      --text-muted: #93A39B;
+      --text-faint: #6D7B74;
+      --accent: #E58A4C;
+      --accent-strong: #F3A466;
+      --good: #4FBF93;
+      --warn: #E48383;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #101512;
+    --surface: #171D1A;
+    --surface-2: #1E2622;
+    --border: #2B3530;
+    --text: #E8EDEA;
+    --text-muted: #93A39B;
+    --text-faint: #6D7B74;
+    --accent: #E58A4C;
+    --accent-strong: #F3A466;
+    --good: #4FBF93;
+    --warn: #E48383;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--serif);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 64px 24px 96px;
+  }
+
+  @media (max-width: 600px) {
+    .page { padding: 40px 16px 64px; }
+  }
+
+  /* ---- Header block ---- */
+
+  .titleblock {
+    border-bottom: 2px solid var(--text);
+    padding-bottom: 22px;
+    margin-bottom: 40px;
+  }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin: 0 0 10px;
+  }
+
+  h1 {
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: clamp(1.7rem, 4vw, 2.3rem);
+    letter-spacing: -0.01em;
+    line-height: 1.15;
+    margin: 0 0 14px;
+    text-wrap: balance;
+  }
+
+  .meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 18px;
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--text-muted);
+  }
+
+  .meta-row span b {
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  .status-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--good);
+    border: 1px solid color-mix(in srgb, var(--good) 45%, transparent);
+    background: color-mix(in srgb, var(--good) 12%, transparent);
+    padding: 3px 9px;
+    border-radius: 3px;
+  }
+
+  .status-chip::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--good);
+    flex: none;
+  }
+
+  /* ---- Sections ---- */
+
+  section { margin-bottom: 52px; }
+
+  h2 {
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: 0.95rem;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 18px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+
+  h2 .num {
+    color: var(--text-faint);
+    font-weight: 500;
+  }
+
+  p {
+    font-size: 1.03rem;
+    line-height: 1.7;
+    color: var(--text);
+    max-width: 66ch;
+    margin: 0 0 16px;
+  }
+
+  p.lede {
+    color: var(--text-muted);
+  }
+
+  /* ---- Prompt block ---- */
+
+  .prompt-block {
+    font-family: var(--mono);
+    font-size: 0.88rem;
+    line-height: 1.65;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 2px;
+    padding: 18px 20px;
+    color: var(--text);
+    white-space: pre-wrap;
+  }
+
+  .prompt-source {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    color: var(--text-faint);
+    margin: 10px 0 0;
+  }
+
+  /* ---- Process steps ---- */
+
+  .steps {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+    background: var(--surface);
+  }
+
+  .step {
+    flex: 1 1 140px;
+    padding: 14px 16px;
+    border-right: 1px solid var(--border);
+    font-family: var(--mono);
+  }
+
+  .step:last-child { border-right: none; }
+
+  .step .n {
+    font-size: 0.7rem;
+    color: var(--accent);
+    letter-spacing: 0.06em;
+  }
+
+  .step .label {
+    font-size: 0.83rem;
+    color: var(--text);
+    margin-top: 4px;
+    font-weight: 600;
+  }
+
+  /* ---- Decision log ---- */
+
+  .decision-group-label {
+    font-family: var(--mono);
+    font-size: 0.76rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin: 28px 0 12px;
+  }
+
+  .decision-group-label:first-child { margin-top: 0; }
+
+  .decision {
+    display: grid;
+    grid-template-columns: 34px 1fr;
+    gap: 4px 16px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .decision:last-child { border-bottom: none; }
+
+  .decision .idx {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--text-faint);
+    padding-top: 2px;
+  }
+
+  .decision .title {
+    font-weight: 700;
+    font-size: 1rem;
+    color: var(--text);
+    margin: 0 0 4px;
+  }
+
+  .decision .why {
+    font-size: 0.95rem;
+    color: var(--text-muted);
+    line-height: 1.6;
+    margin: 0;
+    max-width: 62ch;
+  }
+
+  .decision.fixed .title::after {
+    content: "bug found in review";
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--warn);
+    border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+    background: color-mix(in srgb, var(--warn) 12%, transparent);
+    padding: 2px 6px;
+    border-radius: 3px;
+    margin-left: 10px;
+    font-weight: 600;
+    vertical-align: middle;
+  }
+
+  /* ---- Context usage ---- */
+
+  .arch-note {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 16px 20px;
+    margin-bottom: 22px;
+  }
+
+  .arch-note p { margin-bottom: 0; }
+
+  .table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-size: 0.83rem;
+    background: var(--surface);
+  }
+
+  thead th {
+    text-align: left;
+    font-size: 0.68rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    font-weight: 600;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+
+  thead th.num, td.num { text-align: right; }
+
+  tbody td {
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    vertical-align: middle;
+  }
+
+  tbody tr:last-child td { border-bottom: none; }
+
+  tbody tr.rounds td { color: var(--text-muted); }
+
+  .bar-cell {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 160px;
+  }
+
+  .bar-track {
+    flex: 1 1 auto;
+    height: 7px;
+    background: var(--surface-2);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .bar-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+  }
+
+  tfoot td {
+    padding: 12px 14px;
+    font-weight: 700;
+    color: var(--text);
+    border-top: 2px solid var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .task-name { color: var(--text); font-weight: 600; font-family: var(--serif); font-size: 0.92rem; }
+
+  /* ---- Footer stats ---- */
+
+  .statgrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  .stat {
+    background: var(--surface);
+    padding: 16px 18px;
+  }
+
+  .stat .v {
+    font-family: var(--mono);
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .stat .k {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin-top: 4px;
+  }
+
+  footer {
+    margin-top: 60px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    color: var(--text-faint);
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="titleblock">
+    <p class="eyebrow">Session Report · pru-simulator</p>
+    <h1>Open-loop FOC Simulator</h1>
+    <div class="meta-row">
+      <span>Scope <b>Plan B · simulator/Python/UI</b></span>
+      <span>1471 tests passing</span>
+      <span class="status-chip">Verified locally</span>
+    </div>
+  </div>
+
+  <section id="prompt">
+    <h2><span class="num">1</span> The Initial Request</h2>
+    <p class="lede">Verbatim, as given at the start of the session:</p>
+    <div class="prompt-block">we are goind to implement this new feature on the pru simulator. we have another person working on the pru firmware plan, so, apart from understanding everything, your task is to implement the foc simulator ui plan. also make sure to follow the project documentation skill on the repo and agents.md as always</div>
+    <p class="prompt-source">(Typo “goind” preserved. The request’s attached FOC specification and Plan B were treated as design input; Plan A firmware files were left to the parallel contributor.)</p>
+  </section>
+
+  <section id="process">
+    <h2><span class="num">2</span> Process</h2>
+    <p>The implementation followed the repository instructions and the existing FOC design split: read the project documentation skill and OpenPRU routing guide, reviewed the shared specification and simulator/UI plan, then developed the simulator side in test-first slices. The firmware plan remained outside this change.</p>
+    <div class="steps">
+      <div class="step"><div class="n">01</div><div class="label">Instruction audit</div></div>
+      <div class="step"><div class="n">02</div><div class="label">FOC plan review</div></div>
+      <div class="step"><div class="n">03</div><div class="label">ABI tests first</div></div>
+      <div class="step"><div class="n">04</div><div class="label">Plant + runtime</div></div>
+      <div class="step"><div class="n">05</div><div class="label">WS + UI</div></div>
+      <div class="step"><div class="n">06</div><div class="label">Full verification</div></div>
+    </div>
+  </section>
+
+  <section id="design">
+    <h2><span class="num">3</span> Design Choices</h2>
+    <p class="lede">The new path is intentionally open-loop: PRU0 owns the control-side shared blocks, while the Python plant reads PWM output and publishes model feedback for observation.</p>
+
+    <p class="decision-group-label">Decided up front from the FOC specification</p>
+
+    <div class="decision">
+      <div class="idx">3.1</div>
+      <div>
+        <p class="title">Schema-generated Q24 ABI</p>
+        <p class="why">The control, PWM output, motor feedback, and sine LUT sections are defined once in <code>schema/foc_abi.json</code>. Generated assembly, Python, and C snapshots keep the 0x10000 shared window, offsets, sizes, and seqlock layouts aligned with the future firmware.</p>
+      </div>
+    </div>
+    <div class="decision">
+      <div class="idx">3.2</div>
+      <div>
+        <p class="title">IEP-clocked PMSM plant</p>
+        <p class="why">The model integrates electrical current in αβ coordinates and mechanical torque using the reference motor constants. Observer callbacks follow IEP time, while bounded substeps keep manual catch-up deterministic and numerically stable.</p>
+      </div>
+    </div>
+    <div class="decision">
+      <div class="idx">3.3</div>
+      <div>
+        <p class="title">Host-side staged commit and raw state snapshots</p>
+        <p class="why"><code>FocRuntime</code> seeds the 2048-entry sine table and commits references by writing the block before bumping <code>requested_generation</code>. The WebSocket exposes named raw ABI fields plus the model snapshot so the UI remains inspectable against shared memory.</p>
+      </div>
+    </div>
+    <div class="decision">
+      <div class="idx">3.4</div>
+      <div>
+        <p class="title">Separate Motor Control workspace</p>
+        <p class="why">The tab does not compete with the simulator’s panel pool or Protocol Tools. It adds a small reference form, a measured/commanded angle dial, and rolling duty, current, and αβ voltage canvases, with responsive layout and accessible tab/panel attributes.</p>
+      </div>
+    </div>
+    <div class="decision">
+      <div class="idx">3.5</div>
+      <div>
+        <p class="title">Plan A remains untouched</p>
+        <p class="why">No <code>source/foc_open_loop</code> firmware or firmware documentation was invented in this checkout. The load path accepts the future default firmware location and also supports an explicit source payload for backend tests and parallel integration.</p>
+      </div>
+    </div>
+
+    <p class="decision-group-label">Found and corrected during implementation</p>
+
+    <div class="decision fixed">
+      <div class="idx">3.6</div>
+      <div>
+        <p class="title">Phase-to-αβ transform direction</p>
+        <p class="why">The first plant pass treated <code>inverse_clarke</code> as a phase-to-αβ helper, but the reference function returns three phase values from αβ inputs. The focused motor test caught the mismatch; the model now uses an explicit phase-to-αβ transform for sampled PWM voltages.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="context">
+    <h2><span class="num">4</span> Context Usage</h2>
+    <div class="arch-note">
+      <p>No subagent token accounting applies to this implementation: the available workspace exposed no subagent dispatch tool, so the work, review, and verification were performed in the current checkout. The table records the actual scope of the enhancement instead of inventing token totals.</p>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Component</th>
+            <th>Location</th>
+            <th>Enhancement</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="task-name">ABI</td>
+            <td><code>schema/</code> · <code>tools/</code> · generated snapshots</td>
+            <td>Validated shared-memory layout, pack/unpack helpers, drift tests.</td>
+          </tr>
+          <tr>
+            <td class="task-name">Plant</td>
+            <td><code>pru_io/</code> · <code>simulator.py</code></td>
+            <td>IEP-observed PMSM integration, feedback seqlock, reset hook.</td>
+          </tr>
+          <tr>
+            <td class="task-name">Control plane</td>
+            <td><code>pru_io/</code> · <code>mcp_server/</code> · <code>ui/server.py</code></td>
+            <td>Staged references, LUT seeding, MCP smoke path, FOC WebSocket actions.</td>
+          </tr>
+          <tr>
+            <td class="task-name">Dashboard</td>
+            <td><code>ui/static/</code></td>
+            <td>Motor Control tab, responsive controls, dial, live plots, readouts.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="files">
+    <h2><span class="num">5</span> Files Created</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>File</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="task-name">schema/foc_abi.json</td><td>Single source of truth for the four FOC shared-memory sections and constants.</td></tr>
+          <tr><td class="task-name">tools/gen_foc_abi.py</td><td>Schema validator and generator for assembly, Python, and C ABI snapshots.</td></tr>
+          <tr><td class="task-name">source/foc_abi.inc<br>pru_io/foc_abi.py<br>include/foc_abi.h</td><td>Generated firmware/host/header views of the ABI.</td></tr>
+          <tr><td class="task-name">pru_io/foc_motor_model.py</td><td>IEP-clocked αβ electrical and mechanical PMSM model.</td></tr>
+          <tr><td class="task-name">pru_io/foc_runtime.py</td><td>Reference staging, generation commit, sine LUT seed, and state wrapper.</td></tr>
+          <tr><td class="task-name">tests/test_foc_abi_generated.py<br>tests/test_foc_open_loop.py<br>tests/test_foc_ui.py</td><td>ABI, plant/runtime, WebSocket, and frontend contract coverage.</td></tr>
+          <tr><td class="task-name">docs/reports/2026-09-04-foc-open-loop-session-report.html</td><td>This session report, using the canonical report CSS.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="prompt-source">Existing files extended: <code>simulator.py</code>, <code>mcp_server/server.py</code>, <code>ui/server.py</code>, <code>ui/static/index.html</code>, <code>ui/static/app.js</code>, plus the cache-busting assertion in <code>tests/test_ssi_runtime_ui.py</code>.</p>
+  </section>
+
+  <section id="testing">
+    <h2><span class="num">6</span> Testing and Validation</h2>
+    <p class="lede">The focused checks cover the generated contract, rotating plant behavior, runtime lifecycle, MCP bootstrap, and the dashboard WebSocket/UI contract.</p>
+    <h3>Automated verification</h3>
+    <div class="prompt-block">python -m pytest tests/test_foc_abi_generated.py tests/test_foc_open_loop.py tests/test_foc_ui.py tests/test_mcp_server.py::TestMCPTools::test_pru_foc_inject_bootstraps_runtime_and_returns_shared_state -q
+node --check ui/static/app.js
+python -m pytest -q</div>
+    <p>The focused FOC/MCP/UI run passed 15 tests; the targeted regression including one SSI UI assertion passed 16. The full repository suite passed <b>1471 tests</b> with <b>2 expected failures</b> (<code>xfailed</code>), in 98.45 seconds.</p>
+    <h3>Manual UI validation</h3>
+    <p>The local FastAPI server started successfully at <code>http://127.0.0.1:8080</code>, and the WebSocket contract was exercised through the test client. The in-app browser connector was unavailable in this environment (no browser surfaces were listed), so a visual click-through and screenshot pass could not be performed. When a browser is available, open Motor Control, load <code>foc_open_loop/foc_open_loop.asm</code>, apply a speed/Iq reference, start the observer, and confirm the dial and three rolling plots update.</p>
+    <h3>Frontend pre-flight</h3>
+    <p>The required style detector ran in degraded regex mode because its optional parser modules were unavailable. It reported one pre-existing <code>dark-glow</code> warning at <code>ui/static/index.html:846</code>; no warning pointed at the FOC additions.</p>
+  </section>
+
+  <div class="statgrid">
+    <div class="stat"><div class="v">15</div><div class="k">FOC tests added</div></div>
+    <div class="stat"><div class="v">1471</div><div class="k">full-suite passes</div></div>
+    <div class="stat"><div class="v">4</div><div class="k">ABI sections</div></div>
+    <div class="stat"><div class="v">4</div><div class="k">live canvases</div></div>
+  </div>
+
+  <footer>pru-simulator · Open-loop FOC Plan B · generated from the implementation session</footer>
+</div>
+</body>
+</html>

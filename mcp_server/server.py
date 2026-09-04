@@ -9,7 +9,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import json
 
 from simulator import Simulator
+from pru_io import foc_abi
 from pru_io import ssi_config_abi as abi
+from pru_io.foc_runtime import FocRuntime
 from pru_io.ssi_runtime import SSIRuntime, PROFILES
 
 
@@ -19,6 +21,7 @@ class PRUSimulatorMCP:
     def __init__(self, config_path: str = "memory.cfg"):
         self.sim = Simulator(config_path)
         self._runtime: SSIRuntime | None = None
+        self._foc_runtime: FocRuntime | None = None
 
     def _get_runtime(self) -> SSIRuntime:
         """Lazily construct the SSIRuntime on first SSI-tool use.
@@ -210,6 +213,44 @@ class PRUSimulatorMCP:
             "match": captured == expected,
             "frames_captured": frames_captured,
             "cycles": pru.counters.cycles,
+        }
+
+    def pru_foc_inject(
+        self,
+        source: str,
+        speed_rpm: float = 0.0,
+        id_ref: float = 0.0,
+        iq_ref: float = 0.0,
+        ramp_rate: float = 0.0,
+        core: str = "pru0",
+        max_steps: int = 20_000,
+    ) -> dict:
+        """Load open-loop FOC firmware, attach the plant, and return shared state."""
+        self.sim.hard_reset()
+        errors = self.sim.load(core, source)
+        if errors:
+            return {"status": "error", "errors": errors}
+
+        self.sim.iep.write_iepclk(1)
+        self.sim.iep.write_global_cfg(0x11)
+        runtime = FocRuntime(self.sim)
+        self._foc_runtime = runtime
+        runtime.set_reference(
+            speed=float(speed_rpm) / foc_abi.SPEED_BASE_RPM,
+            id=float(id_ref),
+            iq=float(iq_ref),
+            ramp=float(ramp_rate),
+        )
+        runtime.start()
+        self.sim.step(core, count=max(0, int(max_steps)))
+        state = runtime.state()
+        return {
+            "status": "success",
+            "control": state["control"],
+            "pwm": state["pwm"],
+            "fb": state["fb"],
+            "model": state["model"],
+            "cycles": self.sim.cores[core].counters.cycles,
         }
 
     def ssi_profile_list(self) -> dict:

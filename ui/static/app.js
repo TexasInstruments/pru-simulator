@@ -36,6 +36,9 @@ let _renderedSourceLabels = null;
 let panelVisibilityButtons = null;
 let protocolPanelButtons = null;
 let protocolPanelVisibleKeys = new Set(["i2c"]);
+let focLatestState = null;
+let focSamples = [];
+let focDialAnimationFrame = null;
 
 // ---- Multi-core state ------------------------------------------------------
 let multiCoreMode = false;
@@ -418,6 +421,8 @@ function initTabList(tabListId, initialTabId, onActivate = null) {
 
 function syncWorkspaceSubnav(tab) {
   const isSimulator = tab?.getAttribute("aria-controls") === "simulator-view";
+  const isProtocolTools = tab?.getAttribute("aria-controls") === "protocol-tools-view";
+  const isFoc = tab?.getAttribute("aria-controls") === "foc-view";
   const panelVisibility = document.getElementById("panel-visibility");
   const protocolToolTabs = document.getElementById("protocol-tool-tabs");
 
@@ -426,9 +431,10 @@ function syncWorkspaceSubnav(tab) {
     panelVisibility.setAttribute("aria-hidden", isSimulator ? "false" : "true");
   }
   if (protocolToolTabs) {
-    protocolToolTabs.hidden = isSimulator;
-    protocolToolTabs.setAttribute("aria-hidden", isSimulator ? "true" : "false");
+    protocolToolTabs.hidden = !isProtocolTools;
+    protocolToolTabs.setAttribute("aria-hidden", isProtocolTools ? "false" : "true");
   }
+  if (isFoc) requestGraphDraw();
 }
 
 const PROTOCOL_PANEL_VISIBILITY_KEY = "pru-protocol-panel-visibility";
@@ -619,6 +625,7 @@ function initUI() {
   buildPinGrid(gpoGrid, 20, "gpo", null);
   buildPinGrid(gpiGrid, 20, "gpi", handleGpiClick);
   initProtocolTools();
+  initFocControls();
   initPanelVisibilityControls();
   initLayout('sc');
   updatePanelVisibilityButtons();
@@ -641,6 +648,7 @@ function connect() {
     } else {
       sendAction({ action: "get_state", core: currentCore });
     }
+    sendAction({ action: "foc_state" });
     refreshMemory();
     refreshMemory2();
     loadRegions();
@@ -723,6 +731,14 @@ function connect() {
           st.style.color = "#f38ba8";
           st.style.display = "";
         }
+      } else if (msg.type === "foc_state") {
+        renderFocState(msg);
+        requestGraphDraw();
+      } else if (msg.type === "foc_error") {
+        const status = document.getElementById("foc-runtime-status");
+        const inline = document.getElementById("foc-control-status");
+        if (status) status.textContent = "FOC error · " + msg.error;
+        if (inline) inline.textContent = msg.error;
       } else if (msg.type === "perif_ok") {
         const st = document.getElementById("perif-lb-status");
         if (st) {
@@ -1896,6 +1912,7 @@ function graphHandleMemory(msg) {
 function drawGraph() {
   drawDigitalGraph();
   drawMemGraph();
+  drawFocWorkspace();
 }
 
 let graphDrawPending = false;
@@ -2416,6 +2433,336 @@ function removeMemChannel(index) {
   signalGraph.memChannels.splice(index, 1);
   signalGraph.memChannels.forEach((ch, i) => { ch.label = `M${i + 1}`; });
   renderMemChannelRows();
+}
+
+// ---- Open-loop FOC workspace ----------------------------------------------
+
+const FOC_Q_ONE = 1 << 24;
+const FOC_PHASE_U32 = 0x100000000;
+const FOC_POLE_PAIRS = 4;
+const FOC_COLORS = {
+  a: "#70d6b4",
+  b: "#7eb8e8",
+  c: "#e5a66d",
+  alpha: "#da8ee6",
+  beta: "#e4d27d",
+};
+
+function focQ24(value) {
+  return Number(value || 0) / FOC_Q_ONE;
+}
+
+function focCanvas(canvasId) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return null;
+  const rect = canvas.getBoundingClientRect();
+  const width = Math.floor(rect.width);
+  const height = Math.floor(rect.height);
+  if (width <= 0 || height <= 0) return null;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const pixelWidth = Math.max(1, Math.floor(width * dpr));
+  const pixelHeight = Math.max(1, Math.floor(height * dpr));
+  if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { canvas, ctx, width, height };
+}
+
+function focThemeColor(name, fallback) {
+  const value = getComputedStyle(document.documentElement)
+    .getPropertyValue(name).trim();
+  return value || fallback;
+}
+
+function focRotorAngle(value) {
+  return ((Number(value || 0) >>> 0) / FOC_PHASE_U32) * Math.PI * 2;
+}
+
+function renderFocState(message) {
+  const wasLoaded = !!focLatestState?.loaded;
+  focLatestState = message;
+  if (!message.loaded || (message.loaded && !wasLoaded)) focSamples = [];
+
+  const status = document.getElementById("foc-runtime-status");
+  const controlStatus = document.getElementById("foc-control-status");
+  const pwm = message.pwm;
+  const fb = message.fb;
+  const model = message.model;
+  const loaded = !!message.loaded;
+  const runningNow = !!model?.running;
+
+  if (status) {
+    status.textContent = loaded
+      ? (runningNow ? "Runtime active · IEP observer running" : "Runtime ready · observer stopped")
+      : (message.status || "Firmware not loaded");
+    status.style.color = loaded && runningNow ? "var(--green)" : "var(--text-dim)";
+  }
+  if (controlStatus) {
+    controlStatus.textContent = loaded
+      ? (runningNow ? "Streaming feedback from the PMSM plant." : "Ready · apply references and start.")
+      : "Load firmware to begin.";
+  }
+
+  const enable = document.getElementById("foc-enable");
+  const start = document.getElementById("foc-start");
+  const stop = document.getElementById("foc-stop");
+  if (enable) {
+    enable.disabled = !loaded || runningNow;
+    enable.textContent = runningNow ? "Enabled" : "Enable";
+  }
+  if (start) start.disabled = !loaded || runningNow;
+  if (stop) stop.disabled = !loaded || !runningNow;
+
+  const speedRpm = fb ? focQ24(fb.speed_rpm_q24) * 1000 : null;
+  const theta = fb ? focRotorAngle(fb.rotor_theta_u32) : null;
+  const dutyText = pwm
+    ? [pwm.ta_q24, pwm.tb_q24, pwm.tc_q24]
+      .map(value => focQ24(value).toFixed(3)).join(" / ")
+    : "— / — / —";
+  const setText = (id, value) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+  };
+  setText("foc-speed-readout", speedRpm === null ? "— RPM" : `${speedRpm.toFixed(1)} RPM`);
+  setText("foc-theta-readout", theta === null ? "—°" : `${(theta * 180 / Math.PI).toFixed(1)}°`);
+  setText("foc-duty-readout", dutyText);
+  setText("foc-time-readout", fb ? `0x${Number(fb.timestamp || 0).toString(16).toUpperCase().padStart(8, "0")}` : "—");
+  setText("foc-dial-state", loaded ? (runningNow ? "live" : "paused") : "waiting");
+
+  if (pwm && fb) {
+    const timestamp = Number(fb.timestamp || 0);
+    const previous = focSamples[focSamples.length - 1];
+    if (!previous || previous.timestamp !== timestamp || previous.loop !== pwm.loop_counter) {
+      focSamples.push({
+        timestamp,
+        loop: Number(pwm.loop_counter || 0),
+        ta: focQ24(pwm.ta_q24),
+        tb: focQ24(pwm.tb_q24),
+        tc: focQ24(pwm.tc_q24),
+        ia: focQ24(fb.ia_q24) * 10,
+        ib: focQ24(fb.ib_q24) * 10,
+        ic: focQ24(fb.ic_q24) * 10,
+        valpha: focQ24(pwm.valpha_q24),
+        vbeta: focQ24(pwm.vbeta_q24),
+      });
+      if (focSamples.length > 360) focSamples.shift();
+    }
+  }
+  if (runningNow) scheduleFocDialAnimation();
+}
+
+function drawFocLineChart(canvasId, series, minValue, maxValue) {
+  const surface = focCanvas(canvasId);
+  if (!surface) return;
+  const { ctx, width: W, height: H } = surface;
+  const inset = focThemeColor("--panel-inset", "#1b2127");
+  const grid = focThemeColor("--border", "#39434d");
+  const text = focThemeColor("--text-dim", "#8996a1");
+  ctx.fillStyle = inset;
+  ctx.fillRect(0, 0, W, H);
+
+  const left = 34, right = 8, top = 12, bottom = 18;
+  const plotW = Math.max(1, W - left - right);
+  const plotH = Math.max(1, H - top - bottom);
+  ctx.strokeStyle = grid;
+  ctx.globalAlpha = 0.55;
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = top + (i / 4) * plotH + 0.5;
+    ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(W - right, y); ctx.stroke();
+  }
+  for (let i = 1; i < 6; i++) {
+    const x = left + (i / 6) * plotW + 0.5;
+    ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, H - bottom); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  const formatAxis = value => Math.abs(value) >= 10 ? value.toFixed(0) : value.toFixed(2);
+  ctx.fillStyle = text;
+  ctx.font = "9px Consolas, monospace";
+  ctx.fillText(formatAxis(maxValue), 3, top + 3);
+  ctx.fillText(formatAxis(minValue), 3, H - bottom + 1);
+  if (minValue < 0 && maxValue > 0) {
+    const y = top + (maxValue / (maxValue - minValue)) * plotH + 0.5;
+    ctx.strokeStyle = text;
+    ctx.globalAlpha = 0.45;
+    ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(W - right, y); ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  const labelWidth = series.reduce((total, lane) => total + lane.label.length * 6 + 14, 0);
+  let labelX = Math.max(left, W - labelWidth - 4);
+  series.forEach(lane => {
+    ctx.fillStyle = lane.color;
+    ctx.fillRect(labelX, 3, 6, 6);
+    ctx.fillText(lane.label, labelX + 9, 9);
+    labelX += lane.label.length * 6 + 14;
+  });
+
+  if (focSamples.length < 2) {
+    ctx.fillStyle = text;
+    ctx.fillText("waiting for foc_state…", left + 5, top + plotH / 2);
+    return;
+  }
+
+  const yFor = value => top + (maxValue - value) / (maxValue - minValue) * plotH;
+  series.forEach(lane => {
+    ctx.strokeStyle = lane.color;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    focSamples.forEach((sample, index) => {
+      const x = left + (index / (focSamples.length - 1)) * plotW;
+      const y = yFor(lane.value(sample));
+      if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  });
+}
+
+function drawFocDial() {
+  const surface = focCanvas("foc-rotor-dial");
+  if (!surface) return;
+  const { ctx, width: W, height: H } = surface;
+  const bg = focThemeColor("--panel-inset", "#1b2127");
+  const border = focThemeColor("--border-strong", "#707d88");
+  const dim = focThemeColor("--text-dim", "#8996a1");
+  const cx = W / 2;
+  const cy = H / 2;
+  const radius = Math.max(30, Math.min(W, H) * 0.38);
+  const fb = focLatestState?.fb;
+  const pwm = focLatestState?.pwm;
+  const rotor = fb ? focRotorAngle(fb.rotor_theta_u32) : 0;
+  const command = pwm ? focRotorAngle(pwm.theta_cmd_u32) : 0;
+
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.strokeStyle = border;
+  ctx.lineWidth = 1;
+  ctx.globalAlpha = 0.65;
+  ctx.beginPath(); ctx.arc(0, 0, radius, 0, Math.PI * 2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(0, 0, radius * 0.72, 0, Math.PI * 2); ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  for (let pole = 0; pole < FOC_POLE_PAIRS * 2; pole++) {
+    ctx.save();
+    ctx.rotate(pole * Math.PI / FOC_POLE_PAIRS);
+    ctx.fillStyle = pole % 2 ? "#da8ee6" : "#7eb8e8";
+    ctx.globalAlpha = 0.6;
+    ctx.fillRect(-5, -radius * 0.92, 10, radius * 0.18);
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+
+  const needle = (angle, length, color, lineWidth, dash) => {
+    ctx.save();
+    ctx.rotate(angle - Math.PI / 2);
+    if (dash) ctx.setLineDash([5, 4]);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = lineWidth;
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -length); ctx.stroke();
+    if (!dash) {
+      ctx.fillStyle = color;
+      ctx.beginPath(); ctx.moveTo(0, -length - 8); ctx.lineTo(-4, -length + 1); ctx.lineTo(4, -length + 1); ctx.closePath(); ctx.fill();
+    }
+    ctx.restore();
+  };
+  needle(command, radius * 0.82, "#da8ee6", 1.5, true);
+  needle(rotor, radius * 0.68, "#70d6b4", 3, false);
+  ctx.fillStyle = "#70d6b4";
+  ctx.beginPath(); ctx.arc(0, 0, 5, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = dim;
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(-radius - 8, 0); ctx.lineTo(radius + 8, 0); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, -radius - 8); ctx.lineTo(0, radius + 8); ctx.stroke();
+  ctx.restore();
+
+  ctx.fillStyle = dim;
+  ctx.font = "9px Consolas, monospace";
+  ctx.fillText("0°", cx + radius + 4, cy + 3);
+  ctx.fillText("90°", cx - 11, cy - radius - 8);
+}
+
+function drawFocWorkspace() {
+  const duties = [
+    { label: "Ta", color: FOC_COLORS.a, value: sample => sample.ta },
+    { label: "Tb", color: FOC_COLORS.b, value: sample => sample.tb },
+    { label: "Tc", color: FOC_COLORS.c, value: sample => sample.tc },
+  ];
+  const currents = [
+    { label: "Ia", color: FOC_COLORS.a, value: sample => sample.ia },
+    { label: "Ib", color: FOC_COLORS.b, value: sample => sample.ib },
+    { label: "Ic", color: FOC_COLORS.c, value: sample => sample.ic },
+  ];
+  const voltages = [
+    { label: "Vα", color: FOC_COLORS.alpha, value: sample => sample.valpha },
+    { label: "Vβ", color: FOC_COLORS.beta, value: sample => sample.vbeta },
+  ];
+  let currentPeak = 1;
+  focSamples.forEach(sample => {
+    currents.forEach(lane => { currentPeak = Math.max(currentPeak, Math.abs(lane.value(sample))); });
+  });
+  drawFocDial();
+  drawFocLineChart("foc-duty-plot", duties, 0, 1);
+  drawFocLineChart("foc-current-plot", currents, -currentPeak * 1.15, currentPeak * 1.15);
+  drawFocLineChart("foc-voltage-plot", voltages, -1, 1);
+}
+
+function scheduleFocDialAnimation() {
+  if (focDialAnimationFrame !== null) return;
+  const raf = typeof requestAnimationFrame === "function"
+    ? requestAnimationFrame
+    : callback => setTimeout(callback, 16);
+  const draw = () => {
+    focDialAnimationFrame = null;
+    drawFocDial();
+    if (focLatestState?.model?.running) scheduleFocDialAnimation();
+  };
+  focDialAnimationFrame = raf(draw);
+}
+
+function initFocControls() {
+  const form = document.getElementById("foc-reference-form");
+  const speed = document.getElementById("foc-speed-rpm");
+  const speedPu = document.getElementById("foc-speed-pu");
+  const load = document.getElementById("foc-load");
+  const start = document.getElementById("foc-start");
+  const enable = document.getElementById("foc-enable");
+  const stop = document.getElementById("foc-stop");
+  const controlStatus = document.getElementById("foc-control-status");
+  const updateSpeed = () => {
+    if (speedPu) speedPu.textContent = `${(Number(speed?.value || 0) / 1000).toFixed(3)} pu`;
+  };
+  speed?.addEventListener("input", updateSpeed);
+  updateSpeed();
+
+  load?.addEventListener("click", () => {
+    if (controlStatus) controlStatus.textContent = "Loading open-loop firmware…";
+    sendAction({ action: "foc_load", filename: "foc_open_loop/foc_open_loop.asm" });
+  });
+  form?.addEventListener("submit", event => {
+    event.preventDefault();
+    const sent = sendAction({
+      action: "foc_set_reference",
+      speed_rpm: Number(speed?.value || 0),
+      id_ref: Number(document.getElementById("foc-id-ref")?.value || 0),
+      iq_ref: Number(document.getElementById("foc-iq-ref")?.value || 0),
+      ramp_rate: Number(document.getElementById("foc-ramp-rate")?.value || 0),
+    });
+    if (sent && controlStatus) controlStatus.textContent = "References staged for the next control commit.";
+  });
+  const startFoc = () => {
+    if (sendAction({ action: "foc_start" }) && controlStatus) controlStatus.textContent = "Starting the IEP-clocked plant…";
+  };
+  enable?.addEventListener("click", startFoc);
+  start?.addEventListener("click", startFoc);
+  stop?.addEventListener("click", () => {
+    if (sendAction({ action: "foc_stop" }) && controlStatus) controlStatus.textContent = "Stopping the plant observer…";
+  });
 }
 
 // ---- Signal graph — CSV export ---------------------------------------------

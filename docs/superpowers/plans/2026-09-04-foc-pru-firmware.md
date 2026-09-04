@@ -6,9 +6,9 @@
 **Deliverable:** `source/foc_open_loop/foc_open_loop.asm` that reads references from the `control`
 block, runs RC → RG → sin/cos → inverse Park → SVGEN, and writes duty cycles + angle to `pwm_out`.
 
-Firmware is built and tested **one macro at a time** — each macro gets a firmware↔Python
-cross-check before the next is added. This follows TDD and avoids the known failure mode of large
-one-shot `.asm` rewrites (see memory `pru-asm-rewrites-stall-sonnet`).
+Firmware is built and tested **one macro at a time** — each macro gets a firmware↔Python cross-check
+before the next is added. This follows TDD and avoids the known failure mode of large one-shot `.asm`
+rewrites (see memory `pru-asm-rewrites-stall-sonnet`).
 
 > Prerequisite: `source/foc_abi.inc` must be generated first (owned by Plan B, task B1). This plan
 > `.include`s it for all shared-memory offsets and bases.
