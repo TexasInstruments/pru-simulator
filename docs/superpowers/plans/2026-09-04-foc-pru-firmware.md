@@ -23,7 +23,7 @@ rewrites (see memory `pru-asm-rewrites-stall-sonnet`).
 - [ ] Init: poll `control.requested_generation`; when it changes, `LBBO` the references
       (`speed_ref_q24`, `id_ref_q24`, `iq_ref_q24`, `ramp_rate_q24`, `enable`) into registers and
       `SBBO` `pru_ack_generation = requested_generation`.
-- [ ] **Verify:** `tests/test_foc_open_loop.py::test_config_handshake` — write a control block +
+- [ ] **Verify:** `tests/test_foc_firmware.py::test_config_handshake` — write a control block +
       generation, run until ack, assert `pru_ack_generation` matches and references are latched
       (observe via a scratch `SBBO` of a latched value or a register snapshot).
 
@@ -80,7 +80,7 @@ rewrites (see memory `pru-asm-rewrites-stall-sonnet`).
       notable observations.
 
 ## Definition of done (Plan A)
-- [ ] `python -m pytest tests/test_foc_open_loop.py -q` green.
+- [ ] `python -m pytest tests/test_foc_firmware.py -q` green.
 - [ ] Firmware loads with no parser errors on `pru0`; a full-revolution run produces valid,
       rotating SVPWM duties in `pwm_out`.
 - [ ] No use of unsupported instructions (`QGCT`/`QLT`/`QGT`); MAC uses R28/R29 operands, R26/R27

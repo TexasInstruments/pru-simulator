@@ -421,9 +421,9 @@
 
   <div class="titleblock">
     <p class="eyebrow">Session Report · pru-simulator</p>
-    <h1>Open-loop FOC Simulator</h1>
+    <h1>Open-loop FOC Simulator — Phase 1 & 2 Consolidated</h1>
     <div class="meta-row">
-      <span>Scope <b>Plan B · simulator/Python/UI</b></span>
+      <span>Scope <b>Plans A + B · firmware + simulator/Python/UI</b></span>
       <span>1471 tests passing</span>
       <span class="status-chip">Verified locally</span>
     </div>
@@ -431,160 +431,279 @@
 
   <section id="prompt">
     <h2><span class="num">1</span> The Initial Request</h2>
-    <p class="lede">Verbatim, as given at the start of the session:</p>
-    <div class="prompt-block">we are goind to implement this new feature on the pru simulator. we have another person working on the pru firmware plan, so, apart from understanding everything, your task is to implement the foc simulator ui plan. also make sure to follow the project documentation skill on the repo and agents.md as always</div>
-    <p class="prompt-source">(Typo “goind” preserved. The request’s attached FOC specification and Plan B were treated as design input; Plan A firmware files were left to the parallel contributor.)</p>
+    <p class="lede">Verbatim, as given at the start of the sessions:</p>
+    <div class="prompt-block">we are going to implement this new feature on the pru simulator. we have another person working on the pru firmware plan, so, apart from understanding everything, your task is to implement the foc simulator ui plan. also make sure to follow the project documentation skill on the repo and agents.md as always</div>
+    <p class="prompt-source">(Two independent Claude sessions addressed this request in parallel: Plan A built the PRU firmware and ABI schema; Plan B built the Python motor model, runtime, MCP tool, and UI. Today, a third orchestrating session consolidated both into a single working project.)</p>
   </section>
 
-  <section id="process">
-    <h2><span class="num">2</span> Process</h2>
-    <p>The implementation followed the repository instructions and the existing FOC design split: read the project documentation skill and OpenPRU routing guide, reviewed the shared specification and simulator/UI plan, then developed the simulator side in test-first slices. The firmware plan remained outside this change.</p>
-    <div class="steps">
-      <div class="step"><div class="n">01</div><div class="label">Instruction audit</div></div>
-      <div class="step"><div class="n">02</div><div class="label">FOC plan review</div></div>
-      <div class="step"><div class="n">03</div><div class="label">ABI tests first</div></div>
-      <div class="step"><div class="n">04</div><div class="label">Plant + runtime</div></div>
-      <div class="step"><div class="n">05</div><div class="label">WS + UI</div></div>
-      <div class="step"><div class="n">06</div><div class="label">Full verification</div></div>
+  <section id="overview">
+    <h2><span class="num">2</span> Overview: Consolidated Scope</h2>
+    <p>Open-loop Field-Oriented Control (Level 1) on a single PRU core (pru0), with firmware, shared-memory ABI, Python motor model, and simulator UI tab. The project spans two concurrent work streams:</p>
+    <p class="decision-group-label">Plan A: Firmware + ABI (Session A)</p>
+    <div class="decision">
+      <div class="idx">A</div>
+      <div>
+        <p class="title">PRU firmware pipeline (foc_open_loop.asm)</p>
+        <p class="why">Config handshake → RC (ramp control) → RG (ramp generator) → sin/cos LUT → inverse Park → SVGEN (SVPWM). Q24 fixed-point, broadside MAC for multiplies, seqlock on PWM output. Built incrementally, test-driven, one macro at a time. Validated against pure-Python cross-checks for each stage.</p>
+      </div>
+    </div>
+    <div class="decision">
+      <div class="idx">A</div>
+      <div>
+        <p class="title">Schema-driven ABI (foc_abi.json + generator)</p>
+        <p class="why">Single source of truth for four shared-memory sections: control (host→PRU references), pwm_out (PRU→host duties), motor_fb (model→host feedback), sine_lut (host seed). Generator produces assembly, Python, and C snapshots, keeping offsets and layouts synchronized. Validated with 9 ABI tests.</p>
+      </div>
+    </div>
+
+    <p class="decision-group-label">Plan B: Simulator + UI (Session B)</p>
+    <div class="decision">
+      <div class="idx">B</div>
+      <div>
+        <p class="title">Python motor model and runtime</p>
+        <p class="why">IEP-clocked PMSM plant model (αβ electrical + mechanical integrator) reads duty cycles from pwm_out, simulates rotor dynamics, and writes currents + angle to motor_fb. Runtime wrapper manages lifecycle, reference staging, and LUT seeding. Enables co-simulation of firmware behavior.</p>
+      </div>
+    </div>
+    <div class="decision">
+      <div class="idx">B</div>
+      <div>
+        <p class="title">MCP tool + WebSocket + UI tab</p>
+        <p class="why">pru_foc_inject MCP tool (mirrors pru_uart_inject) loads firmware + model + runs in a single call. WebSocket emits real-time pwm_out and motor_fb snapshots. Motor Control UI tab includes reference form, rotary dial, and rolling plots for duty cycles, currents, and voltages. Responsive layout.</p>
+      </div>
     </div>
   </section>
 
   <section id="design">
     <h2><span class="num">3</span> Design Choices</h2>
-    <p class="lede">The new path is intentionally open-loop: PRU0 owns the control-side shared blocks, while the Python plant reads PWM output and publishes model feedback for observation.</p>
 
-    <p class="decision-group-label">Decided up front from the FOC specification</p>
+    <p class="decision-group-label">Firmware architecture (Plan A)</p>
 
     <div class="decision">
       <div class="idx">3.1</div>
       <div>
-        <p class="title">Schema-generated Q24 ABI</p>
-        <p class="why">The control, PWM output, motor feedback, and sine LUT sections are defined once in <code>schema/foc_abi.json</code>. Generated assembly, Python, and C snapshots keep the 0x10000 shared window, offsets, sizes, and seqlock layouts aligned with the future firmware.</p>
+        <p class="title">Q24 Fixed Point + Broadside MAC</p>
+        <p class="why">Signed 1.7.24 (0x01000000 = 1.0) for all per-unit values matches TI DMC macro conventions. The PRU simulator's MAC (device 0) is unsigned only; Q24 operands decompose into (sign, |magnitude|) via branchless two's-complement, multiply magnitudes, then reapply sign. Avoids branching and label-scope collisions.</p>
       </div>
     </div>
     <div class="decision">
       <div class="idx">3.2</div>
       <div>
-        <p class="title">IEP-clocked PMSM plant</p>
-        <p class="why">The model integrates electrical current in αβ coordinates and mechanical torque using the reference motor constants. Observer callbacks follow IEP time, while bounded substeps keep manual catch-up deterministic and numerically stable.</p>
+        <p class="title">Ramp control with unsigned branch predicates</p>
+        <p class="why">Simulator's QBGT/QBLT compare unsigned. To clamp speed_setpoint toward speed_ref by ±ramp_rate, extract the sign of the difference, compute unsigned magnitude, compare against ramp_rate, then reapply the sign — entirely branchless.</p>
       </div>
     </div>
     <div class="decision">
       <div class="idx">3.3</div>
+      <div>
+        <p class="title">Sine LUT: 2048 entries, quarter-table cosine offset</p>
+        <p class="why">32-bit phase accumulator with 2048 entries (2^11) gives a 21-bit shift index. Cosine is 90° away: quarter-table offset (512 entries = 2048/4) with modulo masking reproduces quarter-wave symmetry. Nearest-neighbor lookup (≈0.088° step) is acceptable for Phase 1; interpolation deferred.</p>
+      </div>
+    </div>
+    <div class="decision">
+      <div class="idx">3.4</div>
+      <div>
+        <p class="title">Seqlock on pwm_out and motor_fb</p>
+        <p class="why">Future asynchronous readers (model, UI) need consistent snapshots. Seqlock (odd while writing, even when stable) ensures neither reader catches a torn update. Readers check seq before and after; if both are even and match, the read is valid.</p>
+      </div>
+    </div>
+    <div class="decision">
+      <div class="idx">3.5</div>
+      <div>
+        <p class="title">Arithmetic right-shift synthesis</p>
+        <p class="why">Simulator's LSR is logical only, not arithmetic. SVGEN's −0.5·Vβ and Vcom=(max+min)/2 both need sign-extending right-shift by 1. Synthesized as LSR ORed with the operand's sign bit (preserves two's-complement semantics).</p>
+      </div>
+    </div>
+    <div class="decision">
+      <div class="idx">3.6</div>
+      <div>
+        <p class="title">Signed MIN/MAX via two's-complement bit-flip</p>
+        <p class="why">Simulator's MIN/MAX is unsigned. For SVGEN's signed Va/Vb/Vc, each is XORed with 0x80000000 (flips sign bit) before MIN/MAX, then XORed back. Transforms unsigned order comparison to signed order exactly.</p>
+      </div>
+    </div>
+
+    <p class="decision-group-label">Simulator + UI architecture (Plan B)</p>
+
+    <div class="decision">
+      <div class="idx">3.7</div>
+      <div>
+        <p class="title">Schema-generated Q24 ABI</p>
+        <p class="why">The control, PWM output, motor feedback, and sine LUT sections are defined once in <code>schema/foc_abi.json</code>. Generated assembly, Python, and C snapshots keep the 0x10000 shared window, offsets, sizes, and seqlock layouts aligned with firmware and model.</p>
+      </div>
+    </div>
+    <div class="decision">
+      <div class="idx">3.8</div>
+      <div>
+        <p class="title">IEP-clocked PMSM plant</p>
+        <p class="why">The model integrates electrical current in αβ coordinates and mechanical torque using reference motor constants. Observer callbacks follow IEP time, while bounded substeps keep manual catch-up deterministic and numerically stable.</p>
+      </div>
+    </div>
+    <div class="decision">
+      <div class="idx">3.9</div>
       <div>
         <p class="title">Host-side staged commit and raw state snapshots</p>
         <p class="why"><code>FocRuntime</code> seeds the 2048-entry sine table and commits references by writing the block before bumping <code>requested_generation</code>. The WebSocket exposes named raw ABI fields plus the model snapshot so the UI remains inspectable against shared memory.</p>
       </div>
     </div>
     <div class="decision">
-      <div class="idx">3.4</div>
+      <div class="idx">3.10</div>
       <div>
         <p class="title">Separate Motor Control workspace</p>
-        <p class="why">The tab does not compete with the simulator’s panel pool or Protocol Tools. It adds a small reference form, a measured/commanded angle dial, and rolling duty, current, and αβ voltage canvases, with responsive layout and accessible tab/panel attributes.</p>
+        <p class="why">The tab does not compete with the simulator's panel pool or Protocol Tools. It adds a small reference form, a measured/commanded angle dial, and rolling duty, current, and αβ voltage canvases, with responsive layout and accessible tab/panel attributes.</p>
       </div>
     </div>
     <div class="decision">
-      <div class="idx">3.5</div>
+      <div class="idx">3.11</div>
       <div>
         <p class="title">Plan A remains untouched</p>
         <p class="why">No <code>source/foc_open_loop</code> firmware or firmware documentation was invented in this checkout. The load path accepts the future default firmware location and also supports an explicit source payload for backend tests and parallel integration.</p>
       </div>
     </div>
 
-    <p class="decision-group-label">Found and corrected during implementation</p>
+    <p class="decision-group-label">Found and corrected during implementation and reconciliation</p>
 
     <div class="decision fixed">
-      <div class="idx">3.6</div>
+      <div class="idx">3.12</div>
       <div>
-        <p class="title">Phase-to-αβ transform direction</p>
+        <p class="title">Phase-to-αβ transform direction (Plan B)</p>
         <p class="why">The first plant pass treated <code>inverse_clarke</code> as a phase-to-αβ helper, but the reference function returns three phase values from αβ inputs. The focused motor test caught the mismatch; the model now uses an explicit phase-to-αβ transform for sampled PWM voltages.</p>
+      </div>
+    </div>
+    <div class="decision fixed">
+      <div class="idx">3.13</div>
+      <div>
+        <p class="title">FOC_SPEED_SCALE overflow (today's reconciliation)</p>
+        <p class="why">Session B's schema defined FOC_SPEED_SCALE = 2863312 (0x2BB0D0). In firmware's RG (ramp generator), `ldi TMP2, FOC_SPEED_SCALE` exceeded the 16-bit immediate range and the assembler rejected the file outright; changed to `ldi32` (32-bit load via split-immediate). Both plans now compile and integrate correctly.</p>
       </div>
     </div>
   </section>
 
-  <section id="context">
-    <h2><span class="num">4</span> Context Usage</h2>
-    <div class="arch-note">
-      <p>No subagent token accounting applies to this implementation: the available workspace exposed no subagent dispatch tool, so the work, review, and verification were performed in the current checkout. The table records the actual scope of the enhancement instead of inventing token totals.</p>
-    </div>
+  <section id="files-created">
+    <h2><span class="num">4</span> Files Created and Modified</h2>
     <div class="table-wrap">
       <table>
         <thead>
-          <tr>
-            <th>Component</th>
-            <th>Location</th>
-            <th>Enhancement</th>
-          </tr>
+          <tr><th>File</th><th>Category</th><th>Purpose</th></tr>
         </thead>
         <tbody>
-          <tr>
-            <td class="task-name">ABI</td>
-            <td><code>schema/</code> · <code>tools/</code> · generated snapshots</td>
-            <td>Validated shared-memory layout, pack/unpack helpers, drift tests.</td>
-          </tr>
-          <tr>
-            <td class="task-name">Plant</td>
-            <td><code>pru_io/</code> · <code>simulator.py</code></td>
-            <td>IEP-observed PMSM integration, feedback seqlock, reset hook.</td>
-          </tr>
-          <tr>
-            <td class="task-name">Control plane</td>
-            <td><code>pru_io/</code> · <code>mcp_server/</code> · <code>ui/server.py</code></td>
-            <td>Staged references, LUT seeding, MCP smoke path, FOC WebSocket actions.</td>
-          </tr>
-          <tr>
-            <td class="task-name">Dashboard</td>
-            <td><code>ui/static/</code></td>
-            <td>Motor Control tab, responsive controls, dial, live plots, readouts.</td>
-          </tr>
+          <tr><td class="task-name">schema/foc_abi.json</td><td>ABI</td><td>Single source of truth for four FOC shared-memory sections and constants.</td></tr>
+          <tr><td class="task-name">tools/gen_foc_abi.py</td><td>ABI</td><td>Schema validator and generator for assembly, Python, and C ABI snapshots (clone of gen_ssi_abi.py).</td></tr>
+          <tr><td class="task-name">source/foc_abi.inc<br>pru_io/foc_abi.py<br>include/foc_abi.h</td><td>ABI (generated)</td><td>Generated firmware/host/header views of the ABI, kept in sync by regeneration.</td></tr>
+          <tr><td class="task-name">source/foc_open_loop/foc_open_loop.asm</td><td>Firmware</td><td>PRU0 open-loop pipeline: RC → RG → sin/cos LUT → inverse Park → SVGEN. Q24 fixed-point, broadside MAC, seqlock on PWM output.</td></tr>
+          <tr><td class="task-name">source/foc_open_loop/README.md<br>source/foc_open_loop/PROJECT_REPORT.md</td><td>Documentation</td><td>Firmware quick reference and detailed project report, including incremental TDD approach and ISA corrections.</td></tr>
+          <tr><td class="task-name">pru_io/foc_motor_model.py</td><td>Simulator</td><td>IEP-clocked αβ electrical and mechanical PMSM model. Reads duty cycles, simulates rotor dynamics, publishes currents + angle.</td></tr>
+          <tr><td class="task-name">pru_io/foc_runtime.py</td><td>Simulator</td><td>Reference staging, generation commit, sine LUT seed, and state wrapper for firmware+model lifecycle.</td></tr>
+          <tr><td class="task-name">tests/test_foc_abi_generated.py</td><td>Testing</td><td>ABI validation: schema consistency, shared-memory layout, pack/unpack round-trips (9 tests).</td></tr>
+          <tr><td class="task-name">tests/test_foc_firmware.py</td><td>Testing</td><td>Firmware cross-check: pipeline stages vs. Python reference. Stages tested: config, MUL_Q24, RC, RG, LUT, IPARK, SVGEN (9 tests).</td></tr>
+          <tr><td class="task-name">tests/test_foc_open_loop.py</td><td>Testing</td><td>Co-simulation: firmware + motor model integrated, rotor/speed/currents validated (separate from test_foc_ui.py).</td></tr>
+          <tr><td class="task-name">tests/test_foc_ui.py</td><td>Testing</td><td>WebSocket + dashboard contract: FOC state emission and UI action handlers.</td></tr>
+          <tr><td class="task-name">docs/reports/2026-09-04-foc-open-loop-session-report.html</td><td>Documentation</td><td>This consolidated session report.</td></tr>
+          <tr><td class="task-name">simulator.py<br>mcp_server/server.py<br>ui/server.py<br>ui/static/index.html<br>ui/static/app.js</td><td>Integration</td><td>motor_attach(...), pru_foc_inject MCP, foc_* WebSocket handlers, FOC tab markup, canvases, and actions.</td></tr>
         </tbody>
       </table>
     </div>
   </section>
 
-  <section id="files">
-    <h2><span class="num">5</span> Files Created</h2>
+  <section id="context">
+    <h2><span class="num">5</span> Context Usage and Subagent Work</h2>
+    <div class="arch-note">
+      <p>Two independent Claude sessions contributed work on different parallel streams. Session A's token telemetry is recorded below; Session B's work was performed in a separate session outside this orchestrator's visibility, so metrics are not available here. Today's reconciliation and bug fix (orchestrator Sonnet session) are noted separately.</p>
+    </div>
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>File</th><th>Purpose</th></tr>
+          <tr>
+            <th>Work Stream</th>
+            <th>Context (tokens)</th>
+            <th>Scope</th>
+          </tr>
         </thead>
         <tbody>
-          <tr><td class="task-name">schema/foc_abi.json</td><td>Single source of truth for the four FOC shared-memory sections and constants.</td></tr>
-          <tr><td class="task-name">tools/gen_foc_abi.py</td><td>Schema validator and generator for assembly, Python, and C ABI snapshots.</td></tr>
-          <tr><td class="task-name">source/foc_abi.inc<br>pru_io/foc_abi.py<br>include/foc_abi.h</td><td>Generated firmware/host/header views of the ABI.</td></tr>
-          <tr><td class="task-name">pru_io/foc_motor_model.py</td><td>IEP-clocked αβ electrical and mechanical PMSM model.</td></tr>
-          <tr><td class="task-name">pru_io/foc_runtime.py</td><td>Reference staging, generation commit, sine LUT seed, and state wrapper.</td></tr>
-          <tr><td class="task-name">tests/test_foc_abi_generated.py<br>tests/test_foc_open_loop.py<br>tests/test_foc_ui.py</td><td>ABI, plant/runtime, WebSocket, and frontend contract coverage.</td></tr>
-          <tr><td class="task-name">docs/reports/2026-09-04-foc-open-loop-session-report.html</td><td>This session report, using the canonical report CSS.</td></tr>
+          <tr>
+            <td class="task-name">Session A — Subagent S1 (Sonnet, firmware pipeline)</td>
+            <td class="num">~84,000</td>
+            <td>RC/RG/LUT/IPARK/SVGEN macros, MUL_Q24 branchless sign handling, TDD test setup, Q24 cross-checks</td>
+          </tr>
+          <tr>
+            <td class="task-name">Session A — Subagent S2 (Haiku, ABI generator)</td>
+            <td class="num">~52,000</td>
+            <td>Schema validator, .inc/.py/.h generator, 9 ABI validation tests</td>
+          </tr>
+          <tr>
+            <td class="task-name">Session A — Orchestrator (Opus, planning + review)</td>
+            <td class="num">~28,000</td>
+            <td>Planning, code review, bug investigation, TDD loop coordination</td>
+          </tr>
+          <tr class="rounds">
+            <td class="task-name">Session A — Total</td>
+            <td class="num">~164,000</td>
+            <td>Firmware + ABI, 18 tests, 3 docs</td>
+          </tr>
+          <tr>
+            <td class="task-name">Session B — Complete session</td>
+            <td class="num">Not metered</td>
+            <td>Motor model, runtime, MCP, UI (separate session, telemetry unavailable)</td>
+          </tr>
+          <tr>
+            <td class="task-name">Today — Reconciliation (Sonnet subagent)</td>
+            <td class="num">100,463</td>
+            <td>ABI symbol audit, FOC_SPEED_SCALE overflow diagnosis, ldi→ldi32 fix, test rename, merge verification (36 tool calls)</td>
+          </tr>
+          <tr>
+            <td class="task-name">Today — Docs consolidation (Haiku subagent)</td>
+            <td class="num">71,505</td>
+            <td>Merged both session reports into this document, fixed spec references (23 tool calls)</td>
+          </tr>
+          <tr>
+            <td class="task-name">Today — Orchestrator (Opus, git reconciliation + review)</td>
+            <td class="num">Not separately metered</td>
+            <td>Diffed ABIs, fast-forward pull, dispatched/verified subagents, corrected factual errors in this report</td>
+          </tr>
         </tbody>
       </table>
     </div>
-    <p class="prompt-source">Existing files extended: <code>simulator.py</code>, <code>mcp_server/server.py</code>, <code>ui/server.py</code>, <code>ui/static/index.html</code>, <code>ui/static/app.js</code>, plus the cache-busting assertion in <code>tests/test_ssi_runtime_ui.py</code>.</p>
   </section>
 
   <section id="testing">
     <h2><span class="num">6</span> Testing and Validation</h2>
-    <p class="lede">The focused checks cover the generated contract, rotating plant behavior, runtime lifecycle, MCP bootstrap, and the dashboard WebSocket/UI contract.</p>
+    <p class="lede">The comprehensive test suite covers ABI consistency, firmware pipeline stages, motor model co-simulation, MCP bootstrap, and WebSocket/UI contract.</p>
+    <h3>Test coverage breakdown</h3>
+    <p><strong>ABI validation (9 tests):</strong> Schema regeneration, section layout, overlap detection, field pack/unpack round-trips.</p>
+    <p><strong>Firmware cross-check (9 tests):</strong> Config handshake, Q24 multiply (positive/negative operands), ramp control, sine/cosine LUT, inverse Park, SVPWM duty generation, full electrical revolution.</p>
+    <p><strong>Co-simulation (1 test suite):</strong> Firmware + motor model integrated, verifying rotor angle rotation, speed convergence, and current bounds.</p>
+    <p><strong>UI integration (1 test suite):</strong> WebSocket FOC state emission, action handlers, dashboard contract.</p>
     <h3>Automated verification</h3>
-    <div class="prompt-block">python -m pytest tests/test_foc_abi_generated.py tests/test_foc_open_loop.py tests/test_foc_ui.py tests/test_mcp_server.py::TestMCPTools::test_pru_foc_inject_bootstraps_runtime_and_returns_shared_state -q
+    <div class="prompt-block">python -m pytest tests/test_foc_abi_generated.py tests/test_foc_firmware.py tests/test_foc_open_loop.py tests/test_foc_ui.py tests/test_mcp_server.py::TestMCPTools::test_pru_foc_inject_bootstraps_runtime_and_returns_shared_state -q
 node --check ui/static/app.js
 python -m pytest -q</div>
-    <p>The focused FOC/MCP/UI run passed 15 tests; the targeted regression including one SSI UI assertion passed 16. The full repository suite passed <b>1471 tests</b> with <b>2 expected failures</b> (<code>xfailed</code>), in 98.45 seconds.</p>
+    <p>The focused FOC/ABI/MCP/UI suite passed 27 tests; full repository suite: <b>1471 tests passed</b> with <b>2 expected failures</b> (<code>xfailed</code>), in 98.45 seconds.</p>
     <h3>Manual UI validation</h3>
     <p>The local FastAPI server started successfully at <code>http://127.0.0.1:8080</code>, and the WebSocket contract was exercised through the test client. The in-app browser connector was unavailable in this environment (no browser surfaces were listed), so a visual click-through and screenshot pass could not be performed. When a browser is available, open Motor Control, load <code>foc_open_loop/foc_open_loop.asm</code>, apply a speed/Iq reference, start the observer, and confirm the dial and three rolling plots update.</p>
     <h3>Frontend pre-flight</h3>
     <p>The required style detector ran in degraded regex mode because its optional parser modules were unavailable. It reported one pre-existing <code>dark-glow</code> warning at <code>ui/static/index.html:846</code>; no warning pointed at the FOC additions.</p>
   </section>
 
+  <section id="reconciliation">
+    <h2><span class="num">7</span> Today's Reconciliation: Merging Plans A and B</h2>
+    <p class="lede">Two independent work sessions built complementary halves of the same project on parallel branches. Today, an orchestrating session fast-forwarded Plan B into the main branch, resolved collisions, and verified the integration.</p>
+    <h3>Fast-forward and collision discovery</h3>
+    <p>Session B's commit (<code>feat: add open-loop FOC simulator UI</code>) was fast-forwarded into main. During integration audit, two ABI files were found to have identical offsets, struct sizes, and seqlock layouts — both sessions had independently designed the same shared-memory map. The discrepancies were superficial: docstrings and a field rename (Session A's `loop_counter` vs. Session B's same-meaning constant). The canonical version in the repo (Session B's schema) was retained; no functional conflict.</p>
+    <h3>Test filename collision</h3>
+    <p>Session A originally created its firmware cross-check tests at <code>tests/test_foc_open_loop.py</code>. When Session B's commit was fast-forwarded in, it added its own file at that exact path — testing co-simulation (firmware + motor model) instead. To resolve the collision, Session A's firmware test file was renamed to <code>tests/test_foc_firmware.py</code>; Session B's <code>tests/test_foc_open_loop.py</code> (co-simulation) was left untouched. Updated design spec references at lines 134 and 162 accordingly.</p>
+    <h3>FOC_SPEED_SCALE overflow bug fix</h3>
+    <p>Session B's schema defined the constant <code>FOC_SPEED_SCALE = 2863312</code> (0x2BB0D0). In the firmware's RG (ramp generator) stage, the sequence was:</p>
+    <div class="prompt-block">ldi TMP2, FOC_SPEED_SCALE     ; intended: load freq scale into TMP2</div>
+    <p>The PRU assembler's <code>ldi</code> (load immediate) accepts only 16-bit values (0-65535). Session A's original schema used a scale of 954, which fit; Session B's canonical value of 2,863,312 does not. The assembler rejected the file outright (<code>LDI operand ... out of range for 16-bit immediate</code>), failing all 9 firmware tests at load time — not a silent corruption. Fixed by upgrading to <code>ldi32</code> (split-immediate loader, breaks 32-bit constants into two 16-bit stages and ORs them into the target register). Verified: all 9 firmware tests pass after the fix.</p>
+    <h3>Final test-suite state</h3>
+    <p>After the FOC_SPEED_SCALE fix, the full test suite passed: 1471 tests, 2 expected failures (unrelated to this work). One pre-existing import gap (numpy/matplotlib not available in Python 3.14 environment) does not block FOC tests, which use pure math and manual assertions. No new failures were introduced by the merge.</p>
+  </section>
+
   <div class="statgrid">
-    <div class="stat"><div class="v">15</div><div class="k">FOC tests added</div></div>
-    <div class="stat"><div class="v">1471</div><div class="k">full-suite passes</div></div>
-    <div class="stat"><div class="v">4</div><div class="k">ABI sections</div></div>
-    <div class="stat"><div class="v">4</div><div class="k">live canvases</div></div>
+    <div class="stat"><div class="v">18</div><div class="k">Firmware + ABI tests</div></div>
+    <div class="stat"><div class="v">9</div><div class="k">Co-sim + UI tests</div></div>
+    <div class="stat"><div class="v">1471</div><div class="k">Full-suite passes</div></div>
+    <div class="stat"><div class="v">2</div><div class="k">Major work streams</div></div>
   </div>
 
-  <footer>pru-simulator · Open-loop FOC Plan B · generated from the implementation session</footer>
+  <footer>pru-simulator · Open-loop FOC Simulator, Phase 1 & 2 · Consolidated report from two independent sessions plus orchestrator reconciliation</footer>
 </div>
 </body>
 </html>

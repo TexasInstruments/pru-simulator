@@ -131,7 +131,7 @@ seeding + staged/commit control writes; exposes `start/stop/step/set_reference/s
 ## 4. Testing strategy
 
 1. **ABI drift** — `python tools/gen_foc_abi.py` + `tests/test_foc_abi_generated.py`.
-2. **Firmware cross-check** (`tests/test_foc_open_loop.py`, 200 MHz via `conftest.py`): known
+2. **Firmware cross-check** (`tests/test_foc_firmware.py`, 200 MHz via `conftest.py`): known
    (IdRef, IqRef, θ) → assert `pwm_out` Vα/Vβ and Ta/Tb/Tc match a NumPy reference within Q24
    tolerance; duties in [0,1]; common-mode identity; θ advances/wraps with SpeedRef.
 3. **Co-sim loop**: attach model, set SpeedRef, run N steps → `rotor_theta` rotates, `speed_rpm`
@@ -159,7 +159,7 @@ seeding + staged/commit control writes; exposes `start/stop/step/set_reference/s
 | `ui/server.py` | `foc_*` WS handlers + `_foc_state` | Edit |
 | `ui/static/index.html` | FOC tab markup + CSS | Edit |
 | `ui/static/app.js` | FOC actions, `foc_state`, dial/plots | Edit |
-| `tests/test_foc_open_loop.py`, `tests/test_foc_abi_generated.py` | Tests | New |
+| `tests/test_foc_firmware.py`, `tests/test_foc_abi_generated.py` | Tests | New |
 
 ## 6. Roadmap (future phases, not built here)
 
