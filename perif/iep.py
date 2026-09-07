@@ -36,8 +36,37 @@ other PRU simulator gets them wrong:
     set - and CMP_EN starts at bit **1**, so CMP0's enable is bit 1, not bit 0.
     Auto-reset is configuration, not implicit behaviour.
 
-Not modelled: capture registers, shadow mode (IEP_CMP_CFG_REG[17] SHADOW_EN),
-slow compensation, sync/EHRPWM counter reset, and interrupt routing. Reads of
+CAPTURE
+
+  0x18  IEP_CAP_CFG_REG      [n]    CAPnR_EN     capture enable, event n
+                             [n+7]  CAPnR_1ST_LAST  0 = first, 1 = last
+  0x1C  IEP_CAP_STATUS_REG   [n]    CAPnR_VALID, write 1 to clear
+  0x20  IEP_CAPR0_REG0       captured counter, 64-bit pairs, CAPRn at 0x20+8n
+
+Capture exists so firmware can timestamp an asynchronous external event
+against the counter - the mechanism every encoder protocol uses when it has to
+relate a host trigger to a line or clock phase.
+
+`capture_event(n)` latches the CURRENT counter into slot n, subject to the
+enable and to first-vs-last:
+
+  * first mode - the slot holds the FIRST event since the valid bit was
+    cleared; later events are ignored until software clears it. This is what a
+    protocol wants when it must timestamp a trigger and not have a later,
+    spurious edge overwrite it.
+  * last mode - every event overwrites.
+
+The enable/mode bit positions above are the modelled convention. The TRM's
+exact CAP_CFG field packing varies between ICSS generations, and firmware that
+depends on a particular packing should be checked against the device TRM rather
+than against this model. What IS faithful, and what firmware actually depends
+on, is the latch semantics: enable gating, first-vs-last, and a valid bit that
+software clears.
+
+Not modelled: shadow mode (IEP_CMP_CFG_REG[17] SHADOW_EN), slow compensation,
+sync/EHRPWM counter reset, interrupt routing, and the pin/event routing that
+decides WHICH external signal drives capture event n - here the event is raised
+by the harness or by another model calling `capture_event()`. Reads of
 unimplemented offsets return zero and writes are ignored, so firmware touching
 them does not fault - it simply sees a counter that ignores those features.
 """
@@ -48,9 +77,14 @@ COUNT_REG0 = 0x10
 COUNT_REG1 = 0x14
 CMP_CFG = 0x70
 CMP_STATUS = 0x74
+CAP_CFG = 0x18
+CAP_STATUS = 0x1C
+CAPR0_REG0 = 0x20
 CMP0_REG0 = 0x78
 
 NUM_COMPARE = 16
+# 0x20..0x6C is 0x50 bytes = ten 64-bit pairs.
+NUM_CAPTURE = 10
 IEP_SIZE = 0x100
 
 _MASK32 = 0xFFFFFFFF
@@ -74,6 +108,9 @@ class IepTimer:
         self.cmp_cfg = 0
         self.cmp_status = 0                  # 16 bits, write-1-to-clear
         self.compare = [0] * NUM_COMPARE     # each 64-bit
+        self.cap_cfg = 0
+        self.cap_status = 0                  # valid bits, write-1-to-clear
+        self.capture = [0] * NUM_CAPTURE     # each 64-bit
 
     # -- configuration views --------------------------------------------
     @property
@@ -92,6 +129,34 @@ class IepTimer:
     def cmp_enabled(self, j: int) -> bool:
         """IEP_CMP_CFG_REG[16:1]: CMP_EN bit 1 maps to CMP0."""
         return bool(self.cmp_cfg & (1 << (j + 1)))
+
+    def cap_enabled(self, n: int) -> bool:
+        return bool(self.cap_cfg & (1 << n))
+
+    def cap_last_mode(self, n: int) -> bool:
+        return bool(self.cap_cfg & (1 << (n + 7)))
+
+    def cap_valid(self, n: int) -> bool:
+        return bool(self.cap_status & (1 << n))
+
+    # -- capture ---------------------------------------------------------
+    def capture_event(self, n: int) -> bool:
+        """Latch the current counter into capture slot *n*.
+
+        Returns True if a value was stored. A disabled slot stores nothing, and
+        in first mode an already-valid slot is left alone - which is the whole
+        point of first mode, so a later edge cannot overwrite the trigger the
+        firmware is trying to timestamp.
+        """
+        if not 0 <= n < NUM_CAPTURE:
+            raise ValueError(f"capture slot {n} out of range")
+        if not self.cap_enabled(n):
+            return False
+        if self.cap_valid(n) and not self.cap_last_mode(n):
+            return False
+        self.capture[n] = self.count
+        self.cap_status |= 1 << n
+        return True
 
     # -- timeline --------------------------------------------------------
     def tick(self) -> None:
@@ -126,6 +191,14 @@ class IepTimer:
             return self.cmp_cfg
         if offset == CMP_STATUS:
             return self.cmp_status
+        if offset == CAP_CFG:
+            return self.cap_cfg
+        if offset == CAP_STATUS:
+            return self.cap_status
+        if CAPR0_REG0 <= offset < CAPR0_REG0 + NUM_CAPTURE * 8:
+            n, half = divmod(offset - CAPR0_REG0, 8)
+            v = self.capture[n]
+            return v & _MASK32 if half == 0 else (v >> 32) & _MASK32
         if CMP0_REG0 <= offset < CMP0_REG0 + NUM_COMPARE * 8:
             j, half = divmod(offset - CMP0_REG0, 8)
             v = self.compare[j]
@@ -147,6 +220,15 @@ class IepTimer:
         elif offset == CMP_STATUS:
             # 16 status bits, write 1h to clear.
             self.cmp_status &= ~(value & 0xFFFF)
+        elif offset == CAP_CFG:
+            self.cap_cfg = value
+        elif offset == CAP_STATUS:
+            # Valid bits, write 1 to clear - the same convention as CMP_STATUS.
+            self.cap_status &= ~value
+        elif CAPR0_REG0 <= offset < CAPR0_REG0 + NUM_CAPTURE * 8:
+            # Capture registers are read-only in hardware; a write is ignored
+            # rather than silently corrupting a timestamp.
+            pass
         elif CMP0_REG0 <= offset < CMP0_REG0 + NUM_COMPARE * 8:
             j, half = divmod(offset - CMP0_REG0, 8)
             if half == 0:

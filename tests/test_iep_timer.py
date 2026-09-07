@@ -270,3 +270,126 @@ def test_counter_carries_into_the_high_word(iep):
     iep.tick()
     assert r32(iep, COUNT_REG0) == 0
     assert r32(iep, COUNT_REG1) == 1
+
+
+# ---------------------------------------------------------------------------
+# Capture unit [plane:RND-19]
+# ---------------------------------------------------------------------------
+# Added because TDLY - and every protocol that timestamps an asynchronous
+# external event against a line phase - needs it, and the module previously
+# said in its own docstring that capture registers were not modelled.
+
+from perif.iep import CAP_CFG, CAP_STATUS, CAPR0_REG0, NUM_CAPTURE  # noqa: E402
+
+
+def _running_iep():
+    iep = IepTimer()
+    iep.global_cfg = (1 << 0) | (1 << 4)         # CNT_ENABLE, DEFAULT_INC = 1
+    return iep
+
+
+def test_a_disabled_slot_captures_nothing():
+    """Enable gating is the difference between a timestamp and a coincidence."""
+    iep = _running_iep()
+    for _ in range(10):
+        iep.tick()
+    assert iep.capture_event(0) is False
+    assert iep.read32(CAPR0_REG0) == 0
+    assert iep.read32(CAP_STATUS) == 0
+
+
+def test_capture_latches_the_counter_at_the_event():
+    iep = _running_iep()
+    iep.write32(CAP_CFG, 0x1)
+    for _ in range(37):
+        iep.tick()
+    assert iep.capture_event(0) is True
+    assert iep.read32(CAPR0_REG0) == 37
+    assert iep.read32(CAP_STATUS) & 0x1
+
+
+def test_a_different_trigger_time_gives_a_different_value():
+    """The gate that stops this being a no-op.
+
+    A capture path that always returns the same number - or zero - would
+    satisfy every other test here. This one cannot be passed by anything that
+    is not actually reading the counter at the moment of the event.
+    """
+    seen = []
+    for ticks in (1, 9, 40, 255):
+        iep = _running_iep()
+        iep.write32(CAP_CFG, 0x1)
+        for _ in range(ticks):
+            iep.tick()
+        iep.capture_event(0)
+        seen.append(iep.read32(CAPR0_REG0))
+    assert seen == [1, 9, 40, 255]
+
+
+def test_first_mode_keeps_the_first_event():
+    """A later edge must not overwrite the trigger being timestamped."""
+    iep = _running_iep()
+    iep.write32(CAP_CFG, 0x1)                     # slot 0, first mode
+    for _ in range(5):
+        iep.tick()
+    iep.capture_event(0)
+    for _ in range(50):
+        iep.tick()
+    assert iep.capture_event(0) is False
+    assert iep.read32(CAPR0_REG0) == 5
+
+
+def test_last_mode_overwrites():
+    iep = _running_iep()
+    iep.write32(CAP_CFG, 0x1 | (1 << 7))          # slot 0, last mode
+    for _ in range(5):
+        iep.tick()
+    iep.capture_event(0)
+    for _ in range(50):
+        iep.tick()
+    assert iep.capture_event(0) is True
+    assert iep.read32(CAPR0_REG0) == 55
+
+
+def test_clearing_the_valid_bit_re_arms_first_mode():
+    iep = _running_iep()
+    iep.write32(CAP_CFG, 0x1)
+    iep.tick()
+    iep.capture_event(0)
+    iep.write32(CAP_STATUS, 0x1)                  # write 1 to clear
+    assert iep.cap_valid(0) is False
+    for _ in range(9):
+        iep.tick()
+    assert iep.capture_event(0) is True
+    assert iep.read32(CAPR0_REG0) == 10
+
+
+def test_capture_registers_are_read_only():
+    """Hardware does not let software forge a timestamp; nor does this."""
+    iep = _running_iep()
+    iep.write32(CAP_CFG, 0x1)
+    for _ in range(7):
+        iep.tick()
+    iep.capture_event(0)
+    iep.write32(CAPR0_REG0, 0xDEADBEEF)
+    assert iep.read32(CAPR0_REG0) == 7
+
+
+def test_slots_are_independent():
+    iep = _running_iep()
+    iep.write32(CAP_CFG, 0x1 | 0x2)               # slots 0 and 1
+    for _ in range(3):
+        iep.tick()
+    iep.capture_event(0)
+    for _ in range(4):
+        iep.tick()
+    iep.capture_event(1)
+    assert iep.read32(CAPR0_REG0) == 3
+    assert iep.read32(CAPR0_REG0 + 8) == 7
+    assert iep.read32(CAP_STATUS) == 0x3
+
+
+def test_an_out_of_range_slot_is_rejected():
+    iep = _running_iep()
+    with pytest.raises(ValueError):
+        iep.capture_event(NUM_CAPTURE)
