@@ -3,7 +3,7 @@
 import pytest
 
 from perif.perif_registers import PerifRegisters
-from perif.perif_channel import PerifChannel, IDLE, WIRE, TST, TRANSMIT
+from perif.perif_channel import PerifChannel, IDLE, WIRE, TST, TRANSMIT, CLKRUN
 from perif.peripheral_interface import PeripheralInterface
 
 _BASE = 0x260E0
@@ -167,22 +167,27 @@ class TestTxSerialize:
         for _ in range(7):
             emitted.append(ch.tx_bit_edge())
         assert emitted == [1, 1, 0, 0, 1, 0, 1, 0]
-        # one more edge finishes the frame
+        # one more edge finishes the TX DATA. The default clk_mode is 1, which
+        # per TRM 6.4.5.2.2.3.6.3.3 keeps PERIF_CLK free-running until the RX
+        # frame counter completes - the transmitter is done, the clock is not.
         ch.tx_bit_edge()
-        assert ch.fsm == IDLE
+        assert ch.fsm == CLKRUN
         assert ch.busy is False
+        assert ch.tx_out_en == 0
         assert ch.tx_fifo == []  # flushed
 
-    def test_clock_mode_stop_level(self):
+    def test_clock_mode_3_stops_high_on_last_tx_bit(self):
+        """Mode 3 is the ONLY mode where TX exhaustion stops the clock."""
         r = mk_regs()
         set_ch_cfg0(r, 0, tx_frame=8)
         ch = PerifChannel(0, r)
-        ch.set_clk_mode(0)  # stop LOW
+        ch.set_clk_mode(3)
         ch.push_tx(0xFF)
         ch.tx_go(0.0)
         for _ in range(9):
             ch.tx_bit_edge()
-        assert ch.tx_clk_pin == 0
+        assert ch.fsm == IDLE
+        assert ch.tx_clk_pin == 1
 
 
 # ---------------------------------------------------------------------------
@@ -230,8 +235,8 @@ class TestContinuousModeStreaming:
         assert second == [1, 0, 1, 1, 1, 0, 1, 1]      # 0xBB MSB-first
         assert ch.fsm == TRANSMIT          # byte1's own boundary not fired yet
 
-        ch.tx_bit_edge()                   # byte1's boundary: no more data -> ends
-        assert ch.fsm == IDLE
+        ch.tx_bit_edge()                   # byte1's boundary: no more data
+        assert ch.fsm == CLKRUN            # clk_mode 1: clock still free-runs
         assert ch.busy is False
 
     def test_running_dry_ends_frame_without_flushing_new_pushes(self):
@@ -241,8 +246,8 @@ class TestContinuousModeStreaming:
         ch.tx_go(0.0)
         for _ in range(7):
             ch.tx_bit_edge()
-        ch.tx_bit_edge()                   # 8th edge: no more data -> ends
-        assert ch.fsm == IDLE
+        ch.tx_bit_edge()                   # 8th edge: no more data
+        assert ch.fsm == CLKRUN            # clk_mode 1: clock still free-runs
         assert ch.busy is False
         # a byte pushed exactly as the frame ends must not be discarded
         ch.push_tx(0xCC)
@@ -304,11 +309,32 @@ class TestClockPeriods:
         # 250 MHz / 2 = 125 MHz → 8 ns
         assert ch.tx_clock_period_ns() == pytest.approx(8.0)
 
-    def test_frac_divider(self):
+    def test_frac_divider_is_a_half_step_not_a_doubling(self):
+        """div16fr: FRAC adds 0.5 to the divider (TRM 6.4.5.2.2.3.6.3.1).
+
+        Table 6-82 lists a fractional divider of 1.5, which a (frac+1)
+        multiplier cannot express at all.
+        """
         r = mk_regs()
-        set_txcfg(r, clk_sel=1, div=0, frac=1)  # N=2 via frac
+        set_txcfg(r, clk_sel=1, div=0, frac=1)          # N = 1 + 0.5 = 1.5
         ch = PerifChannel(0, r, core_clock_mhz=200.0)
-        assert ch.tx_clock_period_ns() == pytest.approx(10.0)  # 100 MHz
+        assert ch.tx_clock_period_ns() == pytest.approx(1000.0 / (200.0 / 1.5))
+
+    def test_oversample_ratio_matches_sample_size_with_ti_driver_divisors(self):
+        """The TRM invariant, using the divisors bissc_drv.c actually computes.
+
+        "The OS clock rate divided by the 1x clock rate must equal
+        PRU0_ED_RX_SAMPLE_SIZE." For 200 MHz / 2 MHz the driver computes
+        rx_div = 11.5 and tx_div = 99, which must land on exactly 8x. A
+        (frac+1) doubling gives 4x and dropping the fraction gives 8.33x -
+        both slip the receiver off the bit cell.
+        """
+        r = mk_regs()
+        set_txcfg(r, clk_sel=1, div=99, frac=0)
+        set_rxcfg(r, clk_sel=1, div=11, frac=1, sample_size=7)
+        ch = PerifChannel(0, r, core_clock_mhz=200.0)
+        ratio = ch.tx_clock_period_ns() / ch.rx_clock_period_ns()
+        assert ratio == pytest.approx(8.0)
 
 
 # ---------------------------------------------------------------------------
@@ -506,3 +532,148 @@ class TestHardwareReset:
         assert p.registers.get_tx_wire_delay(1) == 100
         assert p.registers.get_tx_frame_size(1) == 6
         assert p.registers.get_rx_frame_size(1) == 4
+
+
+# ---------------------------------------------------------------------------
+class TestClockOutputRate:
+    """PERIF<m>_CLK must run at the PROGRAMMED frequency, not half of it.
+
+    Spec 4.4 defines the clock frequency as source/((frac+1)*(div_factor+1)),
+    so `tx_clock_period_ns()` is the period of one full cycle and the pin has
+    to toggle twice within it. Toggling once per period halves the output rate
+    AND stretches every bit cell to two clock periods, which a receiver then
+    oversamples into two FIFO bytes per wire bit.
+    """
+
+    def _run(self, cycles):
+        r = mk_regs()
+        set_txcfg(r, clk_sel=1, div=9, frac=0)          # N = 10
+        set_ch_cfg0(r, 0, tx_frame=0)                   # continuous
+        ch = PerifChannel(0, r, core_clock_mhz=200.0)
+        for _ in range(4):
+            ch.push_tx(0xAA)
+        ch.tx_go(0.0)
+        period = ch.tx_clock_period_ns()
+
+        edges, prev, t = 0, ch.tx_clk_pin, 0.0
+        for _ in range(cycles * 2):
+            t += period / 2.0
+            ch.advance(t)
+            if ch.tx_clk_pin != prev:
+                if prev == 0:
+                    edges += 1                          # rising edge
+                prev = ch.tx_clk_pin
+        return ch, period, edges
+
+    def test_one_full_cycle_per_clock_period(self):
+        cycles = 16
+        ch, period, rising = self._run(cycles)
+        # 4 bytes = 32 bits of data, so 16 cycles is well inside the frame.
+        assert rising >= cycles - 1, (
+            f"only {rising} rising edges in {cycles} clock periods - "
+            "the clock is running at half the programmed rate")
+
+    def test_one_data_bit_per_full_cycle(self):
+        """The bit cell must be one clock period, not two."""
+        r = mk_regs()
+        set_txcfg(r, clk_sel=1, div=9, frac=0)
+        set_ch_cfg0(r, 0, tx_frame=0)
+        ch = PerifChannel(0, r, core_clock_mhz=200.0)
+        ch.push_tx(0b10101010)
+        ch.push_tx(0b11001100)
+        ch.tx_go(0.0)
+        period = ch.tx_clock_period_ns()
+
+        seen, t = [ch.tx_data_pin], 0.0
+        for _ in range(8):
+            t += period
+            ch.advance(t)
+            seen.append(ch.tx_data_pin)
+        # 8 clock periods must have walked 8 data bits, i.e. all of byte 0
+        # and onto byte 1 - not half of byte 0.
+        assert seen[:8] == [1, 0, 1, 0, 1, 0, 1, 0]
+class TestClockModeStopConditions:
+    """TRM 6.4.5.2.2.3.6.3.3 "Stop Conditions", r30[20:19].
+
+        0  free-running, stop LOW  on last RX frame
+        1  free-running, stop HIGH on last RX frame   (reset default)
+        2  free-run (only a reinit leaves this mode)
+        3  stop HIGH on last TX bit
+
+    The distinction matters for every read transaction: the master sends a
+    short request and must keep clocking to shift the response back. A model
+    that stops the clock when the TRANSMITTER runs dry can only ever do
+    mode 3, so a BiSS-C/EnDat/SSI read never receives anything.
+    """
+
+    def _drain_tx(self, ch):
+        for _ in range(9):
+            ch.tx_bit_edge()
+
+    def _finish_rx_frame(self, ch, frame_bytes):
+        ch.arm_rx(True)
+        for _ in range(frame_bytes):
+            ch._capture_byte(0x00)
+
+    @pytest.mark.parametrize("mode,stop_level", [(0, 0), (1, 1)])
+    def test_free_running_until_rx_frame_then_stops(self, mode, stop_level):
+        r = mk_regs()
+        set_ch_cfg0(r, 0, tx_frame=8, rx_frame=2)
+        ch = PerifChannel(0, r)
+        ch.set_clk_mode(mode)
+        ch.push_tx(0xFF)
+        ch.tx_go(0.0)
+        self._drain_tx(ch)
+
+        # TX data is gone but the clock must still be running.
+        assert ch.fsm == CLKRUN
+        assert ch.busy is False
+        assert ch.tx_out_en == 0
+
+        self._finish_rx_frame(ch, 2)
+        assert ch.rx_eof is True
+        assert ch.fsm == IDLE
+        assert ch.tx_clk_pin == stop_level
+
+    def test_mode_2_free_runs_past_the_rx_frame(self):
+        r = mk_regs()
+        set_ch_cfg0(r, 0, tx_frame=8, rx_frame=2)
+        ch = PerifChannel(0, r)
+        ch.set_clk_mode(2)
+        ch.push_tx(0xFF)
+        ch.tx_go(0.0)
+        self._drain_tx(ch)
+        assert ch.fsm == CLKRUN
+
+        self._finish_rx_frame(ch, 2)
+        assert ch.rx_eof is True
+        assert ch.fsm == CLKRUN          # RX frame does NOT stop mode 2
+
+        ch.tx_reinit()                   # only a reinit leaves free-run
+        assert ch.fsm == IDLE
+        assert ch.clk_mode == 1          # reinit restores the reset default
+
+    def test_free_running_clock_actually_emits_edges(self):
+        """CLKRUN must produce real edges on the ns timeline, not just a state.
+
+        This is what lets a read transaction clock its response in; asserting
+        only the FSM label would pass even if the clock were frozen.
+        """
+        r = mk_regs()
+        set_ch_cfg0(r, 0, tx_frame=8, rx_frame=64)
+        ch = PerifChannel(0, r)
+        ch.set_clk_mode(1)
+        ch.push_tx(0xFF)
+        ch.tx_go(0.0)
+        period = ch.tx_clock_period_ns()
+        ch.advance(period * 40)
+        assert ch.fsm == CLKRUN
+
+        toggles, prev, t = 0, ch.tx_clk_pin, period * 40
+        for _ in range(40):
+            t += period
+            ch.advance(t)
+            if ch.tx_clk_pin != prev:
+                toggles += 1
+                prev = ch.tx_clk_pin
+        assert toggles > 10, "clock is frozen while nominally free-running"

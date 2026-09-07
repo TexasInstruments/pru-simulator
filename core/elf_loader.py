@@ -11,6 +11,7 @@ PF_R = 0x4  # Read
 SHT_SYMTAB = 2
 SHT_STRTAB = 3
 SHT_NOBITS = 8
+SHF_ALLOC = 0x2
 
 
 @dataclass
@@ -21,6 +22,18 @@ class ElfImage:
     data_addr: int = 0
     symbols: dict = field(default_factory=dict)  # addr → name (for labels)
     entry_point: int = 0
+    # Every initialized, allocated non-text section, as (addr, bytes) in
+    # address order — .data, .rodata, .cinit and anything else the linker
+    # command file places. `data_bytes`/`data_addr` remain the .data-only view
+    # so existing callers are unaffected.
+    #
+    # This exists because loading only `.data` silently drops const lookup
+    # tables. Firmware that indexes one then reads whatever DMEM happened to
+    # contain, which surfaces as a decode bug in the code under test rather
+    # than as the loader gap it is, which makes it expensive to chase. It goes
+    # unnoticed for as long as every firmware under test happens to have no
+    # const tables.
+    data_sections: list = field(default_factory=list)
 
 
 class ElfParseError(Exception):
@@ -116,6 +129,22 @@ def load_elf(data: bytes) -> ElfImage:
             data_addr = s['addr']
             break
 
+    # --- Extract every initialized, allocated non-text section ---
+    # .rodata holds const lookup tables and .cinit holds the initializers the
+    # C runtime would copy. Skipping them leaves those addresses as whatever
+    # DMEM already contained.
+    data_sections = []
+    for s in sections:
+        if s['type'] == SHT_NOBITS or s['size'] == 0:
+            continue
+        if not (s['flags'] & SHF_ALLOC):
+            continue
+        if s['name'].startswith('.text'):
+            continue
+        data_sections.append((s['addr'],
+                              data[s['offset']:s['offset'] + s['size']]))
+    data_sections.sort(key=lambda item: item[0])
+
     # --- Extract symbols ---
     symbols = {}
     symtab_sec = None
@@ -163,4 +192,5 @@ def load_elf(data: bytes) -> ElfImage:
         data_addr=data_addr,
         symbols=symbols,
         entry_point=e_entry,
+        data_sections=data_sections,
     )

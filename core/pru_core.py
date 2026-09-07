@@ -31,6 +31,47 @@ from xfr.accelerator import Accelerator
 from xfr.mac_accelerator import MACAccelerator
 
 
+# A memory fault whose base register is an uninitialised R2 is almost always
+# one thing, and the raw "no memory region mapped" message names none of it.
+#
+# R2 is the PRU ABI stack pointer and the stack grows DOWN, so an image whose
+# R2 is still zero stores its first register spill just below zero - which
+# wraps to the top of the address space and faults there. Images linked with
+# `-e main` never run `_c_int00`, which is what sets R2 up on hardware, and
+# that linker pattern is the one nearly every headless PRU example uses.
+#
+# The behaviour is correct and is deliberately unchanged. Only the diagnosis
+# is added, because without it the fault reads as a wild pointer bug in the
+# firmware rather than as a missing C runtime.
+_UNINIT_SP_HINT = (
+    "the base register is R2, the PRU ABI stack pointer, and it is either zero "
+    "or has wrapped below zero - the signature of a stack that was never set "
+    "up. R2 is initialised by the C runtime entry `_c_int00`, so this happens "
+    "whenever execution starts somewhere else. Loaders that begin at address 0 "
+    "(PRUICSS_loadFirmware, and this simulator) will do that unless the entry "
+    "is placed there: `.text:_c_int00* > 0x0, PAGE 0` in the linker command "
+    "file puts the runtime at 0 so it runs first. Overriding the entry point "
+    "with `-e main` has the same effect and is the usual cause."
+)
+
+# A stack that grows down from an uninitialised R2 of 0 lands just below zero,
+# which wraps to the very top of the 32-bit space. That is what the fault
+# address looks like in practice: a frame setup emits `SUB r2, r2, <frame>`
+# before the spill, so by the time the store executes R2 is 0xFFFFFFxx rather
+# than 0 - checking only for zero would miss every real occurrence.
+_SP_WRAP_FLOOR = 0xFFFF0000
+
+
+def _stack_pointer_hint(core, base_op, addr) -> str:
+    """Return a trailing hint if this fault is the uninitialised-R2 trap."""
+    if not isinstance(base_op, Register) or base_op.index != 2:
+        return ""
+    sp = core.registers.regs[2]
+    if sp != 0 and not (sp >= _SP_WRAP_FLOOR or addr >= _SP_WRAP_FLOOR):
+        return ""
+    return "  HINT: " + _UNINIT_SP_HINT
+
+
 class PRUCore:
     """Simulates a single PRU core executing PRU assembly instructions."""
 
@@ -40,9 +81,9 @@ class PRUCore:
         self.name = name
         self.registers = RegisterFile()
         self.counters = CycleCounters()
+        self.iep = None          # set by Simulator when an IEP is present
         self.memory = memory
         self.xfr = xfr
-        self.iep = None          # set by Simulator when an IEP is present
         self.io_port = io_port
         self.constant_table: ConstantTable = constant_table if constant_table is not None else ConstantTable()
         # PRU1 sees its own DRAM (DRAM1) at core-local 0x0000 and DRAM0 at
@@ -115,13 +156,6 @@ class PRUCore:
         # Pre-tick: advance UART frame generator before instruction reads R31
         if self.io_port.uart_generator is not None:
             self.io_port.uart_generator.tick(self.counters.cycles)
-
-        # ---- Advance the IEP timer (if attached) --------------------------
-        # One ICSSG_IEP_CLK edge per core cycle. Firmware that polls
-        # IEP_COUNT_REG0 in a loop depends on this advancing; without it the
-        # poll never terminates.
-        if self.iep is not None:
-            self.iep.tick()
 
         instr = self.instructions[self.pc]
         branch_taken = False
@@ -339,7 +373,8 @@ class PRUCore:
                 self._write_registers_from_bytes(start_reg, data, start_byte)
                 self.counters.stall(stalls)
             except ValueError as e:
-                logger.error(f"LBBO fault at 0x{addr:08X}: {e}")
+                logger.error(f"LBBO fault at 0x{addr:08X}: {e}"
+                             f"{_stack_pointer_hint(self, base_op, addr)}")
                 self.halted = True
 
         elif op == "LBCO":
@@ -390,7 +425,8 @@ class PRUCore:
                 stalls = self.memory.write(addr, data)
                 self.counters.stall(stalls)
             except ValueError as e:
-                logger.error(f"SBBO fault at 0x{addr:08X}: {e}")
+                logger.error(f"SBBO fault at 0x{addr:08X}: {e}"
+                             f"{_stack_pointer_hint(self, base_op, addr)}")
                 self.halted = True
 
         # ---- XFR ---------------------------------------------------------
@@ -471,8 +507,31 @@ class PRUCore:
             fill_data = bytes([0xFF] * length)
             self._write_registers_from_bytes(start_reg, fill_data, start_byte)
 
-        elif op in ("WBS", "WBC", "NOP"):
-            # Simplified: no-op
+        elif op in ("WBS", "WBC"):
+            # WBS/WBC stall the core until the selected bit is set/clear.
+            # Treating them as no-ops lets peripheral-driven firmware fall
+            # straight through its status polls: it never yields the simulated
+            # time the peripheral needs to produce data, so every transaction
+            # times out and retries forever. Re-executing the instruction (by
+            # suppressing the PC advance) is what makes the wait observable,
+            # because PRUCore.step() advances the peripheral each step.
+            # Two operand forms reach here: the disassembler emits
+            # (source, bit) — WBS/WBC are QBBS/QBBC with a zero branch offset,
+            # i.e. branch-to-self — while the assembler's mnemonic takes the
+            # bit alone and implies R31.
+            ops = instr.operands
+            if len(ops) >= 2:
+                value, bit_op = self._read_operand(ops[0]), ops[1]
+            else:
+                value, bit_op = self.io_port.read_r31(), ops[0]
+            bit = self._read_operand(bit_op) & 0x1F
+            is_set = (value >> bit) & 1
+            waiting = (op == "WBS" and not is_set) or (op == "WBC" and is_set)
+            if waiting:
+                branch_taken = True          # hold PC: re-execute the wait
+                self.counters.stall_cycles += 1
+
+        elif op == "NOP":
             pass
 
         # Unknown opcodes are silently ignored (or could raise)
@@ -499,6 +558,13 @@ class PRUCore:
         # ---- Advance Peripheral Interface timeline (if attached) --------
         if self.io_port.perif is not None:
             self.io_port.perif.advance_cycles(self.counters.cycles)
+
+        # ---- Advance the IEP timer (if attached) ------------------------
+        # One ICSSG_IEP_CLK edge per core cycle. Firmware that polls
+        # IEP_COUNT_REG0 in a loop depends on this advancing; without it the
+        # poll never terminates.
+        if self.iep is not None:
+            self.iep.tick()
 
         # ---- Count instruction cycle ------------------------------------
         self.counters.tick()
@@ -546,7 +612,13 @@ class PRUCore:
         """Read the value of an operand."""
         if isinstance(op, Register):
             if op.index == 31:
-                return self.io_port.read_r31()
+                # R31 is read live from the I/O port, but the operand's byte /
+                # half-word selection still applies. Returning the full word
+                # for `r31.b3` silently reads bits [7:0] instead of [31:24].
+                val = self.io_port.read_r31()
+                if op.width >= 32 and op.offset == 0:
+                    return val
+                return (val >> op.offset) & ((1 << op.width) - 1)
             return self.registers.read(op.index, op.offset, op.width)
         if isinstance(op, Immediate):
             return op.value
@@ -561,7 +633,12 @@ class PRUCore:
         """Write *value* to an operand destination."""
         if isinstance(op, Register):
             if op.index == 31:
-                # R31 is write-only to hardware (command register) — do not store in register file
+                # R31 is write-only to hardware (command register) - do not
+                # store in the register file. The operand's byte / half-word
+                # selection still applies: `MOV r31.b3, rX.b0` targets bits
+                # [31:24]. R30 below already derives its strobe this way.
+                if op.width < 32 or op.offset:
+                    value = (value & ((1 << op.width) - 1)) << op.offset
                 self.io_port.write_r31(value)
                 return
             self.registers.write(op.index, op.offset, op.width, value)
