@@ -2440,6 +2440,13 @@ function removeMemChannel(index) {
 const FOC_Q_ONE = 1 << 24;
 const FOC_PHASE_U32 = 0x100000000;
 const FOC_POLE_PAIRS = 4;
+// Decimate stored samples by theta (not by emission count) so the plot
+// buffer holds a fixed resolution per electrical revolution regardless of
+// motor speed -- a fast motor emits far more foc_state messages per
+// revolution than a slow one at the server's fixed instruction cadence.
+const FOC_POINTS_PER_REV = 256;
+const FOC_MIN_THETA_STEP = FOC_PHASE_U32 / FOC_POINTS_PER_REV;
+const FOC_MAX_SAMPLES = FOC_POINTS_PER_REV * 5; // ~5 electrical revolutions
 const FOC_COLORS = {
   a: "#70d6b4",
   b: "#7eb8e8",
@@ -2506,13 +2513,8 @@ function renderFocState(message) {
       : "Load firmware to begin.";
   }
 
-  const enable = document.getElementById("foc-enable");
   const start = document.getElementById("foc-start");
   const stop = document.getElementById("foc-stop");
-  if (enable) {
-    enable.disabled = !loaded || runningNow;
-    enable.textContent = runningNow ? "Enabled" : "Enable";
-  }
   if (start) start.disabled = !loaded || runningNow;
   if (stop) stop.disabled = !loaded || !runningNow;
 
@@ -2534,11 +2536,16 @@ function renderFocState(message) {
 
   if (pwm && fb) {
     const timestamp = Number(fb.timestamp || 0);
+    const theta = Number(pwm.theta_cmd_u32 || 0) >>> 0;
     const previous = focSamples[focSamples.length - 1];
-    if (!previous || previous.timestamp !== timestamp || previous.loop !== pwm.loop_counter) {
+    const thetaAdvance = previous
+      ? ((theta - previous.theta) % FOC_PHASE_U32 + FOC_PHASE_U32) % FOC_PHASE_U32
+      : FOC_MIN_THETA_STEP;
+    if (thetaAdvance >= FOC_MIN_THETA_STEP) {
       focSamples.push({
         timestamp,
         loop: Number(pwm.loop_counter || 0),
+        theta,
         ta: focQ24(pwm.ta_q24),
         tb: focQ24(pwm.tb_q24),
         tc: focQ24(pwm.tc_q24),
@@ -2548,13 +2555,21 @@ function renderFocState(message) {
         valpha: focQ24(pwm.valpha_q24),
         vbeta: focQ24(pwm.vbeta_q24),
       });
-      if (focSamples.length > 360) focSamples.shift();
+      if (focSamples.length > FOC_MAX_SAMPLES) focSamples.shift();
     }
   }
   if (runningNow) scheduleFocDialAnimation();
 }
 
-function drawFocLineChart(canvasId, series, minValue, maxValue) {
+function focAdaptiveWindow() {
+  // Samples are now stored at a fixed theta spacing (one per
+  // FOC_MIN_THETA_STEP of electrical revolution), so a target number of
+  // revolutions is just a constant sample count -- no unwrapping needed.
+  const TARGET_TURNS = 2;
+  return Math.min(focSamples.length, TARGET_TURNS * FOC_POINTS_PER_REV);
+}
+
+function drawFocLineChart(canvasId, samples, series, minValue, maxValue) {
   const surface = focCanvas(canvasId);
   if (!surface) return;
   const { ctx, width: W, height: H } = surface;
@@ -2602,7 +2617,7 @@ function drawFocLineChart(canvasId, series, minValue, maxValue) {
     labelX += lane.label.length * 6 + 14;
   });
 
-  if (focSamples.length < 2) {
+  if (samples.length < 2) {
     ctx.fillStyle = text;
     ctx.fillText("waiting for foc_state…", left + 5, top + plotH / 2);
     return;
@@ -2613,8 +2628,8 @@ function drawFocLineChart(canvasId, series, minValue, maxValue) {
     ctx.strokeStyle = lane.color;
     ctx.lineWidth = 1.6;
     ctx.beginPath();
-    focSamples.forEach((sample, index) => {
-      const x = left + (index / (focSamples.length - 1)) * plotW;
+    samples.forEach((sample, index) => {
+      const x = left + (index / (samples.length - 1)) * plotW;
       const y = yFor(lane.value(sample));
       if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     });
@@ -2702,14 +2717,15 @@ function drawFocWorkspace() {
     { label: "Vα", color: FOC_COLORS.alpha, value: sample => sample.valpha },
     { label: "Vβ", color: FOC_COLORS.beta, value: sample => sample.vbeta },
   ];
+  const visible = focSamples.slice(-focAdaptiveWindow());
   let currentPeak = 1;
-  focSamples.forEach(sample => {
+  visible.forEach(sample => {
     currents.forEach(lane => { currentPeak = Math.max(currentPeak, Math.abs(lane.value(sample))); });
   });
   drawFocDial();
-  drawFocLineChart("foc-duty-plot", duties, 0, 1);
-  drawFocLineChart("foc-current-plot", currents, -currentPeak * 1.15, currentPeak * 1.15);
-  drawFocLineChart("foc-voltage-plot", voltages, -1, 1);
+  drawFocLineChart("foc-duty-plot", visible, duties, 0, 1);
+  drawFocLineChart("foc-current-plot", visible, currents, -currentPeak * 1.15, currentPeak * 1.15);
+  drawFocLineChart("foc-voltage-plot", visible, voltages, -1, 1);
 }
 
 function scheduleFocDialAnimation() {
@@ -2731,7 +2747,6 @@ function initFocControls() {
   const speedPu = document.getElementById("foc-speed-pu");
   const load = document.getElementById("foc-load");
   const start = document.getElementById("foc-start");
-  const enable = document.getElementById("foc-enable");
   const stop = document.getElementById("foc-stop");
   const controlStatus = document.getElementById("foc-control-status");
   const updateSpeed = () => {
@@ -2758,7 +2773,6 @@ function initFocControls() {
   const startFoc = () => {
     if (sendAction({ action: "foc_start" }) && controlStatus) controlStatus.textContent = "Starting the IEP-clocked plant…";
   };
-  enable?.addEventListener("click", startFoc);
   start?.addEventListener("click", startFoc);
   stop?.addEventListener("click", () => {
     if (sendAction({ action: "foc_stop" }) && controlStatus) controlStatus.textContent = "Stopping the plant observer…";

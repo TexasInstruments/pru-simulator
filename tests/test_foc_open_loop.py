@@ -14,11 +14,19 @@ def _enable_iep(sim):
 
 
 def _write_rotating_pwm(sim, theta):
-    """Write a hand-derived balanced voltage vector to the PWM ABI."""
+    """Write a hand-derived balanced voltage vector to the PWM ABI.
+
+    Phase voltages are generated with the firmware's SVGEN convention
+    (Va = Vbeta; foc_open_loop.asm ~line 229) so the synthetic duty set
+    matches what the real firmware emits and the model recovers a positively
+    rotating field.
+    """
     amplitude = 0.35 * 48.0
-    va = amplitude * math.cos(theta)
-    vb = amplitude * math.cos(theta - 2.0 * math.pi / 3.0)
-    vc = amplitude * math.cos(theta + 2.0 * math.pi / 3.0)
+    valpha = amplitude * math.cos(theta)
+    vbeta = amplitude * math.sin(theta)
+    va = vbeta
+    vb = -0.5 * vbeta + (math.sqrt(3.0) / 2.0) * valpha
+    vc = -0.5 * vbeta - (math.sqrt(3.0) / 2.0) * valpha
     sim.memory.write(
         abi.PWM_OUT_BASE,
         abi.pack_pwm_out(

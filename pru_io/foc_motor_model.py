@@ -16,15 +16,31 @@ from pru_io import foc_abi as abi
 
 
 # Mechanical parameters are intentionally modest so a 48 V, 4-pole-pair motor
-# reaches the commanded open-loop speed within a short simulator run.
-B = 0.0005
-J = 0.0001
+# reaches the commanded open-loop speed within a short simulator run. Damping
+# (B) and inertia (J) are also sized to keep the open-loop plant out of the
+# lightly-damped "hunting" regime: with B/J too small the synchronous rotor
+# rings +-500 rpm around the commanded speed after the near-instant frequency
+# ramp. Raising J is the dominant lever that filters the torque ripple into a
+# smooth, synchronized rotation (verified: ~97 rpm peak-to-peak vs ~991 before).
+B = 0.003
+J = 0.0005
 Tload = 0.0
 TLOAD = Tload
 
 _MAX_INTEGRATION_DT = 5e-6
 _U32_MASK = 0xFFFF_FFFF
 _U64_MASK = 0xFFFF_FFFF_FFFF_FFFF
+
+# foc_open_loop.asm has no IEP wait in its control loop, so it free-runs far
+# faster than the 100 kHz (10 us) loop FOC_SPEED_SCALE was calibrated for:
+# revs/loop at 1.0 pu = SPEED_SCALE / 2^32, and 1.0 pu = SPEED_BASE_RPM rpm
+# mechanical = (SPEED_BASE_RPM/60)*POLE_PAIRS Hz electrical, so the nominal
+# loop period is (SPEED_SCALE/2^32) / ((SPEED_BASE_RPM/60)*POLE_PAIRS) seconds
+# == 10 us. Live integration is driven by firmware loop_counter ticks scaled
+# by this nominal period rather than by raw (free-running) IEP time.
+NOMINAL_LOOP_PERIOD_S = abi.SPEED_SCALE / (
+    (1 << 32) * (abi.SPEED_BASE_RPM / 60.0) * POLE_PAIRS
+)
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -36,7 +52,12 @@ def _clarke_from_phase(va: float, vb: float, vc: float) -> tuple[float, float]:
     va -= common
     vb -= common
     vc -= common
-    return va, (vb - vc) / math.sqrt(3.0)
+    # Firmware SVGEN (foc_open_loop.asm ~line 229) assigns Va = Vbeta, so the
+    # phase set must be inverted with that swapped convention to recover the
+    # (Valpha, Vbeta) the firmware actually commanded. Using the standard
+    # inverse-Clarke here reverses the recovered field and yields negative
+    # speed for a positive command.
+    return (vb - vc) / math.sqrt(3.0), va
 
 
 def _q24(value: float) -> int:
@@ -57,6 +78,14 @@ class FocMotorModel:
         self._theta_mech = 0.0
         self._omega_mech = 0.0
         self._last_pwm = self._zero_pwm()
+        self._last_loop_counter = self._last_pwm["loop_counter"]
+        # False until the first advance_to() after a start() has read a
+        # loop_counter baseline; see advance_to() for why priming happens
+        # there instead of in start().
+        self._loop_counter_primed = False
+        # True once loop_counter has ever advanced; see advance_to() for why
+        # mid-loop (delta_loops == 0) firings integrate nothing once set.
+        self._loop_driven = False
         self.sim.add_hard_reset_hook(self.reset)
         self._publish_feedback(self._last_timestamp, reset=True)
 
@@ -103,6 +132,9 @@ class FocMotorModel:
         self._theta_mech = 0.0
         self._omega_mech = 0.0
         self._last_pwm = self._zero_pwm()
+        self._last_loop_counter = self._last_pwm["loop_counter"]
+        self._loop_counter_primed = False
+        self._loop_driven = False
         self._publish_feedback(self._last_timestamp, reset=True)
 
     def start(self) -> bool:
@@ -110,6 +142,12 @@ class FocMotorModel:
         if self._running:
             return True
         self._last_timestamp = self._now()
+        # Defer the loop_counter baseline to the first advance_to() call
+        # (rather than snapshotting here) so a start() that races ahead of
+        # the firmware's first completed loop doesn't misattribute that
+        # transition to a live-timed delta.
+        self._loop_counter_primed = False
+        self._loop_driven = False
         self._running = True
         self._iep().add_counter_observer(self._on_iep_advanced)
         self._observer_registered = True
@@ -182,10 +220,37 @@ class FocMotorModel:
         if not elapsed_ticks:
             return 0
 
-        total_dt = elapsed_ticks / self._tick_hz()
+        pwm = self._read_pwm()
+        loop_counter_now = int(pwm["loop_counter"]) & _U32_MASK
+        if self._loop_counter_primed:
+            delta_loops = (loop_counter_now - self._last_loop_counter) & _U32_MASK
+        else:
+            # First call since start(): establish the baseline instead of
+            # attributing this transition to a live-timed delta.
+            delta_loops = 0
+            self._loop_counter_primed = True
+        self._last_loop_counter = loop_counter_now
+        if delta_loops:
+            # Drive the live timebase from completed firmware control loops
+            # rather than raw (free-running) IEP ticks -- see
+            # NOMINAL_LOOP_PERIOD_S above.
+            self._loop_driven = True
+            total_dt = delta_loops * NOMINAL_LOOP_PERIOD_S
+        elif self._loop_driven:
+            # Mid-loop firing (~204 of every ~205 observer callbacks once the
+            # firmware is driving loop_counter): the loop's 10 us step was
+            # already integrated on the delta_loops > 0 firing above, so
+            # adding the free-running IEP-tick fallback here would integrate
+            # the same loop's field ~30x too fast. Integrate nothing.
+            self._publish_feedback(self._last_timestamp)
+            return elapsed_ticks
+        else:
+            # No completed loop has ever been observed (e.g. the manual test
+            # harness driving advance_to() directly with a pinned
+            # loop_counter): fall back to raw IEP-tick integration.
+            total_dt = elapsed_ticks / self._tick_hz()
         steps = max(1, math.ceil(total_dt / _MAX_INTEGRATION_DT))
         dt = total_dt / steps
-        pwm = self._read_pwm()
         for _ in range(steps):
             self._integrate(dt, pwm)
         self._publish_feedback(self._last_timestamp)
@@ -211,7 +276,8 @@ class FocMotorModel:
         return ia, ib, ic, id_meas, iq_meas
 
     def _rotor_theta_u32(self) -> int:
-        phase = (self._theta_mech / (2.0 * math.pi)) % 1.0
+        theta_e = POLE_PAIRS * self._theta_mech
+        phase = (theta_e / (2.0 * math.pi)) % 1.0
         return int(round(phase * (1 << 32))) & _U32_MASK
 
     def _publish_feedback(self, timestamp: int, *, reset: bool = False) -> None:
