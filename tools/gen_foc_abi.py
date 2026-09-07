@@ -187,6 +187,11 @@ def _constant(schema: dict, name: str, default=0):
     return schema.get("_constants", {}).get(name, default)
 
 
+def _status_flag(schema: dict, name: str, default=0) -> int:
+    flags = schema.get("_constants", {}).get("status_flags", {})
+    return int(flags.get(name, default))
+
+
 def generate_inc(schema: dict) -> str:
     """Return the PRU assembly include text."""
     lines = [
@@ -204,6 +209,18 @@ def generate_inc(schema: dict) -> str:
         f"FOC_SPEED_BASE_RPM .set {_constant(schema, 'speed_base_rpm')}",
         f"FOC_CONTROL_LOOP_HZ .set {_constant(schema, 'control_loop_hz')}",
         f"FOC_CURRENT_BASE_A .set {_constant(schema, 'current_base_a')}",
+        f"FOC_DEFAULT_CONTROL_PERIOD_IEP_TICKS .set "
+        f"{_constant(schema, 'default_control_period_iep_ticks')}",
+        f"FOC_MAX_VOLTAGE_MAGNITUDE_Q24 .set "
+        f"{_constant(schema, 'max_voltage_magnitude_q24')}",
+        f"FOC_MAX_VOLTAGE_MAGNITUDE_SQUARED_Q24 .set "
+        f"{_constant(schema, 'max_voltage_magnitude_squared_q24')}",
+        f"FOC_STATUS_DISABLED .set {_status_flag(schema, 'disabled')}",
+        f"FOC_STATUS_SATURATED .set {_status_flag(schema, 'saturated')}",
+        f"FOC_STATUS_DEADLINE_MISS .set "
+        f"{_status_flag(schema, 'deadline_miss')}",
+        f"FOC_STATUS_INVALID_CONFIG .set "
+        f"{_status_flag(schema, 'invalid_config')}",
         "",
     ]
 
@@ -221,6 +238,24 @@ def generate_inc(schema: dict) -> str:
                     f"FOC_{prefix}_{field['name'].upper()}_OFF .set "
                     f"0x{field['offset']:X}"
                 )
+        if section_name == "control":
+            control_period_offset = next(
+                field["offset"]
+                for field in section["fields"]
+                if field["name"] == "control_period_iep_ticks"
+            )
+            lines.append(
+                f"FOC_CONTROL_PERIOD_IEP_TICKS_OFF .set 0x{control_period_offset:X}"
+            )
+        if section_name == "pwm_out":
+            timestamp_offset = next(
+                field["offset"]
+                for field in section["fields"]
+                if field["name"] == "timestamp_cycles"
+            )
+            lines.append(
+                f"FOC_PWM_OUT_TIMESTAMP_IEP_OFF .set 0x{timestamp_offset:X}"
+            )
         lines.append(f"FOC_{prefix}_SIZE .set {_section_size(section)}")
         if "count" in section:
             lines.append(f"FOC_{prefix}_COUNT .set {section['count']}")
@@ -238,6 +273,13 @@ def _field_dict_text(var_name: str, fields: list[dict]) -> str:
         entries.append(
             f'    "{field["name"]}": '
             f'(0x{field["offset"]:X}, "{fmt}"),'
+        )
+    if var_name == "_PWM_OUT_FIELDS":
+        timestamp = next(
+            field for field in fields if field["name"] == "timestamp_cycles"
+        )
+        entries.append(
+            f'    "timestamp_iep": (0x{timestamp["offset"]:X}, "Q"),'
         )
     return var_name + " = {\n" + "\n".join(entries) + "\n}"
 
@@ -275,6 +317,18 @@ def generate_python(schema: dict) -> str:
         f"SPEED_BASE_RPM = {_constant(schema, 'speed_base_rpm')}",
         f"CONTROL_LOOP_HZ = {_constant(schema, 'control_loop_hz')}",
         f"CURRENT_BASE_A = {_constant(schema, 'current_base_a')}",
+        f"DEFAULT_CONTROL_PERIOD_IEP_TICKS = "
+        f"{_constant(schema, 'default_control_period_iep_ticks')}",
+        f"MAX_VOLTAGE_MAGNITUDE_Q24 = "
+        f"{_constant(schema, 'max_voltage_magnitude_q24')}",
+        f"MAX_VOLTAGE_MAGNITUDE_SQUARED_Q24 = "
+        f"{_constant(schema, 'max_voltage_magnitude_squared_q24')}",
+        f"MAX_VOLTAGE_MAGNITUDE_PU = "
+        f"{_constant(schema, 'max_voltage_magnitude_pu')!r}",
+        f"STATUS_DISABLED = {_status_flag(schema, 'disabled')}",
+        f"STATUS_SATURATED = {_status_flag(schema, 'saturated')}",
+        f"STATUS_DEADLINE_MISS = {_status_flag(schema, 'deadline_miss')}",
+        f"STATUS_INVALID_CONFIG = {_status_flag(schema, 'invalid_config')}",
         "U32_MASK = 0xFFFF_FFFF",
         "",
     ]
@@ -298,6 +352,15 @@ def generate_python(schema: dict) -> str:
                     f"{prefix}_{field['name'].upper()}_OFF = "
                     f"0x{field['offset']:X}"
                 )
+        if section_name == "control":
+            lines.append(
+                "CONTROL_PERIOD_IEP_TICKS_OFF = "
+                "CONTROL_CONTROL_PERIOD_IEP_TICKS_OFF"
+            )
+        if section_name == "pwm_out":
+            lines.append(
+                "PWM_OUT_TIMESTAMP_IEP_OFF = PWM_OUT_TIMESTAMP_CYCLES_OFF"
+            )
         lines.append("")
 
     for section_name in SECTION_ORDER:
@@ -327,7 +390,8 @@ def generate_python(schema: dict) -> str:
         "",
         "def pack_control(**fields):",
         '    """Pack a control block, defaulting ABI metadata to current values."""',
-        "    values = {\"abi_version\": ABI_VERSION, \"struct_size\": CONTROL_SIZE}",
+        "    values = {\"abi_version\": ABI_VERSION, \"struct_size\": CONTROL_SIZE,",
+        "              \"control_period_iep_ticks\": DEFAULT_CONTROL_PERIOD_IEP_TICKS}",
         "    values.update(fields)",
         "    return _pack_fields(_CONTROL_FIELDS, CONTROL_SIZE, values)",
         "",
@@ -407,6 +471,20 @@ def generate_c(schema: dict) -> str:
         f"#define FOC_SPEED_BASE_RPM                   ({_constant(schema, 'speed_base_rpm')}U)",
         f"#define FOC_CONTROL_LOOP_HZ                  ({_constant(schema, 'control_loop_hz')}U)",
         f"#define FOC_CURRENT_BASE_A                   ({_constant(schema, 'current_base_a')}U)",
+        f"#define FOC_DEFAULT_CONTROL_PERIOD_IEP_TICKS "
+        f"({_constant(schema, 'default_control_period_iep_ticks')}U)",
+        f"#define FOC_MAX_VOLTAGE_MAGNITUDE_Q24       "
+        f"({_constant(schema, 'max_voltage_magnitude_q24')}U)",
+        f"#define FOC_MAX_VOLTAGE_MAGNITUDE_SQUARED_Q24 "
+        f"({_constant(schema, 'max_voltage_magnitude_squared_q24')}U)",
+        f"#define FOC_STATUS_DISABLED                 "
+        f"({_status_flag(schema, 'disabled')}U)",
+        f"#define FOC_STATUS_SATURATED                "
+        f"({_status_flag(schema, 'saturated')}U)",
+        f"#define FOC_STATUS_DEADLINE_MISS            "
+        f"({_status_flag(schema, 'deadline_miss')}U)",
+        f"#define FOC_STATUS_INVALID_CONFIG           "
+        f"({_status_flag(schema, 'invalid_config')}U)",
         "",
     ]
 
@@ -445,7 +523,34 @@ def generate_c(schema: dict) -> str:
         "    int32_t id_ref_q24;",
         "    int32_t iq_ref_q24;",
         "    int32_t ramp_rate_q24;",
+        "    uint32_t control_period_iep_ticks;",
         "} foc_control_t;",
+        "",
+        "typedef struct {",
+        "    uint32_t seq;",
+        "    int32_t ta_q24;",
+        "    int32_t tb_q24;",
+        "    int32_t tc_q24;",
+        "    int32_t valpha_q24;",
+        "    int32_t vbeta_q24;",
+        "    uint32_t theta_cmd_u32;",
+        "    uint32_t loop_counter;",
+        "    uint64_t timestamp_cycles;",
+        "    uint32_t status;",
+        "    int32_t speed_cmd_q24;",
+        "} foc_pwm_out_t;",
+        "",
+        "typedef struct {",
+        "    uint32_t seq;",
+        "    int32_t ia_q24;",
+        "    int32_t ib_q24;",
+        "    int32_t ic_q24;",
+        "    int32_t id_meas_q24;",
+        "    int32_t iq_meas_q24;",
+        "    uint32_t rotor_theta_u32;",
+        "    int32_t speed_rpm_q24;",
+        "    uint64_t timestamp;",
+        "} foc_motor_fb_t;",
         "",
         "#endif /* FOC_ABI_H_ */",
         "",

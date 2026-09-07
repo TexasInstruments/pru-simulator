@@ -89,6 +89,11 @@ class IEPTimebase:
     def active_clock_hz(self) -> Fraction:
         return self.ocp_clock_hz if self.ocp_enabled else self.external_clock_hz
 
+    def core_clock_hz(self, core: str) -> Fraction:
+        """Return the configured PRU clock represented by *core*'s timeline."""
+        timeline = self._core_timelines[core]
+        return Fraction(self._time_units_per_second, timeline.cycle_units)
+
     @property
     def observer_count(self) -> int:
         """Number of callbacks notified when the counter advances."""

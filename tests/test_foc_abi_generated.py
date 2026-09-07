@@ -60,6 +60,7 @@ def test_control_round_trip_preserves_signed_references_and_metadata():
         "id_ref_q24": -abi.Q_ONE // 4,
         "iq_ref_q24": abi.Q_ONE,
         "ramp_rate_q24": abi.Q_ONE // 100,
+        "control_period_iep_ticks": abi.DEFAULT_CONTROL_PERIOD_IEP_TICKS,
     }
 
 

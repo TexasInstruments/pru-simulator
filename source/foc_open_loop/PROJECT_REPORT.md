@@ -1,6 +1,80 @@
 # foc_open_loop — Project Report
 
-Open-loop Field-Oriented Control (Level 1) on a single PRU core (pru0), with firmware validated against pure-Python cross-checks. This Phase 1 build establishes the shared-memory ABI and pipeline correctness; Phase 2 (motor model, UI, closed-loop feedback) is roadmap.
+Open-loop Field-Oriented Control (Level 1) on a single PRU core (pru0), with firmware validated against pure-Python cross-checks and an IEP-clocked Python plant. Closed-loop current and speed feedback remain future work.
+
+## 0. Validation repair update (2026-09-07)
+
+The simulator now includes the open-loop co-simulation integration that the original report
+listed as future work. This remains open loop: Vd/Vq are voltage references, the speed command
+sets electrical frequency, and the Python plant reports measured behavior without closing a
+current or speed loop.
+
+- Firmware pacing uses absolute IEP deadlines at 100 kHz and publishes true IEP timestamps.
+- The plant integrates elapsed IEP time with the previously coherent PWM command held between
+  publications. The old loop-counter-to-time conversion and nominal-time fallback are removed.
+- Disabled output is neutral (0.5/0.5/0.5) and holds the command angle. Voltage vectors above
+  1/sqrt(3) pu are rejected at the host boundary and faulted/clamped in firmware.
+- The generated ABI is version 2 and includes the configured period, timestamp, ramped command,
+  and saturation/deadline status fields.
+- The runtime owns reset/session state, 100 us sample history, coherent seqlock reads, stop-at-
+  boundary behavior, and clock/wall-time telemetry. The FOC WebSocket Start action applies the
+  visible references and advances bounded PRU0 batches cooperatively.
+- `memory.cfg` is intentionally configured for the local 200 MHz PRU/IEP profile.
+
+### Final repair verification
+
+The remaining lifecycle, breakpoint, dial, and telemetry repairs were verified against the real
+FOC assembly on 2026-09-07. The focused command
+
+```bash
+python -m pytest tests/test_foc_validation_repair.py tests/test_foc_open_loop.py \
+  tests/test_foc_ui.py tests/test_foc_firmware.py tests/test_mcp_server.py -q
+```
+
+passed **76 tests in 52.16 s**. The explicit 200/250/300 MHz clock check passed **6 tests**;
+the control periods were 2000, 2500, and 3000 IEP ticks respectively, with the measured control
+cadence remaining approximately 100 kHz. JavaScript syntax checking, Python compilation, and
+the diff whitespace check also passed. The full simulator suite passed **1521 tests with 2
+expected failures in 159.24 s**.
+
+The FOC WebSocket now publishes generic PRU core-state packets alongside plant telemetry at the
+dashboard cadence. This keeps the Source / Disassembly PC highlight, registers, and instruction
+counters synchronized with the executing assembly. The regression reproduces the prior absence
+of core-state packets and verifies live nonzero instruction counts and PC movement.
+
+The physical acceptance runner uses the actual assembled firmware, runtime, IEP clock, PWM
+publications, and PMSM plant:
+
+```bash
+python tools/run_foc_acceptance.py --clock 200 \
+  --case nominal_400 --case reference_change --case reverse_reset \
+  --case high_valid_1000 --case insufficient_voltage --case zero_voltage_rest
+```
+
+| Case | Simulated time (s) | Wall (s) | Active sim/wall | Final-200 ms mean RPM | Ripple p-p RPM | Result |
+|---|---:|---:|---:|---:|---:|---|
+| 400 RPM, Vq=0.25 | 1.001779 | 162.168 | 0.006177x | 399.999 | 0.069 | settled |
+| 200 -> 400 RPM | 1.001779 | 156.519 | 0.006400x | 399.999 | 0.071 | settled |
+| -400 RPM, Vq=-0.25 | 1.001779 | 159.176 | 0.006294x | -399.999 | 0.069 | settled |
+| 1000 RPM, Vq=0.5 | 2.003351 | 318.921 | 0.006282x | 999.999 | 0.627 | settled |
+| 800 RPM, Vq=0.25 | 1.001365 | 177.213 | 0.005651x | 77.875 | 813.226 | synchronism lost |
+| 400 RPM, Vq=0 | 0.201846 | 31.298 | 0.006449x | 0.000 | 0.000 | rotor stationary |
+
+The first four cases satisfy the final-200-ms speed criterion (within 1% of reference and below
+2% peak-to-peak ripple) with no electrical-angle slip. The insufficient-voltage case reaches
+179.97 degrees of angle error, ends near -100 RPM, and has 90.27% speed error; this is the
+expected open-loop loss of synchronism, not a hidden clamp or closed-loop correction. In the
+zero-voltage case the command angle advances while measured rotor speed remains zero; its angle
+error is therefore not a meaningful synchronism pass criterion.
+
+The dashboard browser automation could not be executed because no in-app browser session was
+available (`agent.browsers.list()` returned an empty list). WebSocket behavior was exercised by
+the FastAPI test client, and the dial/telemetry contracts were checked with Node/static tests.
+
+The operating procedure and current acceptance scenarios are maintained in
+`docs/superpowers/plans/2026-09-07-foc-validation-repair.md` and
+`source/foc_open_loop/README.md`. The sections below preserve the historical Phase 1 design
+record; their Phase 2 roadmap statements describe the state before this repair.
 
 ## 1. Initial prompt
 
@@ -16,9 +90,9 @@ Scoping refinement (same session):
 
 ### 2.1 Phase 1 Scope: Open Loop Only
 
-**Decision:** Implement firmware + ABI only. Motor model, MCP tools, and UI are deferred to Phase 2.
+**Historical decision:** The first implementation intentionally delivered firmware + ABI only. The validation repair now includes the motor model, MCP tool, and UI integration while keeping control open loop.
 
-**Rationale:** The initial request was broad (firmware + motor model + UI in one go). Breaking it into smaller phases lets Phase 1 focus on firmware correctness, shared-memory ABI stability, and validation strategy before adding simulation and visualization layers. Phase 2 can then build on proven firmware behavior.
+**Rationale:** The staged approach first established firmware correctness and ABI stability; the current runtime builds the plant and visualization on that contract.
 
 ### 2.2 ISA Corrections vs. the Provided Reference
 
@@ -54,13 +128,15 @@ Scoping refinement (same session):
 
 **Decision:** Bracket all duty cycle writes with a seqlock (odd while writing, even when stable).
 
-**Rationale:** Future motor model and UI readers will access `pwm_out` asynchronously. A seqlock ensures they never see a torn update. Readers check `seq` before and after each read; if both are even and match, the snapshot is consistent.
+**Rationale:** The Python motor model and UI read `pwm_out` asynchronously. A seqlock ensures they never see a torn update. Readers check `seq` before and after each read; if both are even and match, the snapshot is consistent.
 
-### 2.8 Timestamp as Loop Counter Placeholder
+### 2.8 Absolute IEP timestamps
 
-**Decision:** Write `loop_counter` to both `timestamp_cycles` fields (low and high words).
+**Decision:** Read the 64-bit IEP counter at the publication boundary and write it to
+`timestamp_cycles`; retain `loop_counter` only as a publication sequence diagnostic.
 
-**Rationale:** This single-PRU build has no hardware IEP cycle counter. The loop counter is monotonic and sufficient for motor model cadence tracking in Phase 2. (A true multi-core / multi-PRU setup would pull real cycle counts from the IEP.)
+**Rationale:** The configured IEP clock is the single simulation timebase used by firmware,
+plant integration, charts, and telemetry. A missed absolute deadline is reported as a fault.
 
 ## 3. Files generated
 
@@ -73,6 +149,10 @@ Scoping refinement (same session):
 | `include/foc_abi.h` | Generated C snapshot | ABI (generated) |
 | `tests/test_foc_abi_generated.py` | ABI validation tests (9 tests) | Testing |
 | `source/foc_open_loop/foc_open_loop.asm` | PRU0 firmware (RC, RG, sin/cos LUT, inverse Park, SVGEN) | Firmware |
+| `pru_io/foc_motor_model.py` | IEP-clocked PMSM plant and timestamped sample history | Runtime |
+| `pru_io/foc_runtime.py` | Lifecycle, validation, clock metadata, and coherent state | Runtime |
+| `mcp_server/server.py` | FOC load/run/fault tool | Integration |
+| `ui/server.py`, `ui/static/index.html`, `ui/static/app.js` | FOC WebSocket tab and visualizations | UI |
 | `source/foc_open_loop/README.md` | Quick reference (specs, memory map, run instructions) | Documentation |
 | `source/foc_open_loop/PROJECT_REPORT.md` | This file | Documentation |
 | `tests/test_foc_firmware.py` | Firmware cross-check tests (9 tests) | Testing |
@@ -141,15 +221,19 @@ The firmware uses `& 0x7FF` (FOC_SINE_LUT_COUNT−1) to wrap the cosine offset `
 
 ### 5.5 Constants and Scaling
 
-- **FOC_SPEED_SCALE = 954**: An empirical scale factor. Phase 2 motor model will use this to convert normalized speed ref (±1.0 pu) to motor RPM. Documented as revisitable based on motor parameters.
+- **FOC_SPEED_SCALE = 2863312**: Q24 phase increment scale. At 100 kHz, 1.0 pu is 66.67 electrical revolutions/s, which is 1000 mechanical RPM for this four-pole-pair motor.
 - **CONST_ONE_HALF = 0x00800000**: Exactly 0.5 in Q24.
 - **CONST_SQRT3_HALF ≈ 0x00DDB3D7**: `round(√3/2 · 2^24)` for SVPWM voltage reconstruction.
 
 These constants are baked into the firmware; motor-specific tuning is deferred to Phase 2.
 
-## 6. Roadmap (Phase 2 and beyond, not built here)
+## 6. Roadmap (closed-loop control)
 
-### Phase 2 deliverables (planned, not yet implemented)
+The current repair completes the open-loop plant, runtime, MCP, UI, timestamped history, and
+fault-reporting scope. The remaining roadmap is closed-loop control; the historical Phase 2
+items below are now implemented and retained as a record of the original project plan.
+
+### Historical Phase 2 deliverables (implemented in the validation repair)
 
 - **Motor model** (`pru_io/foc_motor_model.py`): PMSM plant integrator (electrical + mechanical) that reads duty cycles from `pwm_out`, simulates dynamics, and writes currents + rotor angle to `motor_fb`
 - **Runtime wrapper** (`pru_io/foc_runtime.py`): Lifecycle management (start/stop/step), reference staging, LUT seeding

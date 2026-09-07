@@ -39,6 +39,8 @@ def make_sim(nominal_config):
     sim = Simulator(nominal_config)
     errors = sim.load("pru0", SOURCE, include_paths=[str(INCLUDE_DIR)])
     assert errors == [], errors
+    sim.iep.write_iepclk(1)
+    sim.iep.write_global_cfg(0x11)
     return sim
 
 
@@ -137,7 +139,7 @@ def _run_mul_q24_case(nominal_config, a: float, b: float) -> int:
     else:
         raise AssertionError("pru_ack_generation never reached 1")
     addr = abi.PWM_OUT_BASE + abi.PWM_OUT_VALPHA_Q24_OFF
-    for _ in range(500):
+    for _ in range(5000):
         sim.step("pru0", 1)
         if read_u32(sim, addr) != 0:
             break
@@ -192,7 +194,7 @@ def _make_configured_sim(nominal_config, speed_ref, ramp_rate, id_ref=0.0, iq_re
     return sim
 
 
-def _run_iterations(sim, count, max_steps_per_iter=300):
+def _run_iterations(sim, count, max_steps_per_iter=5000):
     """Step through `count` completed l_core_loop passes (each pass writes
     theta_cmd_u32 exactly once), returning the theta_cmd value observed at
     the end of each pass."""
@@ -255,7 +257,7 @@ def _sincos_at_theta(nominal_config, theta_acc: int):
     sim = _make_configured_sim(nominal_config, speed_ref=0.0, ramp_rate=0.0)
     seed_sine_lut(sim)
     sim.cores["pru0"].registers.write_full(12, theta_acc)  # THETA_ACC
-    sim.step("pru0", 300)  # several full l_core_loop passes, theta_acc frozen
+    sim.step("pru0", 5000)
     regs = sim.registers("pru0")
     return regs[17], regs[18]  # SIN_Q24, COS_Q24
 
@@ -289,7 +291,7 @@ def _run_ipark_case(nominal_config, id_ref: float, iq_ref: float, theta_acc: int
                                 id_ref=id_ref, iq_ref=iq_ref)
     seed_sine_lut(sim)
     sim.cores["pru0"].registers.write_full(12, theta_acc)  # THETA_ACC
-    sim.step("pru0", 300)
+    sim.step("pru0", 5000)
     valpha = from_q24(read_u32(sim, abi.PWM_OUT_BASE + abi.PWM_OUT_VALPHA_Q24_OFF))
     vbeta = from_q24(read_u32(sim, abi.PWM_OUT_BASE + abi.PWM_OUT_VBETA_Q24_OFF))
     return valpha, vbeta
@@ -297,7 +299,7 @@ def _run_ipark_case(nominal_config, id_ref: float, iq_ref: float, theta_acc: int
 
 def test_ipark(nominal_config):
     LUT_SHIFT = 21
-    id_iq_grid = [(0.5, 0.0), (0.0, 0.5), (0.3, -0.2), (-0.4, 0.1), (0.6, 0.6)]
+    id_iq_grid = [(0.5, 0.0), (0.0, 0.5), (0.3, -0.2), (-0.4, 0.1), (0.4, 0.4)]
     theta_fracs = [0.0, 1 / 8, 1 / 4, 3 / 8, 1 / 2, 5 / 8, 3 / 4, 7 / 8]
 
     for id_ref, iq_ref in id_iq_grid:
@@ -325,12 +327,10 @@ LUT_SHIFT = 21
 
 
 def svgen_reference(valpha: float, vbeta: float):
-    """Pure-Python SVGEN matching foc_open_loop.asm's SVGEN section exactly:
-    Va=Vbeta; Vb=-0.5*Vbeta+(sqrt(3)/2)*Valpha; Vc=-0.5*Vbeta-(sqrt(3)/2)*Valpha;
-    Vcom=(max+min)/2; Tx=Vx-Vcom+0.5."""
-    va = vbeta
-    vb = -0.5 * vbeta + (math.sqrt(3) / 2) * valpha
-    vc = -0.5 * vbeta - (math.sqrt(3) / 2) * valpha
+    """Pure-Python SVGEN matching the conventional phase mapping."""
+    va = valpha
+    vb = -0.5 * valpha + (math.sqrt(3) / 2) * vbeta
+    vc = -0.5 * valpha - (math.sqrt(3) / 2) * vbeta
     vcom = 0.5 * (max(va, vb, vc) + min(va, vb, vc))
     return va - vcom + 0.5, vb - vcom + 0.5, vc - vcom + 0.5, vcom
 
@@ -340,7 +340,7 @@ def _run_svgen_case(nominal_config, id_ref: float, iq_ref: float, theta_acc: int
                                 id_ref=id_ref, iq_ref=iq_ref)
     seed_sine_lut(sim)
     sim.cores["pru0"].registers.write_full(12, theta_acc)  # THETA_ACC
-    sim.step("pru0", 300)
+    sim.step("pru0", 5000)
     ta = from_q24(read_u32(sim, abi.PWM_OUT_BASE + abi.PWM_OUT_TA_Q24_OFF))
     tb = from_q24(read_u32(sim, abi.PWM_OUT_BASE + abi.PWM_OUT_TB_Q24_OFF))
     tc = from_q24(read_u32(sim, abi.PWM_OUT_BASE + abi.PWM_OUT_TC_Q24_OFF))

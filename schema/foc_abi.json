@@ -1,7 +1,7 @@
 {
   "control": {
     "base": "0x0000",
-    "stride": 36,
+    "stride": 40,
     "fields": [
       {"name": "abi_version", "offset": "0x00", "size": 4, "type": "u32",
        "doc": "FOC shared-memory ABI version."},
@@ -20,12 +20,14 @@
       {"name": "iq_ref_q24", "offset": "0x1C", "size": 4, "type": "i32",
        "doc": "Q-axis voltage reference in Q24."},
       {"name": "ramp_rate_q24", "offset": "0x20", "size": 4, "type": "i32",
-       "doc": "Per-loop signed speed slew limit in Q24."}
+       "doc": "Per-loop signed speed slew limit in Q24."},
+      {"name": "control_period_iep_ticks", "offset": "0x24", "size": 4, "type": "u32",
+       "doc": "Absolute IEP ticks between control publications."}
     ]
   },
   "pwm_out": {
     "base": "0x0100",
-    "stride": 40,
+    "stride": 48,
     "fields": [
       {"name": "seq", "offset": "0x00", "size": 4, "type": "u32",
        "doc": "Seqlock sequence; odd while the block is being written."},
@@ -44,7 +46,11 @@
       {"name": "loop_counter", "offset": "0x1C", "size": 4, "type": "u32",
        "doc": "Controller loop counter."},
       {"name": "timestamp_cycles", "offset": "0x20", "size": 8, "type": "u64",
-       "doc": "PRU cycle timestamp of the publication."}
+       "doc": "True absolute IEP timestamp of the publication; legacy name retained."},
+      {"name": "status", "offset": "0x28", "size": 4, "type": "u32",
+       "doc": "FOC status and fault flags for this coherent publication."},
+      {"name": "speed_cmd_q24", "offset": "0x2C", "size": 4, "type": "i32",
+       "doc": "Ramped signed speed command in Q24 per-unit form."}
     ]
   },
   "motor_fb": {
@@ -81,13 +87,23 @@
     ]
   },
   "constants": {
-    "abi_version": 1,
+    "abi_version": 2,
     "q_fraction_bits": 24,
     "iep_tick_hz": 300000000,
     "sine_lut_entries": 2048,
     "speed_scale": 2863312,
     "speed_base_rpm": 1000,
     "control_loop_hz": 100000,
-    "current_base_a": 10
+    "current_base_a": 10,
+    "default_control_period_iep_ticks": 3000,
+    "max_voltage_magnitude_q24": 9686330,
+    "max_voltage_magnitude_squared_q24": 5592405,
+    "max_voltage_magnitude_pu": 0.5773502691896258,
+    "status_flags": {
+      "disabled": 1,
+      "saturated": 2,
+      "deadline_miss": 4,
+      "invalid_config": 8
+    }
   }
 }

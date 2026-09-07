@@ -301,6 +301,7 @@ class Simulator:
             "cycles": pru.counters.cycles,
             "stall_cycles": pru.counters.stall_cycles,
             "halted": pru.halted,
+            "fault": pru.fault,
         }
 
     def step_paced(self, lead: str, follow: str, count: int = 1,
@@ -607,5 +608,6 @@ class Simulator:
                 "instruction_count": pru.counters.instruction_count,
                 "ipc": pru.counters.ipc,
                 "halted": pru.halted,
+                "fault": pru.fault,
             }
         return result

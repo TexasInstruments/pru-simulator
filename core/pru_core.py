@@ -52,6 +52,9 @@ class PRUCore:
         self._cycle_observer = cycle_observer
         self.pc: int = 0
         self.halted: bool = False
+        self.fault: dict | None = None
+        self._foc_timer_wait_pc: int | None = None
+        self._foc_timer_wait_callback: Callable[[], bool] | None = None
         self.instructions: list[Instruction] = []
         self.loop_state: LoopState | None = None
         self.breakpoints: set[int] = set()
@@ -97,6 +100,15 @@ class PRUCore:
             errors.append(str(exc))
         return errors
 
+    def _record_fault(self, opcode: str, address: int, error: Exception) -> None:
+        self.fault = {
+            "type": "memory",
+            "opcode": opcode,
+            "address": int(address) & 0xFFFF_FFFF,
+            "pc": self.pc,
+            "error": str(error),
+        }
+
     def reset(self) -> None:
         """Reset all state to initial conditions."""
         self.registers.regs[:] = [0] * 32
@@ -104,14 +116,36 @@ class PRUCore:
         self.counters.reset()
         self.pc = 0
         self.halted = False
+        self.fault = None
+        self.clear_foc_timer_wait()
         self.loop_state = None
         for acc in self.accelerators.values():
             acc.reset()
         self.io_port.reset()
 
+    def configure_foc_timer_wait(
+        self, wait_pc: int, callback: Callable[[], bool]
+    ) -> None:
+        """Install the opt-in callback for the verified FOC wait loop."""
+        self._foc_timer_wait_pc = int(wait_pc)
+        self._foc_timer_wait_callback = callback
+
+    def clear_foc_timer_wait(self) -> None:
+        """Disable the FOC timer-wait fast path."""
+        self._foc_timer_wait_pc = None
+        self._foc_timer_wait_callback = None
+
     def step(self) -> None:
         """Execute one instruction."""
         if self.halted or self.pc >= len(self.instructions):
+            return
+
+        if (
+            self._foc_timer_wait_pc is not None
+            and self.pc == self._foc_timer_wait_pc
+            and self._foc_timer_wait_callback is not None
+            and self._foc_timer_wait_callback()
+        ):
             return
 
         # Pre-tick: advance UART frame generator before instruction reads R31
@@ -340,6 +374,7 @@ class PRUCore:
                 self.counters.stall(stalls)
             except ValueError as e:
                 logger.error(f"LBBO fault at 0x{addr:08X}: {e}")
+                self._record_fault("LBBO", addr, e)
                 self.halted = True
 
         elif op == "LBCO":
@@ -357,6 +392,7 @@ class PRUCore:
                 self.counters.stall(stalls)
             except ValueError as e:
                 logger.error(f"LBCO fault at 0x{addr:08X}: {e}")
+                self._record_fault("LBCO", addr, e)
                 self.halted = True
 
         elif op == "SBCO":
@@ -374,6 +410,7 @@ class PRUCore:
                 self.counters.stall(stalls)
             except ValueError as e:
                 logger.error(f"SBCO fault at 0x{addr:08X}: {e}")
+                self._record_fault("SBCO", addr, e)
                 self.halted = True
 
         elif op == "SBBO":
@@ -391,6 +428,7 @@ class PRUCore:
                 self.counters.stall(stalls)
             except ValueError as e:
                 logger.error(f"SBBO fault at 0x{addr:08X}: {e}")
+                self._record_fault("SBBO", addr, e)
                 self.halted = True
 
         # ---- XFR ---------------------------------------------------------

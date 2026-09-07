@@ -138,7 +138,10 @@ def test_pru_startup_writes_iepclk_and_global_cfg_through_c4_and_c26():
     assert _read32(sim, IEP_GLOBAL_CFG) == 0x11
     assert sim.iep.enabled
     assert sim.iep.default_increment == 1
-    assert sim.iep.active_clock_hz == 300_000_000
+    # The repository's local memory.cfg is intentionally a 200 MHz profile;
+    # startup must select the configured OCP clock rather than a hard-coded
+    # 300 MHz assumption.
+    assert sim.iep.active_clock_hz == sim.iep.ocp_clock_hz
 
 
 def test_counter_enable_and_default_increment_control_progression():

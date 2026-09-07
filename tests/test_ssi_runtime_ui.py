@@ -229,7 +229,7 @@ def test_generic_ssi_panel_identifies_the_live_shared_memory_region():
     assert 'value="0x00010200">SSI mailbox (global 0x00010200)</option>' in html
     assert 'id="ssi-runtime-memory-hint"' in html
     assert "PRU0/PRU1 DRAM are not written by this pair" in html
-    assert '/static/app.js?v=20260904-1' in html
+    assert '/static/app.js?v=20260907-6' in html
 
 
 def test_profile_catalog_is_safe_for_ui_and_contains_default_and_documented_profiles():

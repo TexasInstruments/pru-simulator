@@ -2446,7 +2446,9 @@ const FOC_POLE_PAIRS = 4;
 // revolution than a slow one at the server's fixed instruction cadence.
 const FOC_POINTS_PER_REV = 256;
 const FOC_MIN_THETA_STEP = FOC_PHASE_U32 / FOC_POINTS_PER_REV;
-const FOC_MAX_SAMPLES = FOC_POINTS_PER_REV * 5; // ~5 electrical revolutions
+const FOC_SAMPLE_PERIOD_SECONDS = 0.0001;
+const FOC_WINDOW_SECONDS = 0.1;
+const FOC_MAX_SAMPLES = Math.ceil(FOC_WINDOW_SECONDS / FOC_SAMPLE_PERIOD_SECONDS) + 16;
 const FOC_COLORS = {
   a: "#70d6b4",
   b: "#7eb8e8",
@@ -2488,7 +2490,25 @@ function focRotorAngle(value) {
   return ((Number(value || 0) >>> 0) / FOC_PHASE_U32) * Math.PI * 2;
 }
 
-function renderFocState(message) {
+function focNeedleEndpoint(angle, length) {
+  return {
+    x: length * Math.cos(angle),
+    y: -Math.sin(angle) * length,
+  };
+}
+
+function focFormatThroughput(clock) {
+  const ratio = Number(clock?.sim_wall_ratio);
+  if (!Number.isFinite(ratio)) return "--";
+  const digits = ratio < 0.01 ? 4 : ratio < 0.1 ? 3 : ratio < 1 ? 2 : 1;
+  const milliseconds = Number(clock?.simulated_ms_per_wall_second);
+  const rate = Number.isFinite(milliseconds)
+    ? ` (${milliseconds < 10 ? milliseconds.toFixed(2) : milliseconds.toFixed(1)} ms/s)`
+    : "";
+  return `${ratio.toFixed(digits)}x${rate}`;
+}
+
+function renderLegacyFocState(message) {
   const wasLoaded = !!focLatestState?.loaded;
   focLatestState = message;
   if (!message.loaded || (message.loaded && !wasLoaded)) focSamples = [];
@@ -2561,7 +2581,7 @@ function renderFocState(message) {
   if (runningNow) scheduleFocDialAnimation();
 }
 
-function focAdaptiveWindow() {
+function focLegacyAdaptiveWindow() {
   // Samples are now stored at a fixed theta spacing (one per
   // FOC_MIN_THETA_STEP of electrical revolution), so a target number of
   // revolutions is just a constant sample count -- no unwrapping needed.
@@ -2628,8 +2648,13 @@ function drawFocLineChart(canvasId, samples, series, minValue, maxValue) {
     ctx.strokeStyle = lane.color;
     ctx.lineWidth = 1.6;
     ctx.beginPath();
+    const firstTimestamp = Number(samples[0]?.timestamp || 0);
+    const lastTimestamp = Number(samples[samples.length - 1]?.timestamp || firstTimestamp);
+    const timestampSpan = Math.max(1, lastTimestamp - firstTimestamp);
     samples.forEach((sample, index) => {
-      const x = left + (index / (samples.length - 1)) * plotW;
+      const timestamp = Number(sample.timestamp ?? firstTimestamp);
+      const x = left + Math.max(0, Math.min(1,
+        (timestamp - firstTimestamp) / timestampSpan)) * plotW;
       const y = yFor(lane.value(sample));
       if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     });
@@ -2674,15 +2699,22 @@ function drawFocDial() {
   ctx.globalAlpha = 1;
 
   const needle = (angle, length, color, lineWidth, dash) => {
+    const endpoint = focNeedleEndpoint(angle, length);
     ctx.save();
-    ctx.rotate(angle - Math.PI / 2);
     if (dash) ctx.setLineDash([5, 4]);
     ctx.strokeStyle = color;
     ctx.lineWidth = lineWidth;
-    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -length); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(endpoint.x, endpoint.y); ctx.stroke();
     if (!dash) {
       ctx.fillStyle = color;
-      ctx.beginPath(); ctx.moveTo(0, -length - 8); ctx.lineTo(-4, -length + 1); ctx.lineTo(4, -length + 1); ctx.closePath(); ctx.fill();
+      const direction = Math.atan2(endpoint.y, endpoint.x);
+      const left = direction + Math.PI - Math.PI / 7;
+      const right = direction + Math.PI + Math.PI / 7;
+      ctx.beginPath();
+      ctx.moveTo(endpoint.x, endpoint.y);
+      ctx.lineTo(endpoint.x + 9 * Math.cos(left), endpoint.y + 9 * Math.sin(left));
+      ctx.lineTo(endpoint.x + 9 * Math.cos(right), endpoint.y + 9 * Math.sin(right));
+      ctx.closePath(); ctx.fill();
     }
     ctx.restore();
   };
@@ -2700,6 +2732,8 @@ function drawFocDial() {
   ctx.font = "9px Consolas, monospace";
   ctx.fillText("0°", cx + radius + 4, cy + 3);
   ctx.fillText("90°", cx - 11, cy - radius - 8);
+  ctx.fillText("180°", cx - radius - 30, cy + 3);
+  ctx.fillText("270°", cx - 14, cy + radius + 15);
 }
 
 function drawFocWorkspace() {
@@ -2729,16 +2763,133 @@ function drawFocWorkspace() {
 }
 
 function scheduleFocDialAnimation() {
-  if (focDialAnimationFrame !== null) return;
-  const raf = typeof requestAnimationFrame === "function"
-    ? requestAnimationFrame
-    : callback => setTimeout(callback, 16);
-  const draw = () => {
-    focDialAnimationFrame = null;
-    drawFocDial();
-    if (focLatestState?.model?.running) scheduleFocDialAnimation();
+  // Redraw only from the latest timestamped simulator state.  The needles
+  // must not advance on a browser animation clock between simulation samples.
+  drawFocDial();
+}
+
+// The FOC stream is timestamp-driven.  The runtime batches 100 us samples
+// and publishes those batches at roughly 30 Hz, so zero-speed and reverse
+// motion remain visible instead of being discarded by an angle-delta filter.
+function focAdaptiveWindow() {
+  return focSamples.length;
+}
+
+function renderFocState(message) {
+  const wasLoaded = !!focLatestState?.loaded;
+  const sessionChanged = focLatestState?.session_id &&
+    focLatestState.session_id !== message.session_id;
+  focLatestState = message;
+  if (!message.loaded || (message.loaded && !wasLoaded) || sessionChanged) {
+    focSamples = [];
+  }
+
+  const setText = (id, value) => {
+    const element = document.getElementById(id);
+    if (element) element.textContent = value;
   };
-  focDialAnimationFrame = raf(draw);
+  const pwm = message.pwm;
+  const fb = message.fb;
+  const model = message.model;
+  const telemetry = message.telemetry || {};
+  const clock = message.clock || {};
+  const loaded = !!message.loaded;
+  const runningNow = !!model?.running;
+  const speedRpm = Number.isFinite(telemetry.measured_speed_rpm)
+    ? Number(telemetry.measured_speed_rpm)
+    : (fb ? focQ24(fb.speed_rpm_q24) * 1000 : null);
+
+  const status = document.getElementById("foc-runtime-status");
+  const controlStatus = document.getElementById("foc-control-status");
+  if (status) {
+    status.textContent = loaded
+      ? (runningNow ? "Runtime active - IEP observer running" : "Runtime ready - observer stopped")
+      : (message.status || "Firmware not loaded");
+    status.style.color = loaded && runningNow ? "var(--green)" : "var(--text-dim)";
+  }
+  if (controlStatus) {
+    controlStatus.textContent = loaded
+      ? (runningNow ? "Streaming feedback from the PMSM plant." : "Ready - apply references and start.")
+      : "Load firmware to begin.";
+  }
+  const start = document.getElementById("foc-start");
+  const stop = document.getElementById("foc-stop");
+  if (start) start.disabled = !loaded || runningNow;
+  if (stop) stop.disabled = !loaded || !runningNow;
+
+  setText("foc-speed-readout", speedRpm === null ? "-- RPM" : `${speedRpm.toFixed(1)} RPM`);
+  setText("foc-requested-speed-readout", Number.isFinite(telemetry.requested_speed_rpm)
+    ? `${Number(telemetry.requested_speed_rpm).toFixed(1)} RPM` : "-- RPM");
+  setText("foc-ramped-speed-readout", Number.isFinite(telemetry.ramped_speed_rpm)
+    ? `${Number(telemetry.ramped_speed_rpm).toFixed(1)} RPM` : "-- RPM");
+  const rotor = fb ? focRotorAngle(fb.rotor_theta_u32) : null;
+  setText("foc-theta-readout", rotor === null ? "-- deg" : `${(rotor * 180 / Math.PI).toFixed(1)} deg`);
+  setText("foc-angle-error-readout", Number.isFinite(telemetry.angle_error_deg)
+    ? `${Number(telemetry.angle_error_deg).toFixed(1)} deg` : "-- deg");
+  setText("foc-duty-readout", pwm
+    ? [pwm.ta_q24, pwm.tb_q24, pwm.tc_q24].map(value => focQ24(value).toFixed(3)).join(" / ")
+    : "-- / -- / --");
+  setText("foc-time-readout", Number.isFinite(clock.sim_time_s)
+    ? `${Number(clock.sim_time_s).toFixed(4)} s` : "--");
+  const formatClock = value => Number.isFinite(Number(value))
+    ? `${(Number(value) / 1e6).toFixed(3)} MHz`
+    : "--";
+  setText("foc-pru-clock-readout", formatClock(clock.pru_clock_hz));
+  setText("foc-iep-clock-readout", formatClock(clock.iep_clock_hz ?? clock.iep_hz));
+  const controlLoopHz = clock.control_loop_frequency_hz ?? clock.loop_frequency_hz;
+  setText("foc-loop-frequency-readout", Number.isFinite(Number(controlLoopHz))
+    ? `${Number(controlLoopHz).toFixed(0)} Hz` : "-- Hz");
+  setText("foc-sim-wall-readout", focFormatThroughput(clock));
+  const statusFlags = Number(pwm?.status || 0);
+  const faultText = message.fault
+    ? (message.fault.error || "firmware fault")
+    : (statusFlags & 4 ? "deadline miss" : "none");
+  setText("foc-fault-readout", faultText);
+  setText("foc-dial-state", loaded ? (runningNow ? "live" : "paused") : "waiting");
+
+  const append = sample => {
+    if (!sample) return;
+    const timestamp = Number(sample.timestamp ?? fb?.timestamp ?? 0);
+    const previous = focSamples[focSamples.length - 1];
+    if (previous && timestamp === previous.timestamp) return;
+    focSamples.push({
+      timestamp,
+      loop: Number(sample.loop_counter || pwm?.loop_counter || 0),
+      theta: Number(sample.theta_cmd_u32 ?? pwm?.theta_cmd_u32 ?? 0) >>> 0,
+      ta: focQ24(sample.ta_q24 ?? pwm?.ta_q24),
+      tb: focQ24(sample.tb_q24 ?? pwm?.tb_q24),
+      tc: focQ24(sample.tc_q24 ?? pwm?.tc_q24),
+      ia: focQ24(sample.ia_q24 ?? fb?.ia_q24) * 10,
+      ib: focQ24(sample.ib_q24 ?? fb?.ib_q24) * 10,
+      ic: focQ24(sample.ic_q24 ?? fb?.ic_q24) * 10,
+      valpha: focQ24(sample.valpha_q24 ?? pwm?.valpha_q24),
+      vbeta: focQ24(sample.vbeta_q24 ?? pwm?.vbeta_q24),
+    });
+  };
+  const samples = Array.isArray(message.samples) ? message.samples : [];
+  samples.forEach(append);
+  if (pwm && fb && samples.length === 0) {
+    append({
+      timestamp: fb.timestamp,
+      loop_counter: pwm.loop_counter,
+      theta_cmd_u32: pwm.theta_cmd_u32,
+      ta_q24: pwm.ta_q24,
+      tb_q24: pwm.tb_q24,
+      tc_q24: pwm.tc_q24,
+      ia_q24: fb.ia_q24,
+      ib_q24: fb.ib_q24,
+      ic_q24: fb.ic_q24,
+      valpha_q24: pwm.valpha_q24,
+      vbeta_q24: pwm.vbeta_q24,
+    });
+  }
+  const now = Number(model?.timestamp ?? fb?.timestamp ?? 0);
+  const windowTicks = Number(clock.iep_hz || 0) * FOC_WINDOW_SECONDS;
+  if (windowTicks > 0) {
+    focSamples = focSamples.filter(sample => now - sample.timestamp <= windowTicks);
+  }
+  while (focSamples.length > FOC_MAX_SAMPLES) focSamples.shift();
+  if (runningNow) scheduleFocDialAnimation();
 }
 
 function initFocControls() {
@@ -2764,14 +2915,21 @@ function initFocControls() {
     const sent = sendAction({
       action: "foc_set_reference",
       speed_rpm: Number(speed?.value || 0),
-      id_ref: Number(document.getElementById("foc-id-ref")?.value || 0),
-      iq_ref: Number(document.getElementById("foc-iq-ref")?.value || 0),
-      ramp_rate: Number(document.getElementById("foc-ramp-rate")?.value || 0),
+      vd_ref: Number(document.getElementById("foc-id-ref")?.value || 0),
+      vq_ref: Number(document.getElementById("foc-iq-ref")?.value || 0),
+      acceleration_rpm_s: Number(document.getElementById("foc-ramp-rate")?.value || 0),
     });
     if (sent && controlStatus) controlStatus.textContent = "References staged for the next control commit.";
   });
   const startFoc = () => {
-    if (sendAction({ action: "foc_start" }) && controlStatus) controlStatus.textContent = "Starting the IEP-clocked plant…";
+    const sent = sendAction({
+      action: "foc_start",
+      speed_rpm: Number(speed?.value || 0),
+      vd_ref: Number(document.getElementById("foc-id-ref")?.value || 0),
+      vq_ref: Number(document.getElementById("foc-iq-ref")?.value || 0),
+      acceleration_rpm_s: Number(document.getElementById("foc-ramp-rate")?.value || 0),
+    });
+    if (sent && controlStatus) controlStatus.textContent = "Starting the IEP-clocked plant…";
   };
   start?.addEventListener("click", startFoc);
   stop?.addEventListener("click", () => {

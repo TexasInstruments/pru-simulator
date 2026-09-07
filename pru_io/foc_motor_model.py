@@ -31,17 +31,6 @@ _MAX_INTEGRATION_DT = 5e-6
 _U32_MASK = 0xFFFF_FFFF
 _U64_MASK = 0xFFFF_FFFF_FFFF_FFFF
 
-# foc_open_loop.asm has no IEP wait in its control loop, so it free-runs far
-# faster than the 100 kHz (10 us) loop FOC_SPEED_SCALE was calibrated for:
-# revs/loop at 1.0 pu = SPEED_SCALE / 2^32, and 1.0 pu = SPEED_BASE_RPM rpm
-# mechanical = (SPEED_BASE_RPM/60)*POLE_PAIRS Hz electrical, so the nominal
-# loop period is (SPEED_SCALE/2^32) / ((SPEED_BASE_RPM/60)*POLE_PAIRS) seconds
-# == 10 us. Live integration is driven by firmware loop_counter ticks scaled
-# by this nominal period rather than by raw (free-running) IEP time.
-NOMINAL_LOOP_PERIOD_S = abi.SPEED_SCALE / (
-    (1 << 32) * (abi.SPEED_BASE_RPM / 60.0) * POLE_PAIRS
-)
-
 
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
@@ -52,12 +41,7 @@ def _clarke_from_phase(va: float, vb: float, vc: float) -> tuple[float, float]:
     va -= common
     vb -= common
     vc -= common
-    # Firmware SVGEN (foc_open_loop.asm ~line 229) assigns Va = Vbeta, so the
-    # phase set must be inverted with that swapped convention to recover the
-    # (Valpha, Vbeta) the firmware actually commanded. Using the standard
-    # inverse-Clarke here reverses the recovered field and yields negative
-    # speed for a positive command.
-    return (vb - vc) / math.sqrt(3.0), va
+    return va, (vb - vc) / math.sqrt(3.0)
 
 
 def _q24(value: float) -> int:
@@ -78,14 +62,14 @@ class FocMotorModel:
         self._theta_mech = 0.0
         self._omega_mech = 0.0
         self._last_pwm = self._zero_pwm()
-        self._last_loop_counter = self._last_pwm["loop_counter"]
-        # False until the first advance_to() after a start() has read a
-        # loop_counter baseline; see advance_to() for why priming happens
-        # there instead of in start().
-        self._loop_counter_primed = False
-        # True once loop_counter has ever advanced; see advance_to() for why
-        # mid-loop (delta_loops == 0) firings integrate nothing once set.
-        self._loop_driven = False
+        self._observer_period_ticks = max(1, round(self._tick_hz() / abi.CONTROL_LOOP_HZ))
+        self._sample_period_ticks = max(1, round(self._tick_hz() / 10_000.0))
+        self._feedback_period_ticks = self._sample_period_ticks
+        self._last_feedback_timestamp: int | None = None
+        self._sample_origin_timestamp = self._last_timestamp
+        self._sample_elapsed_ticks = 0
+        self._next_sample_elapsed = self._sample_period_ticks
+        self._pending_samples: list[dict] = []
         self.sim.add_hard_reset_hook(self.reset)
         self._publish_feedback(self._last_timestamp, reset=True)
 
@@ -107,7 +91,7 @@ class FocMotorModel:
         iep = self._iep()
         if iep.enabled and iep.default_increment:
             return float(iep.active_clock_hz) * iep.default_increment
-        return float(abi.IEP_TICK_HZ)
+        return float(iep.active_clock_hz)
 
     @staticmethod
     def _zero_pwm() -> dict[str, int]:
@@ -121,6 +105,9 @@ class FocMotorModel:
             "theta_cmd_u32": 0,
             "loop_counter": 0,
             "timestamp_cycles": 0,
+            "timestamp_iep": 0,
+            "status": abi.STATUS_DISABLED,
+            "speed_cmd_q24": 0,
         }
 
     def reset(self) -> None:
@@ -132,22 +119,31 @@ class FocMotorModel:
         self._theta_mech = 0.0
         self._omega_mech = 0.0
         self._last_pwm = self._zero_pwm()
-        self._last_loop_counter = self._last_pwm["loop_counter"]
-        self._loop_counter_primed = False
-        self._loop_driven = False
+        self._observer_period_ticks = max(1, round(self._tick_hz() / abi.CONTROL_LOOP_HZ))
+        self._sample_period_ticks = max(1, round(self._tick_hz() / 10_000.0))
+        self._feedback_period_ticks = self._sample_period_ticks
+        self._last_feedback_timestamp = None
+        self._sample_origin_timestamp = self._last_timestamp
+        self._sample_elapsed_ticks = 0
+        self._next_sample_elapsed = self._sample_period_ticks
+        self._pending_samples.clear()
         self._publish_feedback(self._last_timestamp, reset=True)
+        self._write_zero_pwm(self._last_timestamp)
 
     def start(self) -> bool:
         """Start IEP-clocked integration and publish an initial sample."""
         if self._running:
             return True
         self._last_timestamp = self._now()
-        # Defer the loop_counter baseline to the first advance_to() call
-        # (rather than snapshotting here) so a start() that races ahead of
-        # the firmware's first completed loop doesn't misattribute that
-        # transition to a live-timed delta.
-        self._loop_counter_primed = False
-        self._loop_driven = False
+        self._last_pwm = self._read_pwm()
+        self._observer_period_ticks = max(1, round(self._tick_hz() / abi.CONTROL_LOOP_HZ))
+        self._sample_period_ticks = max(1, round(self._tick_hz() / 10_000.0))
+        self._feedback_period_ticks = self._sample_period_ticks
+        self._last_feedback_timestamp = None
+        self._sample_origin_timestamp = self._last_timestamp
+        self._sample_elapsed_ticks = 0
+        self._next_sample_elapsed = self._sample_period_ticks
+        self._pending_samples.clear()
         self._running = True
         self._iep().add_counter_observer(self._on_iep_advanced)
         self._observer_registered = True
@@ -217,44 +213,35 @@ class FocMotorModel:
         if not self._running:
             raise RuntimeError("motor model is not running")
         elapsed_ticks = self._elapsed_ticks(timestamp)
-        if not elapsed_ticks:
-            return 0
-
-        pwm = self._read_pwm()
-        loop_counter_now = int(pwm["loop_counter"]) & _U32_MASK
-        if self._loop_counter_primed:
-            delta_loops = (loop_counter_now - self._last_loop_counter) & _U32_MASK
-        else:
-            # First call since start(): establish the baseline instead of
-            # attributing this transition to a live-timed delta.
-            delta_loops = 0
-            self._loop_counter_primed = True
-        self._last_loop_counter = loop_counter_now
-        if delta_loops:
-            # Drive the live timebase from completed firmware control loops
-            # rather than raw (free-running) IEP ticks -- see
-            # NOMINAL_LOOP_PERIOD_S above.
-            self._loop_driven = True
-            total_dt = delta_loops * NOMINAL_LOOP_PERIOD_S
-        elif self._loop_driven:
-            # Mid-loop firing (~204 of every ~205 observer callbacks once the
-            # firmware is driving loop_counter): the loop's 10 us step was
-            # already integrated on the delta_loops > 0 firing above, so
-            # adding the free-running IEP-tick fallback here would integrate
-            # the same loop's field ~30x too fast. Integrate nothing.
-            self._publish_feedback(self._last_timestamp)
-            return elapsed_ticks
-        else:
-            # No completed loop has ever been observed (e.g. the manual test
-            # harness driving advance_to() directly with a pinned
-            # loop_counter): fall back to raw IEP-tick integration.
+        if elapsed_ticks:
             total_dt = elapsed_ticks / self._tick_hz()
-        steps = max(1, math.ceil(total_dt / _MAX_INTEGRATION_DT))
-        dt = total_dt / steps
-        for _ in range(steps):
-            self._integrate(dt, pwm)
-        self._publish_feedback(self._last_timestamp)
+            steps = max(1, math.ceil(total_dt / _MAX_INTEGRATION_DT))
+            dt = total_dt / steps
+            for _ in range(steps):
+                self._integrate(dt, self._last_pwm)
+        self._read_pwm()
+        self._sample_elapsed_ticks += elapsed_ticks
+        while self._sample_elapsed_ticks >= self._next_sample_elapsed:
+            sample_timestamp = (
+                self._sample_origin_timestamp + self._next_sample_elapsed
+            ) & _U64_MASK
+            self._pending_samples.append(self._sample(sample_timestamp))
+            self._next_sample_elapsed += self._sample_period_ticks
+        if len(self._pending_samples) > 2_048:
+            del self._pending_samples[:-2_048]
+        feedback_elapsed = (
+            self._last_timestamp - self._last_feedback_timestamp
+        ) & _U64_MASK if self._last_feedback_timestamp is not None else self._feedback_period_ticks
+        if feedback_elapsed >= self._feedback_period_ticks:
+            self._publish_feedback(self._last_timestamp)
         return elapsed_ticks
+
+    def _write_zero_pwm(self, timestamp: int) -> None:
+        """Publish a coherent neutral command when the model is reset."""
+        values = dict(self._zero_pwm())
+        values["timestamp_cycles"] = int(timestamp) & _U64_MASK
+        values["timestamp_iep"] = int(timestamp) & _U64_MASK
+        self.sim.memory.write(abi.PWM_OUT_BASE, abi.pack_pwm_out(**values))
 
     def step(self, ticks: int = 1) -> dict:
         """Advance by *ticks* from the last observed timestamp."""
@@ -297,6 +284,7 @@ class FocMotorModel:
         base = abi.MOTOR_FB_BASE
         if reset:
             self.sim.memory.write(base, block)
+            self._last_feedback_timestamp = int(timestamp) & _U64_MASK
             return
 
         current = int.from_bytes(self.sim.memory_read(base, 4), "little")
@@ -306,6 +294,37 @@ class FocMotorModel:
         self.sim.memory.write(base, struct.pack("<I", odd))
         self.sim.memory.write(base + 4, block[4:])
         self.sim.memory.write(base, struct.pack("<I", even))
+        self._last_feedback_timestamp = int(timestamp) & _U64_MASK
+
+    def publish_feedback(self) -> None:
+        """Publish the current plant state at an explicit lifecycle boundary."""
+        self._publish_feedback(self._last_timestamp)
+
+    def _sample(self, timestamp: int) -> dict:
+        ia, ib, ic, id_meas, iq_meas = self._measured_currents()
+        return {
+            "timestamp": int(timestamp) & _U64_MASK,
+            "theta_cmd_u32": int(self._last_pwm["theta_cmd_u32"]) & _U32_MASK,
+            "rotor_theta_u32": self._rotor_theta_u32(),
+            "ta_q24": int(self._last_pwm["ta_q24"]),
+            "tb_q24": int(self._last_pwm["tb_q24"]),
+            "tc_q24": int(self._last_pwm["tc_q24"]),
+            "valpha_q24": int(self._last_pwm["valpha_q24"]),
+            "vbeta_q24": int(self._last_pwm["vbeta_q24"]),
+            "ia_q24": _q24(ia / abi.CURRENT_BASE_A),
+            "ib_q24": _q24(ib / abi.CURRENT_BASE_A),
+            "ic_q24": _q24(ic / abi.CURRENT_BASE_A),
+            "id_meas_q24": _q24(id_meas / abi.CURRENT_BASE_A),
+            "iq_meas_q24": _q24(iq_meas / abi.CURRENT_BASE_A),
+            "speed_rpm_q24": _q24(
+                self._omega_mech * 60.0 / (2.0 * math.pi) / abi.SPEED_BASE_RPM
+            ),
+        }
+
+    def drain_samples(self) -> list[dict]:
+        samples = self._pending_samples
+        self._pending_samples = []
+        return samples
 
     def _on_iep_advanced(self, timestamp: int) -> None:
         if self._running:
@@ -315,7 +334,11 @@ class FocMotorModel:
         """Advance one observer callback, using the current IEP time by default."""
         if not self._running:
             return 0
-        return self.advance_to(self._now() if timestamp is None else timestamp)
+        now = self._now() if timestamp is None else int(timestamp) & _U64_MASK
+        elapsed = (now - self._last_timestamp) & _U64_MASK
+        if elapsed and elapsed < self._observer_period_ticks and elapsed <= (1 << 63):
+            return 0
+        return self.advance_to(now)
 
     def state(self) -> dict:
         """Return a JSON-serializable plant and last-command snapshot."""

@@ -10,6 +10,7 @@ SOURCE_DIR = Path(__file__).parent.parent / "source"
 AM243X_CONFIG = Path(__file__).parent.parent / "config" / "memory_am243x.cfg"
 SSI_READER_SRC = (SOURCE_DIR / "ssi_generic_reader" / "ssi_generic_reader.asm").read_text()
 SSI_EMULATOR_SRC = (SOURCE_DIR / "ssi_generic_emulator" / "ssi_generic_emulator.asm").read_text()
+FOC_SRC = (SOURCE_DIR / "foc_open_loop" / "foc_open_loop.asm").read_text()
 
 SSI_READER_CLK_PIN = 0
 SSI_READER_DATA_PIN = 16
@@ -116,6 +117,19 @@ class TestMCPTools:
             0.25 * (1 << 24)
         )
         assert "pwm" in result and "fb" in result
+
+    def test_pru_foc_inject_loads_real_assembly_with_generated_include(self):
+        result = self.mcp.pru_foc_inject(
+            source=FOC_SRC,
+            speed_rpm=400.0,
+            iq_ref=0.25,
+            ramp_rate=0.01,
+            max_steps=2_000,
+        )
+
+        assert result["status"] == "success"
+        assert result["clock"]["loop_frequency_hz"] == 100_000
+        assert result["fault"] is None
 
     def test_pru_i2c_attach(self):
         result = self.mcp.pru_i2c_attach(core="pru0", enabled=True, address=0x23)

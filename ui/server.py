@@ -46,6 +46,10 @@ SSI_RUNTIME_EMULATOR_CLK_PIN = 8
 SSI_RUNTIME_EMULATOR_DATA_PIN = 0
 _ssi_runtime: SSIRuntime | None = None
 foc_runtime: FocRuntime | None = None
+FOC_EXECUTION_BATCH_STEPS = 4_096
+_foc_execution_task: asyncio.Task | None = None
+_foc_execution_owner: str | None = None
+_foc_execution_websocket: WebSocket | None = None
 
 
 def _ssi_profile_catalog() -> list[dict]:
@@ -265,7 +269,7 @@ def _foc_layout() -> dict:
     }
 
 
-def _foc_state() -> dict:
+def _foc_state(*, force: bool = True) -> dict | None:
     """Return a JSON-safe shared-memory and plant snapshot for the FOC tab."""
     if foc_runtime is None:
         return {
@@ -275,10 +279,18 @@ def _foc_state() -> dict:
             "pwm": None,
             "fb": None,
             "model": None,
+            "clock": None,
+            "telemetry": None,
+            "samples": [],
+            "session_id": None,
+            "fault": None,
+            "paused_reason": None,
             "layout": _foc_layout(),
             "status": "Load the open-loop FOC firmware first",
         }
-    state = foc_runtime.state()
+    state = foc_runtime.ui_state(force=force)
+    if state is None:
+        return None
     return {
         "type": "foc_state",
         "loaded": True,
@@ -286,9 +298,141 @@ def _foc_state() -> dict:
         "pwm": state["pwm"],
         "fb": state["fb"],
         "model": state["model"],
+        "clock": state["clock"],
+        "telemetry": state["telemetry"],
+        "samples": state["samples"],
+        "session_id": state["session_id"],
         "layout": _foc_layout(),
-        "status": "Open-loop FOC runtime loaded",
+        "status": (
+            f"Paused at {state['paused_reason']}"
+            if state.get("paused_reason")
+            else "Open-loop FOC runtime loaded"
+        ),
+        "fault": state["fault"],
+        "paused_reason": state.get("paused_reason"),
     }
+
+
+async def _cancel_foc_execution(
+    owner: str | None = None,
+    *,
+    pause_runtime: bool = False,
+) -> bool:
+    """Cancel the one shared FOC task and optionally pause its observer."""
+    global _foc_execution_task, _foc_execution_owner, _foc_execution_websocket
+
+    if owner is not None and _foc_execution_owner not in (None, owner):
+        return False
+
+    task = _foc_execution_task
+    _foc_execution_task = None
+    _foc_execution_owner = None
+    _foc_execution_websocket = None
+    if task is not None and not task.done() and task is not asyncio.current_task():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    if pause_runtime and foc_runtime is not None and foc_runtime.model.running:
+        foc_runtime.pause("disconnected")
+    return True
+
+
+def _foc_execution_is_owned_by_other(owner: str) -> bool:
+    return (
+        _foc_execution_task is not None
+        and not _foc_execution_task.done()
+        and _foc_execution_owner not in (None, owner)
+    )
+
+
+async def _foc_execution_loop(owner: str, websocket: WebSocket) -> None:
+    """Advance FOC while retaining a single owner for the shared simulator."""
+    global _foc_execution_task, _foc_execution_owner, _foc_execution_websocket
+    cancelled = False
+    try:
+        while True:
+            runtime = foc_runtime
+            if runtime is None or not runtime.model.running:
+                return
+            pru = sim.cores.get(runtime.core)
+            if pru is None:
+                return
+            if pru.halted or pru.pc >= len(pru.instructions):
+                runtime.pause("halted")
+                break
+            if trace_logs.is_active(getattr(websocket, "_trace_owner", "")):
+                runtime.pause("trace active")
+                break
+
+            result = runtime.run_batch(
+                FOC_EXECUTION_BATCH_STEPS,
+                fast_path=not bool(pru.breakpoints),
+            )
+            if result.get("fault") is not None:
+                runtime.pause("fault")
+                break
+            if result.get("at_breakpoint"):
+                runtime.pause("breakpoint")
+                break
+            state = _foc_state(force=False)
+            if state is not None:
+                await websocket.send_json(state)
+                # The Motor Control stream carries plant telemetry, while the
+                # source/disassembly panel is driven by the generic core
+                # state packet. Publish both on the same UI cadence so FOC
+                # execution remains visible in the normal debugger panels.
+                await _send_state(websocket, runtime.core)
+            await asyncio.sleep(0)
+    except asyncio.CancelledError:
+        cancelled = True
+        raise
+    finally:
+        if not cancelled and foc_runtime is not None:
+            state = _foc_state(force=True)
+            if state is not None:
+                try:
+                    await websocket.send_json(state)
+                    await _send_state(
+                        websocket,
+                        foc_runtime.core,
+                        at_breakpoint=state.get("paused_reason") == "breakpoint",
+                    )
+                except Exception:
+                    pass
+        if (
+            _foc_execution_task is asyncio.current_task()
+            and _foc_execution_owner == owner
+        ):
+            _foc_execution_task = None
+            _foc_execution_owner = None
+            _foc_execution_websocket = None
+
+
+def _start_foc_execution(owner: str, websocket: WebSocket) -> bool:
+    """Start the shared FOC task only when no other connection owns it."""
+    global _foc_execution_task, _foc_execution_owner, _foc_execution_websocket
+
+    if _foc_execution_task is not None and _foc_execution_task.done():
+        _foc_execution_task = None
+        _foc_execution_owner = None
+        _foc_execution_websocket = None
+    if _foc_execution_task is not None:
+        return _foc_execution_owner == owner
+    runtime = foc_runtime
+    if runtime is None or not runtime.model.running:
+        return False
+    pru = sim.cores.get(runtime.core)
+    if pru is None or pru.halted or pru.pc >= len(pru.instructions):
+        return False
+    if trace_logs.is_active(getattr(websocket, "_trace_owner", "")):
+        return False
+    _foc_execution_owner = owner
+    _foc_execution_websocket = websocket
+    _foc_execution_task = asyncio.create_task(_foc_execution_loop(owner, websocket))
+    return True
 
 
 def _drop_foc_runtime() -> None:
@@ -323,8 +467,37 @@ def _load_foc_runtime(source: str | None = None, filename: str | None = None,
         raise RuntimeError("FOC firmware failed to load: " + "; ".join(errors))
     sim.iep.write_iepclk(1)
     sim.iep.write_global_cfg(0x11)
-    foc_runtime = FocRuntime(sim)
+    foc_runtime = FocRuntime(sim, core=core)
     return _foc_state()
+
+
+def _apply_foc_reference(runtime: FocRuntime, msg: dict) -> None:
+    """Apply dashboard reference fields, including the legacy aliases."""
+    reference_keys = {
+        "speed_rpm", "speed", "vd_ref", "id_ref", "id",
+        "vq_ref", "iq_ref", "iq", "acceleration_rpm_s",
+        "ramp_rate", "ramp",
+    }
+    if not reference_keys.intersection(msg):
+        return
+
+    speed_rpm = float(msg.get("speed_rpm", msg.get("speed", 0.0)))
+    vd = float(msg.get("vd_ref", msg.get("id_ref", msg.get("id", 0.0))))
+    vq = float(msg.get("vq_ref", msg.get("iq_ref", msg.get("iq", 0.0))))
+    if "acceleration_rpm_s" in msg:
+        acceleration_rpm_s = float(msg["acceleration_rpm_s"])
+        loop_hz = runtime.state()["clock"]["loop_frequency_hz"]
+        ramp = acceleration_rpm_s / (
+            foc_abi.SPEED_BASE_RPM * loop_hz
+        )
+    else:
+        ramp = float(msg.get("ramp_rate", msg.get("ramp", 0.0)))
+    runtime.set_reference(
+        speed=speed_rpm / foc_abi.SPEED_BASE_RPM,
+        id=vd,
+        iq=vq,
+        ramp=ramp,
+    )
 
 
 def _load_ssi_runtime_pair() -> dict:
@@ -736,6 +909,19 @@ async def websocket_endpoint(websocket: WebSocket):
     global _ssi_runtime, foc_runtime
     await websocket.accept()
     websocket._trace_owner = uuid.uuid4().hex
+    connection_owner = uuid.uuid4().hex
+
+    async def cancel_foc_execution(
+        *, pause_runtime: bool = False, shared: bool = False
+    ) -> bool:
+        return await _cancel_foc_execution(
+            None if shared else connection_owner,
+            pause_runtime=pause_runtime,
+        )
+
+    def start_foc_execution() -> bool:
+        return _start_foc_execution(connection_owner, websocket)
+
     try:
         while True:
             data = await websocket.receive_text()
@@ -970,6 +1156,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
             elif action == "foc_load":
                 await _finalize_trace_log(websocket, "foc_load")
+                await cancel_foc_execution(shared=True, pause_runtime=True)
                 try:
                     state = _load_foc_runtime(
                         source=msg.get("source"),
@@ -990,13 +1177,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
                     continue
                 try:
-                    speed_rpm = float(msg.get("speed_rpm", msg.get("speed", 0.0)))
-                    foc_runtime.set_reference(
-                        speed=speed_rpm / foc_abi.SPEED_BASE_RPM,
-                        id=float(msg.get("id_ref", msg.get("id", 0.0))),
-                        iq=float(msg.get("iq_ref", msg.get("iq", 0.0))),
-                        ramp=float(msg.get("ramp_rate", msg.get("ramp", 0.0))),
-                    )
+                    _apply_foc_reference(foc_runtime, msg)
                     await websocket.send_json(_foc_state())
                 except (TypeError, ValueError) as exc:
                     await websocket.send_json({
@@ -1009,9 +1190,31 @@ async def websocket_endpoint(websocket: WebSocket):
                         "error": "Load the open-loop FOC firmware first",
                     })
                     continue
+                if _foc_execution_is_owned_by_other(connection_owner):
+                    await websocket.send_json({
+                        "type": "foc_error",
+                        "error": "FOC execution is already owned by another connection",
+                    })
+                    continue
                 try:
+                    _apply_foc_reference(foc_runtime, msg)
+                    await cancel_foc_execution()
                     foc_runtime.start()
+                    pru = sim.cores.get(foc_runtime.core)
+                    if (
+                        pru is not None
+                        and not trace_logs.is_active(websocket._trace_owner)
+                    ):
+                        result = foc_runtime.run_batch(
+                            FOC_EXECUTION_BATCH_STEPS,
+                            fast_path=not bool(pru.breakpoints),
+                        )
+                        if result.get("fault") is not None:
+                            foc_runtime.pause("fault")
+                        elif result.get("at_breakpoint"):
+                            foc_runtime.pause("breakpoint")
                     await websocket.send_json(_foc_state())
+                    start_foc_execution()
                 except (RuntimeError, ValueError) as exc:
                     await websocket.send_json({
                         "type": "foc_error", "error": str(exc),
@@ -1023,12 +1226,15 @@ async def websocket_endpoint(websocket: WebSocket):
                         "error": "Load the open-loop FOC firmware first",
                     })
                     continue
+                await cancel_foc_execution(shared=True)
                 foc_runtime.stop()
                 await websocket.send_json(_foc_state())
             elif action == "foc_state":
                 await websocket.send_json(_foc_state())
             elif action == "load":
                 await _finalize_trace_log(websocket, "load")
+                await cancel_foc_execution(shared=True, pause_runtime=True)
+                had_foc_runtime = foc_runtime is not None
                 _drop_foc_runtime()
                 _ssi_runtime = None
                 _history[core].clear()
@@ -1048,8 +1254,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 if errors:
                     await websocket.send_json({"type": "error", "errors": errors})
                 await _send_state(websocket, core)
+                if had_foc_runtime:
+                    await websocket.send_json(_foc_state())
             elif action == "load_elf":
                 await _finalize_trace_log(websocket, "load_elf")
+                await cancel_foc_execution(shared=True, pause_runtime=True)
+                had_foc_runtime = foc_runtime is not None
                 _drop_foc_runtime()
                 _ssi_runtime = None
                 _history[core].clear()
@@ -1064,7 +1274,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 if errors:
                     await websocket.send_json({"type": "error", "errors": errors})
                 await _send_state(websocket, core)
+                if had_foc_runtime:
+                    await websocket.send_json(_foc_state())
             elif action == "step":
+                await cancel_foc_execution(shared=True)
                 _history[core].append(_snapshot(core))
                 if len(_history[core]) > _MAX_HISTORY:
                     _history[core].pop(0)
@@ -1136,17 +1349,27 @@ async def websocket_endpoint(websocket: WebSocket):
                             pass
             elif action == "reset":
                 await _finalize_trace_log(websocket, "reset")
+                await cancel_foc_execution(shared=True, pause_runtime=True)
                 _history[core].clear()
-                sim.reset(core)
+                if foc_runtime is not None and core == foc_runtime.core:
+                    foc_runtime.reset()
+                else:
+                    sim.reset(core)
                 await _send_state(websocket, core)
+                if foc_runtime is not None:
+                    await websocket.send_json(_foc_state())
             elif action == "hard_reset":
                 await _finalize_trace_log(websocket, "hard_reset")
+                await cancel_foc_execution(shared=True, pause_runtime=True)
+                had_foc_runtime = foc_runtime is not None
                 _drop_foc_runtime()
                 _ssi_runtime = None
                 for k in _history:
                     _history[k].clear()
                 sim.hard_reset()
                 await _send_state(websocket, core)
+                if had_foc_runtime:
+                    await websocket.send_json(_foc_state())
             elif action == "set_input":
                 sim.set_input(core, msg["pin"], bool(msg["value"]))
                 await _send_state(websocket, core)
@@ -1196,6 +1419,15 @@ async def websocket_endpoint(websocket: WebSocket):
                 await _send_state(websocket, core)
             elif action == "step_back":
                 await _finalize_trace_log(websocket, "step_back")
+                if foc_runtime is not None and core == foc_runtime.core:
+                    await websocket.send_json({
+                        "type": "error",
+                        "errors": [
+                            "FOC step-back is disabled until a full runtime snapshot is available; use Reset"
+                        ],
+                    })
+                    await websocket.send_json(_foc_state())
+                    continue
                 if _history[core]:
                     _restore(core, _history[core].pop())
                 await _send_state(websocket, core)
@@ -1288,6 +1520,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 sim.xfr.xfr_shift_en = bool(msg.get("enabled", False))
                 await _send_state(websocket, core)
             elif action == "run":
+                await cancel_foc_execution(shared=True)
                 max_steps = int(msg.get("max_steps", 1000))
                 capture = bool(msg.get("capture", False))
                 request_id = msg.get("request_id")
@@ -1327,7 +1560,9 @@ async def websocket_endpoint(websocket: WebSocket):
                             at_breakpoint = True
                             break
                         if foc_runtime is not None and steps % 32 == 0:
-                            await websocket.send_json(_foc_state())
+                            foc_message = _foc_state(force=False)
+                            if foc_message is not None:
+                                await websocket.send_json(foc_message)
                 except ValueError as ve:
                     await websocket.send_json({"type": "error", "errors": [str(ve)]})
                 if samples:
@@ -1337,13 +1572,15 @@ async def websocket_endpoint(websocket: WebSocket):
                         "captured_at_ms": captured_at_ms,
                         "_sample_modes": sample_modes,
                     }])
+                if foc_runtime is not None:
+                    await websocket.send_json(_foc_state(force=True))
+                    start_foc_execution()
                 await _send_state(websocket, core, at_breakpoint=at_breakpoint,
                                   captured=capture)
-                if foc_runtime is not None:
-                    await websocket.send_json(_foc_state())
                 if request_id is not None:
                     await websocket.send_json({"type": "run_done", "request_id": request_id})
             elif action == "run_multicore":
+                await cancel_foc_execution(shared=True)
                 max_steps = int(msg.get("max_steps", 1000))
                 capture = bool(msg.get("capture", False))
                 request_id = msg.get("request_id")
@@ -1477,6 +1714,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                   captured=capture)
                 if foc_runtime is not None:
                     await websocket.send_json(_foc_state())
+                    start_foc_execution()
                 if request_id is not None:
                     await websocket.send_json({"type": "run_done", "request_id": request_id})
             elif action == "set_sd_modulator":
@@ -1574,6 +1812,7 @@ async def websocket_endpoint(websocket: WebSocket):
         import traceback
         traceback.print_exc()
     finally:
+        await cancel_foc_execution(pause_runtime=True)
         try:
             trace_logs.disconnect(websocket._trace_owner)
         except TraceLogError:

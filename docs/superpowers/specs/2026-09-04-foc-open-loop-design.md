@@ -4,6 +4,31 @@
 **Status:** Draft for review
 **Scope:** Phase 1 (open loop) only. Closed-loop levels are roadmap, not built.
 
+## Validation repair addendum (2026-09-07)
+
+The implementation now includes the Python PMSM plant, runtime lifecycle, MCP integration, and
+FOC dashboard described as future work in the original draft. Those additions do not change the
+open-loop scope: Vd/Vq are feed-forward voltage references and the speed command sets electrical
+frequency; no current or speed regulator is added.
+
+The current contract is:
+
+- One IEP simulation clock. Firmware publishes at 100 kHz from absolute IEP deadlines and the
+  plant integrates elapsed IEP ticks while holding the previous coherent PWM command.
+- The schema-generated ABI is version 2. Control includes `control_period_iep_ticks`; PWM output
+  includes a true IEP timestamp, ramped speed command, and status/fault bits.
+- Vd/Vq magnitude is limited to `1/sqrt(3)` pu. Disabled output is neutral and holds the command
+  angle. Deadline misses publish neutral output and a fault status.
+- Start applies visible references and advances PRU0 in bounded, yielding batches. Stop waits for
+  a disabled publication boundary, then freezes the plant observer. Reset restores firmware,
+  FOC-owned memory, IEP/model state, and chart/session history together.
+- The UI publishes requested/ramped/measured speed, electrical angle error, simulated clock,
+  loop frequency, simulation/wall ratio, and timestamped 100 us samples over a 100 ms simulated
+  time window. Legacy Id/Iq field names remain accepted as voltage-reference aliases.
+
+See `docs/superpowers/plans/2026-09-07-foc-validation-repair.md` for the operating procedure
+and acceptance tests.
+
 ## 1. Problem statement
 
 Add a `pru-simulator` project that demonstrates **open-loop Field-Oriented Control** — the TI

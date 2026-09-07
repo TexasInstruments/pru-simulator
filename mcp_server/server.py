@@ -7,6 +7,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
+from pathlib import Path
 
 from simulator import Simulator
 from pru_io import foc_abi
@@ -63,7 +64,8 @@ class PRUSimulatorMCP:
         return {
             "pc": c.pc,
             "cycles": c.counters.cycles,
-            "reason": "halted" if c.halted else "max_steps",
+            "reason": "fault" if c.fault else ("halted" if c.halted else "max_steps"),
+            "fault": c.fault,
         }
 
     def pru_registers(self, core: str = "pru0") -> dict:
@@ -227,22 +229,32 @@ class PRUSimulatorMCP:
     ) -> dict:
         """Load open-loop FOC firmware, attach the plant, and return shared state."""
         self.sim.hard_reset()
-        errors = self.sim.load(core, source)
+        source_dir = Path(__file__).resolve().parents[1] / "source"
+        errors = self.sim.load(core, source, [str(source_dir)])
         if errors:
             return {"status": "error", "errors": errors}
 
         self.sim.iep.write_iepclk(1)
         self.sim.iep.write_global_cfg(0x11)
-        runtime = FocRuntime(self.sim)
+        runtime = FocRuntime(self.sim, core=core)
         self._foc_runtime = runtime
-        runtime.set_reference(
-            speed=float(speed_rpm) / foc_abi.SPEED_BASE_RPM,
-            id=float(id_ref),
-            iq=float(iq_ref),
-            ramp=float(ramp_rate),
-        )
-        runtime.start()
-        self.sim.step(core, count=max(0, int(max_steps)))
+        try:
+            runtime.set_reference(
+                speed=float(speed_rpm) / foc_abi.SPEED_BASE_RPM,
+                id=float(id_ref),
+                iq=float(iq_ref),
+                ramp=float(ramp_rate),
+            )
+            runtime.start()
+        except (TypeError, ValueError) as exc:
+            return {"status": "error", "error": str(exc)}
+        step_result = self.sim.step(core, count=max(0, int(max_steps)))
+        if step_result.get("fault") is not None:
+            return {
+                "status": "error",
+                "error": "FOC firmware faulted during execution",
+                "fault": step_result["fault"],
+            }
         state = runtime.state()
         return {
             "status": "success",
@@ -250,6 +262,10 @@ class PRUSimulatorMCP:
             "pwm": state["pwm"],
             "fb": state["fb"],
             "model": state["model"],
+            "clock": state["clock"],
+            "telemetry": state["telemetry"],
+            "session_id": state["session_id"],
+            "fault": state["fault"],
             "cycles": self.sim.cores[core].counters.cycles,
         }
 

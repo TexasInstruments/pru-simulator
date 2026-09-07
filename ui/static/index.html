@@ -5048,17 +5048,17 @@ Example:
           </div>
           <button id="foc-load" class="foc-button foc-button-secondary" type="button">Load firmware</button>
           <form id="foc-reference-form">
-            <label for="foc-speed-rpm">SpeedRef <span>(RPM)</span></label>
+            <label for="foc-speed-rpm">Speed reference <span>(RPM)</span></label>
             <div class="foc-input-wrap"><input id="foc-speed-rpm" type="number" min="-1000" max="1000" step="1" value="400" /><output id="foc-speed-pu">0.400 pu</output></div>
 
-            <label for="foc-id-ref">IdRef <span>(pu)</span></label>
+            <label for="foc-id-ref">Vd reference <span>(pu)</span></label>
             <input id="foc-id-ref" type="number" min="-1" max="1" step="0.001" value="0" />
 
-            <label for="foc-iq-ref">IqRef <span>(pu)</span></label>
+            <label for="foc-iq-ref">Vq reference <span>(pu)</span></label>
             <input id="foc-iq-ref" type="number" min="-1" max="1" step="0.001" value="0.25" />
 
-            <label for="foc-ramp-rate">Ramp rate <span>(pu / loop)</span></label>
-            <input id="foc-ramp-rate" type="number" min="0" max="1" step="0.001" value="0.02" />
+            <label for="foc-ramp-rate">Acceleration <span>(RPM/s)</span></label>
+            <input id="foc-ramp-rate" type="number" min="0" max="10000" step="1" value="1000" />
             <button id="foc-apply" class="foc-button" type="submit">Apply references</button>
           </form>
 
@@ -5073,6 +5073,14 @@ Example:
             <div><h2>Live readout</h2><p>Decoded from the coherent feedback block.</p></div>
           </div>
           <dl class="foc-readout">
+            <div><dt>Requested speed</dt><dd id="foc-requested-speed-readout">-- RPM</dd></div>
+            <div><dt>Ramped speed</dt><dd id="foc-ramped-speed-readout">-- RPM</dd></div>
+            <div><dt>Angle error</dt><dd id="foc-angle-error-readout">-- deg</dd></div>
+            <div><dt>PRU clock</dt><dd id="foc-pru-clock-readout">-- Hz</dd></div>
+            <div><dt>IEP clock</dt><dd id="foc-iep-clock-readout">-- Hz</dd></div>
+            <div><dt>Control loop</dt><dd id="foc-loop-frequency-readout">-- Hz</dd></div>
+            <div><dt>Sim / active wall</dt><dd id="foc-sim-wall-readout">--</dd></div>
+            <div><dt>Fault</dt><dd id="foc-fault-readout">none</dd></div>
             <div><dt>Speed</dt><dd id="foc-speed-readout">— RPM</dd></div>
             <div><dt>Rotor θ</dt><dd id="foc-theta-readout">—°</dd></div>
             <div><dt>Duty span</dt><dd id="foc-duty-readout">— / — / —</dd></div>
@@ -5342,6 +5350,6 @@ Example:
   </div>
 
   <script src="/static/layout.js?v=20260831-3"></script>
-  <script src="/static/app.js?v=20260907-5"></script>
+  <script src="/static/app.js?v=20260907-6"></script>
 </body>
 </html>
