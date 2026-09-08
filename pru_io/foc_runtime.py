@@ -42,6 +42,7 @@ class FocRuntime:
         self._last_fb = None
         self._publication_intervals = deque(maxlen=32)
         self._paused_reason = None
+        self._resume_breakpoint_pc: int | None = None
         self._pending_ui_samples: list[dict] = []
         self._last_ui_state = None
         self._last_ui_timestamp = None
@@ -192,6 +193,14 @@ class FocRuntime:
 
     def start(self) -> dict:
         """Enable the control block and start the IEP-clocked plant."""
+        core = self.sim.cores.get(self.core)
+        self._resume_breakpoint_pc = None
+        if (
+            self._paused_reason == "breakpoint"
+            and core is not None
+            and core.pc in core.breakpoints
+        ):
+            self._resume_breakpoint_pc = core.pc
         self._restore_iep_clock()
         period = self._control_period_ticks()
         current = self._control()
@@ -319,8 +328,12 @@ class FocRuntime:
                 steps < int(max_steps)
                 and not pru.halted
                 and pru.pc < len(pru.instructions)
-                and pru.pc not in pru.breakpoints
+                and (
+                    pru.pc not in pru.breakpoints
+                    or self._resume_breakpoint_pc == pru.pc
+                )
             ):
+                resuming_breakpoint = self._resume_breakpoint_pc == pru.pc
                 self._fast_path_instruction_budget = (
                     int(max_steps) - steps if fast_enabled else None
                 )
@@ -328,6 +341,8 @@ class FocRuntime:
                 pru.step()
                 retired = pru.counters.instruction_count - before
                 steps += max(1, retired)
+                if resuming_breakpoint:
+                    self._resume_breakpoint_pc = None
         finally:
             self._fast_path_instruction_budget = None
             if fast_enabled:
@@ -363,19 +378,29 @@ class FocRuntime:
                     and candidate["status"] & abi.STATUS_DISABLED
                 ):
                     break
+        self._flush_model_to_iep()
         self.model.stop()
         self._pause_wall_time()
         self._paused_reason = "stopped"
+        self._resume_breakpoint_pc = None
         self.model.publish_feedback()
         self._read_pwm()
         return self.state()
 
     def pause(self, reason: str = "paused") -> dict:
         """Pause the observer without fabricating a neutral PWM publication."""
+        self._flush_model_to_iep()
         self.model.stop()
         self._pause_wall_time()
         self._paused_reason = str(reason)
+        self._resume_breakpoint_pc = None
+        self.model.publish_feedback()
         return self.state()
+
+    def _flush_model_to_iep(self) -> None:
+        """Integrate the observer's final partial control period before pausing."""
+        if self.model.running:
+            self.model.advance_to(int(self.sim.iep.count))
 
     def _pause_wall_time(self) -> None:
         if self._wall_started is None:
@@ -393,6 +418,7 @@ class FocRuntime:
         self._wall_started = None
         self._active_wall_time_s = 0.0
         self._time_origin = int(self.sim.iep.count)
+        self._resume_breakpoint_pc = None
         self._last_pwm = self._neutral_pwm(self._time_origin)
         self._last_fb = self._read_feedback()
         self._publication_intervals.clear()
@@ -444,8 +470,6 @@ class FocRuntime:
         control = self._control()
         pwm = self._read_pwm()
         fb = self._read_feedback()
-        if self.model.running:
-            self.model.advance_to(int(self.sim.iep.count))
         model = self.model.state()
         samples = self.model.drain_samples()
         clock_hz = self._clock_hz()

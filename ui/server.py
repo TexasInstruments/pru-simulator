@@ -1293,6 +1293,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 )
                 sample_modes = [] if trace_active else None
                 pru = sim.cores[core]
+                foc_step_runtime = (
+                    foc_runtime is not None and core == foc_runtime.core
+                )
+                if foc_step_runtime:
+                    foc_runtime.model.start()
                 try:
                     if capture:
                         for _ in range(count):
@@ -1308,6 +1313,11 @@ async def websocket_endpoint(websocket: WebSocket):
                         at_breakpoint = True
                 except ValueError as ve:
                     await websocket.send_json({"type": "error", "errors": [str(ve)]})
+                finally:
+                    if foc_step_runtime:
+                        foc_runtime.pause(
+                            "breakpoint" if at_breakpoint else "stepped"
+                        )
                 if samples:
                     await _publish_capture_batches(websocket, [{
                         "core": core,

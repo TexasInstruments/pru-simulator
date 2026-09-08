@@ -15,6 +15,39 @@ ROOT = Path(__file__).parents[1]
 FOC_SOURCE = (ROOT / "source" / "foc_open_loop" / "foc_open_loop.asm").read_text()
 
 
+def test_telemetry_polling_does_not_change_physics(nominal_config):
+    results = []
+    for poll in (False, True):
+        sim = _load_firmware(nominal_config)
+        runtime = FocRuntime(sim)
+        runtime.start()
+        sim.iep.observe_core_cycles("pru0", 1000)
+        _write_pwm(sim, ta_q24=round(.75 * abi.Q_ONE),
+                   tb_q24=round(.375 * abi.Q_ONE), tc_q24=round(.375 * abi.Q_ONE))
+        if poll:
+            runtime.state()
+        sim.iep.observe_core_cycles("pru0", 2000)
+        results.append(runtime.state()["model"])
+    assert results[0] == results[1]
+
+
+def test_resume_executes_stopped_instruction_then_hits_next_breakpoint(nominal_config):
+    sim = _load_firmware(nominal_config)
+    runtime = FocRuntime(sim)
+    runtime.set_reference(speed=.4, iq=.25, ramp=.00001)
+    core = sim.cores["pru0"]
+    bp = core._parser.labels["l_publish_pwm"]
+    core.breakpoints.update((bp, bp + 1))
+    runtime.start()
+    assert runtime.run_batch(20000)["pc"] == bp
+    runtime.pause("breakpoint")
+    runtime.start()
+    result = runtime.run_batch(20000)
+    assert result["steps"] == 1
+    assert result["pc"] == bp + 1
+    assert result["at_breakpoint"]
+
+
 def _load_firmware(nominal_config):
     sim = Simulator(nominal_config)
     assert sim.load("pru0", FOC_SOURCE, include_paths=[str(ROOT / "source")]) == []
@@ -267,7 +300,8 @@ def test_runtime_batch_preserves_foc_state_contract(nominal_config, fast_path):
     assert result["fault"] is None
     assert state["pwm"]["seq"] % 2 == 0
     assert state["pwm"]["timestamp_cycles"] <= sim.iep.count
-    assert state["model"]["timestamp"] == sim.iep.count
+    model_lag = sim.iep.count - state["model"]["timestamp"]
+    assert 0 <= model_lag < state["clock"]["control_period_iep_ticks"]
 
 
 def test_foc_timer_wait_fast_path_matches_instruction_timeline(nominal_config):

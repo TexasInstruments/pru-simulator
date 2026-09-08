@@ -176,6 +176,64 @@ def test_foc_breakpoint_pauses_after_executing_actual_assembly(fresh_foc_sim):
         assert srv.foc_runtime.sim.cores["pru0"].pc == wait_pc
 
 
+def test_step_after_breakpoint_advances_plant_while_remaining_paused(fresh_foc_sim):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "foc_load"})
+        ws.receive_json()
+        core = fresh_foc_sim.cores["pru0"]
+        core.breakpoints.add(core._parser.labels["l_publish_pwm"])
+        ws.send_json({"action": "foc_start", "speed_rpm": 400,
+                      "vq_ref": .25, "acceleration_rpm_s": 1000})
+        paused = ws.receive_json()
+        assert paused["model"]["running"] is False
+        before = paused["model"]["timestamp"]
+        ws.send_json({"action": "step", "core": "pru0", "count": 4096})
+        stepped = ws.receive_json()
+        while stepped["type"] != "foc_state":
+            stepped = ws.receive_json()
+        assert stepped["model"]["timestamp"] > before
+        assert stepped["model"]["timestamp"] == fresh_foc_sim.iep.count
+        assert stepped["model"]["running"] is False
+        assert abs(stepped["model"]["ib"]) > 0
+
+
+def test_foc_start_resumes_after_step_lands_on_next_breakpoint(fresh_foc_sim):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "foc_load"})
+        assert ws.receive_json()["type"] == "foc_state"
+        core = fresh_foc_sim.cores["pru0"]
+        first_breakpoint = core._parser.labels["l_publish_pwm"]
+        core.breakpoints.update({
+            first_breakpoint,
+            first_breakpoint + 1,
+            first_breakpoint + 2,
+        })
+
+        ws.send_json({"action": "foc_start", "speed_rpm": 400,
+                      "vq_ref": .25, "acceleration_rpm_s": 1000})
+        paused = ws.receive_json()
+        while paused["type"] != "foc_state":
+            paused = ws.receive_json()
+        assert paused["model"]["running"] is False
+        assert core.pc == first_breakpoint
+
+        ws.send_json({"action": "step", "core": "pru0", "count": 1})
+        stepped = ws.receive_json()
+        while stepped["type"] != "foc_state":
+            stepped = ws.receive_json()
+        assert stepped["model"]["running"] is False
+        assert core.pc == first_breakpoint + 1
+        before_start = core.counters.instruction_count
+
+        ws.send_json({"action": "foc_start"})
+        resumed = ws.receive_json()
+        while resumed["type"] != "foc_state":
+            resumed = ws.receive_json()
+        assert core.counters.instruction_count == before_start + 1
+        assert core.pc == first_breakpoint + 2
+        assert resumed["model"]["running"] is False
+
+
 def test_foc_execution_has_one_websocket_owner(fresh_foc_sim):
     with client.websocket_connect("/ws") as first:
         first.send_json({
