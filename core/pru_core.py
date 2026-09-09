@@ -442,6 +442,8 @@ class PRUCore:
                 self._write_registers_from_bytes(start_reg, data, start_byte)
             elif self.xfr.xfr_shift_en and device_id in (SPAD_BANK0, SPAD_BANK1, SPAD_BANK2):
                 self._xin_shifted(device_id, start_reg, length)
+            elif not self.xfr.supports(device_id):
+                raise RuntimeError(self._unsupported_xfr_message("XIN", device_id, start_reg, start_byte, length))
             else:
                 xfr_offset = (start_reg - 2) * 4 + start_byte if device_id == IPC_SPAD else start_reg * 4 + start_byte
                 data = self.xfr.xin(device_id, xfr_offset, length)
@@ -459,6 +461,8 @@ class PRUCore:
                 self.accelerators[device_id].xout(start_reg, data)
             elif self.xfr.xfr_shift_en and device_id in (SPAD_BANK0, SPAD_BANK1, SPAD_BANK2):
                 self._xout_shifted(device_id, start_reg, length)
+            elif not self.xfr.supports(device_id):
+                raise RuntimeError(self._unsupported_xfr_message("XOUT", device_id, start_reg, start_byte, length))
             else:
                 xfr_offset = (start_reg - 2) * 4 + start_byte if device_id == IPC_SPAD else start_reg * 4 + start_byte
                 data = self._read_registers_to_bytes(start_reg, length, start_byte)
@@ -477,6 +481,8 @@ class PRUCore:
                 self._write_registers_from_bytes(start_reg, old_data, start_byte)
             elif self.xfr.xfr_shift_en and device_id in (SPAD_BANK0, SPAD_BANK1, SPAD_BANK2):
                 self._xchg_shifted(device_id, start_reg, length)
+            elif not self.xfr.supports(device_id):
+                raise RuntimeError(self._unsupported_xfr_message("XCHG", device_id, start_reg, start_byte, length))
             else:
                 xfr_offset = (start_reg - 2) * 4 + start_byte if device_id == IPC_SPAD else start_reg * 4 + start_byte
                 data = self._read_registers_to_bytes(start_reg, length, start_byte)
@@ -578,6 +584,19 @@ class PRUCore:
             self.step()
             steps += 1
         return steps
+
+    # ------------------------------------------------------------------
+    # Unsupported-XFR diagnostics
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _unsupported_xfr_message(opcode: str, device_id: int, start_reg: int,
+                                 start_byte: int, length: int) -> str:
+        return (
+            f"Simulator Error: {opcode} XFR device ID {device_id} (0x{device_id:02X}) "
+            f"is not modelled; transfer starts at R{start_reg}.b{start_byte} and is {length} byte(s). "
+            "Add an accelerator/device model; the simulator will not substitute zero data."
+        )
 
     # ------------------------------------------------------------------
     # Operand helpers
