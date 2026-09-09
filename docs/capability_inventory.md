@@ -13,7 +13,13 @@ not unmerged work.
 
 The metadata above is deliberately machine-readable.  `tests/test_capability_inventory.py`
 derives each set from the running code/configurations and fails if this document
-claims a different set.
+claims a different set, in either direction - a fictitious entry and a missing one
+both fail it.  It also checks that every test node id cited in the tables below
+actually collects.
+
+What that does **not** cover is the prose in the tables: a wrong sentence in a
+`What exists` cell will not fail any test.  Treat the metadata sets and the cited
+node ids as machine-verified, and the descriptions as reviewed prose.
 
 ## Supported
 
@@ -21,17 +27,22 @@ claims a different set.
 | --- | --- | --- | --- |
 | PRU core and ISA | The parser and execution engine implement ALU, branch/bit, load/store, control, XFR, and MVI instruction families. | `core/parser.py`, `core/pru_core.py`, `core/alu.py`, `core/branch.py` | `tests/test_alu.py`, `tests/test_branches.py`, `tests/test_isa_execution.py`, `tests/test_mvi.py`, `tests/test_pru_core.py` |
 | Cores | The simulator instantiates `pru0`, `rtu0`, and `pru1`; `pru1` uses swapped local DRAM mapping. | `simulator.py` (`Simulator.__init__`); `core/pru_core.py` (`_map_data_addr`) | `tests/test_pru1_core.py`, `tests/test_dram_mapping.py`, `tests/test_capability_inventory.py` |
-| Configured device models | The supplied configuration models are `AM243x` and `AM263x`.  Their memory regions load from their `[device]` configuration files. | `config/memory_am243x.cfg`, `config/memory_am263x.cfg`; `simulator.py` (`_load_memory`, `_get_device_config`) | `tests/test_integration.py::TestSimulatorBasic::test_load_from_real_config`, `tests/test_capability_inventory.py` |
+| Configured device models | Three memory configurations ship: `memory_am243x.cfg`, `memory_am263x.cfg` and `memory_pif_eth_rx.cfg`, the last a materially different layout that also declares `target = AM243x`.  `[device] target` and `core_version` are inert labels - they are read into a dict and no code branches on either - so the selected configuration changes the memory map and the clock fields only. | `config/memory_am243x.cfg`, `config/memory_am263x.cfg`, `config/memory_pif_eth_rx.cfg`; `simulator.py` (`_load_memory`, `_get_device_config`) | `tests/test_integration.py::TestSimulatorBasic::test_load_from_real_config`, `tests/test_capability_inventory.py` |
 | Memory and constants | Configured memory regions, latency/jitter accounting, constant-table addressing, and PRU local-DRAM mapping exist. | `mem/memory_bus.py`, `mem/regions.py`, `mem/constant_table.py`, `core/pru_core.py` | `tests/test_memory.py`, `tests/test_dram_mapping.py`, `tests/test_pru_core.py` |
-| ELF loading | TI PRU ELF32 loading feeds text, data, and symbols to a core. | `core/elf_loader.py`, `simulator.py` (`load_elf`) | `tests/test_elf_loader.py`, `tests/test_mcp_elf_load.py` |
-| XFR scratchpads | XIN/XOUT/XCHG operate on SPAD banks `10`, `11`, `12` and IPC scratchpad `15`; the XFR shift mode exists for the SPAD banks. | `xfr/xfr_bus.py`, `core/pru_core.py` | `tests/test_xfr.py`, `tests/test_pru_core.py` |
+| ELF loading | TI PRU ELF32 loading feeds text, data, and symbols to a core. | `core/elf_loader.py`, `simulator.py` (`load_elf`) | `tests/test_elf_loader.py`, `tests/test_mcp_elf_load.py`; symbols specifically in `tests/test_disassembler_validation.py::TestDisassemblerValidation::test_symbols_extracted` |
+| XFR scratchpads | XIN/XOUT/XCHG operate on SPAD banks `10`, `11`, `12` and IPC scratchpad `15`. | `xfr/xfr_bus.py`, `core/pru_core.py` | `tests/test_xfr.py`, `tests/test_pru_core.py` |
 | XFR MAC | Broadside MPY/MAC accelerator device ID `0` exists. | `xfr/mac_accelerator.py`; registration in `core/pru_core.py` | `tests/test_mac_accelerator.py`, `tests/test_integration.py::TestMACIntegration` |
 | GPIO and opt-in I2C model | R30/R31 20-bit GPIO, grouped loopback, and an opt-in TCA9538 model on pins 0/1 exist. | `pru_io/io_port.py`, `pru_io/tca9538.py`, `simulator.py` (`i2c_attach`) | `tests/test_io_port.py`, `tests/test_io_loopback.py`, `tests/test_tca9538.py`, `tests/test_i2c_tca9538_firmware.py` |
 | Sigma-delta filter | Three SD channels, pattern generators, SD registers, fast detect, and the R30/R31 interface exist. | `pru_io/sd_filter.py`, `pru_io/sd_channel.py`, `pru_io/sd_modulator.py`, `pru_io/sd_registers.py` | `tests/test_sd_filter.py`, `tests/test_sd_fast_detect.py`, `tests/test_sd_registers.py`, `tests/test_sd_e2e.py` |
 | Peripheral Interface | Two three-channel Peripheral Interface blocks (PRU0 and PRU1), their registers, TX/RX FIFOs, timed loopback, and GPCFG mux gating exist. | `perif/peripheral_interface.py`, `perif/perif_channel.py`, `perif/perif_registers.py`, `perif/gpcfg.py`, `perif/loopback.py`, `simulator.py` | `tests/test_perif.py`, `tests/test_perif_loopback.py`, `tests/test_perif_integration.py`, `tests/test_pru1_core.py` |
 | IEP counter and compare | A shared IEP0 has a 64-bit enabled counter, DEFAULT_INC, 16 64-bit compares, CMP status, and optional CMP0 counter reset. | `perif/iep.py` (`IepTimer`); registration in `simulator.py` (`IepRegisterRegion`) | `tests/test_iep_timer.py::test_counter_does_not_run_until_cnt_enable`, `tests/test_iep_timer.py::test_higher_compares_set_their_own_status_bit`, `tests/test_iep_timer.py::TestIepThroughFirmware` |
 | IEP capture API | Ten capture slots latch the current counter through `IepTimer.capture_event(n)`, with enable, first/last, valid, and write-one-to-clear behavior. | `perif/iep.py` (`capture_event`, `CAP_*`) | `tests/test_iep_timer.py::test_capture_latches_the_counter_at_the_event`, `tests/test_iep_timer.py::test_first_mode_keeps_the_first_event`, `tests/test_iep_timer.py::test_slots_are_independent` |
-| Interfaces | The MCP facade and deterministic headless runner expose load, execution, inspection, and I/O operations. | `mcp_server/server.py`, `tools/headless_runner.py` | `tests/test_mcp_server.py`, `tests/test_headless_runner.py` |
+| Interfaces | Three: the MCP facade, the deterministic headless runner, and a FastAPI dashboard serving REST routes (`/regions`, `/config`, `/source`, `/config/clock_speed`) and a WebSocket. | `mcp_server/server.py`, `tools/headless_runner.py`, `ui/server.py` | `tests/test_mcp_server.py`, `tests/test_headless_runner.py`, `tests/test_server.py`, `tests/test_clock_speed_endpoint.py`, `tests/test_perif_server.py` |
+| Assembler front end | The preprocessor implements macros, `.include`, `.if`/`.else`/`.endif` and `.struct`, and runs on every `Parser.parse_text()`; multi-file assembly builds on it. | `core/preprocessor.py`, `core/parser.py` | `tests/test_preprocessor.py`, `tests/test_multi_file.py` |
+| Operand and range validation | The parser rejects out-of-range and malformed operands rather than truncating them. | `core/operands.py`, `core/parser.py` | `tests/test_operand_ranges.py`, `tests/test_operands.py` |
+| Disassembler | Instruction decoding back to mnemonics, validated against a clpru-compiled reference binary. | `core/disassembler.py` | `tests/test_disassembler_validation.py` |
+| Cycle and instruction counters | Cycles, stall cycles, instruction count and IPC are tracked per core and exposed through the MCP facade. | `core/counters.py`, `mcp_server/server.py` | `tests/test_counters.py` |
+| UART frame generator | Framed UART stimulus generation for the RX paths. | `pru_io/uart_frame_generator.py` | `tests/test_uart_frame_generator.py`, `tests/test_uart_examples.py` |
 
 ## Partial
 
@@ -39,6 +50,8 @@ claims a different set.
 | --- | --- | --- | --- |
 | IEP timer | Counter, compare, and software/harness-invoked capture work. | Shadow mode, slow compensation, sync/EHRPWM reset, interrupt routing, and mapping a pin/peripheral event to `capture_event(n)` do not exist.  Capture therefore requires another model or the harness to call the method directly. | Implemented: `perif/iep.py` (`tick`, `capture_event`); tests listed above. Missing path: `perif/iep.py` documents and implements no routing beyond `capture_event`; `core/pru_core.py` only calls `iep.tick()`. |
 | Peripheral Interface RX auto-arm | Firmware arms RX through R30 bits `[26:24]`; the normal RX capture path works after that write. | `CHnCFG1.RX_EN_COUNTER` / `get_rx_en_count_delay()` is decoded but never starts an arm countdown or calls `arm_rx`. | Implemented: `perif/peripheral_interface.py::process_r30`, `perif/perif_channel.py::arm_rx`; tests `tests/test_perif_integration.py`, `tests/test_perif_loopback.py`. Missing path: `perif/perif_registers.py::get_rx_en_count_delay` has no reference in `perif/perif_channel.py` or `perif/peripheral_interface.py`. |
+
+| XFR shift mode | The shifted XIN/XOUT/XCHG paths are implemented and gated by `XFRBus.xfr_shift_en`. | Nothing exercises them.  No test in the tree references `xfr_shift_en` or the shifted paths, so the behaviour is implemented and unverified rather than verified. | Implemented: `core/pru_core.py` (`_xin_shifted`, `_xout_shifted`, `_xchg_shifted`), `xfr/xfr_bus.py` (`xfr_shift_en`).  Missing path: `grep -rn "xfr_shift_en" tests/` returns nothing. |
 
 ## Not supported
 

@@ -45,3 +45,37 @@ def test_documented_device_models_equal_configured_models():
 def test_documented_cores_equal_simulator_registration():
     sim = Simulator(config_path="nonexistent.cfg")
     assert _document_set("cores") == set(sim.cores)
+
+
+def _cited_test_targets() -> set[str]:
+    """Every `tests/...` path or node id quoted in the inventory tables."""
+    text = INVENTORY.read_text(encoding="utf-8")
+    return set(re.findall(r"`(tests/[\w./]+\.py(?:::[\w:]+)?)`", text))
+
+
+def test_every_cited_test_target_collects():
+    """A row may only cite a test that exists.
+
+    The three set comparisons above guard the machine-readable metadata. They
+    say nothing about the citations, and a citation is the only thing making a
+    "supported" row falsifiable at all - a row pointing at a test file that was
+    renamed, or at a node id that never existed, reads exactly like evidence.
+    """
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q",
+         "--no-header", "-p", "no:cacheprovider", "tests"],
+        cwd=ROOT, capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, f"collection failed:\n{proc.stdout}\n{proc.stderr}"
+    collected = {line.strip().replace("\\", "/")
+                 for line in proc.stdout.splitlines() if "::" in line}
+
+    missing = sorted(
+        target for target in _cited_test_targets()
+        if not (target in collected
+                or any(node.startswith(target + "::") for node in collected))
+    )
+    assert not missing, "inventory cites test targets that do not collect: %s" % missing
