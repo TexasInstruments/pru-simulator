@@ -288,3 +288,102 @@ def test_defect4_auto_arm_fires_after_delay():
     assert ch0._rx_auto_arm_deadline_ns is None
     ch0.advance(ns + 1000)
     assert ch0.rx_en is False, "zero RX_EN_COUNTER should not auto-arm"
+
+
+# ---------------------------------------------------------------------------
+# Defect 4, continued: the arms above read the deadline back out of the model
+# and then check the model against it, so they hold for *any* anchor point.
+# These three pin down the parts that self-consistency cannot.
+# ---------------------------------------------------------------------------
+
+def _run_tx_to_completion(ch, limit_ns=1000.0):
+    """Advance the ns timeline until the TX frame finishes. Returns end time."""
+    ns = 0.0
+    while ch.busy and ns < limit_ns:
+        ns += 5.0
+        ch.advance(ns)
+    assert ch.busy is False, "TX frame did not finish within the budget"
+    return ns
+
+
+def test_defect4_deadline_is_measured_from_the_last_tx_bit():
+    """TRM 6.4.5.2.2.3.6.3.2.2 anchors the counter at the *last* TX bit.
+
+    > ... is used to program a delay between the last TX bit sent and when
+    > the RX_EN is set.
+
+    The natural place to notice RX_EN_COUNTER is on entering TRANSMIT, which
+    would anchor the delay at the FIRST bit instead. Both anchors schedule a
+    deadline and both fire once, so a test that reads the deadline back out of
+    the channel cannot tell them apart. This one computes the expected value
+    independently: a frame that occupies the wire until t_end must arm at
+    t_end + delay, which is strictly later than the delay alone.
+    """
+    r = mk_regs()
+    set_ch_cfg0(r, 0, tx_frame=8)
+    set_ch_cfg1(r, 0, tst=0, rx_en_cnt=50)
+    ch = PerifChannel(0, r, core_clock_mhz=200.0)
+    delay_ns = ch._delay_ns(50)
+
+    ch.push_tx(0xB6)
+    ch.tx_go(0.0)
+    _run_tx_to_completion(ch)
+
+    # _phase_end_ns is the timestamp of the last emitted bit - the same instant
+    # _finish_frame() hands to _record_out_en for the output-enable release.
+    last_bit_ns = ch._phase_end_ns
+    assert last_bit_ns > 0.0, "frame must occupy real time for this to discriminate"
+
+    assert ch._rx_auto_arm_deadline_ns == pytest.approx(last_bit_ns + delay_ns)
+    assert ch._rx_auto_arm_deadline_ns > delay_ns, (
+        "deadline anchored at the first TX bit, not the last: the receiver "
+        "would arm while the master is still driving the line"
+    )
+
+
+def test_defect4_reset_clears_a_pending_deadline():
+    """A scheduled auto-arm must not survive reset() and fire into the next run."""
+    r = mk_regs()
+    set_ch_cfg0(r, 0, tx_frame=8)
+    set_ch_cfg1(r, 0, tst=0, rx_en_cnt=50)
+    ch = PerifChannel(0, r, core_clock_mhz=200.0)
+    ch.push_tx(0xB6)
+    ch.tx_go(0.0)
+    _run_tx_to_completion(ch)
+    assert ch._rx_auto_arm_deadline_ns is not None
+
+    ch.reset()
+    assert ch._rx_auto_arm_deadline_ns is None
+    assert ch.rx_auto_shutoff is False
+
+    # And it stays disarmed however far the timeline runs.
+    ch.advance(100_000.0)
+    assert ch.rx_en is False
+
+
+def test_defect4_pending_deadline_survives_snapshot_restore():
+    """snapshot()/restore() must carry the new fields, or a save/restore drops
+    a pending auto-arm and the channel never receives after reload."""
+    r = mk_regs()
+    set_ch_cfg0(r, 0, tx_frame=8)
+    set_ch_cfg1(r, 0, tst=0, rx_en_cnt=50)
+    ch = PerifChannel(0, r, core_clock_mhz=200.0)
+    ch.push_tx(0xB6)
+    ch.tx_go(0.0)
+    _run_tx_to_completion(ch)
+    ch.rx_auto_shutoff = True
+    deadline = ch._rx_auto_arm_deadline_ns
+    assert deadline is not None
+
+    snap = ch.snapshot()
+
+    fresh = PerifChannel(0, r, core_clock_mhz=200.0)
+    fresh.restore(snap)
+    assert fresh._rx_auto_arm_deadline_ns == pytest.approx(deadline)
+    assert fresh.rx_auto_shutoff is True
+
+    # The restored channel still arms at the original deadline.
+    fresh.advance(deadline - 1.0)
+    assert fresh.rx_en is False
+    fresh.advance(deadline)
+    assert fresh.rx_en is True
