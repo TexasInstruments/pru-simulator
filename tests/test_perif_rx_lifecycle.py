@@ -154,7 +154,7 @@ def test_defect2_auto_shutoff_stops_capturing_after_eof():
     assert ch._rx_started is False
     assert ch._rx_next_edge_ns is None
     # FIFO should retain the 2 bytes, valid stays true, eof true
-    assert ch.rx_fifo == [0x11, 0x22] or len(ch.rx_fifo) == 2
+    assert ch.rx_fifo == [0x11, 0x22]
     # Further capture must be ignored because rx_en is False
     ch.rx_sample_edge(1)  # would be start bit if still enabled
     # No new byte should appear

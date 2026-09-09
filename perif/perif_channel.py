@@ -88,10 +88,16 @@ class PerifChannel:
         self._rx_byte_cnt = 0
         self._rx_next_edge_ns: float | None = None
 
-        # RX optional auto shut-off on EOF (TRM 6.4.5.2.2.3.6 feature list).
-        # No register bit for this exists in the current Perif block, so it
-        # is an explicit software flag defaulting to disabled. When True,
-        # reaching rx_frame_size auto-disables the receiver (fully disarmed).
+        # RX optional auto shut-off on EOF. The TRM names this in the
+        # 6.4.5.2.2.3.6 feature list and specifies it nowhere else: no bit in
+        # CHnCFG0/CHnCFG1 selects it, so firmware on this device has no way to
+        # turn it on and the simulator has nothing to decode.
+        #
+        # This flag is therefore a HOST-SIDE OVERRIDE, not a modelled register.
+        # It is unreachable from any ELF - nothing in PerifRegisters or the
+        # R30/R31 decode path writes it - and it defaults to False so stock
+        # behaviour is unchanged. It exists so a harness can exercise the
+        # shut-off path; do not read it as the feature being implemented.
         self.rx_auto_shutoff = False
 
         # RX auto-arm via RX_EN_COUNTER (TRM 6.4.5.2.2.3.6.3.2.2):
@@ -529,13 +535,23 @@ class PerifChannel:
                 # reinit; mode 3 already stopped on the last TX bit.
                 if self.fsm == CLKRUN and self.clk_mode in (0, 1):
                     self._stop_clock_on_rx_frame()
-                # Optional RX frame size auto shut-off (TRM 6.4.5.2.2.3.6 feature list).
-                # No register bit exists for this in the current block, so it is
-                # an explicit rx_auto_shutoff flag defaulting to disabled.
+                # Optional RX frame size auto shut-off. Host-side override only
+                # - see rx_auto_shutoff in __init__; no firmware can reach this.
                 if self.rx_auto_shutoff:
-                    # Fully disarm (not half-disarmed: clearing rx_en alone and
-                    # leaving _rx_started True is the same class as defect 1).
-                    # Preserve FIFO/valid/ovf/EOF so the completed frame remains readable.
+                    # Fully disarm. Not half-disarmed: clearing rx_en alone and
+                    # leaving _rx_started True is the same class of bug as the
+                    # disable path this commit fixes.
+                    #
+                    # INVENTED, NOT FROM THE TRM: FIFO/valid/ovf/EOF are
+                    # preserved so the completed frame stays readable. That is
+                    # the opposite of what Table 6-80 says happens when rx_en
+                    # goes to 0 ("all counters/flags will get reset"), which is
+                    # the same text arm_rx() is fixed to obey. The TRM does not
+                    # say which rule wins for an auto shut-off, because it does
+                    # not describe auto shut-off at all. Preserving is the only
+                    # choice that leaves the frame you just received readable,
+                    # so it is what a harness wants - but it is a convenience,
+                    # it has no TRM basis, and it must not be cited as one.
                     self.rx_en = False
                     self._rx_started = False
                     self._rx_shift = 0
