@@ -33,7 +33,7 @@ class MACAccelerator(Accelerator):
     # Accelerator interface
     # ------------------------------------------------------------------
 
-    def xout(self, start_reg: int, data: bytes) -> None:
+    def xout(self, start_reg: int, data: bytes, start_byte: int = 0) -> None:
         if start_reg == 25 and len(data) >= 1:
             ctrl = data[0]
             if ctrl & 0x01:
@@ -60,7 +60,7 @@ class MACAccelerator(Accelerator):
             self._accumulator = (high << 32) | low
             self.acc_carry = False
 
-    def xin(self, start_reg: int, length: int) -> bytes:
+    def xin(self, start_reg: int, length: int, start_byte: int = 0) -> bytes:
         if start_reg == 25:
             ctrl = (0x01 if self.mac_mode else 0) | (0x02 if self.acc_carry else 0)
             return (bytes([ctrl]) + bytes(max(0, length - 1)))[:length]
@@ -84,7 +84,7 @@ class MACAccelerator(Accelerator):
 
         return bytes(length)
 
-    def xchg(self, start_reg: int, data: bytes) -> bytes:
+    def xchg(self, start_reg: int, data: bytes, start_byte: int = 0) -> bytes:
         # XCHG has no meaningful semantic for MAC hardware
         return bytes(len(data))
 
