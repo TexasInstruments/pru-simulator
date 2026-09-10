@@ -73,7 +73,7 @@ def test_xchg_full_tx_holds_pc_without_consuming_rx():
         assert len(dma.tx_fifos[1]) == dma.tx_max
 
 
-def test_threads_are_separate_and_empty_threads_hold():
+def test_threads_are_separate_and_empty_threads_return_zeros():
     core = make_core("ldi32 r2, 0x21726568\nxout 0x51, &r2, 4\nhalt\n")
     dma = bridge(core)
     core.run()
@@ -85,24 +85,28 @@ def test_threads_are_separate_and_empty_threads_hold():
     for device_id in (0x52, 0x53):
         empty = core.accelerators[device_id]
         assert empty.xin(2, 4) == bytes(4)
-        assert empty.hold_pc
+        assert not empty.hold_pc
 
 
-def test_held_xin_leaves_the_destination_registers_alone():
-    """A stalled broadside read holds the pipeline; it must not damage R2."""
+def test_empty_xin_retires_blank_data_and_advances_pc():
+    """An empty RX FIFO retires zero data rather than stalling the core."""
     core = make_core("ldi32 r2, 0xDEADBEEF\nxin 0x51, &r2, 4\nhalt\n")
-    while core.pc < 2:
+    while core.pc < 2:  # ldi32 expands to two instructions
         core.step()
-    assert core.registers.read_full(2) == 0xDEADBEEF
-    for _ in range(3):
-        core.step()
-        assert core.pc == 2, "an empty RX thread must hold the PC"
-        assert core.registers.read_full(2) == 0xDEADBEEF
-    # Once data arrives the same instruction completes and writes for real.
-    bridge(core).inject_rx(1, b"okay")
     core.step()
     assert core.pc == 3
-    assert core.registers.read_full(2) == int.from_bytes(b"okay", "little")
+    assert core.registers.read_full(2) == 0
+    assert not core.accelerators[0x51].hold_pc
+
+
+def test_xchg_with_empty_rx_retires_blank_data_and_enqueues_tx():
+    core = make_core("ldi32 r2, 0x61746164\nxchg 0x51, &r2, 4\nhalt\n")
+    while core.pc < 2:  # ldi32 expands to two instructions
+        core.step()
+    core.step()
+    assert core.pc == 3
+    assert core.registers.read_full(2) == 0
+    assert bridge(core).drain_tx(1) == [b"data"]
 
 
 def test_registration_removal_is_caught_by_the_status_vector(monkeypatch):

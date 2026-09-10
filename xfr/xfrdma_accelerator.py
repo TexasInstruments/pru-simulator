@@ -7,9 +7,11 @@ PSI-L threads 1, 2, and 3.  Table 6-108 defines status as two words:
 rx_ready[3:0] then tx_ready[3:0].  Tables 6-109 and 6-110 describe the
 sideband/data layout used by XOUT and XIN.
 
-This model deliberately does not model the sideband word, ``rx_bytes``,
-``tx_data_type`` packing, or PSI-L arbitration.  ``tx_max`` is a simulator
-constructor parameter, not a TRM-derived FIFO depth.
+This model deliberately does not model sideband-word interpretation,
+``tx_data_type`` packing, or PSI-L arbitration.  An empty XIN returns all
+zero bytes, so its unmodelled ``rx_bytes`` field is zero by construction.
+``tx_max`` is a simulator constructor parameter, not a TRM-derived FIFO
+depth.
 
 Two behaviours here are simulator policy rather than documented silicon, and
 are called out so a run is not mistaken for evidence about either:
@@ -101,7 +103,6 @@ class XFRDMAAccelerator(Accelerator):
             return self._status()[:length].ljust(length, b"\0")
         fifo = self.bridge.rx_fifos[self.thread]
         if not fifo:
-            self.hold_pc = True
             return bytes(length)
         return self._consume_rx(length)
 
@@ -123,11 +124,12 @@ class XFRDMAAccelerator(Accelerator):
             return bytes(data)
         rx_fifo = self.bridge.rx_fifos[self.thread]
         tx_fifo = self.bridge.tx_fifos[self.thread]
-        # Check both sides before consuming RX: a held XCHG is side-effect free.
-        if not rx_fifo or len(tx_fifo) >= self.bridge.tx_max:
+        # A full TX FIFO stalls before either side moves.  Empty RX instead
+        # retires as a blank XIN transfer (SPRUIM2J 6.4.6.3.2.3.1).
+        if len(tx_fifo) >= self.bridge.tx_max:
             self.hold_pc = True
             return bytes(data)
-        received = self._consume_rx(len(data))
+        received = self._consume_rx(len(data)) if rx_fifo else bytes(len(data))
         tx_fifo.append(bytes(data))
         return received
 
