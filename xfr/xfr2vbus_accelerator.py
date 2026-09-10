@@ -48,7 +48,33 @@ class XFR2VBUSWriteAccelerator(Accelerator):
     _MODE64_THRESHOLD_REG = 12
     _ADDR32_LOW_REG, _ADDR32_HIGH_REG = 10, 11
     _ADDR64_LOW_REG, _ADDR64_HIGH_REG = 18, 19
-    _VALID_SIZES = (1, 4, 32, 64)
+
+    # Size validity is flow-dependent, not one global set — see
+    # docs/xfr2vbus-trm-model-table.md "Write commands" for the full
+    # reconciliation of the two TRM passages this splits:
+    #
+    # - Split flow (address XOUT, then a separate data-only XOUT): TRM
+    #   section 6.4.6.3.1.6 "XFR2VBUS Programming Model" (line 7543) lists
+    #   the write flow "XOUT (addr) then XOUT 32 Byte/8 Byte/4 Byte/1 Byte
+    #   data" explicitly, naming 8 bytes as one of four legal data sizes.
+    # - Combined flow (one XOUT carries address and data together): Table
+    #   6-106's WR_ADDR notes for both windows say plainly that a combined
+    #   XOUT "needs to be the full 32 bytes" (R11-R10 note, line 7438) or
+    #   "the full 64 bytes" (R19-R18 note, line 7413) — never a partial
+    #   size. 8 bytes is not a legal combined size under either note.
+    #
+    # In this model the two cases are also geometrically distinct: a
+    # payload-bearing XOUT must start at &R2.b0 (checked below), and the
+    # address registers sit immediately after the full 32-/64-byte data
+    # window, so an XOUT can only ever reach an address register once it
+    # has already supplied the *entire* preceding data window — an 8-byte
+    # combined write is not constructible through this call shape at all.
+    # The explicit combined/split size sets below are kept anyway as
+    # defense-in-depth against that geometry changing under refactor, and
+    # so the two TRM passages are each enforced by name rather than folded
+    # into one tuple that would obscure which rule is being applied.
+    _VALID_SPLIT_SIZES = (1, 4, 8, 32, 64)
+    _VALID_COMBINED_SIZES = (32, 64)
 
     def __init__(self, memory: MemoryBus, device_id: int) -> None:
         self._memory = memory
@@ -59,6 +85,34 @@ class XFR2VBUSWriteAccelerator(Accelerator):
     def reset(self) -> None:
         self._addr_lo = bytearray(4)
         self._addr_hi = bytearray(2)
+
+    def _validate_size(self, size: int, *, combined: bool) -> None:
+        """Raise unless `size` is legal for the given XOUT flow shape.
+
+        Split (`combined=False`) is exercised through `xout()` directly by
+        `tests/test_xfr2vbus_accelerator.py`'s split-flow tests. Combined
+        (`combined=True`) with an 8-byte size cannot be produced through
+        `xout()` at all — see the geometry note above
+        `_VALID_SPLIT_SIZES`/`_VALID_COMBINED_SIZES` — so this method is
+        also called directly (on an accelerator instance) by the test suite
+        to exercise the combined-size rule rather than only asserting it
+        can never be reached.
+        """
+        valid = self._VALID_COMBINED_SIZES if combined else self._VALID_SPLIT_SIZES
+        if size in valid:
+            return
+        if combined:
+            raise ValueError(
+                f"XFR2VBUS write device 0x{self.DEVICE_ID:02X}: a combined "
+                f"address+data XOUT must carry the full WR_DATA window, "
+                f"{size} is not a valid combined size (TRM Table 6-106 "
+                "WR_ADDR notes: 'data needs to be the full 32/64 bytes')"
+            )
+        raise ValueError(
+            f"XFR2VBUS write device 0x{self.DEVICE_ID:02X}: {size} is not a valid "
+            "split-flow WR_DATA size (TRM section 6.4.6.3.1.6 Programming "
+            "Model: 1, 4, 8, 32 or 64 bytes)"
+        )
 
     def xin(self, start_reg: int, length: int, start_byte: int = 0) -> bytes:
         # ALL modes: R20[0] WR_BUSY (Table 6-106). The simulator retires a
@@ -84,12 +138,15 @@ class XFR2VBUSWriteAccelerator(Accelerator):
         )
 
         payload = bytearray()
+        touched_addr = False
         for i, value in enumerate(data):
             abs_byte = start_reg * 4 + start_byte + i
             reg_idx, byte_in_reg = divmod(abs_byte, 4)
             if reg_idx == addr_low_reg:
                 self._addr_lo[byte_in_reg] = value
+                touched_addr = True
             elif reg_idx == addr_high_reg:
+                touched_addr = True
                 if byte_in_reg < 2:
                     self._addr_hi[byte_in_reg] = value
                 # bytes 2-3 of the upper address register are reserved (TRM
@@ -113,11 +170,7 @@ class XFR2VBUSWriteAccelerator(Accelerator):
             )
 
         size = len(payload)
-        if size not in self._VALID_SIZES:
-            raise ValueError(
-                f"XFR2VBUS write device 0x{self.DEVICE_ID:02X}: {size} is not a valid "
-                "WR_DATA size (TRM Table 6-106: 1, 4, 32 or 64 bytes)"
-            )
+        self._validate_size(size, combined=touched_addr)
         addr = _split_addr48(self._addr_lo, self._addr_hi)
         if size != 1 and addr % size != 0:
             raise ValueError(

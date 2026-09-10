@@ -117,19 +117,69 @@ class TestWriteChannel:
         with pytest.raises(ValueError, match="aligned"):
             acc.xout(2, b"\xAA" * 32)
 
-    @pytest.mark.parametrize("size", [2, 3, 8, 16, 63])
+    @pytest.mark.parametrize("size", [2, 3, 16, 63])
     def test_invalid_write_sizes_are_rejected(self, size):
-        """TRM Table 6-106 only documents 1, 4, 32, 64 byte WR_DATA sizes.
-
-        All of these sizes stay within the R2..R17 data window (no spillover
-        into an address register), so the rejection is unambiguously about
-        WR_DATA size, not register routing.
+        """TRM section 6.4.6.3.1.6's Programming Model documents exactly
+        four split-flow WR_DATA sizes: 1, 4, 8, 32, 64 bytes (line 7543,
+        "XOUT (addr) then XOUT 32 Byte/ 8 Byte/ 4 Byte/ 1 Byte data"). 8 is
+        NOT one of these rejected sizes — see
+        test_8_byte_split_write_is_accepted below; this list covers sizes
+        that stay within the R2..R17 data window (no spillover into an
+        address register) and are absent from that list, so the rejection
+        is unambiguously about WR_DATA size, not register routing.
         """
         vbus = make_vbus()
         acc = XFR2VBUSWriteAccelerator(vbus, WR_ID0)
         acc.xout(10, struct.pack("<I", VBUS_BASE))
-        with pytest.raises(ValueError, match="valid WR_DATA size"):
+        with pytest.raises(ValueError, match="valid split-flow WR_DATA size"):
             acc.xout(2, b"\x00" * size)
+
+    def test_8_byte_split_write_is_accepted(self):
+        """TRM SPRUIM2J section 6.4.6.3.1.6 "XFR2VBUS Programming Model"
+        (line 7543) lists the split write flow "XOUT (addr) then XOUT 32
+        Byte/ 8 Byte/ 4 Byte/ 1 Byte data" — 8 bytes is one of the four
+        documented split-flow data sizes and must be accepted, not
+        rejected. This regression test replaces a prior version of this
+        suite that pinned the opposite (wrong) behaviour under a citation
+        to Table 6-106 alone; see docs/xfr2vbus-trm-model-table.md "Write
+        commands" for why the two TRM passages do not actually conflict.
+        """
+        vbus = make_vbus()
+        acc = XFR2VBUSWriteAccelerator(vbus, WR_ID0)
+        acc.xout(10, struct.pack("<I", VBUS_BASE + 8))  # 8-byte aligned
+        acc.xout(2, b"\x11" * 8)
+        assert vbus.read(VBUS_BASE + 8, 8)[0] == b"\x11" * 8
+
+    def test_8_byte_write_requires_size_aligned_address(self):
+        """Same alignment discipline already enforced for the 4- and
+        32-byte split sizes (TRM section 6.4.6.3.1.4) applies to 8."""
+        vbus = make_vbus()
+        acc = XFR2VBUSWriteAccelerator(vbus, WR_ID0)
+        acc.xout(10, struct.pack("<I", VBUS_BASE + 4))  # 4-aligned, not 8-aligned
+        with pytest.raises(ValueError, match="aligned"):
+            acc.xout(2, b"\x00" * 8)
+
+    def test_8_byte_combined_write_is_rejected(self):
+        """Table 6-106's WR_ADDR notes for both the 32-byte window ("...in
+        this case data needs to be the full 32 bytes", R11-R10 note, line
+        7438) and the 64-byte window ("...full 64 bytes", R19-R18 note,
+        line 7413) require a combined single-XOUT address+data write to
+        carry the *entire* data window — never a partial size such as 8
+        bytes. That combined-with-8-bytes shape cannot actually be
+        constructed through `xout()`: reaching an address register
+        requires having already supplied the whole preceding data window
+        (32 or 64 bytes), so this exercises the accelerator's
+        `_validate_size` combined-size rule directly, the same rule
+        `xout()` applies internally, rather than asserting the shape is
+        merely unreachable.
+        """
+        acc = XFR2VBUSWriteAccelerator(make_vbus(), WR_ID0)
+        with pytest.raises(ValueError, match="valid combined size"):
+            acc._validate_size(8, combined=True)
+        # The paired positive case: 32 and 64 remain the only legal
+        # combined sizes, matching the two documented WR_DATA windows.
+        acc._validate_size(32, combined=True)
+        acc._validate_size(64, combined=True)
 
     def test_65_byte_xout_spills_last_byte_into_wr_addr_not_data(self):
         """A 65-byte XOUT from &R2 reaches into R18 (byte 0 of WR_ADDR in the

@@ -1,10 +1,21 @@
 # XFR2VBUS: TRM-vs-model field table
 
-Source: AM64x/AM243x TRM SPRUIM2J §6.4.6.3.1 "PRU_ICSSG XFR2VBUS Hardware
-Accelerator", the archived extract
-`research/refs/icssg-chapter-6.4-functional.txt` lines 7276-7549 (§6.4.6.3.1.1
-through §6.4.6.3.1.6, ending where §6.4.6.3.2 XFRDMA — an unrelated
-peripheral — begins). Global IDs from Table 6-60 (line 3463-3466).
+Primary source: **AM64x/AM243x TRM, document SPRUIM2J, section 6.4.6.3.1
+"PRU_ICSSG XFR2VBUS Hardware Accelerator"** (Tables 6-106/6-107, §6.4.6.3.1.1
+through §6.4.6.3.1.6 "XFR2VBUS Programming Model", ending where §6.4.6.3.2
+XFRDMA — an unrelated peripheral — begins). Cite the TRM this way (document +
+section + table) when working from a checkout of this repo.
+
+The line numbers used throughout this doc (e.g. "line 7543") are pointers
+into an archived plain-text extract of that TRM chapter, kept at
+`research/refs/icssg-chapter-6.4-functional.txt` **relative to the workspace
+root that contains this repo as a subdirectory — not relative to this repo
+itself.** A checkout of this repo alone does not include that file (this repo
+does not vendor TRM text; see "Do NOT copy the reference text into the repo"
+policy). If you have this repo checked out standalone, use the
+document/section/table citation above instead of the line numbers, or locate
+your own copy of SPRUIM2J and consult the section/table cited. Global IDs
+from Table 6-60 (line 3463-3466 in that same extract).
 
 This table is the authority the implementation in
 `xfr/xfr2vbus_accelerator.py` was built against. Where the model diverges
@@ -32,11 +43,60 @@ pattern `BSwapAccelerator` uses for its three device IDs.
 
 | PRU register | Access | Field | TRM notes | Model |
 |---|---|---|---|---|
-| R17-R2 (64B mode) | XOUT | WR_DATA | data; atomic combined XOUT spans R19-R2 | data byte covers WR_DATA window |
+| R17-R2 (64B mode) | XOUT | WR_DATA | data; atomic combined XOUT spans R19-R2, and the R19-R18 WR_ADDR note (line 7413) says a combined XOUT "needs to be the full 64 bytes" | combined-flow size validated against `{32,64}` (`_VALID_COMBINED_SIZES`) |
 | R19-R18 | XOUT | WR_ADDR | 48-bit; R19=upper 16, R18=lower 32 (matches the read table's explicit `R20:R19` high:low ordering) | `_addr_hi`/`_addr_lo`, partial-byte-preserving |
-| R9-R2 (32B mode) | XOUT | WR_DATA | sizes 1B, 4B aligned, 32B aligned, no holes | size validated against `{1,4,32,64}` |
+| R9-R2 (32B mode) | XOUT | WR_DATA | "Size restrictions" list (lines 7421-7426): 1B, 4B aligned, 32B aligned, no holes; the R11-R10 WR_ADDR note (line 7438) separately says a combined XOUT "needs to be the full 32 bytes" | split-flow size validated against `{1,4,8,32,64}`, combined-flow against `{32,64}` — see **"Split vs. combined write sizes"** below for why this table's own list and §6.4.6.3.1.6's list are each right for a different flow shape |
 | R11-R10 | XOUT | WR_ADDR | 48-bit; R11=upper16, R10=lower32 | same latch as R19/R18 — see "Corrections" |
 | R20[0] (ALL modes) | XIN | WR_BUSY | 1 = (WR_CMD_FIFO≠0) or (WR_DATA_FIFO≠0) | always 0 post-write — see "Simplifications" |
+
+### Split vs. combined write sizes (Table 6-106 vs. §6.4.6.3.1.6)
+
+Two TRM passages both discuss legal WR_DATA sizes and, read carelessly,
+appear to conflict:
+
+* **Table 6-106's "Size restrictions"** (lines 7421-7426, printed under the
+  **32-Byte Mode** R9-R2 WR_DATA row — not the 64-byte-mode row) lists "1
+  byte / 4 bytes aligned ... / 32 bytes aligned ...". It does not mention 8
+  bytes anywhere.
+* **§6.4.6.3.1.6 "XFR2VBUS Programming Model"** (line 7543) lists the
+  address-then-data **split** write flow as "XOUT (6 Byte address or 4 Byte
+  address) then XOUT 32 Byte/ 8 Byte/ 4 Byte/ 1 Byte data" — four sizes,
+  explicitly including 8.
+
+These are not actually the same rule applied twice with a contradiction; they
+govern two different XOUT shapes:
+
+1. **Combined** — one XOUT sets address and data together. Both WR_ADDR
+   notes are explicit that this shape carries the *whole* data window and
+   nothing less: "the one XOUT can set the address and data at the same
+   time, but in this case data needs to be the full 32 bytes" (R11-R10 note,
+   line 7438) / "...the full 64 bytes" (R19-R18 note, line 7413). Legal
+   combined sizes are therefore exactly `{32, 64}` — 8 is never legal here.
+2. **Split** — a separate WR_ADDR XOUT followed by a separate WR_DATA-only
+   XOUT. §6.4.6.3.1.6's Programming Model is the later, more specific
+   statement of exactly what this flow allows, and it names 8 bytes as one
+   of its four legal data sizes. Table 6-106's "Size restrictions" list,
+   read under the combined-size notes it sits beside, is best understood as
+   an incomplete restatement of the split-flow rule (it also omits 8 — the
+   same gap the Programming Model list fills) rather than a second,
+   competing enumeration; it does not anywhere say "8 bytes is illegal."
+
+The model (`xfr/xfr2vbus_accelerator.py`, `_validate_size`) treats the two
+passages as governing different flows rather than picking one and silently
+discarding the other: `_VALID_SPLIT_SIZES = (1, 4, 8, 32, 64)` for the split
+flow, `_VALID_COMBINED_SIZES = (32, 64)` for the combined flow, selected by
+whether a given XOUT call actually touches a WR_ADDR register in addition to
+WR_DATA. In this model the two shapes are also geometrically distinct: a
+payload-bearing XOUT must start at `&R2.b0`, and the WR_ADDR registers sit
+immediately past the full 32-/64-byte WR_DATA window, so an XOUT cannot reach
+WR_ADDR without having already supplied the entire preceding WR_DATA window —
+an "8-byte combined" XOUT is not constructible through this call shape at
+all. `_validate_size` is still written as an explicit combined/split check
+(rather than relying on that geometry implicitly) so the rule survives a
+future refactor and is independently unit-tested
+(`tests/test_xfr2vbus_accelerator.py::TestWriteChannel::test_8_byte_combined_write_is_rejected`
+calls it directly, since the shape it guards against cannot be reached
+through `xout()`).
 
 ## Read commands (Table 6-107, lines 7451-7527)
 
