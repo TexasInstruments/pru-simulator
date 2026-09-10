@@ -102,14 +102,21 @@ class Simulator:
         self.xfr = XFRBus()
         self.memory = self._load_memory(config_path)
         self.constant_table = self._load_constants(config_path)
+        # XFR2VBUS reaches SoC CBASS0/MSMC memory, a single external bus
+        # shared by every core's accelerator instances (TRM 6.4.6.3.1) —
+        # mirrors how self.memory above is already shared across cores. No
+        # region is registered by default; see PRUCore.vbus_memory.
+        self.vbus_memory = MemoryBus()
         io_pru0 = IOPort()
         io_rtu0 = IOPort()
         io_pru1 = IOPort()
         self.cores: dict[str, PRUCore] = {
-            "pru0": PRUCore("PRU0", self.memory, self.xfr, io_pru0, self.constant_table),
-            "rtu0": PRUCore("RTU0", self.memory, self.xfr, io_rtu0, self.constant_table),
+            "pru0": PRUCore("PRU0", self.memory, self.xfr, io_pru0, self.constant_table,
+                            vbus_memory=self.vbus_memory),
+            "rtu0": PRUCore("RTU0", self.memory, self.xfr, io_rtu0, self.constant_table,
+                            vbus_memory=self.vbus_memory),
             "pru1": PRUCore("PRU1", self.memory, self.xfr, io_pru1, self.constant_table,
-                            dram_swap=True),
+                            dram_swap=True, vbus_memory=self.vbus_memory),
         }
 
         # Wire SD filters to each core's IOPort (PRU1 runs on its own clock)
