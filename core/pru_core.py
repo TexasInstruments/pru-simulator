@@ -35,6 +35,7 @@ from xfr.bswap_accelerator import (
     BSWAP_BYTE_ORDER,
     BSwapAccelerator,
 )
+from xfr.task_ring_accelerator import attach_task_ring
 
 
 # A memory fault whose base register is an uninitialised R2 is almost always
@@ -109,6 +110,11 @@ class PRUCore:
             BSWAP_4_8: BSwapAccelerator(self.registers, BSWAP_4_8),
             BSWAP_4_16: BSwapAccelerator(self.registers, BSWAP_4_16),
         }
+        # XFR2TR ring accelerator, broadside IDs 0x70/0x71/0x72.  TRM SPRUIM2J
+        # Table 6-60 places it on RTU_PRU1/0 only, so `attach_task_ring`
+        # registers nothing on the other cores and their XFR accesses to those
+        # IDs fall through to the fail-loud unsupported-device-ID path.
+        self.task_ring = attach_task_ring(self)
 
     # ------------------------------------------------------------------
     # Public API
@@ -580,6 +586,14 @@ class PRUCore:
         # poll never terminates.
         if self.iep is not None:
             self.iep.tick()
+
+        # ---- Advance the XFR2TR ring copy engine (RTU_PRU cores only) ---
+        # SPRUIM2J 6.4.6.3.3: the accelerator itself performs "a local memory
+        # copy of fixed (preconfigured) TR receive list to the Send list".
+        # Firmware polling tr_rsrc_busy (0x71 XIN, R7[0]) depends on this
+        # advancing; without it the poll never terminates.
+        if self.task_ring is not None:
+            self.task_ring.tick()
 
         # ---- Count instruction cycle ------------------------------------
         self.counters.tick()
