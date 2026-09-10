@@ -10,13 +10,29 @@ sideband/data layout used by XOUT and XIN.
 This model deliberately does not model the sideband word, ``rx_bytes``,
 ``tx_data_type`` packing, or PSI-L arbitration.  ``tx_max`` is a simulator
 constructor parameter, not a TRM-derived FIFO depth.
+
+Two behaviours here are simulator policy rather than documented silicon, and
+are called out so a run is not mistaken for evidence about either:
+
+* Table 6-108 says only ``rx_ready[3:0]``/``tx_ready[3:0]``, "one bit per PSI-L
+  thread", without naming the bit order.  This model uses ``bit == thread``, so
+  the threads reachable through 0x51..0x53 report in bits 1..3 and bit 0 is
+  always clear.  Firmware that assumes thread 1 lands in bit 0 will disagree.
+* Section 6.4.6.3.2.1.1 defines XID 0 for XIN only and says nothing about
+  writing it.  An XOUT or XCHG to 0x50 is therefore discarded and counted in
+  :attr:`XFRDMAAccelerator.status_writes` rather than raised, because a trap
+  would be this simulator's policy presented as hardware behaviour.
 """
 
 from __future__ import annotations
 
+import logging
 from collections import deque
 
 from xfr.accelerator import Accelerator
+
+
+logger = logging.getLogger(__name__)
 
 
 XFRDMA_STATUS_ID = 0x50
@@ -77,6 +93,7 @@ class XFRDMAAccelerator(Accelerator):
         self.device_id = device_id
         self.thread = device_id - XFRDMA_STATUS_ID
         self.hold_pc = False
+        self.status_writes: dict[str, int] = {}
 
     def xin(self, start_reg: int, length: int, start_byte: int = 0) -> bytes:
         self.hold_pc = False
@@ -90,7 +107,9 @@ class XFRDMAAccelerator(Accelerator):
 
     def xout(self, start_reg: int, data: bytes, start_byte: int = 0) -> None:
         self.hold_pc = False
-        self._require_thread()
+        if self.thread == 0:
+            self._note_status_write("XOUT")
+            return
         fifo = self.bridge.tx_fifos[self.thread]
         if len(fifo) >= self.bridge.tx_max:
             self.hold_pc = True
@@ -99,7 +118,9 @@ class XFRDMAAccelerator(Accelerator):
 
     def xchg(self, start_reg: int, data: bytes, start_byte: int = 0) -> bytes:
         self.hold_pc = False
-        self._require_thread()
+        if self.thread == 0:
+            self._note_status_write("XCHG")
+            return bytes(data)
         rx_fifo = self.bridge.rx_fifos[self.thread]
         tx_fifo = self.bridge.tx_fifos[self.thread]
         # Check both sides before consuming RX: a held XCHG is side-effect free.
@@ -112,6 +133,7 @@ class XFRDMAAccelerator(Accelerator):
 
     def reset(self) -> None:
         self.hold_pc = False
+        self.status_writes.clear()
         self.bridge.reset()
 
     def _status(self) -> bytes:
@@ -135,6 +157,23 @@ class XFRDMAAccelerator(Accelerator):
                 fifo.popleft()
         return bytes(result).ljust(length, b"\0")
 
-    def _require_thread(self) -> None:
-        if self.thread == 0:
-            raise ValueError("XFRDMA status ID only supports XIN")
+    def _note_status_write(self, opcode: str) -> None:
+        """Record a write to the status XID, which the TRM only defines for XIN.
+
+        SPRUIM2J 6.4.6.3.2.1.1 gives XID 0 a read-only status meaning and says
+        nothing about writing it, so this simulator discards the transfer rather
+        than trapping -- a trap would be a simulator policy presented as silicon
+        behaviour.  The event is recorded once per opcode so a run that depends
+        on it is still auditable.
+        """
+        if opcode in self.status_writes:
+            self.status_writes[opcode] += 1
+            return
+        self.status_writes[opcode] = 1
+        logger.warning(
+            "%s to XFRDMA status ID 0x%02X is not defined by SPRUIM2J "
+            "6.4.6.3.2.1.1; the transfer is discarded. Later writes are counted "
+            "in XFRDMAAccelerator.status_writes but not logged again.",
+            opcode,
+            self.device_id,
+        )

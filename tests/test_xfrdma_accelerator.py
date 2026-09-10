@@ -2,7 +2,7 @@
 
 import pytest
 
-from core.pru_core import PRUCore
+from core.pru_core import PRUCore, UnsupportedXFRError
 from mem.memory_bus import MemoryBus
 from mem.regions import MemoryRegion
 from pru_io.io_port import IOPort
@@ -81,13 +81,51 @@ def test_threads_are_separate_and_empty_threads_hold():
         assert empty.hold_pc
 
 
-def test_registration_removal_fails_loudly(monkeypatch):
+def test_held_xin_leaves_the_destination_registers_alone():
+    """A stalled broadside read holds the pipeline; it must not damage R2."""
+    core = make_core("ldi32 r2, 0xDEADBEEF\nxin 0x51, &r2, 4\nhalt\n")
+    while core.pc < 2:
+        core.step()
+    assert core.registers.read_full(2) == 0xDEADBEEF
+    for _ in range(3):
+        core.step()
+        assert core.pc == 2, "an empty RX thread must hold the PC"
+        assert core.registers.read_full(2) == 0xDEADBEEF
+    # Once data arrives the same instruction completes and writes for real.
+    bridge(core).inject_rx(1, b"okay")
+    core.step()
+    assert core.pc == 3
+    assert core.registers.read_full(2) == int.from_bytes(b"okay", "little")
+
+
+def test_registration_removal_is_caught_by_the_status_vector(monkeypatch):
+    """Mutation check: without the 0x50 registration the status read is wrong.
+
+    PR #30 made an unmodelled device ID read zeros rather than raise, so the
+    proof that registration matters has to be the vector itself, not a trap.
+    """
+    core = make_core("xin 0x50, &r2, 8\nhalt\n")
+    dma = bridge(core)
+    dma.inject_rx(1, b"rx")
+    monkeypatch.delitem(core.accelerators, 0x50)
+    core.run()
+    assert core.registers.read_full(2) == 0, "unmodelled ID must read zeros"
+    assert 0x50 in core.unsupported_xfr
+
+
+def test_registration_removal_raises_only_in_strict_diagnostic_mode(monkeypatch):
     core = make_core("xin 0x50, &r2, 8\nhalt\n")
     monkeypatch.delitem(core.accelerators, 0x50)
-    with pytest.raises(RuntimeError, match="XIN XFR device ID 80 \\(0x50\\) is not modelled"):
+    core.strict_unsupported_xfr = True
+    with pytest.raises(UnsupportedXFRError, match="0x50"):
         core.step()
 
 
-def test_status_id_rejects_xout():
-    with pytest.raises(ValueError, match="status ID"):
-        XFRDMAAccelerator(XFRDMABridge()).xout(2, b"test")
+def test_status_id_discards_writes_instead_of_trapping():
+    """XID 0 is read-only in the TRM; writing it is undefined, not an error."""
+    status = XFRDMAAccelerator(XFRDMABridge())
+    status.xout(2, b"test")
+    assert status.xchg(2, b"test") == b"test"
+    assert status.status_writes == {"XOUT": 1, "XCHG": 1}
+    status.reset()
+    assert status.status_writes == {}
