@@ -29,6 +29,7 @@ from xfr.xfr_bus import XFRBus, IPC_SPAD, SPAD_BANK0, SPAD_BANK1, SPAD_BANK2
 from pru_io.io_port import IOPort
 from xfr.accelerator import Accelerator
 from xfr.mac_accelerator import MACAccelerator
+from xfr.xfrdma_accelerator import XFRDMAAccelerator, XFRDMABridge, XFRDMA_STATUS_ID, XFRDMA_THREAD_IDS
 from xfr.bswap_accelerator import (
     BSWAP_4_8,
     BSWAP_4_16,
@@ -103,8 +104,11 @@ class PRUCore:
 
         self._parser = Parser()
         self._branch = BranchUnit()
+        xfrdma_bridge = XFRDMABridge()
         self.accelerators: dict[int, Accelerator] = {
             MACAccelerator.DEVICE_ID: MACAccelerator(self.registers),
+            XFRDMA_STATUS_ID: XFRDMAAccelerator(xfrdma_bridge, XFRDMA_STATUS_ID),
+            **{device_id: XFRDMAAccelerator(xfrdma_bridge, device_id) for device_id in XFRDMA_THREAD_IDS},
             BSWAP_BYTE_ORDER: BSwapAccelerator(self.registers, BSWAP_BYTE_ORDER),
             BSWAP_4_8: BSwapAccelerator(self.registers, BSWAP_4_8),
             BSWAP_4_16: BSwapAccelerator(self.registers, BSWAP_4_16),
@@ -447,8 +451,12 @@ class PRUCore:
             start_reg = reg_op.index if isinstance(reg_op, Register) else 0
             start_byte = (reg_op.offset // 8) if isinstance(reg_op, Register) else 0
             if device_id in self.accelerators:
-                data = self.accelerators[device_id].xin(start_reg, length, start_byte)
+                accelerator = self.accelerators[device_id]
+                data = accelerator.xin(start_reg, length, start_byte)
                 self._write_registers_from_bytes(start_reg, data, start_byte)
+                if getattr(accelerator, "hold_pc", False):
+                    branch_taken = True
+                    self.counters.stall_cycles += 1
             elif self.xfr.xfr_shift_en and device_id in (SPAD_BANK0, SPAD_BANK1, SPAD_BANK2):
                 self._xin_shifted(device_id, start_reg, length)
             elif not self.xfr.supports(device_id):
@@ -467,7 +475,11 @@ class PRUCore:
             start_byte = (reg_op.offset // 8) if isinstance(reg_op, Register) else 0
             if device_id in self.accelerators:
                 data = self._read_registers_to_bytes(start_reg, length, start_byte)
-                self.accelerators[device_id].xout(start_reg, data, start_byte)
+                accelerator = self.accelerators[device_id]
+                accelerator.xout(start_reg, data, start_byte)
+                if getattr(accelerator, "hold_pc", False):
+                    branch_taken = True
+                    self.counters.stall_cycles += 1
             elif self.xfr.xfr_shift_en and device_id in (SPAD_BANK0, SPAD_BANK1, SPAD_BANK2):
                 self._xout_shifted(device_id, start_reg, length)
             elif not self.xfr.supports(device_id):
@@ -486,8 +498,12 @@ class PRUCore:
             start_byte = (reg_op.offset // 8) if isinstance(reg_op, Register) else 0
             if device_id in self.accelerators:
                 data = self._read_registers_to_bytes(start_reg, length, start_byte)
-                old_data = self.accelerators[device_id].xchg(start_reg, data, start_byte)
+                accelerator = self.accelerators[device_id]
+                old_data = accelerator.xchg(start_reg, data, start_byte)
                 self._write_registers_from_bytes(start_reg, old_data, start_byte)
+                if getattr(accelerator, "hold_pc", False):
+                    branch_taken = True
+                    self.counters.stall_cycles += 1
             elif self.xfr.xfr_shift_en and device_id in (SPAD_BANK0, SPAD_BANK1, SPAD_BANK2):
                 self._xchg_shifted(device_id, start_reg, length)
             elif not self.xfr.supports(device_id):
