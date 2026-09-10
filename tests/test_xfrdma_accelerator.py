@@ -2,12 +2,13 @@
 
 import pytest
 
-from core.pru_core import PRUCore, UnsupportedXFRError
+from core.pru_core import PRUCore
 from mem.memory_bus import MemoryBus
 from mem.regions import MemoryRegion
 from pru_io.io_port import IOPort
 from xfr.xfr_bus import XFRBus
 from xfr.xfrdma_accelerator import XFRDMAAccelerator, XFRDMABridge
+from xfr.mac_accelerator import MACAccelerator
 
 
 def make_core(asm: str) -> PRUCore:
@@ -31,6 +32,12 @@ def test_status_is_registered_at_0x50_and_has_two_words():
     core.run()
     assert core.registers.read_full(2) == 0x2
     assert core.registers.read_full(3) == 0xC
+
+
+def test_global_device_id_zero_remains_the_mac_accelerator():
+    core = make_core("halt\n")
+    assert isinstance(core.accelerators[0], MACAccelerator)
+    assert set(range(0x50, 0x54)).issubset(core.accelerators)
 
 
 def test_four_byte_status_xin_is_rx_ready_only():
@@ -99,26 +106,11 @@ def test_held_xin_leaves_the_destination_registers_alone():
 
 
 def test_registration_removal_is_caught_by_the_status_vector(monkeypatch):
-    """Mutation check: without the 0x50 registration the status read is wrong.
-
-    PR #30 made an unmodelled device ID read zeros rather than raise, so the
-    proof that registration matters has to be the vector itself, not a trap.
-    """
-    core = make_core("xin 0x50, &r2, 8\nhalt\n")
-    dma = bridge(core)
-    dma.inject_rx(1, b"rx")
-    monkeypatch.delitem(core.accelerators, 0x50)
-    core.run()
-    assert core.registers.read_full(2) == 0, "unmodelled ID must read zeros"
-    assert 0x50 in core.unsupported_xfr
-
-
-def test_registration_removal_raises_only_in_strict_diagnostic_mode(monkeypatch):
+    """Mutation check: the PR #30 boundary fails loudly without 0x50."""
     core = make_core("xin 0x50, &r2, 8\nhalt\n")
     monkeypatch.delitem(core.accelerators, 0x50)
-    core.strict_unsupported_xfr = True
-    with pytest.raises(UnsupportedXFRError, match="0x50"):
-        core.step()
+    with pytest.raises(RuntimeError, match="XFR device ID 80 \\(0x50\\).*not modelled"):
+        core.run()
 
 
 def test_status_id_discards_writes_instead_of_trapping():
