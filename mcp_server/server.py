@@ -640,6 +640,7 @@ def run_stdio_server():
         from mcp.server import Server
         from mcp.server.stdio import stdio_server
         from mcp.types import Tool, TextContent
+        from mcp import types
         import asyncio
         import inspect
         import json
@@ -725,8 +726,90 @@ def run_stdio_server():
             )
 
         async def main():
-            async with stdio_server() as (read_stream, write_stream):
-                await server.run(read_stream, write_stream, server.create_initialization_options())
+            # The current MCP SDK's stdio_server wraps stdin/stdout with
+            # anyio.to_thread.  The execution environment used by the
+            # simulator tests has a non-progressing anyio worker pool, while
+            # asyncio's native pipe transports work normally.  Use the
+            # native path for the constructor-callback API; retain the
+            # historical transport for older decorator-based SDKs.
+            if hasattr(Server, "list_tools"):
+                async with stdio_server() as (read_stream, write_stream):
+                    await server.run(
+                        read_stream, write_stream,
+                        server.create_initialization_options())
+                return
+
+            import anyio
+            from mcp.shared.message import SessionMessage
+
+            class AsyncioReadStream:
+                def __init__(self, reader):
+                    self._reader = reader
+
+                def __aiter__(self):
+                    return self
+
+                async def __anext__(self):
+                    try:
+                        return await self.receive()
+                    except anyio.EndOfStream:
+                        raise StopAsyncIteration
+
+                async def receive(self):
+                    line = await self._reader.readline()
+                    if not line:
+                        raise anyio.EndOfStream
+                    try:
+                        message = types.jsonrpc_message_adapter.validate_json(
+                            line, by_name=False)
+                    except Exception as exc:  # noqa: BLE001
+                        return exc
+                    return SessionMessage(message=message)
+
+                async def aclose(self):
+                    return None
+
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *args):
+                    return None
+
+            class AsyncioWriteStream:
+                def __init__(self, transport):
+                    self._transport = transport
+
+                async def send(self, session_message):
+                    message = session_message.message.model_dump_json(
+                        by_alias=True, exclude_unset=True) + "\n"
+                    self._transport.write(message.encode("utf-8"))
+                    await asyncio.sleep(0)
+
+                async def aclose(self):
+                    self._transport.close()
+                    await asyncio.sleep(0)
+
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *args):
+                    await self.aclose()
+
+            loop = asyncio.get_running_loop()
+            reader = asyncio.StreamReader()
+            read_protocol = asyncio.StreamReaderProtocol(reader)
+            read_transport, _ = await loop.connect_read_pipe(
+                lambda: read_protocol, sys.stdin.buffer)
+            write_protocol = asyncio.BaseProtocol()
+            write_transport, _ = await loop.connect_write_pipe(
+                lambda: write_protocol, sys.stdout.buffer)
+            try:
+                await server.run(
+                    AsyncioReadStream(reader),
+                    AsyncioWriteStream(write_transport),
+                    server.create_initialization_options())
+            finally:
+                read_transport.close()
 
         asyncio.run(main())
 
