@@ -35,7 +35,10 @@ _FIFO_DEPTH = 4
 _UART_CLOCK_MHZ = 192.0
 
 # TX FSM states
-IDLE, WIRE, TST, TRANSMIT = "IDLE", "WIRE", "TST", "TRANSMIT"
+# CLKRUN: TX data is exhausted but PERIF<m>_CLK is still free-running. Required
+# by clk_mode 0/1/2 (TRM 6.4.5.2.2.3.6.3.3) — the clock is NOT stopped by the
+# transmitter running out of data, it is stopped by the RX frame counter.
+IDLE, WIRE, TST, TRANSMIT, CLKRUN = "IDLE", "WIRE", "TST", "TRANSMIT", "CLKRUN"
 
 
 class PerifChannel:
@@ -60,6 +63,7 @@ class PerifChannel:
         self._frame_bits: list[int] = []   # bit sequence still to send (MSB-first)
         self._bit_index = 0
         self._phase_end_ns = 0.0           # end of the current wire/tst phase
+        self._tx_half_toggles = 0          # half-period toggles since transmit
         self._go_ns = 0.0
 
         # Continuous mode (tx_frame_size == 0): live byte-at-a-time FIFO
@@ -76,6 +80,7 @@ class PerifChannel:
         self.rx_fifo: list[int] = []
         self.rx_valid = False
         self.rx_ovf = False
+        self.tx_out_en_transitions: list[tuple[float, int]] = []
         self.rx_eof = False
         self._rx_shift = 0
         self._rx_started = False
@@ -95,13 +100,26 @@ class PerifChannel:
     def _src_mhz(self, clk_sel: int) -> float:
         return self.core_clock_mhz if clk_sel == 1 else self.uart_clock_mhz
 
+    # The dividers are "div16fr" - a fractional divider whose FRAC bit adds a
+    # HALF step, not a doubling. TRM Table 6-82 lists an effective divider of
+    # 1.5, which a (frac+1) multiplier cannot express. Modelling FRAC as a x2
+    # breaks the invariant the TRM states normatively: "The OS clock rate
+    # divided by the 1x clock rate must equal PRU0_ED_RX_SAMPLE_SIZE". TI's
+    # own driver relies on the half step - bissc_drv.c computes
+    # rx_div = source/(baud*8) - 1, which is 11.5 for the 2 MHz case.
+    @staticmethod
+    def _divider(div_factor: int, frac: int) -> float:
+        return (div_factor + 1) + (0.5 if frac else 0.0)
+
     def tx_clock_period_ns(self) -> float:
-        n = (self.regs.get_tx_div_factor_frac() + 1) * (self.regs.get_tx_div_factor() + 1)
+        n = self._divider(self.regs.get_tx_div_factor(),
+                          self.regs.get_tx_div_factor_frac())
         f = self._src_mhz(self.regs.get_tx_clk_sel()) / n
         return 1000.0 / f
 
     def rx_clock_period_ns(self) -> float:
-        n = (self.regs.get_rx_div_factor_frac() + 1) * (self.regs.get_rx_div_factor() + 1)
+        n = self._divider(self.regs.get_rx_div_factor(),
+                          self.regs.get_rx_div_factor_frac())
         f = self._src_mhz(self.regs.get_rx_clk_sel()) / n
         return 1000.0 / f
 
@@ -187,10 +205,12 @@ class PerifChannel:
         else:
             self._enter_transmit(now_ns)
         self.tx_out_en = 1
+        self._record_out_en(now_ns)
 
     def _enter_transmit(self, now_ns: float) -> None:
         self.fsm = TRANSMIT
         self._phase_end_ns = now_ns
+        self._tx_half_toggles = 0
         self.tx_out_en = 1
         if self.regs.get_tx_frame_size(self.index) == 0:
             self._cont_bit_idx = 0
@@ -221,23 +241,74 @@ class PerifChannel:
                 break
         return val
 
+    def _record_out_en(self, t_ns: float) -> None:
+        """Log a change of the transmit output-enable, with its timestamp.
+
+        Half-duplex protocols are specified on how fast the driver STOPS
+        driving, not only on the data it drove. Encoder protocols specify a release
+        window between one end finishing and the other starting; without a timestamped record of tx_out_en there is nothing to
+        measure that against.
+
+        `tx_out_en` is the peripheral's own drive state, asserted when the
+        transmitter enters TRANSMIT and cleared on the last TX bit. It is NOT an
+        external transceiver's direction-enable pin - that is a board-level
+        signal with its own propagation delay, and nothing here models it.
+        """
+        if self.tx_out_en_transitions and \
+                self.tx_out_en_transitions[-1][1] == self.tx_out_en:
+            return
+        self.tx_out_en_transitions.append((t_ns, self.tx_out_en))
+
+    def tx_release_ns(self) -> float | None:
+        """Time from the last transmitted data bit to the line being released.
+
+        Returns None if the transmitter never drove, or has not released yet.
+        """
+        falling = [t for t, v in self.tx_out_en_transitions if v == 0]
+        if not falling or not self.tx_transitions:
+            return None
+        release = falling[-1]
+        last_data = max((t for t, _ in self.tx_transitions if t <= release),
+                        default=None)
+        if last_data is None:
+            return None
+        return release - last_data
+
     def _finish_frame(self) -> None:
-        """Frame data done: drop out_en, apply clock-mode stop level.
+        """TX data done. Whether the CLOCK stops here depends on clk_mode.
 
         Preload-and-go mode flushes the FIFO (spec 7.1). Continuous mode
         never snapshots the FIFO, so it is already at its true live depth —
         any bytes pushed right at the end stay queued for the next go.
         """
-        self.fsm = IDLE
         self.busy = False
         self.tx_out_en = 0
+        self._record_out_en(self._phase_end_ns)
         if self.regs.get_tx_frame_size(self.index) == 0:
             self._cont_byte = None
             self._cont_bit_idx = 0
         else:
             self.tx_fifo = []
             self._frame_bits = []
-        # Clock-mode stop level (spec 7.6): mode 0 stops low, others high.
+
+        # TRM 6.4.5.2.2.3.6.3.3, "Stop Conditions", r30[20:19]:
+        #   0  free-running, stop LOW  on last RX frame
+        #   1  free-running, stop HIGH on last RX frame   (reset default)
+        #   2  free-run (only a reinit leaves this mode)
+        #   3  stop HIGH on last TX bit
+        # Only mode 3 stops the clock when the transmitter runs out of data.
+        # In 0/1/2 the clock keeps running so the far end can be clocked in —
+        # which is the whole point for a read transaction, where the master
+        # sends a short request and then clocks a long response back.
+        if self.clk_mode == 3:
+            self.fsm = IDLE
+            self.tx_clk_pin = 1          # stop high on last TX bit
+        else:
+            self.fsm = CLKRUN            # keep PERIF<m>_CLK free-running
+
+    def _stop_clock_on_rx_frame(self) -> None:
+        """Modes 0/1 stop condition: the RX frame counter completed."""
+        self.fsm = IDLE
         self.tx_clk_pin = 0 if self.clk_mode == 0 else 1
 
     def tx_reinit(self) -> None:
@@ -271,6 +342,7 @@ class PerifChannel:
         self._phase_end_ns = 0.0
         self._go_ns = 0.0
         self.tx_transitions = [(0.0, 0)]
+        self.tx_out_en_transitions = []
 
         self.rx_en = False
         self.rx_fifo = []
@@ -293,13 +365,26 @@ class PerifChannel:
         """
         if self.fsm != TRANSMIT:
             return self.tx_data_pin
+        self._tx_advance_data()
+        if self.fsm == TRANSMIT:
+            self.tx_clk_pin ^= 1
+        return self.tx_data_pin
+
+    def _tx_advance_data(self) -> int:
+        """Advance the serializer by one DATA bit, without touching the clock.
+
+        Split out from `tx_bit_edge` so the ns-timeline path can drive the
+        clock at its own (half-period) granularity while still emitting
+        exactly one data bit per full clock cycle.
+        """
+        if self.fsm != TRANSMIT:
+            return self.tx_data_pin
         if self.regs.get_tx_frame_size(self.index) == 0:
             return self._tx_bit_edge_continuous()
         # bit 0 is already on the wire (set on entering TRANSMIT); advance first.
         self._bit_index += 1
         if self._bit_index < len(self._frame_bits):
             self.tx_data_pin = self._frame_bits[self._bit_index]
-            self.tx_clk_pin ^= 1
         else:
             self._finish_frame()
         return self.tx_data_pin
@@ -308,17 +393,18 @@ class PerifChannel:
         """Continuous-mode bit edge: shift the current byte, then pop the
         next one from the (live) FIFO once 8 bits are out. Ends the frame
         if the FIFO has run dry (spec: software must refill by half-empty)."""
+        # Data only - the clock is toggled by the caller (`tx_bit_edge` for the
+        # edge-level API, `advance()` for the ns timeline), so that one data
+        # bit corresponds to exactly one full clock cycle in both paths.
         self._cont_bit_idx += 1
         if self._cont_bit_idx < 8:
             self.tx_data_pin = (self._cont_byte >> (7 - self._cont_bit_idx)) & 1
-            self.tx_clk_pin ^= 1
         else:
             nxt = self._pop_tx_byte()
             if nxt is not None:
                 self._cont_byte = nxt
                 self._cont_bit_idx = 0
                 self.tx_data_pin = (nxt >> 7) & 1
-                self.tx_clk_pin ^= 1
             else:
                 self._finish_frame()
         return self.tx_data_pin
@@ -389,6 +475,12 @@ class PerifChannel:
         if frame_size != 0 and self._rx_byte_cnt >= frame_size:
             self.rx_eof = True
             self._rx_byte_cnt = 0
+            # TRM stop condition for clk_mode 0/1: "the clock will remain
+            # free-running until the receive module has received the number of
+            # bits indicated in rx_frame_counter". Mode 2 free-runs until a
+            # reinit; mode 3 already stopped on the last TX bit.
+            if self.fsm == CLKRUN and self.clk_mode in (0, 1):
+                self._stop_clock_on_rx_frame()
 
     # ==================================================================
     # ns-timeline advance (used by the loopback / core step)
@@ -409,12 +501,31 @@ class PerifChannel:
             self._enter_transmit(now_ns)
 
         # --- TX transmit: emit bits at the TX sample-clock rate ---
+        # PERIF<m>_CLK frequency is source/((frac+1)*(div_factor+1)) (spec 4.4),
+        # so a full cycle takes tx_clock_period_ns() and the pin must toggle
+        # TWICE in that time. Toggling once per period emits a square wave at
+        # half the programmed rate and stretches every bit cell to two clock
+        # periods, which the receiver then oversamples into two FIFO bytes.
+        # The data bit still advances once per full cycle.
         if self.fsm == TRANSMIT:
-            period = self.tx_clock_period_ns()
-            while self.fsm == TRANSMIT and now_ns >= self._phase_end_ns + period:
-                self._phase_end_ns += period
-                self.tx_bit_edge()
+            half = self.tx_clock_period_ns() / 2.0
+            while self.fsm == TRANSMIT and now_ns >= self._phase_end_ns + half:
+                self._phase_end_ns += half
+                self._tx_half_toggles += 1
+                self.tx_clk_pin ^= 1
+                if self._tx_half_toggles % 2 == 0:
+                    self._tx_advance_data()      # one data bit per full cycle
                 self._record_line(self._phase_end_ns)
+
+        # --- Free-running clock after TX data is exhausted (clk_mode 0/1/2) ---
+        # The RX oversampler below consumes these edges; without them a read
+        # transaction can never clock its response in and the RX frame counter
+        # never reaches its stop condition.
+        if self.fsm == CLKRUN:
+            period = self.tx_clock_period_ns()
+            while self.fsm == CLKRUN and now_ns >= self._phase_end_ns + period:
+                self._phase_end_ns += period
+                self.tx_clk_pin ^= 1
 
         # --- RX: sample the input line at the RX oversample-clock rate ---
         if self.rx_en:

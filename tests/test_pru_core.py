@@ -629,3 +629,107 @@ class TestSubRegisters:
         core = make_core(asm)
         run_to_halt(core)
         assert reg(core, 0) & 0xFFFF == 150
+
+
+# ---------------------------------------------------------------------------
+# R31 byte / half-word selection
+# ---------------------------------------------------------------------------
+
+class TestR31SubRegisterSelection:
+    """R31 is read live and written to hardware, but the operand's byte or
+    half-word selection still applies.
+
+    R31.b3 is the standard idiom for the Peripheral Interface valid/overflow
+    flags (bits [31:24]); R30 in the same function already derives its write
+    strobe from offset/width, so the two paths disagreed.
+    """
+
+    @staticmethod
+    def _reg(offset, width):
+        from core.operands import Register
+        return Register(index=31, offset=offset, width=width)
+
+    def _core(self):
+        mem = MemoryBus()
+        mem.add_region(MemoryRegion("DRAM0", 0x0000, 0x2000, 2, 1, 0))
+        return PRUCore("PRU0", mem, XFRBus(), IOPort())
+
+    def test_read_honours_byte_selection(self):
+        core = self._core()
+        core.io_port.read_r31 = lambda: 0xAABBCCDD
+        b3, b0, full = self._reg(24, 8), self._reg(0, 8), self._reg(0, 32)
+        assert core._read_operand(b3) == 0xAA
+        assert core._read_operand(b0) == 0xDD
+        assert core._read_operand(full) == 0xAABBCCDD
+
+    def test_write_honours_byte_selection(self):
+        core = self._core()
+        seen = []
+        core.io_port.write_r31 = seen.append
+        core._write_operand(self._reg(24, 8), 0x01)
+        core._write_operand(self._reg(0, 8), 0x01)
+        core._write_operand(self._reg(0, 32), 0x12345678)
+        assert seen == [0x01000000, 0x00000001, 0x12345678]
+# WBS / WBC — wait until bit set / clear
+# ---------------------------------------------------------------------------
+
+class TestWaitBitInstructions:
+    """WBS/WBC must STALL the core, not fall through.
+
+    In the ISA they are QBBS/QBBC with a zero branch offset - branch-to-self -
+    so holding the PC is the encoding's own semantics. A no-op implementation
+    lets peripheral-driven firmware race past its own status polls: it never
+    yields the simulated time the peripheral needs to produce data, so the bit
+    it is waiting for never gets a chance to change.
+    """
+
+    @staticmethod
+    def _wait_word(rs1_num: int, bit: int, wbc: bool) -> int:
+        """Encode format-5 with a zero branch offset, which decodes to WBS/WBC."""
+        word = 0b110 << 29                 # format 5
+        word |= (1 if wbc else 0) << 28    # bs: set -> WBC, clear -> WBS
+        word |= 1 << 24                    # io = 1: immediate bit number
+        word |= (bit & 0x1F) << 16         # bit number
+        word |= (0 & 7) << 13              # rs1_sel: byte 0
+        word |= (rs1_num & 0x1F) << 8
+        return word                        # br_hi/br_lo left 0 -> offset 0
+
+    def _core_with(self, words):
+        mem = MemoryBus()
+        mem.add_region(MemoryRegion("DRAM0", 0x0000, 0x2000, 2, 1, 0))
+        core = PRUCore("PRU0", mem, XFRBus(), IOPort())
+        core.load_binary(words, b"", 0)
+        return core
+
+    def test_wbs_decodes_from_a_zero_offset_branch(self):
+        core = self._core_with([self._wait_word(2, 4, wbc=False)])
+        assert core.instructions[0].opcode == "WBS"
+
+    def test_wbs_holds_pc_until_bit_is_set(self):
+        core = self._core_with([self._wait_word(2, 4, wbc=False)])
+        core.registers.write_full(2, 0)
+        for _ in range(20):
+            core.step()
+        assert core.pc == 0, "WBS fell through with the bit clear"
+
+        core.registers.write_full(2, 1 << 4)
+        core.step()
+        assert core.pc == 1, "WBS did not release once the bit was set"
+
+    def test_wbc_holds_pc_until_bit_is_clear(self):
+        core = self._core_with([self._wait_word(2, 4, wbc=True)])
+        core.registers.write_full(2, 1 << 4)
+        for _ in range(20):
+            core.step()
+        assert core.pc == 0, "WBC fell through with the bit set"
+
+        core.registers.write_full(2, 0)
+        core.step()
+        assert core.pc == 1
+
+    def test_waiting_accumulates_stall_cycles(self):
+        core = self._core_with([self._wait_word(2, 4, wbc=False)])
+        core.registers.write_full(2, 0)
+        for _ in range(10):
+            core.step()
+        assert core.counters.stall_cycles > 0

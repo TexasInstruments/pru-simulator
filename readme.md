@@ -85,11 +85,32 @@ See [getting_started.md](getting_started.md) for step-by-step walkthroughs of al
 | `perif_duty_cycle_sweep.asm` | Peripheral Interface TX: 125 Mbit 0%→100% duty-cycle pulse sweep on PRU0 ch0 (needs `memory_perif_125mbit_demo.cfg`) |
 | `pif_eth/` | 8b/10b line-coded Ethernet TX over the Peripheral Interface (PRU0 ch0): firmware PRNG/CRC-32, running-disparity 8b/10b via DRAM0 LUT, pcap output. See [PROJECT_REPORT.md](source/pif_eth/PROJECT_REPORT.md) ([PDF](source/pif_eth/PROJECT_REPORT.pdf)) · [handoff note](docs/handoff/2026-07-20-pif-eth.md). Experimental higher-clock variants `pif_eth_tx_n2*.asm` (not wired into the test suite): [design note](docs/superpowers/specs/2026-07-21-pif-eth-n2-125mbaud-design.md). PRU1 RX over the PRU0→PRU1 loopback (`pif_eth_rx_o1_raw.asm` + `rx_driver.py`), CI-exercised: [design note](docs/superpowers/specs/2026-07-21-pif-eth-pru1-rx-design.md) · [handoff note](docs/handoff/2026-07-22-pif-eth-rx-o1.md) |
 
+## Headless JSON runner
+
+CI and agent workflows can execute an assembly source or a linked TI PRU ELF
+without starting the web UI.  The command writes exactly one deterministic JSON
+object to stdout; load errors exit 2, unmet conditions or exhausted budgets exit
+3, and unexpected runner errors exit 4.
+
+```bash
+python -m tools.headless_runner --json --assembly source/example.asm --core pru0 --max-steps 10000
+python -m tools.headless_runner --json --elf build/firmware.out --until 'reg:r0==0x55' --max-cycles 5000
+```
+
+`--until` accepts `halt` (the default), `cycles>=N`, register equality or
+inequality, 32-bit little-endian memory comparisons, and GPI/GPO pin equality.
+Both `--max-steps` and `--max-cycles` are hard budgets.  JSON remains the only
+stdout format when `--json` is omitted; the flag makes the CI contract explicit.
+
 ## Running Tests
 
 ```bash
-python -m pytest --tb=short -q
+python -m pytest tests --tb=short -q
 ```
+
+The maintained test suite lives under `tests/`.  Files under `references/` are
+standalone experiments and may require optional packages (for example,
+`matplotlib`); they are not part of the CI test suite.
 
 ## Version
 

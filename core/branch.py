@@ -81,10 +81,24 @@ class BranchUnit:
         """Branch if op_val <= reg_val."""
         return op_val <= reg_val
 
+    @staticmethod
+    def _bit_index(bit: int) -> int:
+        """Validate a QBBS/QBBC bit position.
+
+        Defence in depth. The parser rejects a non-literal bit operand, but the
+        shift below must not be reachable with a bad value from any other path:
+        a negative count raises a bare ValueError that escapes the simulator and
+        kills the run with a Python traceback instead of a diagnosable error.
+        """
+        if not isinstance(bit, int) or bit < 0 or bit > 31:
+            raise ValueError(
+                f"QBBS/QBBC bit position must be 0-31, got {bit!r}")
+        return bit
+
     def qbbs(self, reg_val: int, bit: int) -> bool:
         """Branch if bit *bit* is SET in reg_val."""
-        return bool((reg_val >> bit) & 1)
+        return bool((reg_val >> self._bit_index(bit)) & 1)
 
     def qbbc(self, reg_val: int, bit: int) -> bool:
         """Branch if bit *bit* is CLEAR in reg_val."""
-        return not bool((reg_val >> bit) & 1)
+        return not bool((reg_val >> self._bit_index(bit)) & 1)

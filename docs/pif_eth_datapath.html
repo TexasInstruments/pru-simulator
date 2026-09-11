@@ -1,0 +1,585 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pif_eth Datapath</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<style>
+:root{
+  --paper:#ffffff; --surface:#ffffff; --surface-2:#f5f7f8; --sunk:#eef1f3;
+  --ink:#0d1418; --ink-2:#2c3941; --muted:#4e5c66; --rule:#c4ced4; --hair:#dfe5e9;
+  --tx:#8a5d03; --rx:#0a6272;
+  --tx-soft:rgba(138,93,3,.09); --rx-soft:rgba(10,98,114,.08);
+}
+/* Deliberate single-theme design: a white datasheet ground. Every colour is
+   painted explicitly so the page holds on a light or dark host background. */
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--paper); color:var(--ink);
+  font-family:"IBM Plex Sans","Helvetica Neue",Arial,sans-serif;
+  font-size:17px; line-height:1.62; -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1180px; margin:0 auto; padding:56px 28px 96px; display:flex; flex-direction:column; gap:56px}
+
+/* ---------- masthead ---------- */
+.masthead{display:flex; flex-direction:column; gap:18px; border-bottom:2px solid var(--ink); padding-bottom:26px}
+.eyebrow{
+  font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:12px; font-weight:500; letter-spacing:.16em;
+  text-transform:uppercase; color:var(--muted);
+}
+h1{
+  font-family:"IBM Plex Sans Condensed","IBM Plex Sans",sans-serif; font-weight:700;
+  font-size:clamp(38px,6.2vw,62px); line-height:1.02; letter-spacing:-.015em; margin:0;
+  text-wrap:balance;
+}
+.standfirst{margin:0; max-width:62ch; color:var(--ink-2); font-size:18.5px; line-height:1.55}
+.chips{display:flex; flex-wrap:wrap; gap:8px}
+.chip{
+  font-family:"IBM Plex Mono",monospace; font-size:12px; letter-spacing:.04em;
+  border:1px solid var(--rule); border-radius:2px; padding:4px 9px; color:var(--ink-2);
+  background:var(--surface);
+}
+.chip.tx{border-color:var(--tx); color:var(--tx); background:var(--tx-soft)}
+.chip.rx{border-color:var(--rx); color:var(--rx); background:var(--rx-soft)}
+
+/* ---------- sections ---------- */
+section{display:flex; flex-direction:column; gap:20px}
+h2{
+  font-family:"IBM Plex Sans Condensed","IBM Plex Sans",sans-serif; font-weight:600;
+  font-size:28px; letter-spacing:-.005em; margin:0; text-wrap:balance;
+}
+h2 .num{
+  font-family:"IBM Plex Mono",monospace; font-size:12.5px; font-weight:500; color:var(--muted);
+  letter-spacing:.1em; margin-right:12px; vertical-align:3px;
+}
+p{margin:0; max-width:68ch}
+p + p{margin-top:-6px}
+
+/* ---------- figures ---------- */
+figure{margin:0; display:flex; flex-direction:column; gap:12px}
+.canvas{
+  background:var(--surface); border:1px solid var(--rule); border-radius:3px;
+  padding:20px 18px; overflow-x:auto; box-shadow:0 1px 0 rgba(15,22,27,.04);
+}
+.canvas svg{display:block; width:100%; min-width:760px; height:auto; color:var(--ink)}
+figcaption{font-size:14.5px; color:var(--ink-2); max-width:78ch}
+figcaption b{color:var(--ink-2); font-weight:600}
+
+/* svg typography */
+.dg text{font-family:"IBM Plex Sans","Helvetica Neue",sans-serif; fill:currentColor}
+.dg .mono{font-family:"IBM Plex Mono",ui-monospace,monospace}
+.dg .gt{font-family:"IBM Plex Mono",monospace; font-size:11px; font-weight:500; letter-spacing:.13em; text-transform:uppercase; fill:var(--muted)}
+.dg .bt{font-size:13.5px; font-weight:600; text-anchor:middle}
+.dg .bs{font-family:"IBM Plex Mono",monospace; font-size:10.5px; text-anchor:middle; fill:var(--muted)}
+.dg .lbl{font-family:"IBM Plex Mono",monospace; font-size:10.5px; fill:var(--muted)}
+.dg .grp{fill:var(--surface-2); stroke:var(--hair); stroke-width:1}
+.dg .box{fill:var(--surface); stroke:var(--ink-2); stroke-width:1.25; rx:2}
+.dg .mem{fill:var(--sunk); stroke:var(--rule); stroke-width:1}
+.dg .flow{stroke:currentColor; stroke-width:1.55; fill:none}
+.dg .hair{stroke:var(--hair); stroke-width:1}
+.dg .txline{stroke:var(--tx); stroke-width:1.8; fill:none}
+.dg .rxline{stroke:var(--rx); stroke-width:1.8; fill:none}
+.dg .dash{stroke-dasharray:5 4}
+
+.legend{display:flex; flex-wrap:wrap; gap:18px 26px; font-size:13.5px; color:var(--ink-2)}
+.legend span{display:inline-flex; align-items:center; gap:8px}
+.swatch{display:inline-block; width:24px; height:0; border-top:2.5px solid currentColor}
+.swatch.d{border-top-style:dashed}
+.k-tx{color:var(--tx)} .k-rx{color:var(--rx)} .k-ink{color:var(--ink-2)}
+
+/* ---------- tables ---------- */
+.tables{display:grid; gap:26px; grid-template-columns:repeat(auto-fit,minmax(330px,1fr))}
+table{border-collapse:collapse; width:100%; font-size:14.5px}
+caption{
+  text-align:left; font-family:"IBM Plex Mono",monospace; font-size:10.5px;
+  letter-spacing:.13em; text-transform:uppercase; color:var(--ink-2); font-weight:500; padding-bottom:9px;
+}
+th,td{text-align:left; padding:7px 10px 7px 0; border-bottom:1px solid var(--hair); vertical-align:top}
+thead th{
+  font-family:"IBM Plex Mono",monospace; font-size:11.5px; letter-spacing:.08em;
+  text-transform:uppercase; color:var(--muted); font-weight:500; border-bottom:1px solid var(--rule);
+}
+td.a, td.n{font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums; white-space:nowrap}
+td.n{text-align:right; padding-right:18px}
+th.n{text-align:right; padding-right:18px}
+tbody tr:last-child td{border-bottom:1px solid var(--rule)}
+.pass{color:var(--rx); font-weight:600}
+.fail{color:var(--tx); font-weight:600}
+
+/* ---------- notes ---------- */
+ul.notes{margin:0; padding:0; list-style:none; display:grid; gap:14px; grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+ul.notes li{
+  border-left:2px solid var(--rule); padding:2px 0 2px 15px; font-size:15px; color:var(--ink-2);
+}
+ul.notes li b{color:var(--ink); font-weight:600}
+ul.notes li.tx{border-left-color:var(--tx)}
+ul.notes li.rx{border-left-color:var(--rx)}
+code{font-family:"IBM Plex Mono",monospace; font-size:.88em; background:var(--surface-2); padding:1px 4px; border-radius:2px}
+
+footer{border-top:1px solid var(--rule); padding-top:20px; font-size:14px; color:var(--ink-2)}
+footer .files{font-family:"IBM Plex Mono",monospace; font-size:12.5px; line-height:2; color:var(--muted)}
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">PRU simulator · peripheral interface</div>
+    <h1>pif_eth Datapath</h1>
+    <p class="standfirst">Ethernet frames leave PRU0 as an 8b/10b line-coded serial stream on channel&nbsp;0 of
+      the three-channel Peripheral Interface, cross a modelled wire, and are recovered by PRU1 — or tapped
+      by the host and written out as a Wireshark trace.</p>
+    <div class="chips">
+      <span class="chip tx">PRU0 · pif_eth_tx.asm</span>
+      <span class="chip rx">PRU1 · pif_eth_rx_o1_raw.asm</span>
+      <span class="chip">channel 0, continuous mode</span>
+      <span class="chip">8b/10b · K28.5</span>
+      <span class="chip">125 Mbaud @ n=2</span>
+    </div>
+  </header>
+
+  <!-- ============ FIGURE 1 ============ -->
+  <section>
+    <h2><span class="num">FIG 1</span>The datapath, end to end</h2>
+    <figure>
+      <div class="canvas">
+        <svg class="dg" viewBox="0 0 1180 900" role="img"
+             aria-label="Block diagram: PRU0 generates a payload, appends CRC-32, 8b/10b-encodes each octet through a DRAM0 lookup table and packs bits into the channel-0 TX FIFO; a serialiser clocks them onto the serial line; the channel-0 RX side detects the start bit, oversamples at 2x into an RX FIFO, and PRU1 stores raw bytes into DRAM1 before decoding, CRC-checking and bit-error-counting the frame after end-of-frame.">
+          <defs>
+            <marker id="f1a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+            </marker>
+            <marker id="f1tx" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="var(--tx)"/>
+            </marker>
+            <marker id="f1rx" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="var(--rx)"/>
+            </marker>
+          </defs>
+
+          <!-- DRAM0 -->
+          <rect class="mem" x="30" y="70" width="200" height="170" rx="2"/>
+          <text class="gt" x="44" y="92">DRAM0</text>
+          <line class="hair" x1="44" y1="100" x2="216" y2="100"/>
+          <text class="mono lbl" x="44" y="120">0x0000  encode LUT</text>
+          <text class="mono lbl" x="44" y="134">        256 × u32</text>
+          <text class="mono lbl" x="44" y="156">0x0400  control block</text>
+          <text class="mono lbl" x="44" y="178">0x0410  counters</text>
+          <text class="mono lbl" x="44" y="200">0x0418  go flag</text>
+          <text class="mono lbl" x="44" y="222">0x0500  frame + FCS</text>
+
+          <line class="flow" x1="232" y1="126" x2="312" y2="126" marker-end="url(#f1a)"/>
+          <text class="mono lbl" x="272" y="118" text-anchor="middle">LBCO</text>
+          <line class="flow" x1="312" y1="184" x2="232" y2="184" marker-end="url(#f1a)"/>
+          <text class="mono lbl" x="272" y="176" text-anchor="middle">SBBO</text>
+
+          <!-- PRU0 -->
+          <rect class="grp" x="320" y="50" width="830" height="200" rx="3"/>
+          <text class="gt" x="336" y="76">PRU0 — pif_eth_tx.asm</text>
+          <line class="hair" x1="336" y1="88" x2="1134" y2="88"/>
+
+          <rect class="box" x="340" y="125" width="168" height="85"/>
+          <text class="bt" x="424" y="157">PRNG</text>
+          <text class="bs" x="424" y="176">xorshift32</text>
+          <text class="bs" x="424" y="192">payload_len octets</text>
+
+          <rect class="box" x="547" y="125" width="168" height="85"/>
+          <text class="bt" x="631" y="157">CRC-32</text>
+          <text class="bs" x="631" y="176">poly 0xEDB88320</text>
+          <text class="bs" x="631" y="192">append 4 B FCS</text>
+
+          <rect class="box" x="754" y="125" width="168" height="85"/>
+          <text class="bt" x="838" y="157">8b/10b encode</text>
+          <text class="bs" x="838" y="176">LBCO LUT[octet], c24</text>
+          <text class="bs" x="838" y="192">disparity tracked ±1</text>
+
+          <rect class="box" x="961" y="125" width="168" height="85"/>
+          <text class="bt" x="1045" y="157">bit pack</text>
+          <text class="bs" x="1045" y="176">10-bit sym → bytes</text>
+          <text class="bs" x="1045" y="192">MSB-first</text>
+
+          <line class="flow" x1="508" y1="167" x2="543" y2="167" marker-end="url(#f1a)"/>
+          <text class="mono lbl" x="525" y="157" text-anchor="middle">octet</text>
+          <line class="flow" x1="715" y1="167" x2="750" y2="167" marker-end="url(#f1a)"/>
+          <text class="mono lbl" x="732" y="157" text-anchor="middle">+FCS</text>
+          <line class="flow" x1="922" y1="167" x2="957" y2="167" marker-end="url(#f1a)"/>
+          <text class="mono lbl" x="939" y="157" text-anchor="middle">sym10</text>
+
+          <!-- PERIF TX -->
+          <rect class="grp" x="320" y="300" width="830" height="118" rx="3"/>
+          <text class="gt" x="336" y="326">Peripheral interface — channel 0 TX</text>
+          <line class="hair" x1="336" y1="336" x2="1134" y2="336"/>
+
+          <rect class="box" x="930" y="346" width="200" height="58" stroke="var(--tx)"/>
+          <text class="bt" x="1030" y="371">TX FIFO 4 × 8</text>
+          <text class="bs" x="1030" y="389">overrun / underrun</text>
+
+          <rect class="box" x="620" y="346" width="250" height="58" stroke="var(--tx)"/>
+          <text class="bt" x="745" y="371">MSB-first serialiser</text>
+          <text class="bs" x="745" y="389">1 byte popped per 8 bit-edges</text>
+
+          <line class="txline" x1="926" y1="375" x2="874" y2="375" marker-end="url(#f1tx)"/>
+
+          <text class="mono lbl" x="350" y="356">TXCFG @ 0x260E4</text>
+          <text class="mono lbl" x="350" y="370">CH0CFG0 @ 0x260E8 = 0 (continuous)</text>
+          <text class="mono lbl" x="350" y="384">bit_clk = f_core / ((frac+1)(div+1))</text>
+          <text class="mono lbl" x="350" y="398">div=7 → 25 MHz · n=2 → 125 Mbaud</text>
+
+          <!-- push down into perif -->
+          <line class="txline" x1="1045" y1="250" x2="1045" y2="342" marker-end="url(#f1tx)"/>
+          <text class="mono lbl" x="1058" y="272">R30 byte-0 push</text>
+          <text class="mono lbl" x="1058" y="286">ch0 sel: r30.b2</text>
+
+          <!-- back-pressure -->
+          <line class="txline dash" x1="960" y1="344" x2="960" y2="252" marker-end="url(#f1tx)"/>
+          <text class="mono lbl" x="946" y="272" text-anchor="end">R31 tx_fifo_sts</text>
+          <text class="mono lbl" x="946" y="286" text-anchor="end">FIFO-full gate</text>
+
+          <!-- the wire -->
+          <line class="txline" x1="745" y1="404" x2="745" y2="450" marker-end="url(#f1tx)"/>
+          <rect x="525" y="452" width="440" height="46" rx="23" fill="var(--tx-soft)" stroke="var(--tx)" stroke-width="1.8"/>
+          <text x="745" y="470" text-anchor="middle" font-size="13.5" font-weight="600" fill="var(--tx)">ch0 serial line · K28.5 comma bracketed</text>
+          <text class="mono lbl" x="745" y="487" text-anchor="middle">loopback: latency · jitter · drift ±100 ppm</text>
+
+          <line class="flow" x1="967" y1="475" x2="1120" y2="475" marker-end="url(#f1a)"/>
+          <text class="mono lbl" x="1043" y="466" text-anchor="middle">host tap</text>
+          <text class="mono lbl" x="1043" y="493" text-anchor="middle">→ fig 3</text>
+
+          <!-- PERIF RX -->
+          <rect class="grp" x="320" y="548" width="830" height="118" rx="3"/>
+          <text class="gt" x="336" y="574">Peripheral interface — channel 0 RX</text>
+          <line class="hair" x1="336" y1="584" x2="1134" y2="584"/>
+
+          <rect class="box" x="350" y="594" width="210" height="58" stroke="var(--rx)"/>
+          <text class="bt" x="455" y="619">start-bit detect</text>
+          <text class="bs" x="455" y="637">line idles 0, sb_pol = 1</text>
+
+          <rect class="box" x="600" y="594" width="230" height="58" stroke="var(--rx)"/>
+          <text class="bt" x="715" y="619">oversample capture</text>
+          <text class="bs" x="715" y="637">n_rx = n_tx / 2  (2×)</text>
+
+          <rect class="box" x="870" y="594" width="200" height="58" stroke="var(--rx)"/>
+          <text class="bt" x="970" y="619">RX FIFO 4 × 8</text>
+          <text class="bs" x="970" y="637">valid · overflow</text>
+
+          <line class="rxline" x1="564" y1="623" x2="596" y2="623" marker-end="url(#f1rx)"/>
+          <line class="rxline" x1="834" y1="623" x2="866" y2="623" marker-end="url(#f1rx)"/>
+          <text class="mono lbl" x="1086" y="617">RXCFG</text>
+          <text class="mono lbl" x="1086" y="631">0x26100</text>
+
+          <!-- route into RX stage 1 -->
+          <path class="rxline" d="M745 498 L745 522 L455 522 L455 590" marker-end="url(#f1rx)"/>
+
+          <line class="rxline" x1="970" y1="652" x2="970" y2="712" marker-end="url(#f1rx)"/>
+          <text class="mono lbl" x="983" y="674">R31 b24 rx_valid</text>
+          <text class="mono lbl" x="983" y="688">mov r31, 1&lt;&lt;24 → pop</text>
+
+          <!-- PRU1 -->
+          <rect class="grp" x="320" y="716" width="830" height="152" rx="3"/>
+          <text class="gt" x="336" y="742">PRU1 — pif_eth_rx_o1_raw.asm</text>
+          <line class="hair" x1="336" y1="752" x2="1134" y2="752"/>
+
+          <text class="gt" x="340" y="772">Realtime</text>
+          <text class="gt" x="620" y="772">Post-frame (after EOF)</text>
+          <line class="hair dash" x1="585" y1="760" x2="585" y2="858"/>
+
+          <rect class="box" x="340" y="782" width="225" height="64" stroke="var(--rx)"/>
+          <text class="bt" x="452" y="806">capture loop</text>
+          <text class="bs" x="452" y="823">7 instr · store raw byte</text>
+          <text class="bs" x="452" y="838">EOF = 2 zero bytes</text>
+
+          <rect class="box" x="620" y="782" width="150" height="64"/>
+          <text class="bt" x="695" y="810">comma align</text>
+          <text class="bs" x="695" y="828">lock to K28.5</text>
+
+          <rect class="box" x="790" y="782" width="170" height="64"/>
+          <text class="bt" x="875" y="810">8b/10b decode</text>
+          <text class="bs" x="875" y="828">LUT 1024 × u16</text>
+
+          <rect class="box" x="980" y="782" width="150" height="64"/>
+          <text class="bt" x="1055" y="810">CRC-32 · BER</text>
+          <text class="bs" x="1055" y="828">bits vs PRNG</text>
+
+          <line class="flow" x1="569" y1="814" x2="616" y2="814" marker-end="url(#f1a)"/>
+          <text class="mono lbl" x="592" y="805" text-anchor="middle">0x0800</text>
+          <line class="flow" x1="774" y1="814" x2="786" y2="814" marker-end="url(#f1a)"/>
+          <line class="flow" x1="964" y1="814" x2="976" y2="814" marker-end="url(#f1a)"/>
+
+          <!-- DRAM1 -->
+          <rect class="mem" x="30" y="716" width="200" height="152" rx="2"/>
+          <text class="gt" x="44" y="738">DRAM1 · core-local</text>
+          <line class="hair" x1="44" y1="746" x2="216" y2="746"/>
+          <text class="mono lbl" x="44" y="768">0x0000  decode LUT</text>
+          <text class="mono lbl" x="44" y="790">0x0800  raw capture</text>
+          <text class="mono lbl" x="44" y="812">0x0E00  frame (≤256 B)</text>
+          <text class="mono lbl" x="44" y="834">0x0F00  stats</text>
+          <text class="mono lbl" x="44" y="856">0x0F40  control</text>
+
+          <line class="flow" x1="316" y1="782" x2="232" y2="782" marker-end="url(#f1a)"/>
+          <text class="mono lbl" x="274" y="774" text-anchor="middle">SBBO</text>
+          <line class="flow" x1="232" y1="836" x2="316" y2="836" marker-end="url(#f1a)"/>
+          <text class="mono lbl" x="274" y="828" text-anchor="middle">LBBO</text>
+
+          <text class="mono lbl" x="30" y="888">host global address = core-local + 0x2000</text>
+        </svg>
+      </div>
+      <div class="legend">
+        <span class="k-tx"><i class="swatch"></i>TX domain — octets, symbols, bits leaving PRU0</span>
+        <span class="k-rx"><i class="swatch"></i>RX domain — samples, bytes, decoded frame</span>
+        <span class="k-tx"><i class="swatch d"></i>status / back-pressure read through R31</span>
+        <span class="k-ink"><i class="swatch"></i>firmware ↔ DRAM traffic</span>
+      </div>
+      <figcaption>One frame's journey. Everything left of the serial line runs on <b>PRU0</b> at the core clock;
+        everything right of it on <b>PRU1</b>, paced by the perif sample clock. The dashed
+        <code>tx_fifo_sts</code> edge is the only feedback path in the diagram — it is what lets the firmware's
+        push rate track whatever drain rate <code>TXCFG</code> is configured for, and it is the edge the
+        <code>_skipchecks</code> firmware deletes to reach 125 Mbaud.</figcaption>
+    </figure>
+
+    <ul class="notes">
+      <li class="tx"><b>Continuous mode</b> (<code>tx_frame_size = 0</code>) pops the TX FIFO one byte at a
+        time as each finishes shifting out, so <code>R31</code>'s occupancy field shows the true live queue
+        depth. Run the FIFO dry and the frame ends.</li>
+      <li class="tx"><b>K28.5 commas</b> bracket every frame. They are idle fill between bursts and they give
+        the receiver its symbol alignment — there is no preamble.</li>
+      <li class="rx"><b>Start of frame is hardware.</b> The line idles at 0 with <code>sb_pol = 1</code>, so
+        capture auto-starts on the burst's first 1 bit. No firmware polling is involved.</li>
+      <li class="rx"><b>End of frame is two zero bytes.</b> One is not enough: 8b/10b permits a 5-bit run,
+        which at 2× oversampling is 10 zero samples and can fill a whole capture byte on its own.</li>
+    </ul>
+  </section>
+
+  <!-- ============ FIGURE 2 ============ -->
+  <section>
+    <h2><span class="num">FIG 2</span>One octet, one table read</h2>
+    <p>The encoder does no arithmetic. Each octet indexes a 256-entry table in DRAM0 that holds
+      <em>both</em> disparity variants of its 10-bit symbol plus the disparity that results — so encoding an
+      octet is one <code>LBCO</code>, one branch on the running-disparity bit, and a shift into the packer.</p>
+    <figure>
+      <div class="canvas">
+        <svg class="dg" viewBox="0 0 1060 180" role="img"
+             aria-label="Bit layout of a 32-bit lookup-table entry: bits 9 to 0 hold the 10-bit symbol used when running disparity is negative, bit 10 the resulting disparity, bits 25 to 16 the symbol used when disparity is positive, bit 26 its resulting disparity; the remaining bits are unused.">
+          <defs>
+            <marker id="f2a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+            </marker>
+            <pattern id="f2hatch" width="6" height="6" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+              <line x1="0" y1="0" x2="0" y2="6" stroke="var(--rule)" stroke-width="2"/>
+            </pattern>
+          </defs>
+
+          <text class="mono lbl" x="50" y="28">u32 LUT entry for octet b, little-endian — DRAM0 + 4·b</text>
+
+          <!-- unused fields -->
+          <rect x="50" y="60" width="150" height="46" fill="url(#f2hatch)" stroke="var(--rule)"/>
+          <rect x="530" y="60" width="150" height="46" fill="url(#f2hatch)" stroke="var(--rule)"/>
+          <!-- rd bits -->
+          <rect x="200" y="60" width="30" height="46" fill="var(--tx-soft)" stroke="var(--tx)" stroke-width="1.4"/>
+          <rect x="680" y="60" width="30" height="46" fill="var(--tx-soft)" stroke="var(--tx)" stroke-width="1.4"/>
+          <!-- symbol fields -->
+          <rect x="230" y="60" width="300" height="46" fill="var(--surface-2)" stroke="var(--ink-2)" stroke-width="1.2"/>
+          <rect x="710" y="60" width="300" height="46" fill="var(--surface-2)" stroke="var(--ink-2)" stroke-width="1.2"/>
+
+          <text class="bt" x="380" y="82">code10 — used when RD is positive</text>
+          <text class="bs" x="380" y="98">[25:16]</text>
+          <text class="bt" x="860" y="82">code10 — used when RD is negative</text>
+          <text class="bs" x="860" y="98">[9:0]</text>
+
+          <!-- bit ruler -->
+          <text class="mono lbl" x="65" y="52" text-anchor="middle">31</text>
+          <text class="mono lbl" x="215" y="52" text-anchor="middle">26</text>
+          <text class="mono lbl" x="245" y="52" text-anchor="middle">25</text>
+          <text class="mono lbl" x="515" y="52" text-anchor="middle">16</text>
+          <text class="mono lbl" x="545" y="52" text-anchor="middle">15</text>
+          <text class="mono lbl" x="665" y="52" text-anchor="middle">11</text>
+          <text class="mono lbl" x="695" y="52" text-anchor="middle">10</text>
+          <text class="mono lbl" x="725" y="52" text-anchor="middle">9</text>
+          <text class="mono lbl" x="995" y="52" text-anchor="middle">0</text>
+
+          <!-- callouts -->
+          <line class="txline" x1="215" y1="108" x2="215" y2="132" marker-end="url(#f2a)" stroke="var(--tx)"/>
+          <text class="mono lbl" x="215" y="148" text-anchor="middle">RD after</text>
+          <line class="txline" x1="695" y1="108" x2="695" y2="132" marker-end="url(#f2a)" stroke="var(--tx)"/>
+          <text class="mono lbl" x="695" y="148" text-anchor="middle">RD after</text>
+          <text class="mono lbl" x="125" y="88" text-anchor="middle">unused</text>
+          <text class="mono lbl" x="605" y="88" text-anchor="middle">unused</text>
+        </svg>
+      </div>
+      <figcaption>The table is generated host-side by <code>codec.py</code> and written into DRAM0 before the
+        firmware starts. Because both variants live in one word, the firmware never needs to compute
+        disparity — it reads the resulting <code>RD</code> bit straight out of whichever half it used.</figcaption>
+    </figure>
+
+    <div class="tables">
+      <table>
+        <caption>DRAM0 — PRU0 TX</caption>
+        <thead><tr><th>Address</th><th>Contents</th></tr></thead>
+        <tbody>
+          <tr><td class="a">0x0000</td><td>8b/10b encode LUT, 256 × u32</td></tr>
+          <tr><td class="a">0x0400</td><td><code>num_frames</code></td></tr>
+          <tr><td class="a">0x0404</td><td><code>mode</code> — 0 PRNG, 1 preloaded</td></tr>
+          <tr><td class="a">0x0408</td><td><code>prng_state</code> / seed</td></tr>
+          <tr><td class="a">0x040C</td><td><code>payload_len</code>, octets before FCS</td></tr>
+          <tr><td class="a">0x0410</td><td><code>frame_counter</code>, published</td></tr>
+          <tr><td class="a">0x0414</td><td><code>burst_pushed</code> bytes, published</td></tr>
+          <tr><td class="a">0x0418</td><td>go flag — host → firmware handshake</td></tr>
+          <tr><td class="a">0x0500</td><td>frame buffer: payload then 4-byte FCS</td></tr>
+        </tbody>
+      </table>
+
+      <table>
+        <caption>DRAM1 — PRU1 RX (core-local; host adds 0x2000)</caption>
+        <thead><tr><th>Address</th><th>Contents</th></tr></thead>
+        <tbody>
+          <tr><td class="a">0x0000</td><td>8b/10b decode LUT, 1024 × u16</td></tr>
+          <tr><td class="a">0x0800</td><td>raw oversample capture, 1024 B</td></tr>
+          <tr><td class="a">0x0E00</td><td>reconstructed frame, 256 B</td></tr>
+          <tr><td class="a">0x0F00</td><td>stats: frames, cap_bytes, <code>rx_ovf</code></td></tr>
+          <tr><td class="a">0x0F0C</td><td>stats: symbol_errors, <code>crc_ok</code></td></tr>
+          <tr><td class="a">0x0F14</td><td>stats: prng_bit_errors, tot_bits</td></tr>
+          <tr><td class="a">0x0F1C</td><td><code>eof_status</code> — 1 clean, 2 overflow abort</td></tr>
+          <tr><td class="a">0x0F40</td><td>control: mode, seed, <code>payload_len</code>, go</td></tr>
+          <tr><td class="a">0x0F50</td><td><code>rxcfg</code> = ((n_rx−1)&lt;&lt;16) | 0x1F</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ CLOCKS ============ -->
+  <section>
+    <h2><span class="num">RATE</span>What the divider buys</h2>
+    <p>The serialiser's bit clock is <code>f_source / ((frac+1)(div_factor+1))</code>. Everything downstream —
+      the firmware's cycle budget per octet, the receiver's 2× oversampling, the FIFO slack — is set by that
+      one divider, written as <code>n</code> below at a 250 MHz core clock.</p>
+    <div class="tables">
+      <table>
+        <caption>TX ladder — measured in simulation, 2026-07-21</caption>
+        <thead><tr><th>Firmware</th><th class="n">n</th><th class="n">Line rate</th><th>Result</th></tr></thead>
+        <tbody>
+          <tr><td class="a">pif_eth_tx.asm</td><td class="n">7</td><td class="n">25.00 M</td><td><span class="pass">BER 0</span> — production baseline</td></tr>
+          <tr><td class="a">pif_eth_tx_n2.asm</td><td class="n">3–8</td><td class="n">83.3–31.3 M</td><td><span class="pass">BER 0</span> — self-adapting</td></tr>
+          <tr><td class="a">pif_eth_tx_n2.asm</td><td class="n">2</td><td class="n">125.00 M</td><td><span class="fail">underrun → deadlock</span></td></tr>
+          <tr><td class="a">…_n2_skipchecks.asm</td><td class="n">2</td><td class="n">125.00 M</td><td><span class="pass">BER 0</span> — pinned to n=2 only</td></tr>
+          <tr><td class="a">…_n2_skipchecks.asm</td><td class="n">3, 4</td><td class="n">83.3 / 62.5 M</td><td><span class="fail">BER ≈ 0.68, overrun</span></td></tr>
+        </tbody>
+      </table>
+
+      <table>
+        <caption>RX ladder — Option 1, 7 seeds × 4 rungs, all clean</caption>
+        <thead><tr><th class="n">n_tx</th><th class="n">Line rate</th><th class="n">Cycles / byte</th><th>Result</th></tr></thead>
+        <tbody>
+          <tr><td class="n">2</td><td class="n">125.00 M</td><td class="n">8</td><td><span class="pass">PASS</span> — zero headroom</td></tr>
+          <tr><td class="n">4</td><td class="n">62.50 M</td><td class="n">16</td><td><span class="pass">PASS</span></td></tr>
+          <tr><td class="n">6</td><td class="n">41.67 M</td><td class="n">24</td><td><span class="pass">PASS</span></td></tr>
+          <tr><td class="n">8</td><td class="n">31.25 M</td><td class="n">32</td><td><span class="pass">PASS</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><small>The n=2 RX rung fits exactly: seven instructions plus a one-cycle DRAM write stall fill the
+      eight-cycle budget with none of the FIFO's 32-cycle slack spare. That is a measurement of this
+      simulator's modelled timing (<code>write_latency = 1</code>, <code>jitter = 0</code>), not a silicon
+      claim.</small></p>
+  </section>
+
+  <!-- ============ FIGURE 3 ============ -->
+  <section>
+    <h2><span class="num">FIG 3</span>The host tap</h2>
+    <p>PRU1 is one consumer of the line; the host is the other. The same serial transitions the receiver
+      samples are read back by the Python layer, decoded against a golden reference, and written out as a
+      pcap that dissects cleanly in Wireshark.</p>
+    <figure>
+      <div class="canvas">
+        <svg class="dg" viewBox="0 0 1120 300" role="img"
+             aria-label="Two lanes. Control lane: driver.py seeds the DRAM0 control block and sets the go flag, which releases one frame burst from PRU0. Capture lane: the channel-0 serial line is sampled, decoded to symbols, decoded from 8b/10b to octets, checked for CRC and bit errors, and written to a pcap file for Wireshark.">
+          <defs>
+            <marker id="f3a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+            </marker>
+            <marker id="f3tx" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="var(--tx)"/>
+            </marker>
+          </defs>
+
+          <text class="gt" x="60" y="26">Control</text>
+          <rect class="box" x="60" y="40" width="210" height="58"/>
+          <text class="bt" x="165" y="65">driver.py</text>
+          <text class="bs" x="165" y="83">rx_driver.py · seed_ui.py</text>
+
+          <rect class="mem" x="330" y="40" width="250" height="58" rx="2"/>
+          <text class="bt" x="455" y="65">DRAM0 0x0400–0x0418</text>
+          <text class="bs" x="455" y="83">frames · mode · seed · len · go</text>
+
+          <rect class="box" x="640" y="40" width="220" height="58" stroke="var(--tx)"/>
+          <text class="bt" x="750" y="65">PRU0</text>
+          <text class="bs" x="750" y="83">emits one frame burst</text>
+
+          <line class="flow" x1="274" y1="69" x2="326" y2="69" marker-end="url(#f3a)"/>
+          <text class="mono lbl" x="300" y="60" text-anchor="middle">seed</text>
+          <line class="flow" x1="584" y1="69" x2="636" y2="69" marker-end="url(#f3a)"/>
+          <text class="mono lbl" x="610" y="60" text-anchor="middle">go = 1</text>
+
+          <path class="txline" d="M750 98 L750 150 L150 150 L150 184" marker-end="url(#f3tx)" stroke="var(--tx)"/>
+          <text class="mono lbl" x="450" y="142" text-anchor="middle">via the perif ch0 serialiser</text>
+
+          <text class="gt" x="60" y="176">Capture &amp; verify</text>
+          <rect class="box" x="60" y="188" width="180" height="76"/>
+          <text class="bt" x="150" y="214">line samples</text>
+          <text class="bs" x="150" y="232">tx_transitions</text>
+          <text class="bs" x="150" y="248">→ bit stream</text>
+
+          <rect class="box" x="265" y="188" width="180" height="76"/>
+          <text class="bt" x="355" y="214">decoder.py</text>
+          <text class="bs" x="355" y="232">K28.5 comma align</text>
+          <text class="bs" x="355" y="248">→ 10-bit symbols</text>
+
+          <rect class="box" x="470" y="188" width="180" height="76"/>
+          <text class="bt" x="560" y="214">codec.py</text>
+          <text class="bs" x="560" y="232">8b/10b → octets</text>
+          <text class="bs" x="560" y="248">disparity checked</text>
+
+          <rect class="box" x="675" y="188" width="180" height="76"/>
+          <text class="bt" x="765" y="214">crc32 · prng</text>
+          <text class="bs" x="765" y="232">FCS vs zlib.crc32</text>
+          <text class="bs" x="765" y="248">bits vs reference</text>
+
+          <rect class="box" x="880" y="188" width="180" height="76"/>
+          <text class="bt" x="970" y="214">pcap.py</text>
+          <text class="bs" x="970" y="232">classic pcap writer</text>
+          <text class="bs" x="970" y="248">→ Wireshark</text>
+
+          <line class="flow" x1="244" y1="226" x2="261" y2="226" marker-end="url(#f3a)"/>
+          <line class="flow" x1="449" y1="226" x2="466" y2="226" marker-end="url(#f3a)"/>
+          <line class="flow" x1="654" y1="226" x2="671" y2="226" marker-end="url(#f3a)"/>
+          <line class="flow" x1="859" y1="226" x2="876" y2="226" marker-end="url(#f3a)"/>
+        </svg>
+      </div>
+      <figcaption>The handshake is deliberate: the go flag releases <b>one</b> frame at a time so the host can
+        capture each burst's serial line before the next one starts.</figcaption>
+    </figure>
+
+    <ul class="notes">
+      <li><b>BERT frames</b> carry 128 PRNG octets plus a 4-octet CRC-32 — no preamble, no header. They exist
+        to be compared bit-for-bit against the reference stream.</li>
+      <li><b>UDP frames</b> carry Ethernet/IPv4/UDP with <code>"Hello World Text"</code>, padded to 60 octets
+        plus FCS. Only the BERT path runs end-to-end through PRU1 — reconstruction needs the PRNG.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <p>Source — <code>source/pif_eth/</code></p>
+    <div class="files">
+      pif_eth_tx.asm · pif_eth_rx_o1_raw.asm · pif_eth_tx_n2.asm · pif_eth_tx_n2_skipchecks.asm<br>
+      codec.py · crc32.py · prng.py · frames.py · decoder.py · pcap.py · driver.py · rx_driver.py · seed_ui.py<br>
+      perif/perif_channel.py · perif/perif_registers.py · perif/loopback.py
+    </div>
+  </footer>
+
+</div>
+</body>
+</html>

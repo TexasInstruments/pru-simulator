@@ -13,6 +13,7 @@ from core.iep import IEPClockRegisterRegion, IEPRegisterRegion, IEPTimebase
 from core.pru_core import PRUCore
 from mem.memory_bus import MemoryBus
 from mem.regions import MemoryRegion
+from perif.iep import IepTimer, IEP_SIZE
 from mem.constant_table import ConstantTable
 from xfr.xfr_bus import XFRBus
 from pru_io.io_port import IOPort
@@ -78,6 +79,22 @@ class GpcfgRegion(MemoryRegion):
     def write(self, addr: int, data: bytes) -> None:
         self._check_bounds(addr, length=len(data))
         self._gpcfg.write(addr, data)
+
+
+class IepRegisterRegion(MemoryRegion):
+    """Memory region backed by the IEP0 timer (counter + compare registers)."""
+
+    def __init__(self, iep: IepTimer, base_addr: int = 0x0002E000):
+        super().__init__("ICSS_IEP", base_addr, IEP_SIZE, 2, 1, 0)
+        self._iep = iep
+
+    def read(self, addr: int, length: int) -> bytes:
+        self._check_bounds(addr, length)
+        return self._iep.read(addr - self.base_addr, length)
+
+    def write(self, addr: int, data: bytes) -> None:
+        self._check_bounds(addr, length=len(data))
+        self._iep.write(addr - self.base_addr, data)
 
 
 class Simulator:
@@ -182,6 +199,15 @@ class Simulator:
                 self._perif[name].enabled = (mux_sel == MUX_PERIF)
         self._gpcfg.on_mux_change = _on_mux_change
         self.memory.add_region(GpcfgRegion(self._gpcfg))
+
+        # Non-AM243x configurations use the standalone IEP peripheral model.
+        # AM243x already installed the clock-ratio-aware shared IEPTimebase
+        # above; replacing it here would discard its multi-core timeline.
+        if not is_am243x:
+            self.iep = IepTimer()
+            self.memory.add_region(IepRegisterRegion(self.iep))
+            for core in self.cores.values():
+                core.iep = self.iep
 
         # Loopback: PRU0 TX channel-N -> PRU1 RX channel-N.
         self._loopback = Loopback(self._perif["pru0"], self._perif["pru1"])

@@ -2,6 +2,9 @@
 
 import sys
 import os
+import base64
+import binascii
+import struct
 
 # Allow imports from parent directory when run directly
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -20,6 +23,7 @@ class PRUSimulatorMCP:
     """Wraps the Simulator and exposes its methods as MCP-compatible tool functions."""
 
     def __init__(self, config_path: str = "memory.cfg"):
+        self._config_path = config_path
         self.sim = Simulator(config_path)
         self._runtime: SSIRuntime | None = None
         self._foc_runtime: FocRuntime | None = None
@@ -42,6 +46,138 @@ class PRUSimulatorMCP:
         errors = self.sim.load(core, source, include_paths)
         line_count = len([l for l in source.split('\n') if l.strip()])
         return {"success": len(errors) == 0, "errors": errors, "line_count": line_count}
+
+    @staticmethod
+    def _elf_metadata(elf_data: bytes) -> tuple[int, list[dict]]:
+        """Validate an ELF32 image and return its entry point and loadable sections."""
+        if len(elf_data) < 52:
+            raise ValueError("File too small to be a valid ELF")
+        if elf_data[:4] != b"\x7fELF":
+            raise ValueError("Not an ELF file (bad magic)")
+        if elf_data[4] != 1 or elf_data[5] != 1:
+            raise ValueError("Expected a little-endian ELF32 image")
+
+        elf_type, machine, version = struct.unpack_from("<HHI", elf_data, 16)
+        if elf_type != 2:
+            raise ValueError(f"Expected an executable ELF (ET_EXEC=2), got {elf_type}")
+        if machine != 0x90:
+            raise ValueError(f"Expected a TI PRU ELF (machine=0x0090), got 0x{machine:04x}")
+        if version != 1:
+            raise ValueError(f"Invalid ELF version: {version}")
+
+        entry = struct.unpack_from("<I", elf_data, 24)[0]
+        header_size = struct.unpack_from("<H", elf_data, 40)[0]
+        if header_size != 52:
+            raise ValueError(f"Invalid ELF32 header size: {header_size}")
+        if entry % 4:
+            raise ValueError(f"PRU ELF entry point is not instruction-aligned: 0x{entry:x}")
+        section_offset = struct.unpack_from("<I", elf_data, 32)[0]
+        section_size, section_count, names_index = struct.unpack_from("<HHH", elf_data, 46)
+        if section_count == 0:
+            raise ValueError("ELF contains no sections")
+        if section_size < 40:
+            raise ValueError(f"Invalid ELF section header size: {section_size}")
+        if section_offset > len(elf_data) or section_count > (
+                len(elf_data) - section_offset) // section_size:
+            raise ValueError("ELF section header table is truncated")
+
+        headers = []
+        for index in range(section_count):
+            offset = section_offset + index * section_size
+            name_offset, section_type, flags, address, data_offset, size = struct.unpack_from(
+                "<IIIIII", elf_data, offset)
+            if section_type != 8 and size and (
+                    data_offset > len(elf_data) or size > len(elf_data) - data_offset):
+                raise ValueError(f"ELF section {index} data is truncated")
+            headers.append({
+                "name_offset": name_offset,
+                "type": section_type,
+                "flags": flags,
+                "address": address,
+                "offset": data_offset,
+                "size": size,
+            })
+
+        if names_index >= len(headers):
+            raise ValueError("ELF section-name table index is invalid")
+        names_header = headers[names_index]
+        names = elf_data[names_header["offset"]:
+                         names_header["offset"] + names_header["size"]]
+
+        def section_name(name_offset: int) -> str:
+            if name_offset >= len(names):
+                raise ValueError("ELF section name offset is invalid")
+            end = names.find(b"\0", name_offset)
+            if end < 0:
+                raise ValueError("ELF section name table is truncated")
+            return names[name_offset:end].decode("ascii", errors="replace")
+
+        sections = []
+        for header in headers:
+            name = section_name(header["name_offset"])
+            if ((name.startswith(".text") or name == ".data")
+                    and header["type"] != 8 and header["size"] > 0):
+                sections.append({
+                    "name": name,
+                    "address": header["address"],
+                    "size": header["size"],
+                })
+        if not sections:
+            raise ValueError("ELF contains no loadable .text or .data sections")
+        return entry, sections
+
+    def pru_elf_load(self, core: str = "pru0", path: str = "", b64: str = "") -> dict:
+        """Load a PRU ELF image from a filesystem path or base64-encoded bytes."""
+        errors = []
+        entry = None
+        sections = []
+        try:
+            if bool(path) == bool(b64):
+                raise ValueError("Provide exactly one of 'path' or 'b64'")
+            if path:
+                with open(path, "rb") as elf_file:
+                    elf_data = elf_file.read()
+            else:
+                elf_data = base64.b64decode(b64, validate=True)
+            entry, sections = self._elf_metadata(elf_data)
+            text_sections = sorted(
+                (section for section in sections if section["name"].startswith(".text")),
+                key=lambda section: section["address"],
+            )
+            entry_pc = None
+            preceding_words = 0
+            for section in text_sections:
+                if section["size"] % 4:
+                    raise ValueError(
+                        f"ELF text section {section['name']} size is not word-aligned")
+                if section["address"] <= entry < section["address"] + section["size"]:
+                    entry_pc = preceding_words + (entry - section["address"]) // 4
+                    break
+                preceding_words += section["size"] // 4
+            if entry_pc is None:
+                raise ValueError(
+                    f"ELF entry point 0x{entry:x} is not inside a loadable text section")
+
+            # Load transactionally into a fresh simulator.  Besides ensuring a
+            # failed load cannot corrupt the current session, this prevents
+            # stale shared memory, other-core state, or breakpoints from
+            # contaminating a supposedly independent ELF run.
+            candidate = Simulator(self._config_path)
+            errors = candidate.load_elf(core, elf_data)
+            if not errors:
+                candidate.cores[core].pc = entry_pc
+                self.sim = candidate
+        except (OSError, ValueError, binascii.Error) as exc:
+            errors = [f"ELF load failed: {exc}"]
+        if errors:
+            entry = None
+            sections = []
+        return {
+            "success": len(errors) == 0,
+            "errors": errors,
+            "entry": entry,
+            "sections": sections,
+        }
 
     def pru_step(self, core: str = "pru0", count: int = 1) -> dict:
         """Execute count instructions on the specified core."""
