@@ -35,6 +35,14 @@ def reg(core: PRUCore, n: int) -> int:
     return core.registers.read_full(n)
 
 
+@pytest.mark.parametrize("opcode", ["xin", "xout", "xchg"])
+def test_unknown_xfr_fails_loudly_at_core_boundary(opcode: str):
+    """Unknown broadside IDs must not silently read zeros or discard writes."""
+    core = make_core(f"{opcode} 99, &r2, 4\nhalt\n")
+    with pytest.raises(RuntimeError, match=rf"{opcode.upper()} XFR device ID 99.*R2.b0.*4 byte"):
+        core.run(4)
+
+
 # ---------------------------------------------------------------------------
 # LDI — load immediate
 # ---------------------------------------------------------------------------

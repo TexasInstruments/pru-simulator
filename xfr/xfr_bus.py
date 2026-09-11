@@ -34,6 +34,15 @@ class XFRBus:
     def _get_pad(self, device_id: int) -> Scratchpad | None:
         return self._pads.get(device_id)
 
+    def supports(self, device_id: int) -> bool:
+        """Return whether *device_id* is a scratchpad owned by this bus.
+
+        PRUCore also owns accelerator and shifted-SPAD dispatch. Keeping this
+        query narrow lets the core reject a genuinely unsupported XFR transfer
+        instead of treating its result as usable zero data.
+        """
+        return device_id in self._pads
+
     def xin(self, device_id: int, offset: int, length: int) -> bytes:
         """Read *length* bytes from scratchpad *device_id* at *offset*.
 
