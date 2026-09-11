@@ -1,6 +1,7 @@
 """FastAPI + WebSocket backend for the PRU Simulator Dashboard."""
 
 import asyncio
+import importlib.util
 import json
 import math
 import os
@@ -45,6 +46,30 @@ SSI_RUNTIME_READER_DATA_PIN = 16
 SSI_RUNTIME_EMULATOR_CLK_PIN = 8
 SSI_RUNTIME_EMULATOR_DATA_PIN = 0
 _ssi_runtime: SSIRuntime | None = None
+
+# The simple realtime panel is deliberately separate from the legacy generic
+# SSI runtime.  Its only configuration input is the generated build profile;
+# the browser can observe it, but cannot change firmware parameters at run
+# time.
+SSI_SIMPLE_PROJECT_ROOT = pathlib.Path(
+    os.environ.get("SSI_PROJECT_ROOT", pathlib.Path(PROJECT_ROOT).parent)
+)
+SSI_SIMPLE_ROOT = (
+    SSI_SIMPLE_PROJECT_ROOT
+    / "encoder-workspace"
+    / "firmware"
+    / "ccs-tests"
+    / "ssi_test"
+)
+SSI_SIMPLE_HARNESS_PATH = SSI_SIMPLE_ROOT / "tools" / "simulate_ssi.py"
+SSI_SIMPLE_PROFILE_PATH = SSI_SIMPLE_ROOT / "include" / "ssi_build_config.json"
+SSI_SIMPLE_CONFIG_PATH = SSI_SIMPLE_ROOT / "ssi_test" / "ssi_hardware_config.h"
+_ssi_simple_harness = None
+_ssi_simple_result: dict | None = None
+_ssi_simple_error: str | None = None
+_ssi_simple_running = False
+_ssi_simple_task: asyncio.Task | None = None
+
 foc_runtime: FocRuntime | None = None
 FOC_EXECUTION_BATCH_STEPS = 4_096
 _foc_execution_task: asyncio.Task | None = None
@@ -70,6 +95,134 @@ def _ssi_profile_catalog() -> list[dict]:
         })
         catalog.append(item)
     return catalog
+
+
+def _load_ssi_simple_harness():
+    """Load the parent repository's actual three-image SSI runner lazily."""
+    global _ssi_simple_harness
+    if _ssi_simple_harness is not None:
+        return _ssi_simple_harness
+    if not SSI_SIMPLE_HARNESS_PATH.is_file():
+        raise FileNotFoundError(
+            f"SSI realtime harness not found: {SSI_SIMPLE_HARNESS_PATH}"
+        )
+    spec = importlib.util.spec_from_file_location(
+        "ssi_simple_realtime_harness", SSI_SIMPLE_HARNESS_PATH
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("cannot import the SSI realtime harness")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _ssi_simple_harness = module
+    return module
+
+
+def _read_ssi_simple_profile() -> dict:
+    if not SSI_SIMPLE_PROFILE_PATH.is_file():
+        raise FileNotFoundError(
+            f"generated SSI build profile not found: {SSI_SIMPLE_PROFILE_PATH}"
+        )
+    profile = json.loads(SSI_SIMPLE_PROFILE_PATH.read_text(encoding="utf-8"))
+    if not isinstance(profile, dict):
+        raise ValueError("generated SSI build profile must be a JSON object")
+    return profile
+
+
+def _display_ssi_simple_path(path: pathlib.Path) -> str:
+    try:
+        return str(path.relative_to(SSI_SIMPLE_PROJECT_ROOT))
+    except ValueError:
+        return str(path)
+
+
+def _ssi_simple_state() -> dict:
+    """Return the compact browser state for the actual SSI realtime runner."""
+    profile = None
+    profile_error = None
+    try:
+        profile = _read_ssi_simple_profile()
+    except (OSError, TypeError, ValueError) as exc:
+        profile_error = str(exc)
+
+    error = _ssi_simple_error or profile_error
+    return {
+        "loaded": profile is not None and profile_error is None,
+        "running": _ssi_simple_running,
+        "status": (
+            "Running actual PRU0 + PRU1 + RTU_PRU1 firmware"
+            if _ssi_simple_running
+            else ("Ready" if error is None and profile is not None else "Not loaded")
+        ),
+        "config_path": _display_ssi_simple_path(SSI_SIMPLE_CONFIG_PATH),
+        "profile_path": _display_ssi_simple_path(SSI_SIMPLE_PROFILE_PATH),
+        "firmware": {
+            "pru0": _display_ssi_simple_path(
+                SSI_SIMPLE_ROOT / "pru0_ssi_emulator" / "pru0_main.asm"
+            ),
+            "pru1": _display_ssi_simple_path(
+                SSI_SIMPLE_ROOT / "pru1_ssi_reader" / "pru1_main.asm"
+            ),
+            "rtu_pru1": _display_ssi_simple_path(
+                SSI_SIMPLE_ROOT / "rtu1_tick" / "rtu_pru1_main.asm"
+            ),
+        },
+        "profile": profile,
+        "result": _ssi_simple_ui_result(_ssi_simple_result),
+        "error": error,
+    }
+
+
+def _ssi_simple_ui_result(result: dict | None) -> dict | None:
+    """Remove the bounded waveform capture before sending a run result."""
+    if result is None:
+        return None
+    compact = dict(result)
+    compact.pop("capture", None)
+    compact["pass"] = all([
+        compact.get("opportunities") == compact.get("published"),
+        compact.get("skipped") == 0,
+        compact.get("data_mismatches") == 0,
+        compact.get("timer_missed") == 0,
+        compact.get("timer_max_late", 0) < 288,
+        compact.get("reader_aborts") == 0,
+        compact.get("emulator_aborts") == 0,
+        compact.get("frames", 0) > 0,
+    ])
+    return compact
+
+
+def _validate_ssi_simple_iterations(value, maximum: int) -> int:
+    if isinstance(value, bool):
+        raise ValueError("iterations must be an integer")
+    try:
+        iterations = int(value)
+    except (TypeError, ValueError):
+        raise ValueError("iterations must be an integer") from None
+    if not 1 <= iterations <= int(maximum):
+        raise ValueError(f"iterations must be in the range 1..{int(maximum)}")
+    return iterations
+
+
+def _run_ssi_simple_sync(iterations: int) -> dict:
+    """Run the same three assembly images used by the CLI harness."""
+    harness = _load_ssi_simple_harness()
+    profile = harness.load_default_profile()
+    return harness.run(profile, iterations, use_mcp=False)
+
+
+async def _run_ssi_simple_background(iterations: int) -> None:
+    global _ssi_simple_error, _ssi_simple_result
+    global _ssi_simple_running, _ssi_simple_task
+    try:
+        result = await asyncio.to_thread(_run_ssi_simple_sync, iterations)
+        _ssi_simple_result = _ssi_simple_ui_result(result)
+        _ssi_simple_error = None
+    except Exception as exc:  # surface the real harness failure in the panel
+        _ssi_simple_result = None
+        _ssi_simple_error = f"{type(exc).__name__}: {exc}"
+    finally:
+        _ssi_simple_running = False
+        _ssi_simple_task = None
 
 
 def _parse_ssi_frame_values(values) -> list[int]:
@@ -907,6 +1060,8 @@ async def put_clock_speed(request: Request):
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     global _ssi_runtime, foc_runtime
+    global _ssi_simple_error, _ssi_simple_result, _ssi_simple_running
+    global _ssi_simple_task
     await websocket.accept()
     websocket._trace_owner = uuid.uuid4().hex
     connection_owner = uuid.uuid4().hex
@@ -948,6 +1103,85 @@ async def websocket_endpoint(websocket: WebSocket):
                         "type": "trace_log_state",
                         **_trace_state_for_ui(None),
                     })
+            elif action == "ssi_simple_state" or action == "ssi_simple_read":
+                await websocket.send_json({
+                    "type": "ssi_simple_state",
+                    **_ssi_simple_state(),
+                })
+            elif action == "ssi_simple_load":
+                try:
+                    harness = _load_ssi_simple_harness()
+                    profile = harness.load_default_profile()
+                    missing = [
+                        str(path) for path in harness.firmware_paths()
+                        if not pathlib.Path(path).is_file()
+                    ]
+                    if missing:
+                        raise FileNotFoundError(
+                            "SSI firmware source missing: " + ", ".join(missing)
+                        )
+                    if not isinstance(profile, dict):
+                        raise ValueError("generated SSI build profile must be a JSON object")
+                    _read_ssi_simple_profile()
+                    _ssi_simple_result = None
+                    _ssi_simple_error = None
+                    await websocket.send_json({
+                        "type": "ssi_simple_state",
+                        **_ssi_simple_state(),
+                    })
+                except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                    _ssi_simple_error = str(exc)
+                    await websocket.send_json({
+                        "type": "ssi_simple_error",
+                        "error": _ssi_simple_error,
+                    })
+                    await websocket.send_json({
+                        "type": "ssi_simple_state",
+                        **_ssi_simple_state(),
+                    })
+            elif action == "ssi_simple_run":
+                try:
+                    if _ssi_simple_running:
+                        raise ValueError("an SSI realtime run is already in progress")
+                    profile = _read_ssi_simple_profile()
+                    iterations = _validate_ssi_simple_iterations(
+                        msg.get("iterations", profile.get("SSI_ITERATIONS", 100_000)),
+                        profile.get("SSI_ITERATIONS", 100_000),
+                    )
+                    _ssi_simple_result = None
+                    _ssi_simple_error = None
+                    _ssi_simple_running = True
+                    _ssi_simple_task = asyncio.create_task(
+                        _run_ssi_simple_background(iterations)
+                    )
+                    await websocket.send_json({
+                        "type": "ssi_simple_state",
+                        **_ssi_simple_state(),
+                    })
+                except (TypeError, ValueError, OSError) as exc:
+                    _ssi_simple_running = False
+                    _ssi_simple_error = str(exc)
+                    await websocket.send_json({
+                        "type": "ssi_simple_error",
+                        "error": _ssi_simple_error,
+                    })
+                    await websocket.send_json({
+                        "type": "ssi_simple_state",
+                        **_ssi_simple_state(),
+                    })
+            elif action == "ssi_simple_reset":
+                if _ssi_simple_running:
+                    await websocket.send_json({
+                        "type": "ssi_simple_error",
+                        "error": "wait for the SSI realtime run to finish before reset",
+                    })
+                    continue
+                _ssi_simple_result = None
+                _ssi_simple_error = None
+                await websocket.send_json({
+                    "type": "ssi_simple_state",
+                    **_ssi_simple_state(),
+                })
             elif action == "ssi_runtime_profiles":
                 await websocket.send_json({
                     "type": "ssi_runtime_state",

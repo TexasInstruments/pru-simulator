@@ -731,6 +731,10 @@ function connect() {
           st.style.color = "#f38ba8";
           st.style.display = "";
         }
+      } else if (msg.type === "ssi_simple_state") {
+        if (window.renderSsiSimpleState) window.renderSsiSimpleState(msg);
+      } else if (msg.type === "ssi_simple_error") {
+        if (window.renderSsiSimpleError) window.renderSsiSimpleError(msg);
       } else if (msg.type === "foc_state") {
         renderFocState(msg);
         requestGraphDraw();
@@ -6036,6 +6040,106 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     originalRender(msg);
     if (newlyLoaded) selectGenericSsiPartner();
   };
+})();
+
+// ---- Simple SSI realtime panel ---------------------------------------------
+(function () {
+  const loadBtn = document.getElementById("ssi-simple-load");
+  if (!loadBtn) return;
+
+  const runBtn = document.getElementById("ssi-simple-run");
+  const resetBtn = document.getElementById("ssi-simple-reset");
+  const refreshBtn = document.getElementById("ssi-simple-refresh");
+  const iterationsInput = document.getElementById("ssi-simple-iterations");
+  const statusEl = document.getElementById("ssi-simple-status");
+  const profileEl = document.getElementById("ssi-simple-profile");
+  const resultsEl = document.getElementById("ssi-simple-results");
+  let pollTimer = null;
+
+  function setStatus(text, color) {
+    if (!statusEl) return;
+    statusEl.textContent = text;
+    statusEl.style.color = color || "";
+  }
+
+  function stopPolling() {
+    if (pollTimer !== null) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  function startPolling() {
+    stopPolling();
+    pollTimer = setInterval(() => {
+      sendAction({ action: "ssi_simple_read" });
+    }, 500);
+  }
+
+  function renderJson(element, value, emptyText) {
+    if (!element) return;
+    element.textContent = value === null || value === undefined
+      ? emptyText
+      : JSON.stringify(value, null, 2);
+  }
+
+  function updateControls(running, loaded) {
+    if (loadBtn) loadBtn.disabled = running;
+    if (runBtn) runBtn.disabled = running || !loaded;
+    if (resetBtn) resetBtn.disabled = running;
+    if (refreshBtn) refreshBtn.disabled = false;
+    if (iterationsInput) iterationsInput.disabled = running;
+  }
+
+  window.renderSsiSimpleState = function (msg) {
+    renderJson(profileEl, msg.profile, "Generated profile is unavailable.");
+    renderJson(resultsEl, msg.result, "No run yet.");
+    updateControls(Boolean(msg.running), Boolean(msg.loaded));
+
+    if (msg.running) {
+      setStatus("Running actual PRU0 + PRU1 + RTU_PRU1 firmware...", "var(--accent)");
+      startPolling();
+    } else {
+      stopPolling();
+      if (msg.error) {
+        setStatus("✗ " + msg.error, "#f38ba8");
+      } else if (msg.result) {
+        const passed = msg.result.pass === true;
+        setStatus(passed ? "✓ PASS · actual three-core firmware run complete" : "✗ FAIL · inspect run result", passed ? "#6a9955" : "#f38ba8");
+      } else {
+        setStatus(msg.loaded ? "Ready · generated build profile loaded" : (msg.status || "Not loaded"), msg.loaded ? "#6a9955" : "var(--text-dim)");
+      }
+    }
+  };
+
+  window.renderSsiSimpleError = function (msg) {
+    setStatus("✗ " + (msg.error || "SSI realtime error"), "#f38ba8");
+  };
+
+  loadBtn.addEventListener("click", () => {
+    setStatus("Validating generated profile and three firmware sources...", "var(--accent)");
+    sendAction({ action: "ssi_simple_load" });
+  });
+
+  runBtn.addEventListener("click", () => {
+    const requested = Math.trunc(Number(iterationsInput?.value) || 100000);
+    const iterations = Math.max(1, Math.min(100000, requested));
+    if (iterationsInput) iterationsInput.value = String(iterations);
+    if (sendAction({ action: "ssi_simple_run", iterations })) {
+      setStatus("Starting actual three-core firmware run...", "var(--accent)");
+      startPolling();
+    }
+  });
+
+  resetBtn.addEventListener("click", () => {
+    sendAction({ action: "ssi_simple_reset" });
+  });
+
+  refreshBtn.addEventListener("click", () => {
+    sendAction({ action: "ssi_simple_read" });
+  });
+
+  sendAction({ action: "ssi_simple_state" });
 })();
 
 // ---- GP Mux mode selector (GPCFG.PRU_GP_MUX_SEL) ---------------------------

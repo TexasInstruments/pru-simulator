@@ -3798,8 +3798,36 @@
       line-height: 1.45;
     }
 
+    #ssi-runtime .ssi-simple-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    #ssi-runtime .ssi-simple-output {
+      min-height: 150px;
+      max-height: 360px;
+      overflow: auto;
+      margin: 6px 0 0;
+      padding: 8px;
+      background: var(--panel-inset);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    #ssi-runtime-legacy {
+      display: none;
+    }
+
     @media (max-width: 900px) {
       .ssi-runtime-columns {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      #ssi-runtime .ssi-simple-grid {
         grid-template-columns: minmax(0, 1fr);
       }
 
@@ -4666,7 +4694,46 @@ Example:
 
           <hr class="uart-divider" />
           <div class="io-section" id="ssi-runtime">
-            <div class="io-section-title">Generic SSI Runtime</div>
+            <div class="io-section-title">Simple SSI Realtime</div>
+            <div class="ssi-simple-panel" aria-label="Simple SSI realtime test">
+              <div class="ssi-runtime-guide" aria-label="SSI realtime test workflow">
+                <div class="ssi-runtime-guide-heading">
+                  <span class="ssi-workflow-eyebrow">Actual firmware path</span>
+                  <span class="ssi-runtime-guide-summary">Run the checked-in PRU0, PRU1, and RTU_PRU1 images with the Python R5 model.</span>
+                </div>
+                <ol class="ssi-test-flow">
+                  <li><span class="ssi-step-index" aria-hidden="true">1</span><span><strong>Load build</strong><span class="ssi-step-detail">Validate the generated profile and all three assembly sources.</span></span></li>
+                  <li><span class="ssi-step-index" aria-hidden="true">2</span><span><strong>Run firmware</strong><span class="ssi-step-detail">Execute the actual PRU0 emulator + PRU1 reader + RTU_PRU1 timer.</span></span></li>
+                  <li><span class="ssi-step-index" aria-hidden="true">3</span><span><strong>Inspect results</strong><span class="ssi-step-detail">Check every scheduled publication, frame, timer, and wire mismatch.</span></span></li>
+                </ol>
+              </div>
+              <div class="ssi-action-row uart-controls" style="margin-top:8px;">
+                <button id="ssi-simple-load" class="btn-17 graph-btn" style="color:var(--accent);border-color:var(--accent);">
+                  <span class="text-container"><span class="text">Load actual firmware</span></span>
+                </button>
+                <label class="uart-label" for="ssi-simple-iterations">Opportunities:</label>
+                <input id="ssi-simple-iterations" class="uart-inj-num" type="number" min="1" max="100000" value="100000" />
+                <button id="ssi-simple-run" class="btn-17 graph-btn">
+                  <span class="text-container"><span class="text">&#9654; Run realtime</span></span>
+                </button>
+                <button id="ssi-simple-reset" class="graph-btn">Reset</button>
+                <button id="ssi-simple-refresh" class="graph-btn">Refresh</button>
+              </div>
+              <div id="ssi-simple-status" class="uart-hint" role="status" aria-live="polite">Not loaded</div>
+              <div class="uart-hint" style="margin-top:4px;">SSI wires: PRU1:GPO0 -&gt; PRU0:GPI8 (clock), PRU0:GPO0 -&gt; PRU1:GPI16 (data). RTU_PRU1 owns the shared 300 MHz IEP grid; it is not a GPIO wire.</div>
+              <div class="ssi-simple-grid" style="margin-top:8px;">
+                <section class="ssi-workflow-section">
+                  <div class="ssi-workflow-subsection-title">Generated build profile · read-only</div>
+                  <pre id="ssi-simple-profile" class="ssi-simple-output" aria-label="Generated SSI build profile">Load actual firmware to inspect the generated profile.</pre>
+                </section>
+                <section class="ssi-workflow-section">
+                  <div class="ssi-workflow-subsection-title">Run result</div>
+                  <pre id="ssi-simple-results" class="ssi-simple-output" aria-label="SSI realtime run result">No run yet.</pre>
+                </section>
+              </div>
+            </div>
+            <details id="ssi-runtime-legacy" hidden>
+              <summary>Legacy Generic SSI Runtime</summary>
             <div class="ssi-runtime-guide" aria-label="SSI test workflow">
               <div class="ssi-runtime-guide-heading">
                 <span class="ssi-workflow-eyebrow">Test flow</span>
@@ -4893,6 +4960,7 @@ Example:
             <pre id="ssi-runtime-producer-diagnostics" class="uart-hint" style="white-space:pre-wrap;margin:0;">Timestamped producer: ...</pre>
             </section>
           </div>
+            </details>
 
         </div>
       </div>
@@ -5154,7 +5222,7 @@ Example:
                  aria-labelledby="protocol-tab-ssi" aria-hidden="true" tabindex="-1" hidden>
           <div class="protocol-tool-panel-header">
             <h2 class="protocol-tool-panel-title">SSI</h2>
-          <p class="protocol-tool-panel-description">Use SSI Encoder Inject for a single frame or Generic SSI Runtime for repeatable paired tests.</p>
+          <p class="protocol-tool-panel-description">Use SSI Encoder Inject for a single frame or Simple SSI Realtime for the actual three-core firmware test.</p>
           </div>
           <div id="protocol-ssi-content" class="protocol-tool-content" data-protocol-slot="ssi"></div>
         </section>
@@ -5322,7 +5390,7 @@ Example:
         <table class="help-table">
           <tr><td><b>I2C</b></td><td>Attach the TCA9538 device and monitor decoded I2C transactions</td></tr>
           <tr><td><b>UART</b></td><td>Decode captured GPO0 output or inject UART RX data on a GPI pin</td></tr>
-          <tr><td><b>SSI</b></td><td>Inject an encoder position or configure, run, and inspect the generic SSI pair</td></tr>
+          <tr><td><b>SSI</b></td><td>Inject an encoder position or load, run, and inspect the actual three-core SSI realtime firmware</td></tr>
         </table>
       </section>
 
