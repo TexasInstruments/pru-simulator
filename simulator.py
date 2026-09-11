@@ -25,7 +25,7 @@ from perif.perif_registers import PerifRegisters
 from perif.gpcfg import GpcfgRegisters, MUX_PERIF
 from perif.loopback import Loopback
 
-_GPCFG_INDEX = {"pru0": 0, "pru1": 1}   # rtu0 has no GPCFG GP-mux (TRM)
+_GPCFG_INDEX = {"pru0": 0, "pru1": 1}   # RTU cores have no GPCFG GP-mux (TRM)
 
 
 class SDRegisterRegion(MemoryRegion):
@@ -98,7 +98,7 @@ class IepRegisterRegion(MemoryRegion):
 
 
 class Simulator:
-    """Orchestrates two PRU cores (PRU0, RTU0) sharing a memory bus and XFR bus."""
+    """Orchestrates ICSSG cores sharing one memory bus, XFR bus, and IEP."""
 
     def __init__(self, config_path: str = "memory.cfg"):
         self._hard_reset_hooks: list[Callable[[], None]] = []
@@ -119,6 +119,7 @@ class Simulator:
                 "pru0": pru_clock_mhz,
                 "rtu0": pru_clock_mhz,
                 "pru1": pru1_clock_mhz,
+                "rtu1": pru1_clock_mhz,
             }
             self.iep = IEPTimebase(
                 external_clock_mhz=float(dev.get("iep_clock_mhz", "200")),
@@ -137,6 +138,7 @@ class Simulator:
         io_pru0 = IOPort()
         io_rtu0 = IOPort()
         io_pru1 = IOPort()
+        io_rtu1 = IOPort()
         self.cores: dict[str, PRUCore] = {
             "pru0": PRUCore(
                 "PRU0", self.memory, self.xfr, io_pru0, self.constant_table,
@@ -148,6 +150,12 @@ class Simulator:
             ),
             "pru1": PRUCore("PRU1", self.memory, self.xfr, io_pru1, self.constant_table,
                             dram_swap=True, cycle_observer=cycle_observer("pru1")),
+            # RTU_PRU1 executes on slice 1 and therefore sees DRAM1 at its
+            # local C24/0x0000 window, like PRU1. It has no GP-mux or
+            # Peripheral Interface block; the SSI rebuild only needs its
+            # instruction stream, shared memory, and common IEP timeline.
+            "rtu1": PRUCore("RTU1", self.memory, self.xfr, io_rtu1, self.constant_table,
+                            dram_swap=True, cycle_observer=cycle_observer("rtu1")),
         }
         self._gpio_wires: list[dict] = []
 
@@ -155,7 +163,7 @@ class Simulator:
         self._pru_clock_mhz = pru_clock_mhz
         self._pru1_clock_mhz = pru1_clock_mhz
         core_clocks = {"pru0": pru_clock_mhz, "rtu0": pru_clock_mhz,
-                       "pru1": pru1_clock_mhz}
+                       "pru1": pru1_clock_mhz, "rtu1": pru1_clock_mhz}
         for name, core in self.cores.items():
             core.io_port.sd_filter = SigmaDeltaFilter(pru_clock_mhz=core_clocks[name])
 
@@ -200,10 +208,11 @@ class Simulator:
         self._gpcfg.on_mux_change = _on_mux_change
         self.memory.add_region(GpcfgRegion(self._gpcfg))
 
-        # Non-AM243x configurations use the standalone IEP peripheral model.
-        # AM243x already installed the clock-ratio-aware shared IEPTimebase
-        # above; replacing it here would discard its multi-core timeline.
-        if not is_am243x:
+        # Configurations without an explicit target retain the standalone
+        # timer used by the generic simulator fallback. AM243x uses the
+        # clock-ratio-aware shared IEPTimebase above; other explicit targets
+        # intentionally keep the historical "no local IEP" behavior.
+        if not is_am243x and not target:
             self.iep = IepTimer()
             self.memory.add_region(IepRegisterRegion(self.iep))
             for core in self.cores.values():

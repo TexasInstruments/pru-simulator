@@ -619,7 +619,6 @@ def run_stdio_server():
         import inspect
         import json
 
-        server = Server("pru-simulator")
         mcp_wrapper = PRUSimulatorMCP()
 
         # Build tool list from PRUSimulatorMCP public methods
@@ -655,12 +654,7 @@ def run_stdio_server():
                 },
             ))
 
-        @server.list_tools()
-        async def list_tools():
-            return _TOOLS
-
-        @server.call_tool()
-        async def call_tool(name, arguments):
+        def dispatch_tool(name, arguments):
             method = getattr(mcp_wrapper, name, None)
             if method is None:
                 raise ValueError(f"Unknown tool: {name}")
@@ -671,7 +665,39 @@ def run_stdio_server():
             else:
                 real_args = arguments
             result = method(**real_args)
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+            return TextContent(type="text", text=json.dumps(result, indent=2))
+
+        # MCP's low-level Server API changed from decorator registration to
+        # constructor callbacks. Keep both paths so the checked-in stdio
+        # transport works with the SDK declared by requirements.txt as well
+        # as the older SDK used by the original wrapper.
+        if hasattr(Server, "list_tools"):
+            server = Server("pru-simulator")
+
+            @server.list_tools()
+            async def list_tools():
+                return _TOOLS
+
+            @server.call_tool()
+            async def call_tool(name, arguments):
+                return [dispatch_tool(name, arguments)]
+        else:
+            from mcp.types import CallToolResult, ListToolsResult
+
+            async def list_tools(_context, _params):
+                return ListToolsResult(tools=_TOOLS)
+
+            async def call_tool(_context, params):
+                name = getattr(params, "name", None)
+                arguments = getattr(params, "arguments", None) or {}
+                return CallToolResult(content=[dispatch_tool(name, arguments)])
+
+            server = Server(
+                "pru-simulator",
+                on_list_tools=list_tools,
+                on_call_tool=call_tool,
+            )
 
         async def main():
             async with stdio_server() as (read_stream, write_stream):
