@@ -36,6 +36,14 @@ from xfr.bswap_accelerator import (
     BSWAP_BYTE_ORDER,
     BSwapAccelerator,
 )
+from xfr.xfr2vbus_accelerator import (
+    RD_ID0,
+    RD_ID1,
+    WR_ID0,
+    WR_ID1,
+    XFR2VBUSReadAccelerator,
+    XFR2VBUSWriteAccelerator,
+)
 
 
 # A memory fault whose base register is an uninitialised R2 is almost always
@@ -84,7 +92,8 @@ class PRUCore:
 
     def __init__(self, name: str, memory: MemoryBus, xfr: XFRBus, io_port: IOPort,
                  constant_table: ConstantTable | None = None,
-                 dram_swap: bool = False):
+                 dram_swap: bool = False,
+                 vbus_memory: MemoryBus | None = None):
         self.name = name
         self.registers = RegisterFile()
         self.counters = CycleCounters()
@@ -96,6 +105,12 @@ class PRUCore:
         # PRU1 sees its own DRAM (DRAM1) at core-local 0x0000 and DRAM0 at
         # 0x2000 -- the reverse of PRU0. See _map_data_addr.
         self.dram_swap = dram_swap
+        # XFR2VBUS (TRM 6.4.6.3.1) reaches SoC CBASS0/MSMC memory, a distinct
+        # 48-bit address space from the ICSSG-local `memory` bus above. Public
+        # so tests back it with a real MemoryBus/MemoryRegion instead of
+        # reaching into accelerator internals; defaults to an empty bus (any
+        # access without a configured region fails loud, same as `memory`).
+        self.vbus_memory: MemoryBus = vbus_memory if vbus_memory is not None else MemoryBus()
         self.pc: int = 0
         self.halted: bool = False
         self.instructions: list[Instruction] = []
@@ -112,6 +127,10 @@ class PRUCore:
             BSWAP_BYTE_ORDER: BSwapAccelerator(self.registers, BSWAP_BYTE_ORDER),
             BSWAP_4_8: BSwapAccelerator(self.registers, BSWAP_4_8),
             BSWAP_4_16: BSwapAccelerator(self.registers, BSWAP_4_16),
+            RD_ID0: XFR2VBUSReadAccelerator(self.vbus_memory, RD_ID0),
+            RD_ID1: XFR2VBUSReadAccelerator(self.vbus_memory, RD_ID1),
+            WR_ID0: XFR2VBUSWriteAccelerator(self.vbus_memory, WR_ID0),
+            WR_ID1: XFR2VBUSWriteAccelerator(self.vbus_memory, WR_ID1),
         }
 
     # ------------------------------------------------------------------
