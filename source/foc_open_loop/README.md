@@ -13,7 +13,7 @@ using elapsed IEP time; it does not convert the firmware loop counter into time.
 * **Timing:** Absolute IEP deadlines at 100 kHz, using the configured IEP clock and an explicit control period
 * **Safety:** Disabled output is neutral `0.5/0.5/0.5`; voltage magnitude is limited to `1/sqrt(3)` pu; saturation and deadline faults are reported
 * **Pipeline:** Config handshake → RC → RG(θ) → sin/cos lookup → inverse Park (Vα, Vβ) → SVGEN (Ta, Tb, Tc), all published under seqlock
-* **Broadside MAC:** Device 0, operands R28/R29, 64-bit product R26:R27; Q48→Q24 renormalization by `>>24`
+* **Broadside MAC:** Device 0, operands R28/R29, 64-bit product R26:R27; validation reads the full Q48 result, while bounded hot-path products use an 8-bit prescaled operand and the upper word for Q24
 
 ## Shared-memory map (ABI)
 
@@ -35,6 +35,8 @@ The ABI is schema-generated from `schema/foc_abi.json` via `tools/gen_foc_abi.py
 | `pru_io/foc_runtime.py` | Reference validation, lifecycle, coherent telemetry, and clock metadata |
 | `README.md` | this file |
 | `PROJECT_REPORT.md` | detailed project documentation |
+| `tools/profile_foc.py` | assembled stage and region timing profiler |
+| `tools/benchmark_q24.py` | multiply-only versus MAC Q24 experiment |
 
 ## Run it in the simulator
 
@@ -127,6 +129,88 @@ python tools/run_foc_acceptance.py --clock 200 \
 Repeat with `--clock 250` or `--clock 300` for clock-consistency checks. The insufficient-voltage
 case is expected to lose synchronism in this open-loop model; the zero-voltage case is expected
 to move the command angle while the rotor remains stationary.
+
+### Open-loop cycle budget
+
+The reproducible profiler runs the real assembled firmware with timer acceleration disabled:
+
+```bash
+python -m tools.profile_foc --clock 200 --updates 20 \
+  --case nominal --case reverse --case settled --case ramp_clamped \
+  --case boundary --case invalid --case disabled
+```
+
+At 200 MHz the measured valid-reference path is:
+
+| Region | Cycles | Instructions | Stalls | Time at 200 MHz |
+|---|---:|---:|---:|---:|
+| Configuration adoption (not every update) | 62 | 46 | 16 | 0.310 us |
+| Enable/input boundary | 4 | 2 | 2 | 0.020 us |
+| Control computation | 117 | 110 | 7 | 0.585 us |
+| Deadline bookkeeping | 11 | 8 | 3 | 0.055 us |
+| PWM publication | 30 | 17 | 13 | 0.150 us |
+| Active path, excluding deadline wait | 162 | 137 | 25 | 0.810 us |
+
+The profiler also reports sequential stage boundaries inside the 117-cycle computation. The
+200 MHz valid-reference measurement is:
+
+| FOC stage | Cycles / IEP ticks | Instructions | Stalls | Time |
+|---|---:|---:|---:|---:|
+| Entry / validation | 5 / 5 | 2 | 3 | 0.025 us |
+| Ramp | 10 / 10 | 10 | 0 | 0.050 us |
+| Phase accumulator | 11 / 11 | 11 | 0 | 0.055 us |
+| Sine lookup | 5 / 5 | 3 | 2 | 0.025 us |
+| Cosine lookup | 6 / 6 | 4 | 2 | 0.030 us |
+| Inverse Park | 34 / 34 | 34 | 0 | 0.170 us |
+| Inverse Clarke | 17 / 17 | 17 | 0 | 0.085 us |
+| SVPWM common mode | 13 / 13 | 13 | 0 | 0.065 us |
+| SVPWM duty offset | 6 / 6 | 6 | 0 | 0.030 us |
+| Duty clamp / status | 10 / 10 | 10 | 0 | 0.050 us |
+| **Computation total** | **117 / 117** | **110** | **7** | **0.585 us** |
+
+The sine and cosine stages are Q24 LUT index calculation plus memory reads; they are not runtime
+calls to `sin()` or `cos()`. At 250 and 300 MHz, the same 117 cycles/IEP ticks take 0.468 us and
+0.390 us respectively.
+
+The strict below-200-cycle target applies to the computation region, so the optimized open-loop
+kernel is 82 cycles below that target on the normal path. Independently taking the longest
+negative or upper clamp branch for each phase produces a conservative 123-cycle valid bound,
+still 76 cycles below the target. The full active path is deliberately reported separately;
+it includes input, deadline, and publication work. At 250 and 300 MHz the same kernel remains
+117 computation cycles and 162 active cycles, taking 0.468/0.390 us and 0.648/0.540 us
+respectively. The 100 kHz control period is 2,000/2,500/3,000 IEP ticks at those clocks.
+
+The multiply-only MAC mode is configured once at firmware startup. Products use the R28/R29
+operand registers. The valid open-loop path prescales bounded unsigned magnitudes by eight bits
+and reads the upper product word, which is equivalent to `(a*b) >> 24` without an explicit shift.
+Each signed product is still truncated before the inverse-Park sums, preserving the existing Q24
+contract. Adjacent inverse-Park products reuse the fixed R28/R29 operand slots; the cosine lookup
+also writes directly to R29, removing the remaining initial cosine move. The phase scale and
+sqrt(3)/2 constants use the same prescaled upper-word form. The phase-accumulator product now
+has an explicit settling instruction before XIN. Voltage signs are cached in persistent R18
+bytes during configuration adoption, and the valid path falls through the entry check. The
+common-mode stage adds biased extrema directly because the two sign offsets cancel modulo 32
+bits. The simulator's MAC implementation computes multiply-only results when XIN is read, so
+this timing is simulator-verified and still requires TI-toolchain listing and hardware
+measurement for a hardware guarantee.
+
+The multiply-grouping experiment is reproducible with:
+
+```bash
+python -m tools.benchmark_q24 --samples 1000000
+```
+
+On the simulator, two raw Q48 products take 17 cycles with per-product conversion and 11 cycles
+with one MAC accumulation and one final conversion. Using the current prescaled representation,
+the corresponding measurements are 11 and 8 cycles. The accumulated result differs by one Q24
+LSB in the selected fractional case, and 500,039 of 1,000,000 random signed pairs differ by up
+to one LSB. The MAC accumulation is therefore faster in the isolated positive-magnitude test,
+but it is not a drop-in replacement for this bit-exact signed FOC path: the hardware model
+accumulates unsigned magnitudes and a mixed-sign pair needs separate sign handling.
+
+The future closed-loop schedule, including speed PI, Clarke/Park, both current PIs, per-update
+limiting, anti-windup, inverse Park, and SVPWM, is documented in `PROJECT_REPORT.md`. It is a
+feasibility estimate only; no closed-loop controller is implemented in this phase.
 
 ### UI smoke-test matrix
 

@@ -251,15 +251,23 @@ def test_ramp_generates_rotating_theta(nominal_config):
 
 def _sincos_at_theta(nominal_config, theta_acc: int):
     """Preset THETA_ACC (r12) directly and freeze it there (SpeedRef=0,
-    RampRate=0 -> RG's freq is always 0), then run the pipeline long enough
-    for the sin/cos lookup to latch SIN_Q24/COS_Q24 (r17/r18) from that
-    exact value, and return (sin_q24, cos_q24) raw register ints."""
+    RampRate=0 -> RG's freq is always 0), then run the real lookup stages
+    directly so the raw SIN_Q24/COS_Q24 values are captured before inverse
+    Park reuses those registers for magnitudes."""
     sim = _make_configured_sim(nominal_config, speed_ref=0.0, ramp_rate=0.0)
     seed_sine_lut(sim)
-    sim.cores["pru0"].registers.write_full(12, theta_acc)  # THETA_ACC
-    sim.step("pru0", 5000)
+    core = sim.cores["pru0"]
+    labels = core._parser.labels
+    core.registers.write_full(12, theta_acc)  # THETA_ACC
+    core.pc = labels["l_sine_lookup_start"]
+    for _ in range(100):
+        if core.pc == labels["l_cosine_lookup_end"]:
+            break
+        sim.step("pru0", 1)
+    else:
+        raise AssertionError("sin/cos lookup did not finish")
     regs = sim.registers("pru0")
-    return regs[17], regs[18]  # SIN_Q24, COS_Q24
+    return regs[17], regs[29]  # SIN_Q24, COS_Q24 / MAC operand B
 
 
 def test_sincos_lut(nominal_config):

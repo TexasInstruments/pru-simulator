@@ -140,6 +140,7 @@ def run_case(name: str, clock_mhz: float) -> dict:
         tail = [sample for sample in samples if sample["time"] >= case["duration"] - 0.2]
         speeds = [sample["speed"] for sample in tail]
         angles = [sample["angle_error"] for sample in samples]
+        synchronism_check_applicable = math.hypot(case["vd"], case["vq"]) > 0.0
         command_motion = (
             samples[-1]["theta_cmd"] != samples[0]["theta_cmd"]
             if samples else False
@@ -166,7 +167,11 @@ def run_case(name: str, clock_mhz: float) -> dict:
             "command_angle_moved": command_motion,
             "final_speed_rpm": state["model"]["speed_rpm"],
             "fault": state["fault"],
-            "synchronism_lost": max((abs(value) for value in angles), default=0.0) >= 170.0,
+            "synchronism_check_applicable": synchronism_check_applicable,
+            "synchronism_lost": (
+                synchronism_check_applicable
+                and max((abs(value) for value in angles), default=0.0) >= 170.0
+            ),
         }
     finally:
         temp.cleanup()
