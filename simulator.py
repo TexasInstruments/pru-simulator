@@ -113,6 +113,13 @@ class Simulator:
         pru1_clock_mhz = float(dev.get("pru1_clock_mhz", str(pru_clock_mhz)))
 
         if is_am243x:
+            # The SSI hardware images perform their normal AM243x pad/GPIO
+            # mux writes before entering the wire loops. The simulator does
+            # not model pad electrical state, but it must accept those MMIO
+            # writes so the same firmware image can reach its ready flags.
+            self.memory.add_region(
+                MemoryRegion("AM243X_PADCFG", 0x000F0000, 0x6000, 0, 0, 0)
+            )
             self.constant_table.set(26, IEPRegisterRegion.BASE_ADDR)
             self.constant_table.set(28, 0x00010000)
             core_clocks = {

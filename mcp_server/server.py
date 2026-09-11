@@ -607,6 +607,31 @@ class PRUSimulatorMCP:
         """Return a status snapshot for all cores."""
         return {"cores": self.sim.status()}
 
+    def pru_ssi_simple_run(self, iterations: int = 100000) -> dict:
+        """Run the parent SSI project's three real images through its harness.
+
+        The parent project supplies ``SSI_PROJECT_ROOT`` when it requests this
+        tool. Keeping the harness in that project makes the direct and MCP
+        paths use the same source files, generated profile, scheduler, and
+        result checks without making the generic simulator depend on one
+        parent checkout.
+        """
+        project_root = os.environ.get("SSI_PROJECT_ROOT", "")
+        if not project_root:
+            return {"status": "error", "error": "SSI_PROJECT_ROOT is not set"}
+        harness_path = Path(project_root) / "encoder-workspace" / "firmware" / "ccs-tests" / "ssi_test" / "tools" / "simulate_ssi.py"
+        if not harness_path.is_file():
+            return {"status": "error", "error": f"SSI harness not found: {harness_path}"}
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("ssi_mcp_harness", harness_path)
+        if spec is None or spec.loader is None:
+            return {"status": "error", "error": "cannot import SSI harness"}
+        harness = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(harness)
+        profile = harness.load_default_profile()
+        return harness.run(profile, int(iterations), use_mcp=False)
+
 
 def run_stdio_server():
     """Start the MCP stdio server. Requires the 'mcp' SDK to be installed."""

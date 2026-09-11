@@ -27,3 +27,11 @@ def test_rtu1_advances_the_existing_shared_iep_timeline():
     sim.step("rtu1", 17)
 
     assert sim.iep.count == 17
+
+
+def test_am243x_padcfg_mmio_accepts_real_ssi_pin_setup_writes():
+    sim = Simulator(config_path="config/memory_am243x.cfg")
+
+    sim.memory.write(0x000F0000, (0x12345678).to_bytes(4, "little"))
+
+    assert sim.memory_read(0x000F0000, 4) == (0x12345678).to_bytes(4, "little")
