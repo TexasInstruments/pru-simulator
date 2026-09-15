@@ -54,6 +54,21 @@ mcp.pru_run_until(core="pru0")
 print(mcp.pru_registers())           # {'r0': '0x0000002a', 'r1': '0x00000000', ...}
 ```
 
+### Simple SSI realtime firmware
+
+The repository includes the three-image SSI realtime firmware and its
+functional harness under `firmware/ssi_test`. It is self-contained and does
+not require the CCS workspace:
+
+```python
+result = mcp.pru_ssi_simple_run(iterations=1000)
+print(result["published"], result["frames"])
+```
+
+The dashboard's **Load actual firmware** action uses the same bundled files.
+Edit `firmware/ssi_test/ssi_test/ssi_hardware_config.h` and run its
+`tools/generate_config.py` command to test another validated profile.
+
 ---
 
 ## Tool Reference
@@ -71,6 +86,7 @@ print(mcp.pru_registers())           # {'r0': '0x0000002a', 'r1': '0x00000000', 
 | `pru_breakpoint` | `core="pru0"`, `address: int` | `{id}` | Add a breakpoint |
 | `pru_uart_inject` | `source`, `payload`, `baudrate=4M`, `frames=1`, `core`, `pin`, `dram0_offset`, `max_steps` | `{status, frames_received, received_data, match}` | UART RX end-to-end test |
 | `pru_ssi_inject` | `source`, `value=0`, `bits=12`, `clk_pin=0`, `data_pin=8`, `core`, `dram0_offset=16`, `max_steps` | `{status, expected, captured, match, frames_captured, cycles}` | SSI encoder end-to-end test |
+| `pru_ssi_simple_run` | `iterations=100000` | SSI realtime result object | Run the bundled PRU0, PRU1, and RTU_PRU1 firmware images |
 | `pru_status` | — | `{cores: {name: {pc, cycles, halted}}}` | Snapshot all cores |
 
 ---

@@ -360,34 +360,48 @@ class Simulator:
         until its total instruction count equals the lead's. This keeps the
         two cores in approximate lockstep so GPIO edge polling sees changes.
         """
+        self.step_paced_many(lead, [follow], count=count, guard_ns=guard_ns)
+
+    def step_paced_many(self, lead: str, followers: list[str], count: int = 1,
+                        guard_ns: float = 20.0) -> None:
+        """Step one lead core while pacing zero or more follower cores.
+
+        Peripheral-mode followers catch up to the lead's virtual clock while
+        GPIO/SSI followers catch up to its instruction count.  The pairwise
+        :meth:`step_paced` API delegates here so existing two-core callers
+        retain the same scheduling behavior.
+        """
         lead_pru = self._get_core(lead)
-        follow_pru = self._get_core(follow)
         lead_perif = self._perif.get(lead)
-        follow_perif = self._perif.get(follow)
+        follower_states = [
+            (self._get_core(follower), self._perif.get(follower))
+            for follower in followers
+        ]
         for _ in range(count):
             if not lead_pru.halted and lead_pru.pc < len(lead_pru.instructions):
                 lead_pru.step()
-            perif_active = (
-                lead_perif is not None and follow_perif is not None
-                and lead_perif.enabled and follow_perif.enabled
-            )
-            if perif_active:
-                target = lead_perif._now_ns - guard_ns
-                safety = 1000
-                while (follow_perif._now_ns < target and safety > 0
-                       and not follow_pru.halted
-                       and follow_pru.pc < len(follow_pru.instructions)):
-                    follow_pru.step()
-                    safety -= 1
-            else:
-                target_ic = lead_pru.counters.instruction_count
-                safety = 1000
-                while (follow_pru.counters.instruction_count < target_ic
-                       and safety > 0
-                       and not follow_pru.halted
-                       and follow_pru.pc < len(follow_pru.instructions)):
-                    follow_pru.step()
-                    safety -= 1
+            for follow_pru, follow_perif in follower_states:
+                perif_active = (
+                    lead_perif is not None and follow_perif is not None
+                    and lead_perif.enabled and follow_perif.enabled
+                )
+                if perif_active:
+                    target = lead_perif._now_ns - guard_ns
+                    safety = 1000
+                    while (follow_perif._now_ns < target and safety > 0
+                           and not follow_pru.halted
+                           and follow_pru.pc < len(follow_pru.instructions)):
+                        follow_pru.step()
+                        safety -= 1
+                else:
+                    target_ic = lead_pru.counters.instruction_count
+                    safety = 1000
+                    while (follow_pru.counters.instruction_count < target_ic
+                           and safety > 0
+                           and not follow_pru.halted
+                           and follow_pru.pc < len(follow_pru.instructions)):
+                        follow_pru.step()
+                        safety -= 1
 
     def registers(self, core: str) -> list[int]:
         """Return the 32 general-purpose register values for *core*."""

@@ -608,18 +608,31 @@ class PRUSimulatorMCP:
         return {"cores": self.sim.status()}
 
     def pru_ssi_simple_run(self, iterations: int = 100000) -> dict:
-        """Run the parent SSI project's three real images through its harness.
+        """Run the bundled SSI project's three real images through its harness.
 
-        The parent project supplies ``SSI_PROJECT_ROOT`` when it requests this
-        tool. Keeping the harness in that project makes the direct and MCP
-        paths use the same source files, generated profile, scheduler, and
-        result checks without making the generic simulator depend on one
-        parent checkout.
+        The simulator repository includes the harness, generated profile, and
+        three assembly images. ``SSI_PROJECT_ROOT`` is an explicit optional
+        override for a matching external workspace.
         """
-        project_root = os.environ.get("SSI_PROJECT_ROOT", "")
-        if not project_root:
-            return {"status": "error", "error": "SSI_PROJECT_ROOT is not set"}
-        harness_path = Path(project_root) / "encoder-workspace" / "firmware" / "ccs-tests" / "ssi_test" / "tools" / "simulate_ssi.py"
+        project_root = os.environ.get("SSI_PROJECT_ROOT")
+        if project_root:
+            harness_path = (
+                Path(project_root)
+                / "encoder-workspace"
+                / "firmware"
+                / "ccs-tests"
+                / "ssi_test"
+                / "tools"
+                / "simulate_ssi.py"
+            )
+        else:
+            harness_path = (
+                Path(__file__).resolve().parents[1]
+                / "firmware"
+                / "ssi_test"
+                / "tools"
+                / "simulate_ssi.py"
+            )
         if not harness_path.is_file():
             return {"status": "error", "error": f"SSI harness not found: {harness_path}"}
         import importlib.util

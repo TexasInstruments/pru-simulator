@@ -57,7 +57,9 @@
     }
 
     #core-select,
+    #mc-primary-select,
     #mc-partner-select,
+    #mc-third-select,
     #pru-speed-select {
       background: var(--btn);
       color: var(--text);
@@ -1360,7 +1362,8 @@
 
     /* Reg panel body must scroll in MC mode (panel is now flex-leaf, body gets flex:1) */
     #mc-pru0-reg-panel .panel-body,
-    #mc-rtu0-reg-panel .panel-body { overflow-y: auto; padding: 0; }
+    #mc-rtu0-reg-panel .panel-body,
+    #mc-rtu1-reg-panel .panel-body { overflow-y: auto; padding: 0; }
 
     /* Drag ghost */
     .tile-drag-ghost {
@@ -1732,7 +1735,9 @@
     }
 
     #core-select,
+    #mc-primary-select,
     #mc-partner-select,
+    #mc-third-select,
     #pru-speed-select,
     #sim-interval {
       background: #0d151d;
@@ -2258,7 +2263,9 @@
     }
 
     #core-select,
+    #mc-primary-select,
     #mc-partner-select,
+    #mc-third-select,
     #pru-speed-select,
     #sim-interval {
       background: var(--panel-inset);
@@ -2695,7 +2702,9 @@
     }
 
     #core-select,
+    #mc-primary-select,
     #mc-partner-select,
+    #mc-third-select,
     #pru-speed-select,
     #sim-interval {
       padding: 4px 7px;
@@ -4273,6 +4282,7 @@
       <option value="pru0">PRU0</option>
       <option value="rtu0">RTU0</option>
       <option value="pru1">PRU1</option>
+      <option value="rtu1">RTU_PRU1</option>
     </select>
 
     <select id="pru-speed-select" title="PRU core clock speed (applies to PRU0, RTU0, and PRU1)">
@@ -4285,12 +4295,29 @@
     </div>
 
     <div class="toolbar-group toolbar-execution" role="group" aria-label="Execution controls">
-    <button id="btn-multicore" class="btn-17" title="Toggle dual-core debug view">
+    <button id="btn-multicore" class="btn-17" title="Toggle one-, two-, or three-core debug view">
       <span class="text-container"><span class="text">Multi-core</span></span>
     </button>
-    <select id="mc-partner-select" title="Second core in multi-core view" style="display:none;">
+    <select id="mc-primary-select" title="Primary core in multi-core view" style="display:none;">
+      <option value="none">None</option>
+      <option value="pru0" selected>PRU0</option>
       <option value="rtu0">RTU0</option>
       <option value="pru1">PRU1</option>
+      <option value="rtu1">RTU_PRU1</option>
+    </select>
+    <select id="mc-partner-select" title="Second core in multi-core view" style="display:none;">
+      <option value="none">None</option>
+      <option value="pru0">PRU0</option>
+      <option value="rtu0" selected>RTU0</option>
+      <option value="pru1">PRU1</option>
+      <option value="rtu1">RTU_PRU1</option>
+    </select>
+    <select id="mc-third-select" title="Third core in multi-core view" style="display:none;">
+      <option value="none" selected>None</option>
+      <option value="pru0">PRU0</option>
+      <option value="rtu0">RTU0</option>
+      <option value="pru1">PRU1</option>
+      <option value="rtu1">RTU_PRU1</option>
     </select>
 
     <button id="btn-step" class="btn-17 btn-step">
@@ -4368,6 +4395,11 @@
       <span id="cnt-rtu-cycles-wrap" style="display:none;">Cycles: <span class="val" id="cnt-rtu-cycles">0</span></span>
       <span id="cnt-rtu-stalls-wrap" style="display:none;">Stalls: <span class="val" id="cnt-rtu-stalls">0</span></span>
       <span id="cnt-rtu-pc-wrap"     style="display:none;">PC: <span class="val" id="cnt-rtu-pc">0</span></span>
+      <span id="cnt-sep2" style="display:none;color:var(--border);">│</span>
+      <span id="cnt-p2-label" style="display:none;color:var(--accent);font-weight:bold;">None</span>
+      <span id="cnt-p2-cycles-wrap" style="display:none;">Cycles: <span class="val" id="cnt-p2-cycles">0</span></span>
+      <span id="cnt-p2-stalls-wrap" style="display:none;">Stalls: <span class="val" id="cnt-p2-stalls">0</span></span>
+      <span id="cnt-p2-pc-wrap"     style="display:none;">PC: <span class="val" id="cnt-p2-pc">0</span></span>
     </div>
   </div>
 
@@ -4408,6 +4440,7 @@
             <option value="pru0">→ PRU0</option>
             <option value="rtu0">→ RTU0</option>
             <option value="pru1">→ PRU1</option>
+            <option value="rtu1">→ RTU_PRU1</option>
           </select>
           <input type="file" id="file-input" accept=".asm,.inc,.s,.out" style="display:none" />
           <button id="btn-file" class="btn-load">Open</button>
@@ -4703,24 +4736,19 @@ Example:
                 </div>
                 <ol class="ssi-test-flow">
                   <li><span class="ssi-step-index" aria-hidden="true">1</span><span><strong>Load build</strong><span class="ssi-step-detail">Validate the generated profile and all three assembly sources.</span></span></li>
-                  <li><span class="ssi-step-index" aria-hidden="true">2</span><span><strong>Run firmware</strong><span class="ssi-step-detail">Execute the actual PRU0 emulator + PRU1 reader + RTU_PRU1 timer.</span></span></li>
+                  <li><span class="ssi-step-index" aria-hidden="true">2</span><span><strong>Use simulator controls</strong><span class="ssi-step-detail">Run, Step, or SIM advances all three images plus the functional R5 model.</span></span></li>
                   <li><span class="ssi-step-index" aria-hidden="true">3</span><span><strong>Inspect results</strong><span class="ssi-step-detail">Check every scheduled publication, frame, timer, and wire mismatch.</span></span></li>
                 </ol>
               </div>
               <div class="ssi-action-row uart-controls" style="margin-top:8px;">
                 <button id="ssi-simple-load" class="btn-17 graph-btn" style="color:var(--accent);border-color:var(--accent);">
-                  <span class="text-container"><span class="text">Load actual firmware</span></span>
-                </button>
-                <label class="uart-label" for="ssi-simple-iterations">Opportunities:</label>
-                <input id="ssi-simple-iterations" class="uart-inj-num" type="number" min="1" max="100000" value="100000" />
-                <button id="ssi-simple-run" class="btn-17 graph-btn">
-                  <span class="text-container"><span class="text">&#9654; Run realtime</span></span>
+                  <span class="text-container"><span class="text">Load actual firmware into simulator</span></span>
                 </button>
                 <button id="ssi-simple-reset" class="graph-btn">Reset</button>
                 <button id="ssi-simple-refresh" class="graph-btn">Refresh</button>
               </div>
               <div id="ssi-simple-status" class="uart-hint" role="status" aria-live="polite">Not loaded</div>
-              <div class="uart-hint" style="margin-top:4px;">SSI wires: PRU1:GPO0 -&gt; PRU0:GPI8 (clock), PRU0:GPO0 -&gt; PRU1:GPI16 (data). RTU_PRU1 owns the shared 300 MHz IEP grid; it is not a GPIO wire.</div>
+              <div class="uart-hint" style="margin-top:4px;">Load installs PRU0, PRU1, and RTU_PRU1 into the normal simulator. Then use the top Run, Step, or SIM controls. SSI wires: PRU1:GPO0 -&gt; PRU0:GPI8 (clock), PRU0:GPO0 -&gt; PRU1:GPI16 (data). RTU_PRU1 owns the shared 300 MHz IEP grid; it is not a GPIO wire.</div>
               <div class="ssi-simple-grid" style="margin-top:8px;">
                 <section class="ssi-workflow-section">
                   <div class="ssi-workflow-subsection-title">Generated build profile · read-only</div>
@@ -5025,7 +5053,7 @@ Example:
       <!-- MC PRU0 source panel -->
       <div class="panel" id="mc-pru0-source-panel">
         <div class="panel-title" data-panel-id="mc-pru0-source" style="display:flex;align-items:center;">
-          <span>PRU0 Source</span>
+          <span id="mc-primary-source-title">PRU0 Source</span>
           <span class="mc-pc-badge" id="mc-pru0-pc">PC: 0</span>
         </div>
         <div class="bp-bar" id="mc-pru0-bp-bar">
@@ -5043,7 +5071,7 @@ Example:
       <!-- MC PRU0 register panel -->
       <div class="panel" id="mc-pru0-reg-panel">
         <div class="panel-title mc-reg-title" data-panel-id="mc-pru0-registers">
-          <span>PRU0 Registers</span>
+          <span id="mc-primary-reg-title">PRU0 Registers</span>
           <span class="mc-carry-row">Carry: <span class="mc-carry-val" id="mc-pru0-carry">0</span></span>
           <span class="mc-mac-row">MAC: <span class="mc-mac-mode" id="mc-pru0-mac-mode">MPY</span><span class="mc-mac-carry" id="mc-pru0-mac-carry"></span></span>
           <span style="margin-left:6px;font-size:10px;color:var(--text-dim);">SPAD:</span>
@@ -5084,6 +5112,36 @@ Example:
         </div>
         <div class="panel-body">
           <table class="reg-table"><tbody id="mc-rtu0-reg-tbody"></tbody></table>
+        </div>
+      </div>
+
+      <!-- MC third source panel -->
+      <div class="panel" id="mc-rtu1-source-panel">
+        <div class="panel-title" data-panel-id="mc-rtu1-source" style="display:flex;align-items:center;">
+          <span id="mc-third-source-title">None Source</span>
+          <span class="mc-pc-badge" id="mc-rtu1-pc">PC: 0</span>
+        </div>
+        <div class="bp-bar" id="mc-rtu1-bp-bar">
+          <span class="bp-bar-label">Breakpoints:</span>
+          <span class="bp-chip-list" id="mc-rtu1-bp-chip-list"></span>
+          <input type="text" id="mc-rtu1-bp-addr-input" placeholder="addr" title="Set a breakpoint at an address (hex 0x.. or decimal)">
+          <button class="bp-action" id="mc-rtu1-bp-add-btn" title="Set breakpoint at address">Set</button>
+          <button class="bp-action" id="mc-rtu1-bp-clear-btn" title="Clear all breakpoints on this core">Clear all</button>
+        </div>
+        <div class="panel-body">
+          <ul class="source-list" id="mc-rtu1-source-list"></ul>
+        </div>
+      </div>
+
+      <!-- MC third register panel -->
+      <div class="panel" id="mc-rtu1-reg-panel">
+        <div class="panel-title mc-reg-title" data-panel-id="mc-rtu1-registers">
+          <span id="mc-third-reg-title">None Registers</span>
+          <span class="mc-carry-row">Carry: <span class="mc-carry-val" id="mc-rtu1-carry">0</span></span>
+          <span class="mc-mac-row">MAC: <span class="mc-mac-mode" id="mc-rtu1-mac-mode">MPY</span><span class="mc-mac-carry" id="mc-rtu1-mac-carry"></span></span>
+        </div>
+        <div class="panel-body">
+          <table class="reg-table"><tbody id="mc-rtu1-reg-tbody"></tbody></table>
         </div>
       </div>
 
@@ -5331,7 +5389,7 @@ Example:
         <table class="help-table">
           <tr><td><kbd>→</kbd></td><td>Step: execute one instruction</td></tr>
           <tr><td><kbd>←</kbd></td><td>Step Back: reverse one instruction</td></tr>
-          <tr><td><kbd>Space</kbd></td><td>Toggle breakpoint at current PC (both cores in Multi-core mode)</td></tr>
+          <tr><td><kbd>Space</kbd></td><td>Toggle breakpoint at current PC on every selected core in Multi-core mode</td></tr>
           <tr><td><kbd>?</kbd></td><td>Open / close this help window</td></tr>
           <tr><td><kbd>Esc</kbd></td><td>Close open modal (help, config)</td></tr>
         </table>
@@ -5346,7 +5404,7 @@ Example:
           <tr><td><b>SIM</b></td><td>Toggle timed simulation mode</td></tr>
           <tr><td><b>Reset</b></td><td>Soft reset: registers and PC to 0, plus this core's Peripheral Interface status/FIFOs</td></tr>
           <tr><td><b>HW Reset</b></td><td>Hard reset: clears SPAD, XFR config, and every core's Peripheral Interface state (FIFOs, overrun/underrun, RX valid/overflow, busy); perif config registers, GP Mux and loopback settings are kept</td></tr>
-          <tr><td><b>Multi-core</b></td><td>Toggle dual-core (PRU0 + RTU0) debug view</td></tr>
+          <tr><td><b>Multi-core</b></td><td>Show and run one, two, or three selected cores together</td></tr>
           <tr><td><b>Config</b></td><td>Edit simulator configuration (JSON)</td></tr>
           <tr><td><b>⊞ Reset Layout</b></td><td>Restore default panel layout</td></tr>
         </table>
@@ -5417,7 +5475,7 @@ Example:
     </div>
   </div>
 
-  <script src="/static/layout.js?v=20260831-3"></script>
-  <script src="/static/app.js?v=20260907-6"></script>
+  <script src="/static/layout.js?v=20260914-1"></script>
+  <script src="/static/app.js?v=20260914-5"></script>
 </body>
 </html>

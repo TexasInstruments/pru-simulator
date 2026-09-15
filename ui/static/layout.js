@@ -39,7 +39,7 @@ const MC_DEFAULT_TREE = {
   type: 'split', dir: 'h', sizes: [55, 20, 25],
   children: [
     {
-      type: 'split', dir: 'v', sizes: [50, 50],
+      type: 'split', dir: 'v', sizes: [34, 33, 33],
       children: [
         {
           type: 'split', dir: 'h', sizes: [67, 33],
@@ -53,6 +53,13 @@ const MC_DEFAULT_TREE = {
           children: [
             { type: 'leaf', panelId: 'mc-rtu0-source' },
             { type: 'leaf', panelId: 'mc-rtu0-registers' },
+          ]
+        },
+        {
+          type: 'split', dir: 'h', sizes: [67, 33],
+          children: [
+            { type: 'leaf', panelId: 'mc-rtu1-source' },
+            { type: 'leaf', panelId: 'mc-rtu1-registers' },
           ]
         }
       ]
@@ -531,6 +538,8 @@ function initLayout(mode) {
     'mc-pru0-registers': document.getElementById('mc-pru0-reg-panel'),
     'mc-rtu0-source':    document.getElementById('mc-rtu0-source-panel'),
     'mc-rtu0-registers': document.getElementById('mc-rtu0-reg-panel'),
+    'mc-rtu1-source':    document.getElementById('mc-rtu1-source-panel'),
+    'mc-rtu1-registers': document.getElementById('mc-rtu1-reg-panel'),
     // These panels are shared by SC and MC layouts and must remain part of
     // the MC registry so visibility controls and persistence cover the tree.
     editor:       SC_PANELS.editor,
@@ -545,7 +554,7 @@ function initLayout(mode) {
   modePanelIds.mc = Object.keys(MC_PANELS);
 
   // Invalidate saved layouts when panel set changes
-  const LAYOUT_VERSION = 3;
+  const LAYOUT_VERSION = 4;
   const storedVer = parseInt(localStorage.getItem('pru-layout-ver') || '0', 10);
   if (storedVer < LAYOUT_VERSION) {
     localStorage.removeItem('pru-layout-sc');

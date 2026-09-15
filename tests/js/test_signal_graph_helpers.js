@@ -194,6 +194,22 @@ function testStepFallback() {
   assert.equal(bucketAt(buckets, 15).enter, 0);
 }
 
+function testEdgeTimestampedPulseUsesObservedEdgeTimes() {
+  const samples = [
+    { runStep: 0, edgeTimestamped: true },
+    { runStep: 100, edgeTimestamped: true },
+    { runStep: 104, edgeTimestamped: true },
+    { runStep: 108, edgeTimestamped: true },
+  ];
+  const buckets = graphBuildDigitalBuckets(samples, [1, 0, 1, 1], 0, 120, 120);
+
+  assert.equal(bucketAt(buckets, 75).enter, 1);
+  assert.equal(bucketAt(buckets, 99).enter, 1);
+  assert.equal(bucketAt(buckets, 100).enter, 0);
+  assert.equal(bucketAt(buckets, 103).enter, 0);
+  assert.equal(bucketAt(buckets, 104).enter, 1);
+}
+
 function testInputsAreNotMutated() {
   const samples = [
     { step: 0, runStep: 100, tag: "first" },
@@ -366,6 +382,7 @@ testTwoEdgePulseInsideOnePixel();
 testAdjacentSubPixelPulsesRemainVisible();
 testZoomedOrdinaryWaveformKeepsLevelSequence();
 testStepFallback();
+testEdgeTimestampedPulseUsesObservedEdgeTimes();
 testInputsAreNotMutated();
 testFindsNewestCompleteFrame();
 testRejectsIncompleteFrame();

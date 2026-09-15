@@ -50,25 +50,32 @@ _ssi_runtime: SSIRuntime | None = None
 # The simple realtime panel is deliberately separate from the legacy generic
 # SSI runtime.  Its only configuration input is the generated build profile;
 # the browser can observe it, but cannot change firmware parameters at run
-# time.
-SSI_SIMPLE_PROJECT_ROOT = pathlib.Path(
-    os.environ.get("SSI_PROJECT_ROOT", pathlib.Path(PROJECT_ROOT).parent)
-)
-SSI_SIMPLE_ROOT = (
-    SSI_SIMPLE_PROJECT_ROOT
-    / "encoder-workspace"
-    / "firmware"
-    / "ccs-tests"
-    / "ssi_test"
-)
+# time.  The simulator checkout carries its own firmware bundle.  An explicit
+# SSI_PROJECT_ROOT remains available for developers who want to inspect the
+# matching CCS workspace instead.
+_ssi_project_override = os.environ.get("SSI_PROJECT_ROOT")
+if _ssi_project_override:
+    SSI_SIMPLE_PROJECT_ROOT = pathlib.Path(_ssi_project_override)
+    SSI_SIMPLE_ROOT = (
+        SSI_SIMPLE_PROJECT_ROOT
+        / "encoder-workspace"
+        / "firmware"
+        / "ccs-tests"
+        / "ssi_test"
+    )
+else:
+    SSI_SIMPLE_PROJECT_ROOT = pathlib.Path(PROJECT_ROOT)
+    SSI_SIMPLE_ROOT = SSI_SIMPLE_PROJECT_ROOT / "firmware" / "ssi_test"
 SSI_SIMPLE_HARNESS_PATH = SSI_SIMPLE_ROOT / "tools" / "simulate_ssi.py"
+SSI_SIMPLE_GENERATOR_PATH = SSI_SIMPLE_ROOT / "tools" / "generate_config.py"
 SSI_SIMPLE_PROFILE_PATH = SSI_SIMPLE_ROOT / "include" / "ssi_build_config.json"
 SSI_SIMPLE_CONFIG_PATH = SSI_SIMPLE_ROOT / "ssi_test" / "ssi_hardware_config.h"
 _ssi_simple_harness = None
-_ssi_simple_result: dict | None = None
+_ssi_simple_session = None
+_ssi_simple_host = None
+_ssi_simple_armed = False
+_ssi_simple_stop_sent = False
 _ssi_simple_error: str | None = None
-_ssi_simple_running = False
-_ssi_simple_task: asyncio.Task | None = None
 
 foc_runtime: FocRuntime | None = None
 FOC_EXECUTION_BATCH_STEPS = 4_096
@@ -117,6 +124,135 @@ def _load_ssi_simple_harness():
     return module
 
 
+def _regenerate_ssi_simple_profile() -> None:
+    """Regenerate the SSI build inputs from the selected hardware profile."""
+    if not SSI_SIMPLE_GENERATOR_PATH.is_file():
+        raise FileNotFoundError(
+            f"SSI profile generator not found: {SSI_SIMPLE_GENERATOR_PATH}"
+        )
+    if not SSI_SIMPLE_CONFIG_PATH.is_file():
+        raise FileNotFoundError(
+            f"SSI hardware configuration not found: {SSI_SIMPLE_CONFIG_PATH}"
+        )
+    spec = importlib.util.spec_from_file_location(
+        "ssi_simple_profile_generator", SSI_SIMPLE_GENERATOR_PATH
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("cannot import the SSI profile generator")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    generate = getattr(module, "generate", None)
+    if not callable(generate):
+        raise RuntimeError("SSI profile generator does not expose generate()")
+    generate(SSI_SIMPLE_CONFIG_PATH, SSI_SIMPLE_PROFILE_PATH.parent)
+
+
+def _drop_ssi_simple_firmware() -> None:
+    """Detach the SSI UI scheduler without changing the simulator object."""
+    global _ssi_simple_session, _ssi_simple_host
+    global _ssi_simple_armed, _ssi_simple_stop_sent, _ssi_simple_error
+    _ssi_simple_session = None
+    _ssi_simple_host = None
+    _ssi_simple_armed = False
+    _ssi_simple_stop_sent = False
+    _ssi_simple_error = None
+
+
+def _load_ssi_simple_firmware() -> None:
+    """Load the three SSI images into the simulator used by the normal UI."""
+    global sim, _ssi_simple_session, _ssi_simple_host
+    global _ssi_simple_armed, _ssi_simple_stop_sent, _ssi_simple_error
+
+    _regenerate_ssi_simple_profile()
+    harness = _load_ssi_simple_harness()
+    profile = _read_ssi_simple_profile()
+    paths = tuple(pathlib.Path(path) for path in harness.firmware_paths())
+    missing = [str(path) for path in paths if not path.is_file()]
+    if missing:
+        raise FileNotFoundError("SSI firmware source missing: " + ", ".join(missing))
+
+    # Build the candidate outside the global simulator so a failed parse does
+    # not destroy the user's current simulator session.
+    session = harness.SsiSimulation(
+        profile,
+        record_events=False,
+        record_position_stores=False,
+    )
+    session.load(*paths)
+    host = harness.HostModel(
+        session,
+        initial=int(profile["SSI_INITIAL_POSITION"]),
+        step=int(profile["SSI_POSITION_STEP"]),
+        mask=int(profile["SSI_POSITION_MASK"]),
+        record_events=False,
+        record_position_stores=False,
+    )
+    session.write32(
+        "dram0",
+        int(session.abi["SSI_PRU0_POSITION_OFF"]),
+        host.pending,
+    )
+
+    sim = session.sim
+    _ssi_simple_session = session
+    _ssi_simple_host = host
+    _ssi_simple_armed = False
+    _ssi_simple_stop_sent = False
+    _ssi_simple_error = None
+    for history in _history.values():
+        history.clear()
+
+
+def _ssi_simple_advance(slots: int = 1, *, on_slot=None) -> None:
+    """Advance all three images and the functional R5 model by *slots*."""
+    global _ssi_simple_armed, _ssi_simple_stop_sent
+    if _ssi_simple_session is None or _ssi_simple_host is None:
+        raise RuntimeError("load the SSI firmware into the simulator first")
+    if slots < 0:
+        raise ValueError("SSI simulator slot count cannot be negative")
+
+    session = _ssi_simple_session
+    host = _ssi_simple_host
+    profile = session.profile
+    abi = session.abi
+    for _ in range(slots):
+        session.step(1)
+        host.poll()
+
+        if not _ssi_simple_armed:
+            timer_ready = session.read32(
+                "dram1", int(abi["SSI_PRU1_TIMER_READY_OFF"])
+            )
+            if timer_ready == 1:
+                session.write32(
+                    "dram1", int(abi["SSI_PRU1_ARM_READY_OFF"]), 1
+                )
+                _ssi_simple_armed = True
+
+        if (
+            not _ssi_simple_stop_sent
+            and host.published >= int(profile["SSI_ITERATIONS"])
+        ):
+            session.write32(
+                "dram1", int(abi["SSI_PRU1_STOP_OFF"]), 1
+            )
+            _ssi_simple_stop_sent = True
+
+        if on_slot is not None:
+            on_slot()
+
+
+async def _ssi_simple_advance_async(slots: int = 1, *, on_slot=None) -> None:
+    """Advance a UI batch in bounded chunks while yielding between chunks."""
+    remaining = max(0, int(slots))
+    while remaining:
+        chunk = min(128, remaining)
+        _ssi_simple_advance(chunk, on_slot=on_slot)
+        remaining -= chunk
+        if remaining:
+            await asyncio.sleep(0)
+
+
 def _read_ssi_simple_profile() -> dict:
     if not SSI_SIMPLE_PROFILE_PATH.is_file():
         raise FileNotFoundError(
@@ -145,13 +281,14 @@ def _ssi_simple_state() -> dict:
         profile_error = str(exc)
 
     error = _ssi_simple_error or profile_error
+    loaded = _ssi_simple_session is not None and profile_error is None
     return {
-        "loaded": profile is not None and profile_error is None,
-        "running": _ssi_simple_running,
+        "loaded": loaded,
+        "running": False,
         "status": (
-            "Running actual PRU0 + PRU1 + RTU_PRU1 firmware"
-            if _ssi_simple_running
-            else ("Ready" if error is None and profile is not None else "Not loaded")
+            "Loaded actual PRU0 + PRU1 + RTU_PRU1 firmware; use the simulator Run/Step controls"
+            if loaded
+            else ("Profile ready; load the three firmware images" if error is None and profile is not None else "Not loaded")
         ),
         "config_path": _display_ssi_simple_path(SSI_SIMPLE_CONFIG_PATH),
         "profile_path": _display_ssi_simple_path(SSI_SIMPLE_PROFILE_PATH),
@@ -167,62 +304,43 @@ def _ssi_simple_state() -> dict:
             ),
         },
         "profile": profile,
-        "result": _ssi_simple_ui_result(_ssi_simple_result),
+        "result": _ssi_simple_progress(),
         "error": error,
     }
 
 
-def _ssi_simple_ui_result(result: dict | None) -> dict | None:
-    """Remove the bounded waveform capture before sending a run result."""
-    if result is None:
+def _ssi_simple_progress() -> dict | None:
+    """Return live mailbox counters without launching a second simulator."""
+    if _ssi_simple_session is None or _ssi_simple_host is None:
         return None
-    compact = dict(result)
-    compact.pop("capture", None)
-    compact["pass"] = all([
-        compact.get("opportunities") == compact.get("published"),
-        compact.get("skipped") == 0,
-        compact.get("data_mismatches") == 0,
-        compact.get("timer_missed") == 0,
-        compact.get("timer_max_late", 0) < 288,
-        compact.get("reader_aborts") == 0,
-        compact.get("emulator_aborts") == 0,
-        compact.get("frames", 0) > 0,
-    ])
-    return compact
+    session = _ssi_simple_session
+    host = _ssi_simple_host
+    abi = session.abi
+
+    def read(name: str) -> int:
+        return session.read32("dram1", int(abi[name]))
+
+    return {
+        "opportunities": host.opportunities,
+        "published": host.published,
+        "skipped": host.skipped,
+        "frames": read("SSI_PRU1_READER_FRAMES_OFF"),
+        "timer_emitted": read("SSI_PRU1_TIMER_EMITTED_OFF"),
+        "timer_missed": read("SSI_PRU1_TIMER_MISSED_OFF"),
+        "timer_max_late": read("SSI_PRU1_TIMER_MAX_LATE_OFF"),
+        "reader_aborts": read("SSI_PRU1_READER_ABORTS_OFF"),
+        "emulator_frames": session.read32("dram0", 0x0C),
+        "emulator_resyncs": session.read32("dram0", 0x10),
+        "emulator_aborts": session.read32("dram0", 0x14),
+    }
 
 
-def _validate_ssi_simple_iterations(value, maximum: int) -> int:
-    if isinstance(value, bool):
-        raise ValueError("iterations must be an integer")
-    try:
-        iterations = int(value)
-    except (TypeError, ValueError):
-        raise ValueError("iterations must be an integer") from None
-    if not 1 <= iterations <= int(maximum):
-        raise ValueError(f"iterations must be in the range 1..{int(maximum)}")
-    return iterations
-
-
-def _run_ssi_simple_sync(iterations: int) -> dict:
-    """Run the same three assembly images used by the CLI harness."""
-    harness = _load_ssi_simple_harness()
-    profile = harness.load_default_profile()
-    return harness.run(profile, iterations, use_mcp=False)
-
-
-async def _run_ssi_simple_background(iterations: int) -> None:
-    global _ssi_simple_error, _ssi_simple_result
-    global _ssi_simple_running, _ssi_simple_task
-    try:
-        result = await asyncio.to_thread(_run_ssi_simple_sync, iterations)
-        _ssi_simple_result = _ssi_simple_ui_result(result)
-        _ssi_simple_error = None
-    except Exception as exc:  # surface the real harness failure in the panel
-        _ssi_simple_result = None
-        _ssi_simple_error = f"{type(exc).__name__}: {exc}"
-    finally:
-        _ssi_simple_running = False
-        _ssi_simple_task = None
+async def _send_ssi_simple_progress(websocket: WebSocket) -> None:
+    """Publish only the live SSI counters after a normal simulator action."""
+    await websocket.send_json({
+        "type": "ssi_simple_progress",
+        "result": _ssi_simple_progress(),
+    })
 
 
 def _parse_ssi_frame_values(values) -> list[int]:
@@ -602,6 +720,7 @@ def _load_foc_runtime(source: str | None = None, filename: str | None = None,
                       core: str = "pru0") -> dict:
     """Load one PRU FOC program and initialize its host-side runtime."""
     global foc_runtime
+    _drop_ssi_simple_firmware()
     _drop_foc_runtime()
     sim.hard_reset()
 
@@ -656,6 +775,7 @@ def _apply_foc_reference(runtime: FocRuntime, msg: dict) -> None:
 def _load_ssi_runtime_pair() -> dict:
     """Load, wire and initialize the generic PRU0/PRU1 SSI pair."""
     global _ssi_runtime
+    _drop_ssi_simple_firmware()
     reader_source = SSI_RUNTIME_READER.read_text(encoding="utf-8")
     emulator_source = SSI_RUNTIME_EMULATOR.read_text(encoding="utf-8")
 
@@ -718,7 +838,9 @@ _config_lock = asyncio.Lock()
 
 # ---- Step history (for step-back) ----------------------------------------
 _MAX_HISTORY = 500
-_history: dict[str, list] = {"pru0": [], "rtu0": [], "pru1": []}
+_history: dict[str, list] = {
+    "pru0": [], "rtu0": [], "pru1": [], "rtu1": []
+}
 
 
 def _snapshot(core: str) -> dict:
@@ -938,12 +1060,12 @@ async def put_config(request: Request):
     text = (await request.body()).decode("utf-8")
     async with _config_lock:
         try:
+            _drop_ssi_simple_firmware()
             with open(config_path, "w") as f:
                 f.write(text)
             sim = Simulator(config_path=config_path)
-            _history["pru0"].clear()
-            _history["rtu0"].clear()
-            _history["pru1"].clear()
+            for history in _history.values():
+                history.clear()
             return {"ok": True}
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=400)
@@ -1040,6 +1162,7 @@ async def put_clock_speed(request: Request):
         )
     async with _config_lock:
         try:
+            _drop_ssi_simple_firmware()
             with open(config_path, "r") as f:
                 text = f.read()
             text = _set_ini_value(text, "device", "pru_clock_mhz", str(mhz))
@@ -1049,9 +1172,8 @@ async def put_clock_speed(request: Request):
             sim = Simulator(config_path=config_path)
             _ssi_runtime = None
             foc_runtime = None
-            _history["pru0"].clear()
-            _history["rtu0"].clear()
-            _history["pru1"].clear()
+            for history in _history.values():
+                history.clear()
             return {"ok": True}
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=400)
@@ -1060,8 +1182,7 @@ async def put_clock_speed(request: Request):
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     global _ssi_runtime, foc_runtime
-    global _ssi_simple_error, _ssi_simple_result, _ssi_simple_running
-    global _ssi_simple_task
+    global _ssi_simple_error
     await websocket.accept()
     websocket._trace_owner = uuid.uuid4().hex
     connection_owner = uuid.uuid4().hex
@@ -1110,25 +1231,17 @@ async def websocket_endpoint(websocket: WebSocket):
                 })
             elif action == "ssi_simple_load":
                 try:
-                    harness = _load_ssi_simple_harness()
-                    profile = harness.load_default_profile()
-                    missing = [
-                        str(path) for path in harness.firmware_paths()
-                        if not pathlib.Path(path).is_file()
-                    ]
-                    if missing:
-                        raise FileNotFoundError(
-                            "SSI firmware source missing: " + ", ".join(missing)
-                        )
-                    if not isinstance(profile, dict):
-                        raise ValueError("generated SSI build profile must be a JSON object")
-                    _read_ssi_simple_profile()
-                    _ssi_simple_result = None
-                    _ssi_simple_error = None
+                    await _finalize_trace_log(websocket, "ssi_simple_load")
+                    await cancel_foc_execution(shared=True, pause_runtime=True)
+                    _drop_foc_runtime()
+                    _ssi_runtime = None
+                    _load_ssi_simple_firmware()
                     await websocket.send_json({
                         "type": "ssi_simple_state",
                         **_ssi_simple_state(),
                     })
+                    for loaded_core in ("pru0", "pru1", "rtu1"):
+                        await _send_state(websocket, loaded_core, include_source=True)
                 except (OSError, RuntimeError, TypeError, ValueError) as exc:
                     _ssi_simple_error = str(exc)
                     await websocket.send_json({
@@ -1140,48 +1253,29 @@ async def websocket_endpoint(websocket: WebSocket):
                         **_ssi_simple_state(),
                     })
             elif action == "ssi_simple_run":
+                await websocket.send_json({
+                    "type": "ssi_simple_error",
+                    "error": "SSI firmware is controlled by the normal simulator Run, Step, and SIM buttons after Load actual firmware",
+                })
+            elif action == "ssi_simple_reset":
                 try:
-                    if _ssi_simple_running:
-                        raise ValueError("an SSI realtime run is already in progress")
-                    profile = _read_ssi_simple_profile()
-                    iterations = _validate_ssi_simple_iterations(
-                        msg.get("iterations", profile.get("SSI_ITERATIONS", 100_000)),
-                        profile.get("SSI_ITERATIONS", 100_000),
-                    )
-                    _ssi_simple_result = None
-                    _ssi_simple_error = None
-                    _ssi_simple_running = True
-                    _ssi_simple_task = asyncio.create_task(
-                        _run_ssi_simple_background(iterations)
-                    )
+                    if _ssi_simple_session is None:
+                        _drop_ssi_simple_firmware()
+                    else:
+                        _load_ssi_simple_firmware()
                     await websocket.send_json({
                         "type": "ssi_simple_state",
                         **_ssi_simple_state(),
                     })
-                except (TypeError, ValueError, OSError) as exc:
-                    _ssi_simple_running = False
+                    if _ssi_simple_session is not None:
+                        for loaded_core in ("pru0", "pru1", "rtu1"):
+                            await _send_state(websocket, loaded_core, include_source=True)
+                except (OSError, RuntimeError, TypeError, ValueError) as exc:
                     _ssi_simple_error = str(exc)
                     await websocket.send_json({
                         "type": "ssi_simple_error",
                         "error": _ssi_simple_error,
                     })
-                    await websocket.send_json({
-                        "type": "ssi_simple_state",
-                        **_ssi_simple_state(),
-                    })
-            elif action == "ssi_simple_reset":
-                if _ssi_simple_running:
-                    await websocket.send_json({
-                        "type": "ssi_simple_error",
-                        "error": "wait for the SSI realtime run to finish before reset",
-                    })
-                    continue
-                _ssi_simple_result = None
-                _ssi_simple_error = None
-                await websocket.send_json({
-                    "type": "ssi_simple_state",
-                    **_ssi_simple_state(),
-                })
             elif action == "ssi_runtime_profiles":
                 await websocket.send_json({
                     "type": "ssi_runtime_state",
@@ -1470,6 +1564,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await cancel_foc_execution(shared=True, pause_runtime=True)
                 had_foc_runtime = foc_runtime is not None
                 _drop_foc_runtime()
+                _drop_ssi_simple_firmware()
                 _ssi_runtime = None
                 _history[core].clear()
                 filename = msg.get("filename")
@@ -1495,6 +1590,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await cancel_foc_execution(shared=True, pause_runtime=True)
                 had_foc_runtime = foc_runtime is not None
                 _drop_foc_runtime()
+                _drop_ssi_simple_firmware()
                 _ssi_runtime = None
                 _history[core].clear()
                 # ELF binary sent as base64-encoded string
@@ -1512,6 +1608,37 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json(_foc_state())
             elif action == "step":
                 await cancel_foc_execution(shared=True)
+                if _ssi_simple_session is not None:
+                    count = max(0, int(msg.get("count", 1)))
+                    capture = bool(msg.get("capture", False))
+                    pru = sim.cores[core]
+                    samples = []
+                    captured_at_ms = []
+                    for step_index in range(count):
+                        _ssi_simple_advance(1)
+                        if capture:
+                            samples.append(
+                                _capture_sample(
+                                    pru,
+                                    run_step=pru.counters.instruction_count,
+                                )
+                            )
+                            captured_at_ms.append(_capture_time_ms(core, pru))
+                    if samples:
+                        await _publish_capture_batches(websocket, [{
+                            "core": core,
+                            "samples": samples,
+                            "captured_at_ms": captured_at_ms,
+                            "edge_timestamps": True,
+                        }])
+                    await _send_state(websocket, core, captured=capture)
+                    await _send_ssi_simple_progress(websocket)
+                    if msg.get("request_id") is not None:
+                        await websocket.send_json({
+                            "type": "run_done",
+                            "request_id": msg["request_id"],
+                        })
+                    continue
                 _history[core].append(_snapshot(core))
                 if len(_history[core]) > _MAX_HISTORY:
                     _history[core].pop(0)
@@ -1594,6 +1721,21 @@ async def websocket_endpoint(websocket: WebSocket):
             elif action == "reset":
                 await _finalize_trace_log(websocket, "reset")
                 await cancel_foc_execution(shared=True, pause_runtime=True)
+                if _ssi_simple_session is not None:
+                    try:
+                        _load_ssi_simple_firmware()
+                        await _send_state(websocket, core, include_source=True)
+                        await websocket.send_json({
+                            "type": "ssi_simple_state",
+                            **_ssi_simple_state(),
+                        })
+                    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                        _ssi_simple_error = str(exc)
+                        await websocket.send_json({
+                            "type": "ssi_simple_error",
+                            "error": _ssi_simple_error,
+                        })
+                    continue
                 _history[core].clear()
                 if foc_runtime is not None and core == foc_runtime.core:
                     foc_runtime.reset()
@@ -1605,6 +1747,21 @@ async def websocket_endpoint(websocket: WebSocket):
             elif action == "hard_reset":
                 await _finalize_trace_log(websocket, "hard_reset")
                 await cancel_foc_execution(shared=True, pause_runtime=True)
+                if _ssi_simple_session is not None:
+                    try:
+                        _load_ssi_simple_firmware()
+                        await _send_state(websocket, core, include_source=True)
+                        await websocket.send_json({
+                            "type": "ssi_simple_state",
+                            **_ssi_simple_state(),
+                        })
+                    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                        _ssi_simple_error = str(exc)
+                        await websocket.send_json({
+                            "type": "ssi_simple_error",
+                            "error": _ssi_simple_error,
+                        })
+                    continue
                 had_foc_runtime = foc_runtime is not None
                 _drop_foc_runtime()
                 _ssi_runtime = None
@@ -1768,6 +1925,31 @@ async def websocket_endpoint(websocket: WebSocket):
                 max_steps = int(msg.get("max_steps", 1000))
                 capture = bool(msg.get("capture", False))
                 request_id = msg.get("request_id")
+                if _ssi_simple_session is not None:
+                    pru = sim.cores[core]
+                    if capture:
+                        simple_samples, simple_times = await _ssi_simple_capture_run(
+                            {core: pru}, core, max_steps
+                        )
+                        samples = simple_samples[core]
+                        captured_at_ms = simple_times[core]
+                    else:
+                        samples = []
+                        captured_at_ms = []
+                        await _ssi_simple_advance_async(max_steps)
+                    if samples:
+                        await _publish_capture_batches(websocket, [{
+                            "core": core,
+                            "samples": samples,
+                            "captured_at_ms": captured_at_ms,
+                        }])
+                    await _send_state(websocket, core, captured=capture)
+                    await _send_ssi_simple_progress(websocket)
+                    if request_id is not None:
+                        await websocket.send_json({
+                            "type": "run_done", "request_id": request_id,
+                        })
+                    continue
                 pru = sim.cores[core]
                 at_breakpoint = False
                 samples = []
@@ -1828,24 +2010,82 @@ async def websocket_endpoint(websocket: WebSocket):
                 max_steps = int(msg.get("max_steps", 1000))
                 capture = bool(msg.get("capture", False))
                 request_id = msg.get("request_id")
-                partner = msg.get("partner", "pru1")
-                lead_pru = sim.cores[core]
-                partner_pru = sim.cores[partner]
-                lead_bp = partner_bp = False
-                samples = []
-                partner_samples = []
-                captured_at_ms = []
-                partner_captured_at_ms = []
+                try:
+                    selected_cores = _multicore_cores(msg)
+                except ValueError as exc:
+                    error = {"type": "error", "errors": [str(exc)]}
+                    if request_id is not None:
+                        error["request_id"] = request_id
+                    await websocket.send_json(error)
+                    if request_id is not None:
+                        await websocket.send_json({
+                            "type": "run_done", "request_id": request_id,
+                        })
+                    continue
+                lead_core = selected_cores[0]
+                if _ssi_simple_session is not None:
+                    selected_prus = {
+                        selected_core: sim.cores[selected_core]
+                        for selected_core in selected_cores
+                    }
+                    if capture:
+                        samples_by_core, times_by_core = await _ssi_simple_capture_run(
+                            selected_prus, lead_core, max_steps
+                        )
+                    else:
+                        samples_by_core = {
+                            selected_core: [] for selected_core in selected_cores
+                        }
+                        times_by_core = {
+                            selected_core: [] for selected_core in selected_cores
+                        }
+                        await _ssi_simple_advance_async(max_steps)
+                    if capture:
+                        emitted_cores = [
+                            selected_core
+                            for selected_core in selected_cores
+                            if samples_by_core[selected_core]
+                        ]
+                        lead_count = selected_prus[lead_core].counters.instruction_count
+                        capture_group = f"{','.join(emitted_cores)}:{lead_count}"
+                        await _publish_capture_batches(websocket, [
+                            {
+                                "core": selected_core,
+                                "samples": samples_by_core[selected_core],
+                                "captured_at_ms": times_by_core[selected_core],
+                                "capture_group": capture_group,
+                                "capture_cores": emitted_cores,
+                                "edge_timestamps": True,
+                            }
+                            for selected_core in emitted_cores
+                        ])
+                    for selected_core in selected_cores:
+                        await _send_state(websocket, selected_core, captured=capture)
+                    await _send_ssi_simple_progress(websocket)
+                    if request_id is not None:
+                        await websocket.send_json({
+                            "type": "run_done", "request_id": request_id,
+                        })
+                    continue
+                lead_pru = sim.cores[lead_core]
+                prus = {selected_core: sim.cores[selected_core]
+                        for selected_core in selected_cores}
+                breakpoints = {selected_core: False for selected_core in selected_cores}
+                samples_by_core = {selected_core: [] for selected_core in selected_cores}
+                times_by_core = {selected_core: [] for selected_core in selected_cores}
                 trace_active = bool(
                     capture and trace_logs.is_active(
                         getattr(websocket, "_trace_owner", "")
                     )
                 )
-                sample_modes = [] if trace_active else None
-                partner_sample_modes = [] if trace_active else None
-                previous_lead_capture_signature = None
-                previous_partner_capture_signature = None
-                sync_error = _multicore_sync_error(core, partner)
+                sample_modes = {
+                    selected_core: ([] if trace_active else None)
+                    for selected_core in selected_cores
+                }
+                previous_capture_signatures = {
+                    selected_core: None for selected_core in selected_cores
+                }
+                sync_error = _multicore_sync_error_many(selected_cores)
                 if sync_error:
                     error = {
                         "type": "error",
@@ -1862,9 +2102,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     steps = 0
                     while (steps < max_steps and not lead_pru.halted
                            and lead_pru.pc < len(lead_pru.instructions)):
-                        sim.step_paced(core, partner, 1)
+                        sim.step_paced_many(lead_core, selected_cores[1:], 1)
                         steps += 1
-                        sync_error = _multicore_step_sync_error(core, partner)
+                        sync_error = _multicore_step_sync_error_many(selected_cores)
                         if sync_error:
                             error = {
                                 "type": "error",
@@ -1880,42 +2120,27 @@ async def websocket_endpoint(websocket: WebSocket):
                         # horizontal axis remains monotonic across Run chunks.
                         run_step = lead_pru.counters.instruction_count
                         if capture:
-                            lead_capture_sample, previous_lead_capture_signature = (
-                                _capture_sample_if_needed(
-                                    lead_pru,
-                                    steps,
-                                    run_step=run_step,
-                                    previous_signature=previous_lead_capture_signature,
+                            for selected_core in selected_cores:
+                                selected_sample, previous_capture_signatures[selected_core] = (
+                                    _capture_sample_if_needed(
+                                        prus[selected_core],
+                                        steps,
+                                        run_step=run_step,
+                                        previous_signature=previous_capture_signatures[selected_core],
+                                    )
                                 )
+                                if selected_sample is not None:
+                                    samples_by_core[selected_core].append(selected_sample)
+                                    times_by_core[selected_core].append(
+                                        _capture_time_ms(selected_core, prus[selected_core])
+                                    )
+                                    if trace_active:
+                                        sample_modes[selected_core].append(_io_mode(selected_core))
+                        for selected_core in selected_cores:
+                            breakpoints[selected_core] = (
+                                prus[selected_core].pc in prus[selected_core].breakpoints
                             )
-                            if lead_capture_sample is not None:
-                                samples.append(lead_capture_sample)
-                                captured_at_ms.append(
-                                    _capture_time_ms(core, lead_pru)
-                                )
-                                if trace_active:
-                                    sample_modes.append(_io_mode(core))
-
-                            partner_capture_sample, previous_partner_capture_signature = (
-                                _capture_sample_if_needed(
-                                    partner_pru,
-                                    steps,
-                                    run_step=run_step,
-                                    previous_signature=previous_partner_capture_signature,
-                                )
-                            )
-                            if partner_capture_sample is not None:
-                                partner_samples.append(partner_capture_sample)
-                                partner_captured_at_ms.append(
-                                    _capture_time_ms(partner, partner_pru)
-                                )
-                                if trace_active:
-                                    partner_sample_modes.append(_io_mode(partner))
-                        if lead_pru.pc in lead_pru.breakpoints:
-                            lead_bp = True
-                            break
-                        if partner_pru.pc in partner_pru.breakpoints:
-                            partner_bp = True
+                        if any(breakpoints.values()):
                             break
                 except ValueError as ve:
                     await websocket.send_json({"type": "error", "errors": [str(ve)]})
@@ -1923,39 +2148,41 @@ async def websocket_endpoint(websocket: WebSocket):
                     if request_id is not None:
                         await websocket.send_json({"type": "run_done", "request_id": request_id})
                     continue
-                # The two capture messages belong to one shared instruction
+                # The capture messages belong to one shared instruction
                 # timeline.  Give the browser a stable group key so it can
-                # interleave them before writing to its single graph buffer;
-                # sending one complete core batch after the other would evict
-                # the first core from that buffer.
+                # interleave all selected cores before writing to its single
+                # graph buffer.
+                emitted_cores = [
+                    selected_core
+                    for selected_core in selected_cores
+                    if samples_by_core[selected_core]
+                ]
                 capture_group = None
-                if samples and partner_samples:
+                if emitted_cores:
                     capture_group = (
-                        f"{core}:{partner}:{lead_pru.counters.instruction_count}"
+                        f"{','.join(emitted_cores)}:{lead_pru.counters.instruction_count}"
                     )
-                capture_batches = []
-                if samples:
-                    capture_batches.append({
-                        "core": core,
-                        "samples": samples,
-                        "captured_at_ms": captured_at_ms,
-                        "_sample_modes": sample_modes,
+                capture_batches = [
+                    {
+                        "core": selected_core,
+                        "samples": samples_by_core[selected_core],
+                        "captured_at_ms": times_by_core[selected_core],
+                        "_sample_modes": sample_modes[selected_core],
                         "capture_group": capture_group,
-                    })
-                if partner_samples:
-                    capture_batches.append({
-                        "core": partner,
-                        "samples": partner_samples,
-                        "captured_at_ms": partner_captured_at_ms,
-                        "_sample_modes": partner_sample_modes,
-                        "capture_group": capture_group,
-                    })
+                        "capture_cores": emitted_cores,
+                    }
+                    for selected_core in emitted_cores
+                    if samples_by_core[selected_core]
+                ]
                 if capture_batches:
                     await _publish_capture_batches(websocket, capture_batches)
-                await _send_state(websocket, core, at_breakpoint=lead_bp,
-                                  captured=capture)
-                await _send_state(websocket, partner, at_breakpoint=partner_bp,
-                                  captured=capture)
+                for selected_core in selected_cores:
+                    await _send_state(
+                        websocket,
+                        selected_core,
+                        at_breakpoint=breakpoints[selected_core],
+                        captured=capture,
+                    )
                 if foc_runtime is not None:
                     await websocket.send_json(_foc_state())
                     start_foc_execution()
@@ -2115,6 +2342,27 @@ def _io_mode(core, sd_data=None, perif_data=None, mux_sel=None) -> str:
 # follower up.  Larger differences mean one core can remain frozen while the
 # other continues, which produces a misleading multi-core graph.
 MULTICORE_PERIF_SYNC_TOLERANCE_NS = 20.0
+MULTICORE_CORE_NAMES = ("pru0", "rtu0", "pru1", "rtu1")
+
+
+def _multicore_cores(message: dict) -> list[str]:
+    """Resolve the selected multicore slots into one to three core names."""
+    if "cores" in message:
+        selected = message["cores"]
+        if not isinstance(selected, list):
+            raise ValueError("multi-core cores must be a list")
+    else:
+        selected = [message.get("core", "pru0"), message.get("partner", "pru1")]
+
+    if not 1 <= len(selected) <= 3:
+        raise ValueError("multi-core selection must contain one to three cores")
+    if any(core not in MULTICORE_CORE_NAMES for core in selected):
+        raise ValueError(
+            "multi-core selection contains an unknown core; choose PRU0, RTU0, PRU1, or RTU_PRU1"
+        )
+    if len(set(selected)) != len(selected):
+        raise ValueError("multi-core cores must be distinct")
+    return selected
 
 
 def _multicore_sync_error(core: str, partner: str) -> str | None:
@@ -2168,6 +2416,26 @@ def _multicore_step_sync_error(core: str, partner: str) -> str | None:
 
     if lead.counters.instruction_count != follow.counters.instruction_count:
         return f"Multi-core run stopped: instruction counts differ ({core}={lead.counters.instruction_count}, {partner}={follow.counters.instruction_count}); reset both cores."
+    return None
+
+
+def _multicore_sync_error_many(cores: list[str]) -> str | None:
+    """Check every selected core pair before a synchronized run."""
+    for index, lead in enumerate(cores):
+        for follow in cores[index + 1:]:
+            error = _multicore_sync_error(lead, follow)
+            if error:
+                return error
+    return None
+
+
+def _multicore_step_sync_error_many(cores: list[str]) -> str | None:
+    """Check every selected core pair after one synchronized step."""
+    for index, lead in enumerate(cores):
+        for follow in cores[index + 1:]:
+            error = _multicore_step_sync_error(lead, follow)
+            if error:
+                return error
     return None
 
 
@@ -2280,8 +2548,44 @@ def _capture_time_ms(core_name: str, core) -> float:
     return core.counters.cycles / (float(mhz) * 1000.0)
 
 
+async def _ssi_simple_capture_run(selected_prus, lead_core, slots):
+    """Capture Simple SSI edges without materializing unchanged slots."""
+    samples_by_core = {core: [] for core in selected_prus}
+    times_by_core = {core: [] for core in selected_prus}
+    initial_run_step = selected_prus[lead_core].counters.instruction_count
+    previous_signatures = {}
+
+    for core, pru in selected_prus.items():
+        samples_by_core[core].append(
+            _capture_sample(pru, run_step=initial_run_step)
+        )
+        times_by_core[core].append(_capture_time_ms(core, pru))
+        previous_signatures[core] = _capture_signature(pru)
+
+    def capture_transition():
+        run_step = selected_prus[lead_core].counters.instruction_count
+        for core, pru in selected_prus.items():
+            signature = _capture_signature(pru)
+            if signature == previous_signatures[core]:
+                continue
+            samples_by_core[core].append(_capture_sample(pru, run_step=run_step))
+            times_by_core[core].append(_capture_time_ms(core, pru))
+            previous_signatures[core] = signature
+
+    await _ssi_simple_advance_async(slots, on_slot=capture_transition)
+
+    terminal_run_step = selected_prus[lead_core].counters.instruction_count
+    for core, pru in selected_prus.items():
+        samples_by_core[core].append(
+            _capture_sample(pru, run_step=terminal_run_step)
+        )
+        times_by_core[core].append(_capture_time_ms(core, pru))
+    return samples_by_core, times_by_core
+
+
 async def _send_capture(ws, core, samples, captured_at_ms=None,
-                        sequences=None, capture_group=None, modes=None):
+                        sequences=None, capture_group=None, modes=None,
+                        capture_cores=None, edge_timestamps=None):
     """Ship a run loop's per-instruction Signal Graph samples in one message."""
     if captured_at_ms is None:
         captured_at_ms = [
@@ -2300,6 +2604,10 @@ async def _send_capture(ws, core, samples, captured_at_ms=None,
         message["modes"] = modes
     if capture_group is not None:
         message["capture_group"] = capture_group
+    if capture_cores is not None:
+        message["capture_cores"] = capture_cores
+    if edge_timestamps is not None:
+        message["edge_timestamps"] = bool(edge_timestamps)
     await ws.send_json(message)
 
 
@@ -2370,6 +2678,8 @@ async def _publish_capture_batches(ws, batches):
             sequences=batch.get("sequences"),
             capture_group=batch.get("capture_group"),
             modes=batch.get("_sample_modes"),
+            capture_cores=batch.get("capture_cores"),
+            edge_timestamps=batch.get("edge_timestamps"),
         )
 
 

@@ -70,13 +70,14 @@ class TestMCPTools:
         assert "pru0" in status["cores"]
         assert status["cores"]["pru0"]["halted"] is True
 
-    def test_pru_ssi_simple_run_reports_missing_parent_harness(self, monkeypatch):
+    def test_pru_ssi_simple_run_uses_bundled_harness_without_project_root(self, monkeypatch):
         monkeypatch.delenv("SSI_PROJECT_ROOT", raising=False)
 
         result = self.mcp.pru_ssi_simple_run(iterations=1)
 
-        assert result["status"] == "error"
-        assert "SSI_PROJECT_ROOT" in result["error"]
+        assert result["opportunities"] == 1
+        assert result["published"] == 1
+        assert result["skipped"] == 0
 
     def test_pru_run_until(self):
         self.mcp.pru_load(source="ldi r0, 1\nldi r1, 2\nhalt", core="pru0")

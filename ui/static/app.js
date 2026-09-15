@@ -9,7 +9,7 @@ let ws = null;
 let prevRegisters = new Array(32).fill("0x00000000");
 let currentCore = "pru0";
 let running = false;
-let runInterval = null;
+let runPumpTimer = null;
 let runRequestInFlight = false;
 let nextRunRequestId = 1;
 const pendingRunRequestIds = new Set();
@@ -17,8 +17,10 @@ const abandonedRunRequestIds = new Set();
 let activeToolbarRequestId = null;
 let activeSimRequestId = null;
 let genericSsiLoaded = false;
+let simpleSsiLoaded = false;
 let genericSsiRunInFlight = false;
 let genericSsiRequestId = null;
+const RUN_PUMP_DELAY_MS = 1000 / 30;
 const SSI_RUNTIME_READ_THROTTLE_MS = 250;
 let ssiRuntimeReadTimer = null;
 let ssiRuntimeReadQueued = false;
@@ -42,21 +44,24 @@ let focDialAnimationFrame = null;
 
 // ---- Multi-core state ------------------------------------------------------
 let multiCoreMode = false;
-let mcPartner = "rtu0";            // second core shown in multi-core view
+const MC_SLOT_KEYS = ["pru0", "rtu0", "rtu1"];
+let mcCores = ["pru0", "rtu0", null]; // selected core for each visible slot
+let mcPartner = "rtu0";                 // legacy alias for SSI pair controls
 let mcPrevRegs = {
   pru0: new Array(32).fill("0x00000000"),
   rtu0: new Array(32).fill("0x00000000"),
   pru1: new Array(32).fill("0x00000000"),
+  rtu1: new Array(32).fill("0x00000000"),
 };
-let mcLastSourceBreakpointKey = { pru0: null, rtu0: null, pru1: null };
-let mcCurrentSourceLine = { pru0: null, rtu0: null, pru1: null };
-let mcSourceInstructions = { pru0: [], rtu0: [], pru1: [] };
-let mcSourceLabels = { pru0: {}, rtu0: {}, pru1: {} };
-let mcRenderedSourceInstructions = { pru0: null, rtu0: null, pru1: null };
-let mcRenderedSourceLabels = { pru0: null, rtu0: null, pru1: null };
-let mcBreakpoints   = { pru0: new Set(), rtu0: new Set(), pru1: new Set() };
-let mcHaltedState   = { pru0: false, rtu0: false, pru1: false };
-let mcBreakState    = { pru0: false, rtu0: false, pru1: false };
+let mcLastSourceBreakpointKey = { pru0: null, rtu0: null, rtu1: null };
+let mcCurrentSourceLine = { pru0: null, rtu0: null, rtu1: null };
+let mcSourceInstructions = { pru0: [], rtu0: [], rtu1: [] };
+let mcSourceLabels = { pru0: {}, rtu0: {}, rtu1: {} };
+let mcRenderedSourceInstructions = { pru0: null, rtu0: null, rtu1: null };
+let mcRenderedSourceLabels = { pru0: null, rtu0: null, rtu1: null };
+let mcBreakpoints   = { pru0: new Set(), rtu0: new Set(), rtu1: new Set() };
+let mcHaltedState   = { pru0: false, rtu0: false, rtu1: false };
+let mcBreakState    = { pru0: false, rtu0: false, rtu1: false };
 let mcSpadVisible   = new Set();   // SPAD banks visible in PRU0 MC reg panel
 let mcPrevSpad      = {};          // key -> Array for change detection
 
@@ -94,18 +99,18 @@ const GRAPH_HEIGHT_STEPS = [80, 140, 200, 280, 400, 560, 720, 960, 1200];
 const signalGraph = {
   recording: false,
   windowSize: 1024,
-  buf: [],        // circular buffer array, length === windowSize
+  buf: [],        // circular buffer array, length === window capacity
   head: 0,        // next write index
-  fill: 0,        // number of valid samples (0..windowSize)
+  fill: 0,        // number of valid records (0..window capacity)
   memChannels: [], // [{addr, length, color, label}], up to 8
   heightIdx: 1,   // index into GRAPH_HEIGHT_STEPS (default 140px)
   memHeightIdx: 1, // separate height index for memory graph canvas
   view: null,      // null = full range; { minStep, maxStep } = zoomed
   _dragStart: null, // { clientX, fracX, view } for pan tracking
 };
-// Paired multicore captures arrive as one message per core. Hold the two
-// batches briefly so they can be merged by run step before entering the one
-// circular graph buffer; otherwise the second batch evicts the first core.
+// Multicore captures arrive as one message per selected core. Hold the group
+// until every selected batch arrives so they can be merged by run step before
+// entering the one circular graph buffer.
 const pendingGraphCaptures = new Map();
 
 // ---- DOM references -------------------------------------------------------
@@ -136,6 +141,9 @@ const btnSaveAsm      = document.getElementById("btn-save-asm");
 const btnMulticore    = document.getElementById("btn-multicore");
 const editorPanel     = document.getElementById("editor-panel");
 const mcLoadCore      = document.getElementById("mc-load-core");
+const mcPrimarySelect = document.getElementById("mc-primary-select");
+const mcPartnerSelect = document.getElementById("mc-partner-select");
+const mcThirdSelect   = document.getElementById("mc-third-select");
 
 const btnOpenProject  = document.getElementById("btn-open-project");
 
@@ -544,13 +552,17 @@ const PANEL_TOGGLE_DEFS = [
     key: "source",
     label: "Source / Disassembly",
     icon: "\u25a4",
-    ids: () => multiCoreMode ? ["mc-pru0-source", "mc-rtu0-source"] : ["source"],
+    ids: () => multiCoreMode
+      ? ["mc-pru0-source", "mc-rtu0-source", "mc-rtu1-source"]
+      : ["source"],
   },
   {
     key: "registers",
     label: "Registers",
     icon: "\u25a6",
-    ids: () => multiCoreMode ? ["mc-pru0-registers", "mc-rtu0-registers"] : ["registers"],
+    ids: () => multiCoreMode
+      ? ["mc-pru0-registers", "mc-rtu0-registers", "mc-rtu1-registers"]
+      : ["registers"],
   },
   { key: "io", label: "I/O Pins", icon: "\u2194", ids: () => ["io"] },
   { key: "signal-graph", label: "Signal Graph", icon: "\u223f", ids: () => ["signal-graph"] },
@@ -643,8 +655,7 @@ function connect() {
     wsStatus.textContent = "Connected";
     wsStatus.className = "connected";
     if (multiCoreMode) {
-      sendAction({ action: "get_state", core: "pru0" });
-      sendAction({ action: "get_state", core: mcPartner });
+      requestMCStates();
     } else {
       sendAction({ action: "get_state", core: currentCore });
     }
@@ -658,6 +669,8 @@ function connect() {
   ws.onclose = () => {
     wsStatus.textContent = "Disconnected";
     wsStatus.className = "error";
+    graphMemoryInFlight.clear();
+    graphMemoryRefreshAt = 0;
     cancelAllRunRequests();
     pendingGraphCaptures.clear();
     memReadInFlight = false;
@@ -704,6 +717,7 @@ function connect() {
           // standalone SSI run still gets an immediate final read.
           queueSsiRuntimeRead(!(running || simRunning));
         }
+        scheduleRunPump(RUN_PUMP_DELAY_MS);
       } else if (msg.type === "uart_inject_ok") {
         const st = document.getElementById("uart-inj-status");
         if (st) {
@@ -733,6 +747,8 @@ function connect() {
         }
       } else if (msg.type === "ssi_simple_state") {
         if (window.renderSsiSimpleState) window.renderSsiSimpleState(msg);
+      } else if (msg.type === "ssi_simple_progress") {
+        if (window.renderSsiSimpleProgress) window.renderSsiSimpleProgress(msg);
       } else if (msg.type === "ssi_simple_error") {
         if (window.renderSsiSimpleError) window.renderSsiSimpleError(msg);
       } else if (msg.type === "foc_state") {
@@ -845,6 +861,10 @@ function abandonRunRequest(requestId) {
 }
 
 function cancelAllRunRequests() {
+  if (runPumpTimer !== null) {
+    clearTimeout(runPumpTimer);
+    runPumpTimer = null;
+  }
   for (const requestId of pendingRunRequestIds) abandonedRunRequestIds.add(requestId);
   pendingRunRequestIds.clear();
   activeToolbarRequestId = null;
@@ -860,13 +880,19 @@ function canStartRunRequest(inFlight) {
 
 // ---- UI update ------------------------------------------------------------
 
+function setTextIfChanged(element, value) {
+  if (!element) return;
+  const text = String(value);
+  if (element.textContent !== text) element.textContent = text;
+}
+
 function updateUI(state) {
   // Counters / header
-  cntCycles.textContent   = state.cycles;
-  cntStalls.textContent   = state.stall_cycles;
-  cntInstrs.textContent   = state.instruction_count;
-  cntIpc.textContent      = state.ipc.toFixed(3);
-  cntPc.textContent       = state.pc;
+  setTextIfChanged(cntCycles, state.cycles);
+  setTextIfChanged(cntStalls, state.stall_cycles);
+  setTextIfChanged(cntInstrs, state.instruction_count);
+  setTextIfChanged(cntIpc, state.ipc.toFixed(3));
+  setTextIfChanged(cntPc, state.pc);
 
   // Sync breakpoints from server
   if (state.breakpoints) clientBreakpoints = new Set(state.breakpoints);
@@ -892,9 +918,12 @@ function updateUI(state) {
 
   // MAC mode indicator
   if (state.mac) {
-    document.getElementById("mac-mode-label").textContent = state.mac.mode ? "ACC" : "MPY";
+    setTextIfChanged(
+      document.getElementById("mac-mode-label"),
+      state.mac.mode ? "ACC" : "MPY",
+    );
     const carryEl = document.getElementById("mac-carry-label");
-    carryEl.textContent = state.mac.acc_carry ? " CARRY" : "";
+    setTextIfChanged(carryEl, state.mac.acc_carry ? " CARRY" : "");
   }
 
   // Registers + SPAD
@@ -931,7 +960,7 @@ function updateRegisters(regs, carry) {
     if (valEl.querySelector("input")) continue;
 
     const newVal = regs[i];
-    valEl.textContent = newVal;
+    if (newVal !== prevRegisters[i]) setTextIfChanged(valEl, newVal);
 
     if (newVal !== prevRegisters[i]) {
       rowEl.classList.add("changed");
@@ -941,7 +970,7 @@ function updateRegisters(regs, carry) {
   }
   prevRegisters = [...regs];
   if (carry !== null && carry !== undefined) {
-    regCarry.textContent = carry ? "1" : "0";
+    setTextIfChanged(regCarry, carry ? "1" : "0");
   }
 }
 
@@ -1530,16 +1559,43 @@ function updateI2CPanel(io) {
  * sample = { step, mode, gpo: [20], gpi: [20], perif: [3], perifOe: [3],
  *            perifClk: [3], mem: [number|null, ...] }
  */
-function graphPushSample(sample) {
+function graphCoreCount() {
+  if (!multiCoreMode || typeof mcSelectedCores !== "function") return 1;
+  return Math.max(1, mcSelectedCores().length);
+}
+
+function graphWindowCapacity() {
+  return signalGraph.windowSize * graphCoreCount();
+}
+
+function graphStoreSample(sample) {
+  const capacity = signalGraph.buf.length;
   signalGraph.buf[signalGraph.head] = sample;
-  signalGraph.head = (signalGraph.head + 1) % signalGraph.windowSize;
-  if (signalGraph.fill < signalGraph.windowSize) signalGraph.fill++;
+  signalGraph.head = (signalGraph.head + 1) % capacity;
+  if (signalGraph.fill < capacity) signalGraph.fill++;
+}
+
+function graphEnsureCapacity() {
+  const capacity = graphWindowCapacity();
+  if (signalGraph.buf.length === capacity) return;
+  const samples = graphGetSamples();
+  signalGraph.buf = new Array(capacity);
+  signalGraph.head = 0;
+  signalGraph.fill = 0;
+  samples.slice(-capacity).forEach(graphStoreSample);
+}
+
+function graphPushSample(sample) {
+  graphEnsureCapacity();
+  graphStoreSample(sample);
   // Show Export CSV once we have data
   const exportRow = document.getElementById("graph-export-row");
   const countEl   = document.getElementById("graph-sample-count");
   if (exportRow && signalGraph.fill > 0) {
     exportRow.style.display = "";
-    if (countEl) countEl.textContent = `${signalGraph.fill} samples recorded`;
+    if (countEl) {
+      countEl.textContent = `${Math.ceil(signalGraph.fill / graphCoreCount())} time samples recorded`;
+    }
   }
 }
 
@@ -1547,12 +1603,13 @@ function graphPushSample(sample) {
  * Return samples in chronological order (oldest first).
  */
 function graphGetSamples() {
-  const { buf, head, fill, windowSize } = signalGraph;
+  const { buf, head, fill } = signalGraph;
   if (fill === 0) return [];
-  const start = fill < windowSize ? 0 : head;
+  const capacity = buf.length;
+  const start = fill < capacity ? 0 : head;
   const out = [];
   for (let i = 0; i < fill; i++) {
-    out.push(buf[(start + i) % windowSize]);
+    out.push(buf[(start + i) % capacity]);
   }
   return out;
 }
@@ -1651,24 +1708,25 @@ function renderUARTBytes(bytes) {
 }
 
 /**
- * Resize the circular buffer to newSize, keeping the most recent samples.
+ * Resize the circular buffer to newSize shared time samples.
  */
 function graphResizeWindow(newSize) {
   const samples = graphGetSamples(); // oldest → newest, chronological
   signalGraph.windowSize = newSize;
-  signalGraph.buf = new Array(newSize);
+  signalGraph.view = null;
+  const cores = [...new Set(samples.map(s => s.core || "pru0"))];
+  const coreCount = Math.max(1, cores.length, graphCoreCount());
+  signalGraph.buf = new Array(newSize * coreCount);
   signalGraph.head = 0;
   signalGraph.fill = 0;
 
-  // Split by core so each core keeps proportional history, then merge
-  const cores = [...new Set(samples.map(s => s.core || "pru0"))];
   if (cores.length <= 1) {
     // Single-core path: simple slice
     samples.slice(-newSize).forEach(s => graphPushSample(s));
     return;
   }
-  // Multi-core: allocate slots evenly per core, keep newest
-  const perCore = Math.max(1, Math.floor(newSize / cores.length));
+  // Multi-core: keep the requested number of shared time samples per core.
+  const perCore = newSize;
   const kept = [];
   for (const c of cores) {
     const cs = samples.filter(s => (s.core || "pru0") === c);
@@ -1731,17 +1789,12 @@ function graphViewZoom(factor, fracX) {
  * Pushes a new sample and fires read_memory for each memory channel.
  */
 const GRAPH_MEM_BPS = { uint8: 1, uint16: 2, uint32: 4, int32: 4 };
+const GRAPH_MEMORY_REFRESH_MS = 100;
+let graphMemoryRefreshAt = 0;
+const graphMemoryInFlight = new Set();
 
 function graphSample(state) {
-  // Always refresh memory snapshots if channels are configured
-  signalGraph.memChannels.forEach((ch, i) => {
-    sendAction({
-      action: "read_memory",
-      addr: ch.addr,
-      length: ch.count * (GRAPH_MEM_BPS[ch.format] || 4),
-      tag: `graph-M${i}`,
-    });
-  });
+  graphRequestSnapshots();
 
   // A run loop's samples already arrived in a "capture" message; sampling this
   // closing state push too would append a duplicate of its last sample.
@@ -1816,7 +1869,7 @@ function graphAppendCaptureSample(msg, s) {
   const singleShot = mode === "perif";
   // Peripheral captures are intentionally single-shot: sampling every
   // instruction would otherwise roll the transmission out of view quickly.
-  if (singleShot && signalGraph.fill >= signalGraph.windowSize) {
+  if (singleShot && signalGraph.fill >= graphWindowCapacity()) {
     graphSetRecording(false);
     return false;
   }
@@ -1826,6 +1879,7 @@ function graphAppendCaptureSample(msg, s) {
     runStep: runStep ?? step,
     mode,
     core,
+    edgeTimestamped: Boolean(msg.edge_timestamps),
     gpo: Array.from({ length: 20 }, (_, i) => (r30 >> i) & 1),
     gpi: Array.from({ length: 20 }, (_, i) => (gpiBits >> i) & 1),
     perif: [0, 1, 2].map(i => (outBits >> i) & 1),
@@ -1833,6 +1887,40 @@ function graphAppendCaptureSample(msg, s) {
     perifClk: [0, 1, 2].map(i => (clkBits >> i) & 1),
   });
   return true;
+}
+
+function graphMergeCaptureGroup(group) {
+  // Selected cores use the same runStep values. Interleave by that shared
+  // time axis so the circular buffer retains each core's recent history.
+  const merged = [];
+  for (const batch of group.values()) {
+    for (const sample of (batch.samples || [])) {
+      merged.push({ core: batch.core || "pru0", batch, sample });
+    }
+  }
+  merged.sort((a, b) => {
+    const aStep = a.sample[6] ?? a.sample[0];
+    const bStep = b.sample[6] ?? b.sample[0];
+    return aStep - bStep || a.core.localeCompare(b.core);
+  });
+  for (const item of merged) {
+    if (!graphAppendCaptureSample(item.batch, item.sample)) break;
+  }
+}
+
+let flushingPendingGraphCaptures = false;
+
+function graphFlushPendingCaptures() {
+  if (flushingPendingGraphCaptures) return;
+  flushingPendingGraphCaptures = true;
+  try {
+    for (const group of pendingGraphCaptures.values()) {
+      graphMergeCaptureGroup(group);
+    }
+  } finally {
+    pendingGraphCaptures.clear();
+    flushingPendingGraphCaptures = false;
+  }
 }
 
 function graphHandleCapture(msg) {
@@ -1851,25 +1939,12 @@ function graphHandleCapture(msg) {
     pendingGraphCaptures.set(String(groupId), group);
   }
   group.set(msg.core || "pru0", msg);
-  if (group.size < 2) return;
+  const expectedCaptureCount = Array.isArray(msg.capture_cores)
+    ? msg.capture_cores.length
+    : String(groupId).split(":", 1)[0].split(",").filter(Boolean).length || 1;
+  if (group.size < expectedCaptureCount) return;
   pendingGraphCaptures.delete(String(groupId));
-
-  // Both cores use the same runStep values. Interleave by that shared time
-  // axis so the circular buffer retains both cores' recent history.
-  const merged = [];
-  for (const batch of group.values()) {
-    for (const sample of (batch.samples || [])) {
-      merged.push({ core: batch.core || "pru0", batch, sample });
-    }
-  }
-  merged.sort((a, b) => {
-    const aStep = a.sample[6] ?? a.sample[0];
-    const bStep = b.sample[6] ?? b.sample[0];
-    return aStep - bStep || a.core.localeCompare(b.core);
-  });
-  for (const item of merged) {
-    if (!graphAppendCaptureSample(item.batch, item.sample)) break;
-  }
+  graphMergeCaptureGroup(group);
 }
 
 /**
@@ -1883,6 +1958,7 @@ function _graphChannelIdxFromTag(tag) {
 function graphMarkChannelError(tag) {
   const idx = _graphChannelIdxFromTag(tag);
   if (isNaN(idx)) return;
+  graphMemoryInFlight.delete(idx);
   const row = document.querySelector(`.graph-mem-row[data-index="${idx}"]`);
   if (row) row.querySelector(".graph-ch-addr")?.classList.add("addr-error");
 }
@@ -1890,7 +1966,9 @@ function graphMarkChannelError(tag) {
 function graphHandleMemory(msg) {
   // tag format: "graph-M{channelIdx}"
   const idx = _graphChannelIdxFromTag(msg.tag);
-  if (isNaN(idx) || idx >= signalGraph.memChannels.length) return;
+  if (isNaN(idx)) return;
+  graphMemoryInFlight.delete(idx);
+  if (idx >= signalGraph.memChannels.length) return;
   const ch = signalGraph.memChannels[idx];
   const raw = msg.data || msg.bytes || msg.values;
   if (!Array.isArray(raw) || raw.length === 0) return;
@@ -2030,7 +2108,9 @@ function graphBuildDigitalBuckets(samples, data, visMin, visMax, width) {
   let segmentValue = values[0];
   for (let i = 1; i < count; i++) {
     if (values[i] === values[i - 1]) continue;
-    const transition = (times[i - 1] + times[i]) / 2;
+    const transition = samples[i].edgeTimestamped
+      ? times[i]
+      : (times[i - 1] + times[i]) / 2;
     markSegment(segmentStart, transition, segmentValue);
     segmentStart = transition;
     segmentValue = values[i];
@@ -2333,14 +2413,24 @@ function _graphUpdateLegend(channels, containerId) {
 
 // ---- Signal graph — memory channel management ------------------------------
 
-function graphRequestSnapshots() {
+function graphRequestSnapshots(force = false) {
+  if (!force && !signalGraph.recording) return;
+  const now = Date.now();
+  if (!force && now < graphMemoryRefreshAt) return;
+  graphMemoryRefreshAt = Math.max(
+    graphMemoryRefreshAt,
+    now + GRAPH_MEMORY_REFRESH_MS,
+  );
   signalGraph.memChannels.forEach((ch, i) => {
-    sendAction({
+    if (graphMemoryInFlight.has(i)) return;
+    graphMemoryInFlight.add(i);
+    if (sendAction({
       action: "read_memory",
       addr: ch.addr,
       length: ch.count * (GRAPH_MEM_BPS[ch.format] || 4),
       tag: `graph-M${i}`,
-    });
+    })) return;
+    graphMemoryInFlight.delete(i);
   });
 }
 
@@ -2371,7 +2461,7 @@ function renderMemChannelRows() {
         signalGraph.memChannels[i].addr = v >>> 0;
         addrInput.value = "0x" + (v >>> 0).toString(16).toUpperCase().padStart(8, "0");
         signalGraph.memChannels[i].snapshot = null;
-        graphRequestSnapshots(); drawGraph();
+        graphRequestSnapshots(true); drawGraph();
       }
     };
     addrInput.addEventListener("change", applyAddr);
@@ -2387,7 +2477,7 @@ function renderMemChannelRows() {
       if (!isNaN(v) && v >= 1 && v <= 8192) {
         signalGraph.memChannels[i].count = v;
         signalGraph.memChannels[i].snapshot = null;
-        graphRequestSnapshots(); drawGraph();
+        graphRequestSnapshots(true); drawGraph();
       }
     };
     cntInput.addEventListener("change", applyCnt);
@@ -2404,7 +2494,7 @@ function renderMemChannelRows() {
     fmtSel.addEventListener("change", () => {
       signalGraph.memChannels[i].format = fmtSel.value;
       signalGraph.memChannels[i].snapshot = null;
-      graphRequestSnapshots(); drawGraph();
+      graphRequestSnapshots(true); drawGraph();
     });
 
     const rm = document.createElement("span");
@@ -2429,7 +2519,7 @@ function addMemChannel() {
     snapshot: null,
   });
   renderMemChannelRows();
-  graphRequestSnapshots();
+  graphRequestSnapshots(true);
   drawGraph();
 }
 
@@ -3016,6 +3106,22 @@ coreSelect.addEventListener("change", () => {
   updateCtableForCore();
 });
 
+function sendMCRun(max_steps, capture = false, request_id = undefined) {
+  const cores = mcSelectedCores();
+  if (cores.length === 0) {
+    flashStatus("SELECT A CORE", "halted");
+    return false;
+  }
+  const action = {
+    action: "run_multicore",
+    cores,
+    max_steps,
+    capture,
+  };
+  if (request_id !== undefined) action.request_id = request_id;
+  return sendAction(action);
+}
+
 btnStep.addEventListener("click", () => {
   stopRun(); stopSim();
   if (genericSsiLoaded) {
@@ -3035,8 +3141,7 @@ btnStep.addEventListener("click", () => {
       trackRunRequest(request_id);
     }
   } else if (multiCoreMode) {
-    sendAction({ action: "run_multicore", core: "pru0", partner: mcPartner,
-                 max_steps: 1 });
+    sendMCRun(1);
   } else {
     sendAction({ action: "step", core: currentCore, count: 1 });
   }
@@ -3062,18 +3167,16 @@ btnReset.addEventListener("click", () => {
       pru0: new Array(32).fill("0x00000000"),
       rtu0: new Array(32).fill("0x00000000"),
       pru1: new Array(32).fill("0x00000000"),
+      rtu1: new Array(32).fill("0x00000000"),
     };
     sendAction({ action: "reset", core: "pru1" });
     sendAction({ action: "reset", core: "pru0" });
     sendAction({ action: "ssi_runtime_read" });
   } else if (multiCoreMode) {
-    mcPrevRegs = {
-      pru0: new Array(32).fill("0x00000000"),
-      rtu0: new Array(32).fill("0x00000000"),
-      pru1: new Array(32).fill("0x00000000"),
-    };
-    sendAction({ action: "reset", core: "pru0" });
-    sendAction({ action: "reset", core: mcPartner });
+    MC_SLOT_KEYS.forEach(resetMCSlot);
+    const selected = mcSelectedCores();
+    for (const core of selected) sendAction({ action: "reset", core });
+    requestMCStates();
   } else {
     sendAction({ action: "reset", core: currentCore });
   }
@@ -3092,6 +3195,7 @@ btnHardReset.addEventListener("click", () => {
       pru0: new Array(32).fill("0x00000000"),
       rtu0: new Array(32).fill("0x00000000"),
       pru1: new Array(32).fill("0x00000000"),
+      rtu1: new Array(32).fill("0x00000000"),
     };
     sendAction({ action: "hard_reset", core: "pru1" });
     // Hard reset clears the runtime object as well as the cores.  Reload the
@@ -3102,9 +3206,10 @@ btnHardReset.addEventListener("click", () => {
       pru0: new Array(32).fill("0x00000000"),
       rtu0: new Array(32).fill("0x00000000"),
       pru1: new Array(32).fill("0x00000000"),
+      rtu1: new Array(32).fill("0x00000000"),
     };
-    sendAction({ action: "hard_reset", core: "pru0" });
-    sendAction({ action: "get_state", core: mcPartner });
+    sendAction({ action: "hard_reset", core: mcSelectedCores()[0] || "pru0" });
+    requestMCStates();
   } else {
     sendAction({ action: "hard_reset", core: currentCore });
   }
@@ -3164,6 +3269,7 @@ btnLoad.addEventListener("click", async () => {
     mcLastSourceBreakpointKey[targetCore] = null;
     const srcList = document.getElementById(`mc-${targetCore}-source-list`);
     if (srcList) srcList.innerHTML = "";
+    simpleSsiLoaded = false;
     sendAction({ action: "load", core: targetCore, source, filename });
   } else {
     prevRegisters = new Array(32).fill("0x00000000");
@@ -3171,6 +3277,7 @@ btnLoad.addEventListener("click", async () => {
     _sourceLabels = {};
     _lastSourceBreakpointKey = null;
     sourceList.innerHTML = "";
+    simpleSsiLoaded = false;
     sendAction({ action: "load", core: currentCore, source, filename });
   }
 });
@@ -3178,8 +3285,12 @@ btnLoad.addEventListener("click", async () => {
 // ---- Signal graph controls -------------------------------------------------
 
 function graphSetRecording(on) {
+  if (!on) {
+    graphFlushPendingCaptures();
+    requestGraphDraw();
+  }
   signalGraph.recording = on;
-  if (!on) pendingGraphCaptures.clear();
+  if (on) graphRequestSnapshots();
   const btn = document.getElementById("graph-rec-btn");
   const dot = document.getElementById("graph-rec-dot");
   if (btn) btn.classList.toggle("rec-on", on);
@@ -3187,11 +3298,13 @@ function graphSetRecording(on) {
 }
 
 function graphClear() {
-  signalGraph.buf = new Array(signalGraph.windowSize);
+  signalGraph.buf = new Array(graphWindowCapacity());
   signalGraph.head = 0;
   signalGraph.fill = 0;
   signalGraph.view = null;
   pendingGraphCaptures.clear();
+  graphMemoryRefreshAt = 0;
+  graphMemoryInFlight.clear();
   const exportRow = document.getElementById("graph-export-row");
   if (exportRow) exportRow.style.display = "none";
 }
@@ -3278,7 +3391,7 @@ document.getElementById("graph-win-sel").addEventListener("change", (e) => {
 })();
 
 document.getElementById("graph-mem-refresh-btn").addEventListener("click", () => {
-  graphRequestSnapshots();
+  graphRequestSnapshots(true);
   drawGraph();
 });
 
@@ -3492,6 +3605,7 @@ fileInput.addEventListener("change", (e) => {
         _sourceInstructions = [];
         _sourceLabels = {};
       }
+      simpleSsiLoaded = false;
       sendAction({ action: "load_elf", core, data: b64 });
       // Show loaded filename in source panel title
       const srcTitle = document.querySelector('#source-panel .panel-title');
@@ -3695,45 +3809,62 @@ document.addEventListener("keydown", (e) => {
 
 // ---- Run mode -------------------------------------------------------------
 
+function scheduleRunPump(delayMs = 0) {
+  if (!running || runPumpTimer !== null) return;
+  runPumpTimer = setTimeout(() => {
+    runPumpTimer = null;
+    pumpRun();
+  }, Math.max(0, delayMs));
+}
+
+function pumpRun() {
+  if (!running || runRequestInFlight) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+  const capture = signalGraph.recording;
+  const max_steps = simpleSsiLoaded ? 3000 : 1000;
+  if (!canStartRunRequest(runRequestInFlight)) return;
+  const request_id = genericSsiLoaded
+    ? "ssi-runtime-general-" + nextRunRequestId++
+    : nextRunRequestId++;
+  let sent;
+  if (genericSsiLoaded) {
+    sent = sendAction({ action: "run_multicore", core: "pru1",
+                        partner: "pru0", max_steps, capture, request_id });
+  } else if (multiCoreMode) {
+    sent = sendMCRun(max_steps, capture, request_id);
+  } else {
+    sent = sendAction({ action: "run", core: currentCore, max_steps, capture,
+                        request_id });
+  }
+  if (sent) trackRunRequest(request_id, "toolbar");
+}
+
 function startRun() {
   stopSim();
+  if (multiCoreMode && mcSelectedCores().length === 0) {
+    flashStatus("SELECT A CORE", "halted");
+    return;
+  }
   running = true;
   setButtonLabel(btnRun, "Stop");
   btnRun.classList.add("btn-reset");
   btnRun.classList.remove("btn-run");
-  runInterval = setInterval(() => {
-    const capture = signalGraph.recording;
-    const max_steps = 1000;
-    if (!canStartRunRequest(runRequestInFlight)) return;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    const request_id = genericSsiLoaded
-      ? "ssi-runtime-general-" + nextRunRequestId++
-      : nextRunRequestId++;
-    let sent;
-    if (genericSsiLoaded) {
-      sent = sendAction({ action: "run_multicore", core: "pru1",
-                          partner: "pru0", max_steps, capture, request_id });
-    } else if (multiCoreMode) {
-      sent = sendAction({ action: "run_multicore", core: "pru0",
-                          partner: mcPartner, max_steps, capture, request_id });
-    } else {
-      sent = sendAction({ action: "run", core: currentCore, max_steps, capture,
-                          request_id });
-    }
-    if (sent) trackRunRequest(request_id, "toolbar");
-  }, 10);
+  scheduleRunPump();
 }
 
 function stopRun() {
+  graphFlushPendingCaptures();
+  requestGraphDraw();
+  if (runPumpTimer !== null) {
+    clearTimeout(runPumpTimer);
+    runPumpTimer = null;
+  }
   if (!running) return;
   running = false;
   setButtonLabel(btnRun, "Run");
   btnRun.classList.add("btn-run");
   btnRun.classList.remove("btn-reset");
-  if (runInterval !== null) {
-    clearInterval(runInterval);
-    runInterval = null;
-  }
   if (activeToolbarRequestId !== null) {
     const requestId = activeToolbarRequestId;
     abandonRunRequest(requestId);
@@ -3747,6 +3878,10 @@ function stopRun() {
 
 function startSim() {
   stopRun();
+  if (multiCoreMode && mcSelectedCores().length === 0) {
+    flashStatus("SELECT A CORE", "halted");
+    return;
+  }
   simRunning = true;
   setButtonLabel(btnSim, "Stop SIM");
   btnSim.classList.add("btn-reset");
@@ -3770,8 +3905,7 @@ function startSim() {
         trackRunRequest(request_id, "sim");
       }
     } else if (multiCoreMode) {
-      sendAction({ action: "step", core: "pru0", count: 1 });
-      sendAction({ action: "step", core: mcPartner, count: 1 });
+      sendMCRun(1, signalGraph.recording);
     } else {
       sendAction({ action: "step", core: currentCore, count: 1 });
     }
@@ -3779,6 +3913,8 @@ function startSim() {
 }
 
 function stopSim() {
+  graphFlushPendingCaptures();
+  requestGraphDraw();
   if (!simRunning) return;
   simRunning = false;
   setButtonLabel(btnSim, "SIM");
@@ -4953,56 +5089,183 @@ function flashStatus(text, cssClass) {
 
 btnMulticore.addEventListener("click", toggleMultiCore);
 document.getElementById("btn-reset-layout").addEventListener("click", resetLayout);
+document.getElementById("btn-reset-layout").addEventListener("click", () => {
+  if (multiCoreMode) syncMCPanelVisibility();
+});
 
-// ---- Multi-core partner (second core in the MC view: RTU0 or PRU1) --------
-const mcPartnerSelect = document.getElementById("mc-partner-select");
+// ---- Multi-core core selection --------------------------------------------
+
+const mcSelects = [mcPrimarySelect, mcPartnerSelect, mcThirdSelect];
+const MC_SLOT_PANEL_IDS = [
+  ["mc-pru0-source", "mc-pru0-registers"],
+  ["mc-rtu0-source", "mc-rtu0-registers"],
+  ["mc-rtu1-source", "mc-rtu1-registers"],
+];
+const MC_COUNTER_SLOTS = [
+  {
+    label: "cnt-p0-label",
+    separator: null,
+    cycles: "cnt-cycles-wrap",
+    stalls: "cnt-stalls-wrap",
+    pc: "cnt-pc-wrap",
+    cycleValue: "cnt-cycles",
+    stallValue: "cnt-stalls",
+    pcValue: "cnt-pc",
+  },
+  {
+    label: "cnt-p1-label",
+    separator: "cnt-sep",
+    cycles: "cnt-rtu-cycles-wrap",
+    stalls: "cnt-rtu-stalls-wrap",
+    pc: "cnt-rtu-pc-wrap",
+    cycleValue: "cnt-rtu-cycles",
+    stallValue: "cnt-rtu-stalls",
+    pcValue: "cnt-rtu-pc",
+  },
+  {
+    label: "cnt-p2-label",
+    separator: "cnt-sep2",
+    cycles: "cnt-p2-cycles-wrap",
+    stalls: "cnt-p2-stalls-wrap",
+    pc: "cnt-p2-pc-wrap",
+    cycleValue: "cnt-p2-cycles",
+    stallValue: "cnt-p2-stalls",
+    pcValue: "cnt-p2-pc",
+  },
+];
+
+function mcCoreLabel(core) {
+  if (core === "pru0") return "PRU0";
+  if (core === "rtu0") return "RTU0";
+  if (core === "pru1") return "PRU1";
+  if (core === "rtu1") return "RTU_PRU1";
+  return "None";
+}
+
+function mcReadSelections() {
+  return mcSelects.map(select => {
+    if (!select || select.value === "none") return null;
+    return select.value;
+  });
+}
+
+function mcSelectedCores() {
+  return mcCores.filter(Boolean);
+}
+
+function mcCoreForSlot(slotKey) {
+  const slotIndex = MC_SLOT_KEYS.indexOf(slotKey);
+  return slotIndex < 0 ? null : mcCores[slotIndex];
+}
+
+function resetMCSlot(slotKey) {
+  mcPrevRegs[slotKey] = new Array(32).fill("0x00000000");
+  mcSourceInstructions[slotKey] = [];
+  mcSourceLabels[slotKey] = {};
+  mcRenderedSourceInstructions[slotKey] = null;
+  mcRenderedSourceLabels[slotKey] = null;
+  mcLastSourceBreakpointKey[slotKey] = null;
+  mcCurrentSourceLine[slotKey] = null;
+  mcBreakpoints[slotKey] = new Set();
+  mcHaltedState[slotKey] = false;
+  mcBreakState[slotKey] = false;
+  const srcList = document.getElementById(`mc-${slotKey}-source-list`);
+  if (srcList) srcList.innerHTML = "";
+  if (typeof buildMCRegTable === "function") buildMCRegTable(slotKey);
+}
+
+function applyMCSlotLabels() {
+  const sourceTitleIds = [
+    "mc-primary-source-title", "mc-partner-source-title", "mc-third-source-title",
+  ];
+  const registerTitleIds = [
+    "mc-primary-reg-title", "mc-partner-reg-title", "mc-third-reg-title",
+  ];
+  mcCores.forEach((core, index) => {
+    const label = mcCoreLabel(core);
+    const sourceTitle = document.getElementById(sourceTitleIds[index]);
+    const registerTitle = document.getElementById(registerTitleIds[index]);
+    if (sourceTitle) sourceTitle.textContent = `${label} Source`;
+    if (registerTitle) registerTitle.textContent = `${label} Registers`;
+    const counter = MC_COUNTER_SLOTS[index];
+    const counterLabel = document.getElementById(counter.label);
+    if (counterLabel) counterLabel.textContent = label;
+  });
+  mcPartner = mcCores[1] || "rtu0";
+}
+
+function updateMCSelectionOptions() {
+  const selected = new Set(mcCores.filter(Boolean));
+  mcSelects.forEach((select, index) => {
+    if (!select) return;
+    for (const option of select.options) {
+      option.disabled = option.value !== "none" &&
+        selected.has(option.value) && option.value !== mcCores[index];
+    }
+  });
+}
+
+function updateMCCounterVisibility() {
+  MC_COUNTER_SLOTS.forEach((counter, index) => {
+    const visible = multiCoreMode && Boolean(mcCores[index]);
+    for (const id of [counter.label, counter.cycles, counter.stalls, counter.pc]) {
+      const element = document.getElementById(id);
+      if (element) element.style.display = visible ? "" : "none";
+    }
+    const hasPrevious = mcCores.slice(0, index).some(Boolean);
+    if (counter.separator) {
+      const separator = document.getElementById(counter.separator);
+      if (separator) separator.style.display = visible && hasPrevious ? "" : "none";
+    }
+  });
+}
+
+function syncMCPanelVisibility() {
+  if (!multiCoreMode || typeof setPanelsVisibility !== "function") return;
+  const allPanelIds = MC_SLOT_PANEL_IDS.flat();
+  const visiblePanelIds = MC_SLOT_PANEL_IDS.flatMap((panelIds, index) =>
+    mcCores[index] ? panelIds : []
+  );
+  setPanelsVisibility(allPanelIds, false);
+  if (visiblePanelIds.length > 0) setPanelsVisibility(visiblePanelIds, true);
+}
+
+function applyMCSelections({ resetSlots = true } = {}) {
+  mcCores = mcReadSelections();
+  if (resetSlots) MC_SLOT_KEYS.forEach(resetMCSlot);
+  applyMCSlotLabels();
+  updateMCSelectionOptions();
+  updateMCCounterVisibility();
+  syncMCPanelVisibility();
+}
+
+function requestMCStates() {
+  for (const core of mcSelectedCores()) {
+    sendAction({ action: "get_state", core });
+  }
+}
 
 function selectGenericSsiPartner() {
-  mcPartner = "pru1";
+  if (mcPrimarySelect) mcPrimarySelect.value = "pru0";
   if (mcPartnerSelect) mcPartnerSelect.value = "pru1";
-  applyMCPartnerLabels();
-  if (multiCoreMode) {
-    mcPrevRegs.rtu0 = new Array(32).fill("0x00000000");
-    mcSourceInstructions.rtu0 = [];
-    mcSourceLabels.rtu0 = {};
-    mcLastSourceBreakpointKey.rtu0 = null;
-    mcBreakpoints.rtu0 = new Set();
-    mcHaltedState.rtu0 = false;
-    mcBreakState.rtu0 = false;
-    buildMCRegTable("rtu0");
-    sendAction({ action: "get_state", core: "pru0" });
-    sendAction({ action: "get_state", core: "pru1" });
-  }
+  if (mcThirdSelect) mcThirdSelect.value = "none";
+  applyMCSelections({ resetSlots: multiCoreMode });
+  if (multiCoreMode) requestMCStates();
 }
 
-function applyMCPartnerLabels() {
-  const label = mcPartner === "pru1" ? "PRU1" : "RTU0";
-  const srcTitle = document.getElementById("mc-partner-source-title");
-  const regTitle = document.getElementById("mc-partner-reg-title");
-  const cntLabel = document.getElementById("cnt-p1-label");
-  if (srcTitle) srcTitle.textContent = `${label} Source`;
-  if (regTitle) regTitle.textContent = `${label} Registers`;
-  if (cntLabel) cntLabel.textContent = label;
-}
-
-mcPartnerSelect.addEventListener("change", () => {
-  stopRun(); stopSim();
-  graphClear();
-  mcPartner = mcPartnerSelect.value;
-  applyMCPartnerLabels();
-  if (multiCoreMode) {
-    // Reset the partner DOM slot and re-request state for the new core.
-    mcPrevRegs.rtu0 = new Array(32).fill("0x00000000");
-    mcSourceInstructions.rtu0 = [];
-    mcSourceLabels.rtu0 = {};
-    mcLastSourceBreakpointKey.rtu0 = null;
-    mcBreakpoints.rtu0 = new Set();
-    mcHaltedState.rtu0 = false;
-    mcBreakState.rtu0 = false;
-    buildMCRegTable("rtu0");
-    sendAction({ action: "get_state", core: "pru0" });
-    sendAction({ action: "get_state", core: mcPartner });
-  }
+mcSelects.forEach((select, index) => {
+  select?.addEventListener("change", () => {
+    stopRun(); stopSim();
+    graphClear();
+    const selected = select.value;
+    if (selected !== "none") {
+      mcSelects.forEach((other, otherIndex) => {
+        if (otherIndex !== index && other?.value === selected) other.value = "none";
+      });
+    }
+    applyMCSelections();
+    requestMCStates();
+  });
 });
 
 function toggleMultiCore() {
@@ -5013,17 +5276,9 @@ function toggleMultiCore() {
   if (multiCoreMode) {
     coreSelect.style.display = "none";
     mcLoadCore.style.display = "";
-    mcPartnerSelect.style.display = "";
-    applyMCPartnerLabels();
+    mcSelects.forEach(select => { if (select) select.style.display = ""; });
+    applyMCSelections();
     btnMulticore.classList.add("mc-active");
-
-    // Show per-core counter labels and RTU0 counter spans
-    document.getElementById("cnt-p0-label").style.display = "";
-    document.getElementById("cnt-sep").style.display = "";
-    document.getElementById("cnt-p1-label").style.display = "";
-    document.getElementById("cnt-rtu-cycles-wrap").style.display = "";
-    document.getElementById("cnt-rtu-stalls-wrap").style.display = "";
-    document.getElementById("cnt-rtu-pc-wrap").style.display = "";
     document.getElementById("cnt-instrs-wrap").style.display = "none";
     document.getElementById("cnt-ipc-wrap").style.display = "none";
 
@@ -5032,30 +5287,30 @@ function toggleMultiCore() {
       mcPrevSpad[b.key] = new Array(b.count).fill("0x00000000");
     }
 
-    // Build register tables for both cores
-    buildMCRegTable("pru0");
-    buildMCRegTable("rtu0");
+    // Build register tables for all available slots.
+    MC_SLOT_KEYS.forEach(buildMCRegTable);
 
     // Switch to MC layout
     switchLayoutMode("mc");
+    syncMCPanelVisibility();
 
-    // Request state for both cores
-    sendAction({ action: "get_state", core: "pru0" });
-    sendAction({ action: "get_state", core: mcPartner });
+    // Request state for all selected cores.
+    requestMCStates();
 
   } else {
     coreSelect.style.display = "";
     mcLoadCore.style.display = "none";
-    mcPartnerSelect.style.display = "none";
+    mcSelects.forEach(select => { if (select) select.style.display = "none"; });
     btnMulticore.classList.remove("mc-active");
 
     // Restore SC counter layout
-    document.getElementById("cnt-p0-label").style.display = "none";
-    document.getElementById("cnt-sep").style.display = "none";
-    document.getElementById("cnt-p1-label").style.display = "none";
-    document.getElementById("cnt-rtu-cycles-wrap").style.display = "none";
-    document.getElementById("cnt-rtu-stalls-wrap").style.display = "none";
-    document.getElementById("cnt-rtu-pc-wrap").style.display = "none";
+    MC_COUNTER_SLOTS.forEach(counter => {
+      document.getElementById(counter.label).style.display = "none";
+      if (counter.separator) document.getElementById(counter.separator).style.display = "none";
+      document.getElementById(counter.cycles).style.display = "none";
+      document.getElementById(counter.stalls).style.display = "none";
+      document.getElementById(counter.pc).style.display = "none";
+    });
     document.getElementById("cnt-instrs-wrap").style.display = "";
     document.getElementById("cnt-ipc-wrap").style.display = "";
 
@@ -5117,8 +5372,9 @@ function editMCRegister(valEl, core, index) {
     if (committed) return;
     committed = true;
     const newVal = parseInt(input.value, 16);
-    if (!isNaN(newVal) && newVal >= 0 && newVal <= 0xFFFFFFFF) {
-      sendAction({ action: "set_register", core, index, value: newVal });
+    const actualCore = mcCoreForSlot(core);
+    if (actualCore && !isNaN(newVal) && newVal >= 0 && newVal <= 0xFFFFFFFF) {
+      sendAction({ action: "set_register", core: actualCore, index, value: newVal });
       valEl.textContent = "0x" + newVal.toString(16).padStart(8, "0").toUpperCase();
     } else {
       valEl.textContent = oldVal;
@@ -5132,25 +5388,24 @@ function editMCRegister(valEl, core, index) {
 }
 
 function updateMCUI(state) {
-  if (state.core !== "pru0" && state.core !== mcPartner) return;   // core not shown
-  // The second MC panel's DOM ids are the "rtu0" slot; the partner core
-  // (RTU0 or PRU1) renders into it.
-  const core = state.core === "pru0" ? "pru0" : "rtu0";
+  const slotIndex = mcCores.indexOf(state.core);
+  if (slotIndex < 0) return;   // core is not selected in the view
+  const core = MC_SLOT_KEYS[slotIndex];
 
   // PC badge in panel title
   const pcBadge = document.getElementById(`mc-${core}-pc`);
-  if (pcBadge) pcBadge.textContent = `PC: ${state.pc}`;
+  setTextIfChanged(pcBadge, `PC: ${state.pc}`);
 
   // Carry
   const carryEl = document.getElementById(`mc-${core}-carry`);
-  if (carryEl) carryEl.textContent = state.carry ? "1" : "0";
+  setTextIfChanged(carryEl, state.carry ? "1" : "0");
 
   // MAC indicator
   if (state.mac) {
     const modeEl = document.getElementById(`mc-${core}-mac-mode`);
-    if (modeEl) modeEl.textContent = state.mac.mode ? "ACC" : "MPY";
+    setTextIfChanged(modeEl, state.mac.mode ? "ACC" : "MPY");
     const macCarryEl = document.getElementById(`mc-${core}-mac-carry`);
-    if (macCarryEl) macCarryEl.textContent = state.mac.acc_carry ? " CARRY" : "";
+    setTextIfChanged(macCarryEl, state.mac.acc_carry ? " CARRY" : "");
   }
 
   // Registers
@@ -5161,7 +5416,13 @@ function updateMCUI(state) {
     mcSourceInstructions[core] = state.instructions;
     mcSourceLabels[core] = state.labels || {};
   }
-  updateMCSource(core, mcSourceInstructions[core], state.pc, mcSourceLabels[core]);
+  updateMCSource(
+    core,
+    mcSourceInstructions[core],
+    state.pc,
+    mcSourceLabels[core],
+    state.core,
+  );
 
   // Breakpoints
   if (state.breakpoints) mcBreakpoints[core] = new Set(state.breakpoints);
@@ -5171,25 +5432,25 @@ function updateMCUI(state) {
   mcBreakState[core]  = !!state.at_breakpoint;
   updateMCStatus();
 
-  // Per-core counters and IO
-  if (core === "pru0") {
-    cntCycles.textContent = state.cycles;
-    cntStalls.textContent = state.stall_cycles;
-    cntInstrs.textContent = state.instruction_count;
-    cntIpc.textContent    = state.ipc.toFixed(3);
-    cntPc.textContent     = state.pc;
+  // Per-core counters and IO. The first selected slot owns the shared IO
+  // panel; source/register panels remain independent for all three slots.
+  const counter = MC_COUNTER_SLOTS[slotIndex];
+  if (counter) {
+    setTextIfChanged(document.getElementById(counter.cycleValue), state.cycles);
+    setTextIfChanged(document.getElementById(counter.stallValue), state.stall_cycles);
+    setTextIfChanged(document.getElementById(counter.pcValue), state.pc);
+  }
+  const firstSelectedIndex = mcCores.findIndex(Boolean);
+  if (slotIndex === firstSelectedIndex) {
     updatePins(state.io);
     updateSDPanel(state.io);
     updateI2CPanel(state.io);
-    // Update SPAD columns in PRU0 MC reg panel
-    if (mcSpadVisible.size > 0) updateMCSpad(state.spad);
-  } else if (core === "rtu0") {
-    document.getElementById("cnt-rtu-cycles").textContent = state.cycles;
-    document.getElementById("cnt-rtu-stalls").textContent = state.stall_cycles;
-    document.getElementById("cnt-rtu-pc").textContent     = state.pc;
+    if (state.core === "pru0" && mcSpadVisible.size > 0) {
+      updateMCSpad(state.spad);
+    }
   }
 
-  // Signal graph: sample both cores in MC mode (covers SIM and step modes)
+  // Signal graph: sample every selected core in MC mode.
   graphSample(state);
   requestGraphDraw();
 
@@ -5216,8 +5477,14 @@ function updateMCSpad(spad) {
 }
 
 function updateMCStatus() {
-  const anyBreak  = mcBreakState.pru0  || mcBreakState.rtu0;
-  const anyHalted = mcHaltedState.pru0 || mcHaltedState.rtu0;
+  const selectedSlots = MC_SLOT_KEYS.filter((_, index) => Boolean(mcCores[index]));
+  const anyBreak = selectedSlots.some(core => mcBreakState[core]);
+  const anyHalted = selectedSlots.some(core => mcHaltedState[core]);
+  if (selectedSlots.length === 0) {
+    statusBadge.textContent = "IDLE";
+    statusBadge.className = "";
+    return;
+  }
   if (anyBreak) {
     statusBadge.textContent = "BREAK";
     statusBadge.className   = "halted";
@@ -5240,13 +5507,13 @@ function updateMCRegisters(core, regs) {
     if (!valEl) continue;
     if (valEl.querySelector("input")) continue;
     const newVal = regs[i];
-    valEl.textContent = newVal;
+    if (newVal !== prev[i]) setTextIfChanged(valEl, newVal);
     rowEl.classList.toggle("changed", newVal !== prev[i]);
   }
   mcPrevRegs[core] = [...regs];
 }
 
-function updateMCSource(core, instructions, pc, labels) {
+function updateMCSource(core, instructions, pc, labels, actualCore = mcCoreForSlot(core)) {
   const listEl = document.getElementById(`mc-${core}-source-list`);
   if (!listEl) return;
 
@@ -5322,32 +5589,29 @@ function updateMCSource(core, instructions, pc, labels) {
   }
   mcCurrentSourceLine[core] = currentLine;
 
-  // "rtu0" is this panel's fixed DOM slot; the core actually loaded into it
-  // (RTU0 or PRU1) is whatever mcPartner currently points at.
-  const realCore = core === "pru0" ? "pru0" : mcPartner;
-  renderBpBar(`mc-${core}-`, realCore, mcBreakpoints[core]);
+  renderBpBar(`mc-${core}-`, actualCore, mcBreakpoints[core]);
 }
 
-// Breakpoint toggle via dblclick on MC source panels
-document.getElementById("mc-pru0-source-panel").addEventListener("dblclick", (e) => {
-  const li = e.target.closest("li[id^='mc-pru0-src-line-']");
-  if (!li) return;
-  const addr = parseInt(li.id.replace("mc-pru0-src-line-", ""), 10);
-  if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: "pru0", addr });
-});
-
-document.getElementById("mc-rtu0-source-panel").addEventListener("dblclick", (e) => {
-  const li = e.target.closest("li[id^='mc-rtu0-src-line-']");
-  if (!li) return;
-  const addr = parseInt(li.id.replace("mc-rtu0-src-line-", ""), 10);
-  if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: mcPartner, addr });
+// Breakpoint toggle via dblclick on any selected MC source panel.
+MC_SLOT_KEYS.forEach((slotKey, slotIndex) => {
+  const panel = document.getElementById(`mc-${slotKey}-source-panel`);
+  panel?.addEventListener("dblclick", (e) => {
+    const li = e.target.closest(`li[id^='mc-${slotKey}-src-line-']`);
+    if (!li) return;
+    const addr = parseInt(li.id.replace(`mc-${slotKey}-src-line-`, ""), 10);
+    const actualCore = mcCores[slotIndex];
+    if (actualCore && !isNaN(addr)) {
+      sendAction({ action: "toggle_breakpoint", core: actualCore, addr });
+    }
+  });
 });
 
 // ---- Init -----------------------------------------------------------------
 
 wireBpBar("", () => currentCore);
-wireBpBar("mc-pru0-", () => "pru0");
-wireBpBar("mc-rtu0-", () => mcPartner);
+MC_SLOT_KEYS.forEach((slotKey, slotIndex) => {
+  wireBpBar(`mc-${slotKey}-`, () => mcCores[slotIndex]);
+});
 
 initUI();
 connect();
@@ -5370,16 +5634,14 @@ document.addEventListener("keydown", (e) => {
   if (e.key === " ") {
     e.preventDefault();
     if (multiCoreMode) {
-      const pru0Line = document.querySelector("#mc-pru0-source-list li.current-pc");
-      if (pru0Line) {
-        const addr = parseInt(pru0Line.id.replace("mc-pru0-src-line-", ""), 10);
-        if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: "pru0", addr });
-      }
-      const partnerLine = document.querySelector("#mc-rtu0-source-list li.current-pc");
-      if (partnerLine) {
-        const addr = parseInt(partnerLine.id.replace("mc-rtu0-src-line-", ""), 10);
-        if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: mcPartner, addr });
-      }
+      MC_SLOT_KEYS.forEach((slotKey, slotIndex) => {
+        const actualCore = mcCores[slotIndex];
+        if (!actualCore) return;
+        const line = document.querySelector(`#mc-${slotKey}-source-list li.current-pc`);
+        if (!line) return;
+        const addr = parseInt(line.id.replace(`mc-${slotKey}-src-line-`, ""), 10);
+        if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: actualCore, addr });
+      });
     } else {
       const pcLine = sourceList.querySelector("li.current-pc");
       if (!pcLine) return;
@@ -5392,8 +5654,7 @@ document.addEventListener("keydown", (e) => {
     if (genericSsiLoaded) {
       btnStep.click();
     } else if (multiCoreMode) {
-      sendAction({ action: "step", core: "pru0", count: 1 });
-      sendAction({ action: "step", core: mcPartner, count: 1 });
+      sendMCRun(1);
     } else {
       sendAction({ action: "step", core: currentCore, count: 1 });
     }
@@ -5402,8 +5663,9 @@ document.addEventListener("keydown", (e) => {
     stopRun(); stopSim();
     graphClear();
     if (multiCoreMode) {
-      sendAction({ action: "step_back", core: "pru0" });
-      sendAction({ action: "step_back", core: mcPartner });
+      for (const core of mcSelectedCores()) {
+        sendAction({ action: "step_back", core });
+      }
     } else {
       sendAction({ action: "step_back", core: currentCore });
     }
@@ -5920,6 +6182,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
   }
 
   loadBtn.addEventListener("click", () => {
+    simpleSsiLoaded = false;
     genericSsiLoaded = false;
     stopRun();
     stopSim();
@@ -6047,33 +6310,16 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
   const loadBtn = document.getElementById("ssi-simple-load");
   if (!loadBtn) return;
 
-  const runBtn = document.getElementById("ssi-simple-run");
   const resetBtn = document.getElementById("ssi-simple-reset");
   const refreshBtn = document.getElementById("ssi-simple-refresh");
-  const iterationsInput = document.getElementById("ssi-simple-iterations");
   const statusEl = document.getElementById("ssi-simple-status");
   const profileEl = document.getElementById("ssi-simple-profile");
   const resultsEl = document.getElementById("ssi-simple-results");
-  let pollTimer = null;
 
   function setStatus(text, color) {
     if (!statusEl) return;
     statusEl.textContent = text;
     statusEl.style.color = color || "";
-  }
-
-  function stopPolling() {
-    if (pollTimer !== null) {
-      clearInterval(pollTimer);
-      pollTimer = null;
-    }
-  }
-
-  function startPolling() {
-    stopPolling();
-    pollTimer = setInterval(() => {
-      sendAction({ action: "ssi_simple_read" });
-    }, 500);
   }
 
   function renderJson(element, value, emptyText) {
@@ -6083,55 +6329,45 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
       : JSON.stringify(value, null, 2);
   }
 
-  function updateControls(running, loaded) {
-    if (loadBtn) loadBtn.disabled = running;
-    if (runBtn) runBtn.disabled = running || !loaded;
-    if (resetBtn) resetBtn.disabled = running;
+  function updateControls(loaded) {
+    if (loadBtn) loadBtn.disabled = false;
+    if (resetBtn) resetBtn.disabled = !loaded;
     if (refreshBtn) refreshBtn.disabled = false;
-    if (iterationsInput) iterationsInput.disabled = running;
   }
 
   window.renderSsiSimpleState = function (msg) {
+    simpleSsiLoaded = Boolean(msg.loaded);
     renderJson(profileEl, msg.profile, "Generated profile is unavailable.");
-    renderJson(resultsEl, msg.result, "No run yet.");
-    updateControls(Boolean(msg.running), Boolean(msg.loaded));
+    renderJson(resultsEl, msg.result, "No simulator progress yet.");
+    updateControls(Boolean(msg.loaded));
 
-    if (msg.running) {
-      setStatus("Running actual PRU0 + PRU1 + RTU_PRU1 firmware...", "var(--accent)");
-      startPolling();
+    if (msg.error) {
+      setStatus("✗ " + msg.error, "#f38ba8");
     } else {
-      stopPolling();
-      if (msg.error) {
-        setStatus("✗ " + msg.error, "#f38ba8");
-      } else if (msg.result) {
-        const passed = msg.result.pass === true;
-        setStatus(passed ? "✓ PASS · actual three-core firmware run complete" : "✗ FAIL · inspect run result", passed ? "#6a9955" : "#f38ba8");
-      } else {
-        setStatus(msg.loaded ? "Ready · generated build profile loaded" : (msg.status || "Not loaded"), msg.loaded ? "#6a9955" : "var(--text-dim)");
-      }
+      setStatus(msg.status || "Not loaded", msg.loaded ? "#6a9955" : "var(--text-dim)");
     }
   };
 
+  window.renderSsiSimpleProgress = function (msg) {
+    renderJson(resultsEl, msg.result, "No simulator progress yet.");
+  };
+
   window.renderSsiSimpleError = function (msg) {
+    simpleSsiLoaded = false;
     setStatus("✗ " + (msg.error || "SSI realtime error"), "#f38ba8");
   };
 
   loadBtn.addEventListener("click", () => {
-    setStatus("Validating generated profile and three firmware sources...", "var(--accent)");
+    simpleSsiLoaded = false;
+    genericSsiLoaded = false;
+    graphClear();
+    setStatus("Loading PRU0, PRU1, and RTU_PRU1 into the simulator...", "var(--accent)");
     sendAction({ action: "ssi_simple_load" });
   });
 
-  runBtn.addEventListener("click", () => {
-    const requested = Math.trunc(Number(iterationsInput?.value) || 100000);
-    const iterations = Math.max(1, Math.min(100000, requested));
-    if (iterationsInput) iterationsInput.value = String(iterations);
-    if (sendAction({ action: "ssi_simple_run", iterations })) {
-      setStatus("Starting actual three-core firmware run...", "var(--accent)");
-      startPolling();
-    }
-  });
-
   resetBtn.addEventListener("click", () => {
+    graphClear();
+    setStatus("Reloading the three SSI firmware images...", "var(--accent)");
     sendAction({ action: "ssi_simple_reset" });
   });
 
