@@ -416,6 +416,28 @@ class Simulator:
         """Reset *core* to its initial state (registers, counters, PC, halted flag)."""
         self._get_core(core).reset()
 
+    def set_strict_unsupported_xfr(self, enabled: bool) -> None:
+        """Choose what happens when firmware drives an unmodelled XFR device ID.
+
+        The default (``False``) keeps the hardware-faithful result -- XIN reads
+        zeros, XOUT is ignored -- and records the event.  ``True`` makes such a
+        transfer raise :class:`~core.pru_core.UnsupportedXFRError` instead, for
+        callers that would rather a run fail than continue on zero data.
+        """
+        for core in self.cores.values():
+            core.strict_unsupported_xfr = enabled
+
+    def unsupported_xfr_report(self) -> list[dict]:
+        """Return one record per unmodelled XFR device ID seen since reset.
+
+        Each record carries the device ID, the core and PC that first used it,
+        the opcodes involved and how many transfers were made, so a caller can
+        tell a run that exercised a real model from one that read zeros.
+        """
+        return [record
+                for core in self.cores.values()
+                for record in core.unsupported_xfr.values()]
+
     def hard_reset(self) -> None:
         """Full hardware reset: reset all cores, clear all SPAD banks, and reset XFR config.
 
