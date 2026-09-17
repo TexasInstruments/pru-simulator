@@ -80,12 +80,30 @@ class PerifChannel:
         self.rx_fifo: list[int] = []
         self.rx_valid = False
         self.rx_ovf = False
+        self.tx_out_en_transitions: list[tuple[float, int]] = []
         self.rx_eof = False
         self._rx_shift = 0
         self._rx_started = False
         self._rx_sample_cnt = 0
         self._rx_byte_cnt = 0
         self._rx_next_edge_ns: float | None = None
+
+        # RX optional auto shut-off on EOF. The TRM names this in the
+        # 6.4.5.2.2.3.6 feature list and specifies it nowhere else: no bit in
+        # CHnCFG0/CHnCFG1 selects it, so firmware on this device has no way to
+        # turn it on and the simulator has nothing to decode.
+        #
+        # This flag is therefore a HOST-SIDE OVERRIDE, not a modelled register.
+        # It is unreachable from any ELF - nothing in PerifRegisters or the
+        # R30/R31 decode path writes it - and it defaults to False so stock
+        # behaviour is unchanged. It exists so a harness can exercise the
+        # shut-off path; do not read it as the feature being implemented.
+        self.rx_auto_shutoff = False
+
+        # RX auto-arm via RX_EN_COUNTER (TRM 6.4.5.2.2.3.6.3.2.2):
+        # CHnCFG1[31:16] programs the delay from the last TX bit to RX_EN
+        # being set. None means no pending auto-arm.
+        self._rx_auto_arm_deadline_ns: float | None = None
 
         # RX input source: callable(t_ns) -> bit (0/1). Default: idle low.
         self.rx_line_source = None
@@ -99,13 +117,26 @@ class PerifChannel:
     def _src_mhz(self, clk_sel: int) -> float:
         return self.core_clock_mhz if clk_sel == 1 else self.uart_clock_mhz
 
+    # The dividers are "div16fr" - a fractional divider whose FRAC bit adds a
+    # HALF step, not a doubling. TRM Table 6-82 lists an effective divider of
+    # 1.5, which a (frac+1) multiplier cannot express. Modelling FRAC as a x2
+    # breaks the invariant the TRM states normatively: "The OS clock rate
+    # divided by the 1x clock rate must equal PRU0_ED_RX_SAMPLE_SIZE". TI's
+    # own driver relies on the half step - bissc_drv.c computes
+    # rx_div = source/(baud*8) - 1, which is 11.5 for the 2 MHz case.
+    @staticmethod
+    def _divider(div_factor: int, frac: int) -> float:
+        return (div_factor + 1) + (0.5 if frac else 0.0)
+
     def tx_clock_period_ns(self) -> float:
-        n = (self.regs.get_tx_div_factor_frac() + 1) * (self.regs.get_tx_div_factor() + 1)
+        n = self._divider(self.regs.get_tx_div_factor(),
+                          self.regs.get_tx_div_factor_frac())
         f = self._src_mhz(self.regs.get_tx_clk_sel()) / n
         return 1000.0 / f
 
     def rx_clock_period_ns(self) -> float:
-        n = (self.regs.get_rx_div_factor_frac() + 1) * (self.regs.get_rx_div_factor() + 1)
+        n = self._divider(self.regs.get_rx_div_factor(),
+                          self.regs.get_rx_div_factor_frac())
         f = self._src_mhz(self.regs.get_rx_clk_sel()) / n
         return 1000.0 / f
 
@@ -191,6 +222,7 @@ class PerifChannel:
         else:
             self._enter_transmit(now_ns)
         self.tx_out_en = 1
+        self._record_out_en(now_ns)
 
     def _enter_transmit(self, now_ns: float) -> None:
         self.fsm = TRANSMIT
@@ -226,6 +258,39 @@ class PerifChannel:
                 break
         return val
 
+    def _record_out_en(self, t_ns: float) -> None:
+        """Log a change of the transmit output-enable, with its timestamp.
+
+        Half-duplex protocols are specified on how fast the driver STOPS
+        driving, not only on the data it drove. Encoder protocols specify a release
+        window between one end finishing and the other starting; without a timestamped record of tx_out_en there is nothing to
+        measure that against.
+
+        `tx_out_en` is the peripheral's own drive state, asserted when the
+        transmitter enters TRANSMIT and cleared on the last TX bit. It is NOT an
+        external transceiver's direction-enable pin - that is a board-level
+        signal with its own propagation delay, and nothing here models it.
+        """
+        if self.tx_out_en_transitions and \
+                self.tx_out_en_transitions[-1][1] == self.tx_out_en:
+            return
+        self.tx_out_en_transitions.append((t_ns, self.tx_out_en))
+
+    def tx_release_ns(self) -> float | None:
+        """Time from the last transmitted data bit to the line being released.
+
+        Returns None if the transmitter never drove, or has not released yet.
+        """
+        falling = [t for t, v in self.tx_out_en_transitions if v == 0]
+        if not falling or not self.tx_transitions:
+            return None
+        release = falling[-1]
+        last_data = max((t for t, _ in self.tx_transitions if t <= release),
+                        default=None)
+        if last_data is None:
+            return None
+        return release - last_data
+
     def _finish_frame(self) -> None:
         """TX data done. Whether the CLOCK stops here depends on clk_mode.
 
@@ -235,6 +300,7 @@ class PerifChannel:
         """
         self.busy = False
         self.tx_out_en = 0
+        self._record_out_en(self._phase_end_ns)
         if self.regs.get_tx_frame_size(self.index) == 0:
             self._cont_byte = None
             self._cont_bit_idx = 0
@@ -256,6 +322,19 @@ class PerifChannel:
             self.tx_clk_pin = 1          # stop high on last TX bit
         else:
             self.fsm = CLKRUN            # keep PERIF<m>_CLK free-running
+
+        # TRM 6.4.5.2.2.3.6.3.2.2 RX auto-arm via RX_EN_COUNTER
+        # CHnCFG1[31:16] programs delay from last TX bit to RX_EN set.
+        # Zero means disabled; non-zero schedules arming at that delay,
+        # not immediately.
+        try:
+            delay_cnt = self.regs.get_rx_en_count_delay(self.index)
+        except Exception:
+            delay_cnt = 0
+        if delay_cnt:
+            delay_ns = self._delay_ns(delay_cnt)
+            if not self.rx_en:
+                self._rx_auto_arm_deadline_ns = self._phase_end_ns + delay_ns
 
     def _stop_clock_on_rx_frame(self) -> None:
         """Modes 0/1 stop condition: the RX frame counter completed."""
@@ -293,6 +372,7 @@ class PerifChannel:
         self._phase_end_ns = 0.0
         self._go_ns = 0.0
         self.tx_transitions = [(0.0, 0)]
+        self.tx_out_en_transitions = []
 
         self.rx_en = False
         self.rx_fifo = []
@@ -304,6 +384,8 @@ class PerifChannel:
         self._rx_sample_cnt = 0
         self._rx_byte_cnt = 0
         self._rx_next_edge_ns = None
+        self.rx_auto_shutoff = False
+        self._rx_auto_arm_deadline_ns = None
 
         self._last_ns = 0.0
 
@@ -377,8 +459,22 @@ class PerifChannel:
             self._rx_byte_cnt = 0
             self.rx_eof = False
             self._rx_next_edge_ns = None
+            self._rx_auto_arm_deadline_ns = None
         elif not enabled:
+            # TRM SPRUIM2J 6.4.5.2.2.3.6.4.4 step 7 / Table 6-80:
+            # disabling RX (rx_en=0) resets all counters and flags.
+            self._rx_started = False
+            self._rx_shift = 0
+            self._rx_sample_cnt = 0
+            self._rx_byte_cnt = 0
             self.rx_eof = False
+            self._rx_next_edge_ns = None
+            # Stale FIFO data and latched overflow were previously readable
+            # at the start of the next frame because neither branch cleared them.
+            self.rx_fifo = []
+            self.rx_valid = False
+            self.rx_ovf = False
+            self._rx_auto_arm_deadline_ns = None
 
     def clr_val(self) -> None:
         """Pop one byte from the RX FIFO (R31 bit24/25/26)."""
@@ -419,18 +515,49 @@ class PerifChannel:
         else:
             self.rx_ovf = True
         self.rx_valid = len(self.rx_fifo) > 0
-        # Frame-size EOF (bytes). 0 => immediate EOF handled by caller.
         frame_size = self.regs.get_rx_frame_size(self.index)
-        self._rx_byte_cnt += 1
-        if frame_size != 0 and self._rx_byte_cnt >= frame_size:
-            self.rx_eof = True
+        if frame_size == 0:
+            # TRM 6.4.5.2.2.3.6: firmware that arms RX before programming
+            # RX_FRAME_SIZE (normal when length is discovered, e.g. BiSS-C)
+            # would otherwise carry an arbitrary count into the first real
+            # frame and get EOF at the wrong byte. Keep counter at zero while
+            # no frame size is programmed; do not reset unconditionally on
+            # every byte when a size is programmed.
             self._rx_byte_cnt = 0
-            # TRM stop condition for clk_mode 0/1: "the clock will remain
-            # free-running until the receive module has received the number of
-            # bits indicated in rx_frame_counter". Mode 2 free-runs until a
-            # reinit; mode 3 already stopped on the last TX bit.
-            if self.fsm == CLKRUN and self.clk_mode in (0, 1):
-                self._stop_clock_on_rx_frame()
+        else:
+            self._rx_byte_cnt += 1
+            if self._rx_byte_cnt >= frame_size:
+                self.rx_eof = True
+                self._rx_byte_cnt = 0
+                # TRM stop condition for clk_mode 0/1: "the clock will remain
+                # free-running until the receive module has received the number of
+                # bits indicated in rx_frame_counter". Mode 2 free-runs until a
+                # reinit; mode 3 already stopped on the last TX bit.
+                if self.fsm == CLKRUN and self.clk_mode in (0, 1):
+                    self._stop_clock_on_rx_frame()
+                # Optional RX frame size auto shut-off. Host-side override only
+                # - see rx_auto_shutoff in __init__; no firmware can reach this.
+                if self.rx_auto_shutoff:
+                    # Fully disarm. Not half-disarmed: clearing rx_en alone and
+                    # leaving _rx_started True is the same class of bug as the
+                    # disable path this commit fixes.
+                    #
+                    # INVENTED, NOT FROM THE TRM: FIFO/valid/ovf/EOF are
+                    # preserved so the completed frame stays readable. That is
+                    # the opposite of what Table 6-80 says happens when rx_en
+                    # goes to 0 ("all counters/flags will get reset"), which is
+                    # the same text arm_rx() is fixed to obey. The TRM does not
+                    # say which rule wins for an auto shut-off, because it does
+                    # not describe auto shut-off at all. Preserving is the only
+                    # choice that leaves the frame you just received readable,
+                    # so it is what a harness wants - but it is a convenience,
+                    # it has no TRM basis, and it must not be cited as one.
+                    self.rx_en = False
+                    self._rx_started = False
+                    self._rx_shift = 0
+                    self._rx_sample_cnt = 0
+                    self._rx_next_edge_ns = None
+                    self._rx_auto_arm_deadline_ns = None
 
     # ==================================================================
     # ns-timeline advance (used by the loopback / core step)
@@ -476,6 +603,15 @@ class PerifChannel:
             while self.fsm == CLKRUN and now_ns >= self._phase_end_ns + period:
                 self._phase_end_ns += period
                 self.tx_clk_pin ^= 1
+
+        # --- RX auto-arm: check deadline before sampling ---
+        # TRM 6.4.5.2.2.3.6.3.2.2: hardware auto-enables RX after the
+        # programmed RX_EN_COUNTER delay from the last TX bit. The delay
+        # field is the point; auto-arm must not fire immediately at end
+        # of TX (trap) and zero means disabled.
+        if self._rx_auto_arm_deadline_ns is not None and now_ns >= self._rx_auto_arm_deadline_ns:
+            # arm_rx(True) gives the enable-edge reset semantics and clears deadline
+            self.arm_rx(True)
 
         # --- RX: sample the input line at the RX oversample-clock rate ---
         if self.rx_en:
@@ -525,7 +661,10 @@ class PerifChannel:
             "rx_valid": self.rx_valid, "rx_ovf": self.rx_ovf, "rx_eof": self.rx_eof,
             "rx_shift": self._rx_shift, "rx_started": self._rx_started,
             "rx_sample_cnt": self._rx_sample_cnt, "rx_byte_cnt": self._rx_byte_cnt,
-            "rx_next_edge_ns": self._rx_next_edge_ns, "last_ns": self._last_ns,
+            "rx_next_edge_ns": self._rx_next_edge_ns,
+            "rx_auto_shutoff": self.rx_auto_shutoff,
+            "rx_auto_arm_deadline_ns": self._rx_auto_arm_deadline_ns,
+            "last_ns": self._last_ns,
         }
 
     def restore(self, s: dict) -> None:
@@ -541,7 +680,10 @@ class PerifChannel:
         self.rx_valid = s["rx_valid"]; self.rx_ovf = s["rx_ovf"]; self.rx_eof = s["rx_eof"]
         self._rx_shift = s["rx_shift"]; self._rx_started = s["rx_started"]
         self._rx_sample_cnt = s["rx_sample_cnt"]; self._rx_byte_cnt = s["rx_byte_cnt"]
-        self._rx_next_edge_ns = s["rx_next_edge_ns"]; self._last_ns = s["last_ns"]
+        self._rx_next_edge_ns = s["rx_next_edge_ns"]
+        self.rx_auto_shutoff = s.get("rx_auto_shutoff", False)
+        self._rx_auto_arm_deadline_ns = s.get("rx_auto_arm_deadline_ns")
+        self._last_ns = s["last_ns"]
 
     def get_state(self) -> dict:
         st = {
@@ -556,6 +698,8 @@ class PerifChannel:
             "rx_valid": self.rx_valid,
             "rx_ovf": self.rx_ovf,
             "rx_eof": self.rx_eof,
+            "rx_auto_shutoff": self.rx_auto_shutoff,
+            "rx_auto_arm_deadline_ns": self._rx_auto_arm_deadline_ns,
             "clk_mode": self.clk_mode,
             "tx_clk_pin": self.tx_clk_pin,
             "tx_data_pin": self.tx_data_pin,

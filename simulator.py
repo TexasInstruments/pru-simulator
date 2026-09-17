@@ -11,6 +11,7 @@ import re
 from core.pru_core import PRUCore
 from mem.memory_bus import MemoryBus
 from mem.regions import MemoryRegion
+from perif.iep import IepTimer, IEP_SIZE
 from mem.constant_table import ConstantTable
 from xfr.xfr_bus import XFRBus
 from pru_io.io_port import IOPort
@@ -76,6 +77,22 @@ class GpcfgRegion(MemoryRegion):
     def write(self, addr: int, data: bytes) -> None:
         self._check_bounds(addr, length=len(data))
         self._gpcfg.write(addr, data)
+
+
+class IepRegisterRegion(MemoryRegion):
+    """Memory region backed by the IEP0 timer (counter + compare registers)."""
+
+    def __init__(self, iep: IepTimer, base_addr: int = 0x0002E000):
+        super().__init__("ICSS_IEP", base_addr, IEP_SIZE, 2, 1, 0)
+        self._iep = iep
+
+    def read(self, addr: int, length: int) -> bytes:
+        self._check_bounds(addr, length)
+        return self._iep.read(addr - self.base_addr, length)
+
+    def write(self, addr: int, data: bytes) -> None:
+        self._check_bounds(addr, length=len(data))
+        self._iep.write(addr - self.base_addr, data)
 
 
 class Simulator:
@@ -146,6 +163,12 @@ class Simulator:
                 self._perif[name].enabled = (mux_sel == MUX_PERIF)
         self._gpcfg.on_mux_change = _on_mux_change
         self.memory.add_region(GpcfgRegion(self._gpcfg))
+
+        # IEP0 timer. Shared by all cores on the ICSSG, like the real peripheral.
+        self.iep = IepTimer()
+        self.memory.add_region(IepRegisterRegion(self.iep))
+        for core in self.cores.values():
+            core.iep = self.iep
 
         # Loopback: PRU0 TX channel-N -> PRU1 RX channel-N.
         self._loopback = Loopback(self._perif["pru0"], self._perif["pru1"])
@@ -392,6 +415,28 @@ class Simulator:
     def reset(self, core: str) -> None:
         """Reset *core* to its initial state (registers, counters, PC, halted flag)."""
         self._get_core(core).reset()
+
+    def set_strict_unsupported_xfr(self, enabled: bool) -> None:
+        """Choose what happens when firmware drives an unmodelled XFR device ID.
+
+        The default (``False``) keeps the hardware-faithful result -- XIN reads
+        zeros, XOUT is ignored -- and records the event.  ``True`` makes such a
+        transfer raise :class:`~core.pru_core.UnsupportedXFRError` instead, for
+        callers that would rather a run fail than continue on zero data.
+        """
+        for core in self.cores.values():
+            core.strict_unsupported_xfr = enabled
+
+    def unsupported_xfr_report(self) -> list[dict]:
+        """Return one record per unmodelled XFR device ID seen since reset.
+
+        Each record carries the device ID, the core and PC that first used it,
+        the opcodes involved and how many transfers were made, so a caller can
+        tell a run that exercised a real model from one that read zeros.
+        """
+        return [record
+                for core in self.cores.values()
+                for record in core.unsupported_xfr.values()]
 
     def hard_reset(self) -> None:
         """Full hardware reset: reset all cores, clear all SPAD banks, and reset XFR config.

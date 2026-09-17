@@ -29,6 +29,62 @@ from xfr.xfr_bus import XFRBus, IPC_SPAD, SPAD_BANK0, SPAD_BANK1, SPAD_BANK2
 from pru_io.io_port import IOPort
 from xfr.accelerator import Accelerator
 from xfr.mac_accelerator import MACAccelerator
+from xfr.bswap_accelerator import (
+    BSWAP_4_8,
+    BSWAP_4_16,
+    BSWAP_BYTE_ORDER,
+    BSwapAccelerator,
+)
+
+
+# A memory fault whose base register is an uninitialised R2 is almost always
+# one thing, and the raw "no memory region mapped" message names none of it.
+#
+# R2 is the PRU ABI stack pointer and the stack grows DOWN, so an image whose
+# R2 is still zero stores its first register spill just below zero - which
+# wraps to the top of the address space and faults there. Images linked with
+# `-e main` never run `_c_int00`, which is what sets R2 up on hardware, and
+# that linker pattern is the one nearly every headless PRU example uses.
+#
+# The behaviour is correct and is deliberately unchanged. Only the diagnosis
+# is added, because without it the fault reads as a wild pointer bug in the
+# firmware rather than as a missing C runtime.
+_UNINIT_SP_HINT = (
+    "the base register is R2, the PRU ABI stack pointer, and it is either zero "
+    "or has wrapped below zero - the signature of a stack that was never set "
+    "up. R2 is initialised by the C runtime entry `_c_int00`, so this happens "
+    "whenever execution starts somewhere else. Loaders that begin at address 0 "
+    "(PRUICSS_loadFirmware, and this simulator) will do that unless the entry "
+    "is placed there: `.text:_c_int00* > 0x0, PAGE 0` in the linker command "
+    "file puts the runtime at 0 so it runs first. Overriding the entry point "
+    "with `-e main` has the same effect and is the usual cause."
+)
+
+# A stack that grows down from an uninitialised R2 of 0 lands just below zero,
+# which wraps to the very top of the 32-bit space. That is what the fault
+# address looks like in practice: a frame setup emits `SUB r2, r2, <frame>`
+# before the spill, so by the time the store executes R2 is 0xFFFFFFxx rather
+# than 0 - checking only for zero would miss every real occurrence.
+_SP_WRAP_FLOOR = 0xFFFF0000
+
+
+def _stack_pointer_hint(core, base_op, addr) -> str:
+    """Return a trailing hint if this fault is the uninitialised-R2 trap."""
+    if not isinstance(base_op, Register) or base_op.index != 2:
+        return ""
+    sp = core.registers.regs[2]
+    if sp != 0 and not (sp >= _SP_WRAP_FLOOR or addr >= _SP_WRAP_FLOOR):
+        return ""
+    return "  HINT: " + _UNINIT_SP_HINT
+
+
+class UnsupportedXFRError(RuntimeError):
+    """A broadside transfer named an XFR device ID this simulator does not model.
+
+    Raised only when :attr:`PRUCore.strict_unsupported_xfr` is set.  It is a
+    diagnostic for callers that would rather a run fail than quietly read
+    zeros; the hardware itself does not trap on an unconnected device ID.
+    """
 
 
 class PRUCore:
@@ -40,6 +96,7 @@ class PRUCore:
         self.name = name
         self.registers = RegisterFile()
         self.counters = CycleCounters()
+        self.iep = None          # set by Simulator when an IEP is present
         self.memory = memory
         self.xfr = xfr
         self.io_port = io_port
@@ -52,11 +109,19 @@ class PRUCore:
         self.instructions: list[Instruction] = []
         self.loop_state: LoopState | None = None
         self.breakpoints: set[int] = set()
+        # Unsupported-XFR diagnostics. Reads from an unconnected broadside
+        # device ID return zeros on hardware and writes to one are ignored, so
+        # that stays the default here; these only make the event visible.
+        self.strict_unsupported_xfr: bool = False
+        self.unsupported_xfr: dict[int, dict] = {}
 
         self._parser = Parser()
         self._branch = BranchUnit()
         self.accelerators: dict[int, Accelerator] = {
             MACAccelerator.DEVICE_ID: MACAccelerator(self.registers),
+            BSWAP_BYTE_ORDER: BSwapAccelerator(self.registers, BSWAP_BYTE_ORDER),
+            BSWAP_4_8: BSwapAccelerator(self.registers, BSWAP_4_8),
+            BSWAP_4_16: BSwapAccelerator(self.registers, BSWAP_4_16),
         }
 
     # ------------------------------------------------------------------
@@ -105,6 +170,7 @@ class PRUCore:
         for acc in self.accelerators.values():
             acc.reset()
         self.io_port.reset()
+        self.unsupported_xfr.clear()
 
     def step(self) -> None:
         """Execute one instruction."""
@@ -331,7 +397,8 @@ class PRUCore:
                 self._write_registers_from_bytes(start_reg, data, start_byte)
                 self.counters.stall(stalls)
             except ValueError as e:
-                logger.error(f"LBBO fault at 0x{addr:08X}: {e}")
+                logger.error(f"LBBO fault at 0x{addr:08X}: {e}"
+                             f"{_stack_pointer_hint(self, base_op, addr)}")
                 self.halted = True
 
         elif op == "LBCO":
@@ -382,7 +449,8 @@ class PRUCore:
                 stalls = self.memory.write(addr, data)
                 self.counters.stall(stalls)
             except ValueError as e:
-                logger.error(f"SBBO fault at 0x{addr:08X}: {e}")
+                logger.error(f"SBBO fault at 0x{addr:08X}: {e}"
+                             f"{_stack_pointer_hint(self, base_op, addr)}")
                 self.halted = True
 
         # ---- XFR ---------------------------------------------------------
@@ -394,11 +462,13 @@ class PRUCore:
             start_reg = reg_op.index if isinstance(reg_op, Register) else 0
             start_byte = (reg_op.offset // 8) if isinstance(reg_op, Register) else 0
             if device_id in self.accelerators:
-                data = self.accelerators[device_id].xin(start_reg, length)
+                data = self.accelerators[device_id].xin(start_reg, length, start_byte)
                 self._write_registers_from_bytes(start_reg, data, start_byte)
             elif self.xfr.xfr_shift_en and device_id in (SPAD_BANK0, SPAD_BANK1, SPAD_BANK2):
                 self._xin_shifted(device_id, start_reg, length)
             else:
+                if not self.xfr.supports(device_id):
+                    self._note_unsupported_xfr("XIN", device_id, start_reg, start_byte, length)
                 xfr_offset = (start_reg - 2) * 4 + start_byte if device_id == IPC_SPAD else start_reg * 4 + start_byte
                 data = self.xfr.xin(device_id, xfr_offset, length)
                 self._write_registers_from_bytes(start_reg, data, start_byte)
@@ -412,10 +482,12 @@ class PRUCore:
             start_byte = (reg_op.offset // 8) if isinstance(reg_op, Register) else 0
             if device_id in self.accelerators:
                 data = self._read_registers_to_bytes(start_reg, length, start_byte)
-                self.accelerators[device_id].xout(start_reg, data)
+                self.accelerators[device_id].xout(start_reg, data, start_byte)
             elif self.xfr.xfr_shift_en and device_id in (SPAD_BANK0, SPAD_BANK1, SPAD_BANK2):
                 self._xout_shifted(device_id, start_reg, length)
             else:
+                if not self.xfr.supports(device_id):
+                    self._note_unsupported_xfr("XOUT", device_id, start_reg, start_byte, length)
                 xfr_offset = (start_reg - 2) * 4 + start_byte if device_id == IPC_SPAD else start_reg * 4 + start_byte
                 data = self._read_registers_to_bytes(start_reg, length, start_byte)
                 self.xfr.xout(device_id, xfr_offset, data)
@@ -429,11 +501,13 @@ class PRUCore:
             start_byte = (reg_op.offset // 8) if isinstance(reg_op, Register) else 0
             if device_id in self.accelerators:
                 data = self._read_registers_to_bytes(start_reg, length, start_byte)
-                old_data = self.accelerators[device_id].xchg(start_reg, data)
+                old_data = self.accelerators[device_id].xchg(start_reg, data, start_byte)
                 self._write_registers_from_bytes(start_reg, old_data, start_byte)
             elif self.xfr.xfr_shift_en and device_id in (SPAD_BANK0, SPAD_BANK1, SPAD_BANK2):
                 self._xchg_shifted(device_id, start_reg, length)
             else:
+                if not self.xfr.supports(device_id):
+                    self._note_unsupported_xfr("XCHG", device_id, start_reg, start_byte, length)
                 xfr_offset = (start_reg - 2) * 4 + start_byte if device_id == IPC_SPAD else start_reg * 4 + start_byte
                 data = self._read_registers_to_bytes(start_reg, length, start_byte)
                 old_data = self.xfr.xchg(device_id, xfr_offset, data)
@@ -515,6 +589,13 @@ class PRUCore:
         if self.io_port.perif is not None:
             self.io_port.perif.advance_cycles(self.counters.cycles)
 
+        # ---- Advance the IEP timer (if attached) ------------------------
+        # One ICSSG_IEP_CLK edge per core cycle. Firmware that polls
+        # IEP_COUNT_REG0 in a loop depends on this advancing; without it the
+        # poll never terminates.
+        if self.iep is not None:
+            self.iep.tick()
+
         # ---- Count instruction cycle ------------------------------------
         self.counters.tick()
 
@@ -527,6 +608,61 @@ class PRUCore:
             self.step()
             steps += 1
         return steps
+
+    # ------------------------------------------------------------------
+    # Unsupported-XFR diagnostics
+    # ------------------------------------------------------------------
+
+    def _note_unsupported_xfr(self, opcode: str, device_id: int, start_reg: int,
+                              start_byte: int, length: int) -> None:
+        """Record a broadside transfer to a device ID this simulator does not model.
+
+        The data path is deliberately left alone.  An XIN from an unconnected
+        XFR device ID reads back zeros on hardware and an XOUT to one is
+        ignored, so returning zeros and discarding the write is the faithful
+        behaviour rather than a gap to be closed.  What is missing is
+        *visibility*: a run that drives an unmodelled widget is
+        indistinguishable from one that drives a working peripheral.  Each
+        unmodelled device ID is therefore warned about once and recorded in
+        :attr:`unsupported_xfr` for a caller to inspect afterwards.
+
+        Setting :attr:`strict_unsupported_xfr` turns the same condition into an
+        :class:`UnsupportedXFRError`.  That is an opt-in check for callers that
+        need such a run to fail loudly; it does not model anything hardware does.
+        """
+        record = self.unsupported_xfr.get(device_id)
+        first_sighting = record is None
+        if first_sighting:
+            record = {
+                "device_id": device_id,
+                "core": self.name,
+                "opcodes": [],
+                "first_pc": self.pc,
+                "count": 0,
+            }
+            self.unsupported_xfr[device_id] = record
+        record["count"] += 1
+        if opcode not in record["opcodes"]:
+            record["opcodes"].append(opcode)
+
+        detail = (
+            f"{opcode} XFR device ID {device_id} (0x{device_id:02X}) is not modelled by "
+            f"this simulator; {self.name} at PC {self.pc} transfers {length} byte(s) "
+            f"starting at R{start_reg}.b{start_byte}"
+        )
+        if self.strict_unsupported_xfr:
+            raise UnsupportedXFRError(
+                f"{detail}. strict_unsupported_xfr is enabled, so the run fails here "
+                f"instead of continuing on zero data."
+            )
+        if first_sighting:
+            logger.warning(
+                "%s. Reads return zeros and writes are discarded, matching an unconnected "
+                "broadside ID on hardware -- so this run is not evidence that the widget "
+                "works. Later transfers to this device ID are not logged again; see "
+                "PRUCore.unsupported_xfr for the full record.",
+                detail,
+            )
 
     # ------------------------------------------------------------------
     # Operand helpers
