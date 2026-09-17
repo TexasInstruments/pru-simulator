@@ -58,5 +58,5 @@ def test_source_updates_reuse_the_cached_listing_for_delta_states():
 
     assert "let _renderedSourceInstructions = null;" in js
     assert "const sourceChanged = instructions !== _renderedSourceInstructions" in js
-    assert "let mcRenderedSourceInstructions = { pru0: null, rtu0: null, pru1: null };" in js
+    assert "let mcRenderedSourceInstructions = { pru0: null, rtu0: null, rtu1: null };" in js
     assert "const sourceChanged = instructions !== mcRenderedSourceInstructions[core]" in js

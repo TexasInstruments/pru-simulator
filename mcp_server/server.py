@@ -5,6 +5,8 @@ import os
 import base64
 import binascii
 import struct
+import copy
+import random
 
 # Allow imports from parent directory when run directly
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -17,6 +19,7 @@ from pru_io import foc_abi
 from pru_io import ssi_config_abi as abi
 from pru_io.foc_runtime import FocRuntime
 from pru_io.ssi_runtime import SSIRuntime, PROFILES
+from mcp_server.vcd_export import export_pin_waveform
 
 
 class PRUSimulatorMCP:
@@ -190,19 +193,156 @@ class PRUSimulatorMCP:
         result["instruction_text"] = inst_text
         return result
 
-    def pru_run_until(self, core: str = "pru0", condition: str = "halt", max_steps: int = 10000) -> dict:
-        """Run the core until halted or max_steps reached."""
-        c = self.sim.cores[core]
-        for _ in range(max_steps):
-            if c.halted:
-                break
-            c.step()
+    def pru_step_multicore(self, lead: str = "pru0", follow: str = "pru1",
+                           count: int = 1, guard_ns: float = 0.0) -> dict:
+        """Step two cores with peripheral-clock pacing and return both core states.
+
+        ``guard_ns`` is how far the follow core may trail the lead core.  The
+        MCP default is zero so even short validation programs advance both
+        cores; callers modelling a receiver guard may request a positive lag.
+        """
+        if count < 0:
+            raise ValueError("count must be non-negative")
+        if guard_ns < 0:
+            raise ValueError("guard_ns must be non-negative")
+        if lead == follow:
+            raise ValueError("lead and follow must name different cores")
+
+        def state(core: str) -> dict:
+            c = self.sim.cores[core]
+            return {
+                "core": core,
+                "pc": c.pc,
+                "cycles": c.counters.cycles,
+                "halted": c.halted,
+            }
+
+        for _ in range(count):
+            follow_pru = self.sim.cores[follow]
+            follow_cycles = follow_pru.counters.cycles
+            self.sim.step_paced(lead, follow, 1, guard_ns=guard_ns)
+            # Peripheral time does not advance for ordinary ALU-only programs.
+            # A user-facing "step both" tool must still retire one instruction
+            # on the follower instead of returning two plausible-looking states
+            # after advancing only the lead core.
+            if (follow_pru.counters.cycles == follow_cycles
+                    and not follow_pru.halted
+                    and follow_pru.pc < len(follow_pru.instructions)):
+                follow_pru.step()
+
+            lead_perif = self.sim._perif.get(lead)
+            follow_perif = self.sim._perif.get(follow)
+            if lead_perif is not None and follow_perif is not None:
+                target_ns = lead_perif._now_ns - guard_ns
+                if follow_perif._now_ns < target_ns:
+                    return {
+                        "success": False,
+                        "reason": "pacing_catchup_failed",
+                        "target_ns": target_ns,
+                        "follow_ns": follow_perif._now_ns,
+                        "lead": state(lead),
+                        "follow": state(follow),
+                    }
+
         return {
+            "success": True,
+            "reason": "stepped",
+            "lead": state(lead),
+            "follow": state(follow),
+        }
+
+    def pru_run_until(self, core: str = "pru0", condition: str = "halt",
+                      max_steps: int = 10000, max_cycles: int = 0) -> dict:
+        """Run until a condition, step limit, or cycle budget is reached.
+
+        Conditions: ``halt``, ``cycles>N``, ``reg:rN==V``, ``mem:ADDR!=V``
+        (32-bit little-endian), and ``pin:N==V``/``gpi:N==V``/``gpo:N==V``.
+        ``pin`` is an alias for GPI; input and output predicates are never ORed.
+        A positive ``max_cycles`` is an inclusive budget measured from this call.
+        """
+        if max_steps < 0:
+            raise ValueError("max_steps must be non-negative")
+        if max_cycles < 0:
+            raise ValueError("max_cycles must be non-negative")
+        c = self.sim.cores[core]
+        start_cycles = c.counters.cycles
+
+        def condition_met() -> bool:
+            if condition == "halt":
+                return c.halted
+            if condition.startswith("cycles>"):
+                return c.counters.cycles > int(condition[7:], 0)
+            if condition.startswith("reg:"):
+                register, value = condition[4:].split("==", 1)
+                if not register.lower().startswith("r"):
+                    raise ValueError(f"Invalid register condition: {condition}")
+                index = int(register[1:])
+                if not 0 <= index < 32:
+                    raise ValueError(f"Invalid register condition: {condition}")
+                return c.registers.read_full(index) == int(value, 0)
+            if condition.startswith("mem:"):
+                address, value = condition[4:].split("!=", 1)
+                actual = int.from_bytes(self.sim.memory_read(int(address, 0), 4), "little")
+                return actual != int(value, 0)
+            pin_prefix = next((prefix for prefix in ("pin:", "gpi:", "gpo:")
+                               if condition.startswith(prefix)), None)
+            if pin_prefix:
+                pin, value = condition[len(pin_prefix):].split("==", 1)
+                index = int(pin, 0)
+                target = int(value, 0)
+                if not 0 <= index < 20 or target not in (0, 1):
+                    raise ValueError(f"Invalid pin condition: {condition}")
+                io_state = self.sim.io(core)
+                kind = "gpo" if pin_prefix == "gpo:" else "gpi"
+                return io_state[f"{kind}_pins"][index] == target
+            raise ValueError(f"Unsupported run condition: {condition}")
+
+        reason = None
+        for _ in range(max_steps):
+            if condition_met():
+                reason = "halted" if condition == "halt" else "condition_met"
+                break
+            if c.pc in c.breakpoints:
+                reason = "breakpoint"
+                break
+            if max_cycles:
+                # An instruction may add memory stall cycles.  Predict it on a
+                # private copy, and do not mutate the live simulator unless the
+                # complete instruction fits inside the inclusive budget.
+                rng_state = random.getstate()
+                try:
+                    projected = copy.deepcopy(self.sim)
+                    projected_core = projected.cores[core]
+                    projected_core.step()
+                finally:
+                    # Memory read jitter uses the module RNG.  The live step
+                    # must draw the same value as the projection.
+                    random.setstate(rng_state)
+                projected_delta = projected_core.counters.cycles - c.counters.cycles
+                if c.counters.cycles - start_cycles + projected_delta > max_cycles:
+                    return {
+                        "pc": c.pc,
+                        "cycles": c.counters.cycles,
+                        "reason": "budget_exceeded",
+                        "budget_exceeded": True,
+                        "condition_met": False,
+                    }
+            c.step()
+        if reason is None and condition_met():
+            reason = "halted" if condition == "halt" else "condition_met"
+        final_reason = "fault" if c.fault else (reason or "max_steps")
+        result = {
             "pc": c.pc,
             "cycles": c.counters.cycles,
-            "reason": "fault" if c.fault else ("halted" if c.halted else "max_steps"),
-            "fault": c.fault,
+            "reason": final_reason,
+            "budget_exceeded": final_reason == "budget_exceeded",
+            "condition_met": final_reason in ("halted", "condition_met"),
         }
+        # Keep main's stable non-fault response shape while exposing the
+        # feature branch's structured execution fault when one occurred.
+        if c.fault:
+            result["fault"] = c.fault
+        return result
 
     def pru_registers(self, core: str = "pru0") -> dict:
         """Return all 32 general-purpose register values for the specified core."""
@@ -227,6 +367,14 @@ class PRUSimulatorMCP:
         """Set a single GPI pin on the specified core's I/O port."""
         self.sim.set_input(core, pin, value)
         return {"ok": True}
+
+    def pru_vcd_export(self, path: str, core: str = "pru0", max_steps: int = 10000,
+                       pins: str = "0-19", include_gpi: bool = False) -> dict:
+        """Run a loaded core and export selected GPIO pins as deterministic VCD."""
+        return export_pin_waveform(
+            self.sim, core, path, max_steps=max_steps, pins=pins,
+            include_gpi=include_gpi,
+        )
 
     def pru_i2c_attach(self, core: str = "pru0", enabled: bool = True, address: int = 0x23) -> dict:
         """Attach or detach a TCA9538 I2C device model on SCL=bit0/SDA=bit1 of the specified core."""
@@ -675,6 +823,8 @@ def run_stdio_server():
                 annotation = param.annotation
                 if annotation in (int,):
                     ptype = "integer"
+                elif annotation in (float,):
+                    ptype = "number"
                 elif annotation in (bool,):
                     ptype = "boolean"
                 prop = {"type": ptype}

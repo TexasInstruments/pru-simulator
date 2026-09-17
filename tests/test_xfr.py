@@ -121,6 +121,18 @@ class TestXFRBus:
             bus.xout(99, 0, b"\xFF")
         assert any("99" in msg for msg in caplog.messages)
 
+    def test_unknown_device_warns_once_per_device_id(self, caplog):
+        """A poll loop over an unmodelled widget must not warn every iteration."""
+        bus = XFRBus()
+        with caplog.at_level(logging.WARNING, logger="xfr.xfr_bus"):
+            for _ in range(5):
+                bus.xin(99, 0, 4)
+            bus.xout(99, 0, b"\xFF")
+            bus.xin(98, 0, 4)
+        messages = [r.getMessage() for r in caplog.records if r.name == "xfr.xfr_bus"]
+        assert len([m for m in messages if "99" in m]) == 1
+        assert len([m for m in messages if "98" in m]) == 1
+
     def test_unknown_device_xchg_logs_warning(self, caplog):
         bus = XFRBus()
         with caplog.at_level(logging.WARNING, logger="xfr.xfr_bus"):

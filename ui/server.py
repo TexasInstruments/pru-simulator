@@ -2757,10 +2757,67 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False,
     await ws.send_json(state)
 
 
-def start_dashboard(host="127.0.0.1", port=8080):
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 8080
+
+
+def _port_is_free(host, port):
+    """Return True when a listening socket can be bound to host:port.
+
+    uvicorn's own bind failure surfaces as a bare OSError traceback that never
+    names the port, so probe first to report something actionable. The probe
+    must make the same bind decision uvicorn will: asyncio sets SO_REUSEADDR on
+    POSIX, but deliberately does not on Windows (where it would permit
+    hijacking an active listener). Mirroring that avoids a false "in use" for a
+    POSIX port sitting in TIME_WAIT.
+    """
+    import socket
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if os.name != "nt":
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind((host, port))
+        except OSError:
+            return False
+        return True
+    finally:
+        probe.close()
+
+
+def start_dashboard(host=DEFAULT_HOST, port=DEFAULT_PORT):
     import uvicorn
+
+    if not _port_is_free(host, port):
+        raise SystemExit(
+            f"Port {port} on {host} is already in use.\n"
+            f"Start the dashboard on another port, e.g.:\n"
+            f"    python ui/server.py --port {port + 1}\n"
+            f"    PRU_SIM_UI_PORT={port + 1} python ui/server.py"
+        )
+
     uvicorn.run(app, host=host, port=port)
 
 
+def _parse_args(argv=None):
+    import argparse
+
+    parser = argparse.ArgumentParser(description="PRU Simulator Dashboard")
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("PRU_SIM_UI_HOST", DEFAULT_HOST),
+        help=f"bind address (default {DEFAULT_HOST}, env PRU_SIM_UI_HOST)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("PRU_SIM_UI_PORT", DEFAULT_PORT)),
+        help=f"bind port (default {DEFAULT_PORT}, env PRU_SIM_UI_PORT)",
+    )
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
-    start_dashboard()
+    args = _parse_args()
+    start_dashboard(host=args.host, port=args.port)
