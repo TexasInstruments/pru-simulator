@@ -68,11 +68,14 @@ tests/test_ssi_encoder_sequence_emulator.py::test_ssi_encoder_sequence_emulator_
 
 ## Out of scope (not touched by this change)
 
-- `source/ssi_encoder_emulator_12bit/` (fixed-value emulator variant).
+- The original fixed-value emulator variant was later retired; use the generic
+  emulator for configurable values and the sequence fixture for regression
+  coverage.
 - The real hardware CCS project under
   `encoder-workspace/firmware/ccs-tests/ssi_test/` and R5 host firmware.
 - `encoder-workspace/firmware/simulator-tests/` (parent-repo copies of these
   same three `.asm` files).
 - `docs/superpowers/` and `docs/reports/` (historical snapshots).
-- `docs/handoff/2026-08-17-encoder-ssi-testing.md` (left as-is; it documents
-  the prior role assignment as a point-in-time snapshot).
+- `docs/handoff/2026-08-17-encoder-ssi-testing.md` (its opening table preserves
+  the prior role assignment as a point-in-time snapshot; its validation section
+  now points to the current assignment).

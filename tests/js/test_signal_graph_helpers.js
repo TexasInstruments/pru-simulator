@@ -267,20 +267,20 @@ function testRejectsIncompleteFrame() {
   assert.equal(graphFindNewestSsiFrame(samples), null);
 }
 
-function testPrefersPru0ClockLane() {
+function testPrefersPru1ClockLane() {
   const samples = [
     ...makeClockLane("pru0", frameTimes(100, 25)),
     ...makeClockLane("pru1", frameTimes(300, 25)),
   ];
 
   assert.deepEqual(plainFrame(graphFindNewestSsiFrame(samples)), {
-    minStep: 96,
-    maxStep: 196,
+    minStep: 296,
+    maxStep: 396,
   });
 }
 
-function testFallsBackWhenPru0IsAbsent() {
-  const samples = makeClockLane("pru1", frameTimes(100, 25));
+function testFallsBackWhenPru1IsAbsent() {
+  const samples = makeClockLane("pru0", frameTimes(100, 25));
 
   assert.deepEqual(plainFrame(graphFindNewestSsiFrame(samples)), {
     minStep: 96,
@@ -386,8 +386,8 @@ testEdgeTimestampedPulseUsesObservedEdgeTimes();
 testInputsAreNotMutated();
 testFindsNewestCompleteFrame();
 testRejectsIncompleteFrame();
-testPrefersPru0ClockLane();
-testFallsBackWhenPru0IsAbsent();
+testPrefersPru1ClockLane();
+testFallsBackWhenPru1IsAbsent();
 testClampsFrameToBufferedBounds();
 testFrameInputsAreNotMutated();
 testFitFrameControlIsWired();

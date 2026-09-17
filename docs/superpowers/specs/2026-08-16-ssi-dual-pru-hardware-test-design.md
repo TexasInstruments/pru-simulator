@@ -1,5 +1,10 @@
 # SSI Dual-PRU Hardware Test Design
 
+> **Historical draft:** This design predates the 2026-08-19 SSI role reversal.
+> The current hardware convention is PRU0 emulator / PRU1 reader; see
+> `docs/handoff/2026-08-19-ssi-pru-role-reversal.md` and the bundled sources
+> under `firmware/ssi_test/` for the active mapping.
+
 ## Goal
 
 Create a Code Composer Studio workspace for AM243x LaunchPad hardware testing

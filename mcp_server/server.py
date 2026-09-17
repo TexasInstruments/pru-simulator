@@ -466,16 +466,21 @@ class PRUSimulatorMCP:
         absolute encoder (straight binary, MSB-first) on the reader's data-in
         pin, runs the reader, and reads back the captured word.
 
-        The reader firmware convention stores the captured word to DRAM0 offset
-        16 (4 bytes, little-endian) and keeps a frame counter in R20. *value*
-        is the position the encoder presents; *bits* its width.
+        The reader firmware stores the captured word at local DRAM offset 16
+        (4 bytes, little-endian) and keeps a frame counter in R20. The
+        historical *dram0_offset* parameter is interpreted as that local
+        offset and translated to the executing core's global DRAM address.
+        *value* is the position the encoder presents; *bits* its width.
         """
         self.sim.reset(core)
         errors = self.sim.load(core, source)
         if errors:
             return {"status": "error", "errors": errors}
 
-        self.sim.memory.write(dram0_offset, bytes(4))
+        result_addr = dram0_offset
+        if self.sim.cores[core].dram_swap and result_addr < 0x4000:
+            result_addr ^= 0x2000
+        self.sim.memory.write(result_addr, bytes(4))
         self.sim.ssi_inject(
             core=core,
             clk_pin=clk_pin,
@@ -485,7 +490,7 @@ class PRUSimulatorMCP:
         )
         self.sim.step(core, count=max_steps)
 
-        raw = self.sim.memory_read(dram0_offset, 4)
+        raw = self.sim.memory_read(result_addr, 4)
         captured = int.from_bytes(raw, "little") & ((1 << bits) - 1)
         pru = self.sim.cores[core]
         frames_captured = pru.registers.read_full(20)
@@ -977,7 +982,7 @@ def run_stdio_server():
         asyncio.run(main())
 
     except ImportError:
-        print("Error: 'mcp' SDK is not installed. Install it with: pip install mcp", file=sys.stderr)
+        print("Error: 'mcp' SDK is not installed. Install it with: pip install -r requirements.txt", file=sys.stderr)
         sys.exit(1)
 
 

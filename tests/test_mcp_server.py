@@ -108,6 +108,20 @@ class TestMCPTools:
         assert result["captured"] == 0xABC
         assert result["frames_captured"] >= 1
 
+    def test_pru_ssi_inject_reads_result_from_pru1_dram(self):
+        reader = (
+            Path(__file__).parent.parent
+            / "source"
+            / "ssi_reader_4mhz_12bit"
+            / "ssi_reader_4mhz_12bit.asm"
+        ).read_text()
+        result = self.mcp.pru_ssi_inject(
+            source=reader, value=0xABC, bits=12, core="pru1", max_steps=20_000
+        )
+        assert result["match"] is True
+        assert result["captured"] == 0xABC
+        assert result["frames_captured"] >= 1
+
     def test_pru_foc_inject_bootstraps_runtime_and_returns_shared_state(self):
         result = self.mcp.pru_foc_inject(
             source="halt",

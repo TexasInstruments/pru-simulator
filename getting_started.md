@@ -252,7 +252,8 @@ The result is read back via XIN into R26 (low 32 bits) and R27 (high 32 bits).
 **Variations:**
 - Change baudrate to test tolerance (receiver handles down to ~3.75 Mbaud).
 - Set **Frames** > 1 to inject multiple consecutive frames — each is stored sequentially in DRAM0.
-- Use the MCP tool `pru_uart_inject` for automated testing from Claude.
+- Use the MCP tool `pru_uart_inject` for automated testing from an
+  MCP-compatible client.
 
 ---
 
@@ -260,9 +261,9 @@ The result is read back via XIN into R26 (low 32 bits) and R27 (high 32 bits).
 
 **What it does:** Clocks a 12-bit absolute encoder at 4 MHz using the SSI
 (Synchronous Serial Interface) protocol and captures the position word to
-DRAM0 offset 16. The IO panel's **SSI Encoder Inject** section provides the
-encoder stimulus — type a position and inject it, exactly like the UART RX
-inject feature.
+local DRAM offset 16 (DRAM1 when the canonical PRU1 assignment is selected).
+The IO panel's **SSI Encoder Inject** section provides the encoder stimulus —
+type a position and inject it, exactly like the UART RX inject feature.
 
 **Protocol**: CLK idles HIGH; first falling edge = frame start; 12 rising
 edges shift the encoder's data out MSB-first; master samples DATA during the
@@ -271,13 +272,15 @@ high phase; CLK returns HIGH for the inter-frame monoflop timeout.
 **Steps:**
 
 1. Open **Project** in the Editor panel and select `source/ssi_reader_4mhz_12bit/`.
-2. Click **Load & Assemble**. 19 instructions appear in the Source panel.
+2. Select **PRU1** in the core selector, then click **Load & Assemble**. 19
+   instructions appear in the Source panel.
 3. Open the **IO** panel. Scroll down to **SSI Encoder Inject**.
 4. Enter a hex position value (e.g. `ABC`). Verify CLK = GPO0, DATA = GPI8, Bits = 12.
 5. Click **▶ Inject**. Status shows: `✓ Armed: position 0xabc (12-bit) · CLK=GPO0 DATA=GPI8 · run to capture`.
 6. Click **Run** in the toolbar.
-7. Open the **Memory** panel. Set address to `0x0010` (DRAM0 offset 16). The
-   captured word `0x00000ABC` appears and updates on each new frame.
+7. Open the **Memory** panel. Set address to `0x2010` (PRU1 DRAM1 offset
+   `0x10`). The captured word `0x00000ABC` appears and updates on each new
+   frame.
 
 **What to observe:**
 - R30 bit 0 in the Registers panel shows the SSI clock toggling.
@@ -287,7 +290,9 @@ high phase; CLK returns HIGH for the inter-frame monoflop timeout.
 
 **To change the injected position:**
 - Click **Reset**, enter a new value in the **SSI Encoder Inject** panel, click **Inject**, then **Run**.
-- You can also call `sim.ssi_generator.set_value(new_value)` from Python to update the position mid-run.
+- You can also call
+  `sim.cores["pru1"].io_port.ssi_generator.set_value(new_value)` from Python
+  to update the position mid-run.
 
 **MCP tool for automated testing:**
 ```python
@@ -295,7 +300,9 @@ from mcp_server.server import PRUSimulatorMCP
 mcp = PRUSimulatorMCP()
 with open("source/ssi_reader_4mhz_12bit/ssi_reader_4mhz_12bit.asm") as f:
     asm = f.read()
-result = mcp.pru_ssi_inject(source=asm, value=0xABC, bits=12, dram0_offset=16)
+result = mcp.pru_ssi_inject(
+    source=asm, value=0xABC, bits=12, core="pru1", dram0_offset=16
+)
 print(result)  # {"match": True, "captured_hex": "0xabc", "cycles": 834, ...}
 ```
 

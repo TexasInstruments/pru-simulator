@@ -56,7 +56,7 @@ The control operates on the newest core lane matching the configured SSI clock o
 
 If no complete frame is available, the view is unchanged and the toolbar status reports `No complete SSI frame in capture`.
 
-In multicore mode, GPO0 on PRU0 is preferred because the reader owns the SSI clock. If PRU0 is absent, the current core's GPO0 is used. The control does not infer frames from data lanes.
+In multicore mode, GPO0 on PRU1 is preferred because the reader owns the SSI clock. If PRU1 is absent, the current core's GPO0 is used. The control does not infer frames from data lanes.
 
 ### 4. Resolution feedback
 
@@ -93,17 +93,17 @@ Implementation follows red-green TDD for each behavior.
 ### Python/backend tests
 
 - Existing `run_multicore` capture tests continue to prove both cores receive shared `run_step` values.
-- Existing GPIO wire tests continue to prove PRU0 GPO0 -> PRU1 GPI16 propagation.
-- Add or extend a focused test proving the reciprocal PRU1 GPO0 -> PRU0 GPI8 wire used by the encoder pair.
+- Existing GPIO wire tests continue to prove PRU1 GPO0 -> PRU0 GPI16 propagation.
+- Add or extend a focused test proving the reciprocal PRU0 GPO0 -> PRU1 GPI8 wire used by the encoder pair.
 - Run the complete `pru-simulator` pytest suite.
 
 ### Simulator MCP validation
 
-Use `PRUSimulatorMCP.pru_ssi_inject` with `source/ssi_reader/ssi_reader.asm` and at least the values `0x000`, `0xA5A`, and `0xFFF`. Each run must report `match: true` and at least one captured frame.
+Use `PRUSimulatorMCP.pru_ssi_inject` with `source/ssi_reader_4mhz_12bit/ssi_reader_4mhz_12bit.asm` and at least the values `0x000`, `0xA5A`, and `0xFFF`. Each run must report `match: true` and at least one captured frame.
 
-For dual-core validation, load the reader and emulator firmware into PRU0 and PRU1, add both GPIO wires, pace the cores together, and verify:
+For dual-core validation, load the reader on PRU1 and the emulator on PRU0, add both GPIO wires, pace the cores together, and verify:
 
-- the reader's DRAM0 result equals the emulator's configured position;
+- the reader's DRAM1 result equals the emulator's configured position;
 - both loopback signal pairs agree at shared capture steps; and
 - the frame counter advances on each core.
 

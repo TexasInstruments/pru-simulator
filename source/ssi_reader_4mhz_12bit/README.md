@@ -34,9 +34,14 @@ Single-core **PRU1** firmware that generates a 4 MHz SSI clock and captures a
 
 1. Start the dashboard: `python ui/server.py`
 2. Load this firmware on **PRU1**.
-3. Load one of the SSI emulator firmwares on **PRU0**:
-   * `source/ssi_encoder_emulator_12bit/ssi_encoder_emulator_12bit.asm` — fixed value `0xA5A`
-   * `source/ssi_encoder_sequence_emulator_12bit/ssi_encoder_sequence_emulator_12bit.asm` — cycling sequence
+3. Load an SSI emulator firmware on **PRU0**:
+   * `source/ssi_encoder_sequence_emulator_12bit/ssi_encoder_sequence_emulator_12bit.asm` — retained cycling sequence for regression testing.
+   * `source/ssi_generic_emulator/ssi_generic_emulator.asm` — configurable emulator for interactive testing and new scenarios.
+
+   The fixed reader and sequence emulator are the compatibility pair used by
+   the legacy regression tests. For configurable runs, use the generic reader
+   and generic emulator together; the dashboard's Generic SSI Runtime does
+   this automatically.
 4. Add GPIO wires in the IO panel:
    * `pru1:GPO0` → `pru0:GPI16` (clock)
    * `pru0:GPO0` → `pru1:GPI8` (data)
@@ -53,15 +58,16 @@ Single-core **PRU1** firmware that generates a 4 MHz SSI clock and captures a
 ### MCP server
 
 ```python
-from mcp_server.simulator_mcp import PRUSimulatorMCP
+from mcp_server.server import PRUSimulatorMCP
 mcp = PRUSimulatorMCP()
 result = mcp.pru_ssi_inject(
     source=open("source/ssi_reader_4mhz_12bit/ssi_reader_4mhz_12bit.asm").read(),
     value=0xABC,
     clk_pin="GPO0",
     data_pin="GPI8",
+    core="pru1",
 )
-print(result)  # expected, captured, match, frames_captured, cycle_count
+print(result)  # expected, captured, match, frames_captured, cycles
 ```
 
 ### Automated tests

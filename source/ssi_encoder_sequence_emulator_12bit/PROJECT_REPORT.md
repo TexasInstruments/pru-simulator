@@ -104,13 +104,14 @@ This test automates the multi-core setup, GPIO wiring, execution, and verificati
 ### MCP Server Validation
 
 ```python
-from mcp_server.simulator_mcp import PRUSimulatorMCP
+from mcp_server.server import PRUSimulatorMCP
 mcp = PRUSimulatorMCP()
 result = mcp.pru_ssi_inject(
     source=open("source/ssi_reader_4mhz_12bit/ssi_reader_4mhz_12bit.asm").read(),
     value=0xABC,  # First value in sequence
     clk_pin="GPO0",
     data_pin="GPI8",
+    core="pru1",
 )
 # Returns match=true when reader correctly captures current sequence value
 ```

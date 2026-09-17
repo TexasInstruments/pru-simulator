@@ -1,10 +1,10 @@
 ; ssi_generic_emulator.asm - runtime-configurable SSI encoder emulator (PRU0)
 ; ---------------------------------------------------------------------------
-; Generic replacement for the fixed ssi_encoder_sequence_emulator_12bit.asm /
-; ssi_encoder_emulator_12bit.asm behavior: bit width, timing, sequencing and
-; fault injection are all driven by the shared-memory config block described
-; in ssi_config_abi.inc / docs/superpowers/specs/2026-08-19-generic-runtime-ssi-design.md
-; instead of hardcoded .set constants. The old fixed files are untouched.
+; Maintained configurable SSI emulator with the same wire protocol as the
+; legacy fixed test fixtures, but runtime-configurable instead of using
+; hardcoded .set constants. Bit width, timing, sequencing and fault injection
+; are driven by the shared-memory config block described in ssi_config_abi.inc /
+; docs/superpowers/specs/2026-08-19-generic-runtime-ssi-design.md.
 ;
 ; LaunchPad loopback pin contract:
 ;   reader  R30.0  (CLK out, BP.11) -> this program R31.8 (CLK in, BP.51)
@@ -84,10 +84,10 @@ SSI_CONFIG_REAL_FIELDS_SIZE .set 0x54
 SSI_FRAMES_OFFSET_FROM_CFG .set 0x100
 
 ; Debounce threshold = tm_pause_outer_iters * 16, via a 4-bit left shift.
-; Rationale for 16: the existing fixed emulator (ssi_encoder_emulator_12bit.asm)
-; uses PAUSE_THRESH=300 consecutive-high polls against its reader's
-; PAUSE_OUTER=15 monoflop count -- a ~20:1 ratio. 16 keeps that same order of
-; magnitude while being a clean shift (x16 = <<4) instead of a runtime divide.
+; Rationale for 16: the legacy fixed-value SSI behavior uses PAUSE_THRESH=300
+; consecutive-high polls against its reader's PAUSE_OUTER=15 monoflop count --
+; a ~20:1 ratio. 16 keeps that same order of magnitude while being a clean
+; shift (x16 = <<4) instead of a runtime divide.
 DEBOUNCE_MULTIPLIER_SHIFT .set 4
 ; Cap so a pathologically large tm_pause_outer_iters can't make idle-sync
 ; effectively never happen; a few thousand polls is still negligible next to

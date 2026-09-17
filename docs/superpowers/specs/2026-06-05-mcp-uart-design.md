@@ -11,7 +11,7 @@ Produce:
 1. `docs/mcp_server.md` — user-facing guide covering setup, all MCP tools, and two worked examples
 2. `source/uart_tx.asm` — PRU assembly: transmit one byte via R30.t0 at 115200 baud
 3. `source/uart_print.asm` — PRU assembly: transmit a null-terminated string from DRAM0
-4. Claude Code `settings.json` entry that registers the PRU simulator as an MCP server
+4. Client configuration entry that registers the PRU simulator as an MCP server
 
 ---
 
@@ -19,22 +19,22 @@ Produce:
 
 ### What it covers
 - One paragraph explaining what Model Context Protocol is and why the PRU simulator exposes it
-- Install step: `pip install mcp` (already in requirements.txt)
-- Claude Code config snippet — `mcpServers` entry in `~/.claude/settings.json`:
+- Install step: `pip install -r requirements.txt`
+- MCP-compatible client config snippet — `mcpServers` entry:
 
 ```json
 {
   "mcpServers": {
     "pru-simulator": {
       "command": "python",
-      "args": ["C:/ti/industrial-automation-lab/Projects/pru_simulator/mcp_server/server.py"],
-      "cwd": "C:/ti/industrial-automation-lab/Projects/pru_simulator"
+      "args": ["<repo-root>/mcp_server/server.py"],
+      "cwd": "<repo-root>"
     }
   }
 }
 ```
 
-- Python direct-use quick start (3 lines, no MCP SDK required):
+- Python direct-use quick start (3 lines):
 
 ```python
 from mcp_server.server import PRUSimulatorMCP
@@ -152,7 +152,7 @@ The doc then shows how to replay the GPO trace (step-mode) and decode each chara
 | `docs/mcp_server.md` | Create — user-facing guide |
 | `source/uart_tx.asm` | Create — single-byte UART TX |
 | `source/uart_print.asm` | Create — string UART TX |
-| `~/.claude/settings.json` | Modify — add `mcpServers` entry |
+| MCP-compatible client configuration | Document — add `mcpServers` entry |
 
 ---
 

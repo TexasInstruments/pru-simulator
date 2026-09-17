@@ -1,15 +1,20 @@
 # Encoder SSI simulator support
 
-This handoff records the simulator-side support for validating a 12-bit SSI
-absolute encoder transaction before running the corresponding firmware on
-hardware.
+This handoff records the initial simulator-side support for validating a
+12-bit SSI absolute encoder transaction before running the corresponding
+firmware on hardware. The original fixed-value emulator was later retired;
+the maintained choices are the sequence fixture for regression tests or the
+generic reader/emulator pair for configurable runs.
 
-## Simulator examples
+## Initial simulator examples (before the role reversal)
+
+This section preserves the original PRU assignment for historical context. For
+the current assignment, load the sequence emulator on PRU0 and the reader on
+PRU1 as described in `2026-08-19-ssi-pru-role-reversal.md`.
 
 | Example | Role | Pins |
 |---|---|---|
 | `source/ssi_reader_4mhz_12bit/ssi_reader_4mhz_12bit.asm` | PRU0 master; generates a 4 MHz SSI clock and stores the captured word at DRAM0 offset `0x10` | GPO0 = CLK, GPI8 = DATA |
-| `source/ssi_encoder_emulator_12bit/ssi_encoder_emulator_12bit.asm` | PRU1 reactive emulator for one fixed 12-bit value | GPI16 = CLK, GPO0 = DATA |
 | `source/ssi_encoder_sequence_emulator_12bit/ssi_encoder_sequence_emulator_12bit.asm` | PRU1 emulator that presents `ABC`, `AAA`, `BCA`, `12A`, `CC2` in a repeating sequence | GPI16 = CLK, GPO0 = DATA |
 
 The examples use the same SSI transaction and memory convention as the
@@ -17,15 +22,15 @@ hardware firmware, but omit SoC-specific pad and clock initialization.
 `memory.cfg` sets both simulated PRU clocks to 300 MHz; the reader therefore
 uses 75 core cycles per SSI bit for an exact 4 MHz clock.
 
-## UI validation
+## Current UI validation
 
 1. Start the dashboard with `python ui/server.py`.
-2. Load the reader on `pru0` and the sequence emulator on `pru1`.
+2. Load the reader on `pru1` and the sequence emulator on `pru0`.
 3. Add GPIO wires:
-   - `pru0:GPO0 -> pru1:GPI16` (clock)
-   - `pru1:GPO0 -> pru0:GPI8` (data)
+   - `pru1:GPO0 -> pru0:GPI16` (clock)
+   - `pru0:GPO0 -> pru1:GPI8` (data)
 4. Enable Signal Graph recording, then run the multi-core pair.
-5. Check DRAM0 offset `0x10` on PRU0 and the PRU0 frame counter.
+5. Check DRAM1 offset `0x10` on PRU1 and the PRU1 frame counter.
 
 The graph keeps a shared cycle axis for both cores, preserves transitions that
 fall within one pixel, and records each core as separate lanes. Use **Fit
@@ -34,8 +39,9 @@ The capture stride is 10 instructions in GP mode, which gives enough samples
 for the 4 MHz waveform without overwhelming the browser.
 
 For a single-core reader test, use the **SSI Encoder Inject** panel instead of
-the PRU1 emulator. Enter a 12-bit value such as `ABC`, select `GPO0`/`GPI8`,
-inject, and run.
+the PRU0 emulator. Select PRU1, enter a 12-bit value such as `ABC`, select
+`GPO0`/`GPI8`, inject, and run. Inspect local DRAM offset `0x10` in PRU1's
+DRAM1 window.
 
 ## Automated validation
 

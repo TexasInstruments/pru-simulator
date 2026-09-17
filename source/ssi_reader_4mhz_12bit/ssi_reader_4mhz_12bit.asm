@@ -7,7 +7,8 @@
 ;
 ; Pins (AM243x):  SSI CLK   = R30.0  (GPO0)   -> encoder clock in
 ;                 SSI DATA  = R31.8  (GPI8)   <- encoder data out
-; Result:         captured 12-bit word -> DRAM0 offset 16 (4 bytes, little-endian)
+; Result:         captured 12-bit word -> executing core's local DRAM offset 16
+;                 (DRAM1 when loaded on the canonical PRU1 reader)
 ;                 frame counter        -> R20
 ;
 ; Protocol: idle CLK & DATA HIGH; frame starts on the first FALLING clock edge;
@@ -24,7 +25,7 @@
 CLK_PIN       .set 0
 DATA_IN_PIN   .set 8
 DATA_LENGTH   .set 12
-RESULT_OFF    .set 16        ; DRAM0 byte offset for the captured word
+RESULT_OFF    .set 16        ; local DRAM byte offset for the captured word
 
 ; ---- @300 MHz (3.33 ns/cycle) - ACTIVE / RECOMMENDED ----
 ; Why 300 MHz: exact integer ratios (75 cycles/bit = 4.0 MHz SSI, no rounding)
@@ -80,7 +81,7 @@ low_end:
     qbne  bit_loop, r1, 0           ; repeat until all 12 bits are clocked
 
     set   r30, r30, CLK_PIN         ; idle SSI clock HIGH
-    sbco  &r2, c24, RESULT_OFF, 4   ; store captured word -> DRAM0[16]
+    sbco  &r2, c24, RESULT_OFF, 4   ; store captured word -> local DRAM[16]
     add   r20, r20, 1               ; frame counter++
     ; Monoflop tm: PRU LOOP max count = 256, so nest two loops.
     ; @300 MHz: outer(15) x inner(250) = 3750 cyc x 3.33 ns = 12.5 us (datasheet min)

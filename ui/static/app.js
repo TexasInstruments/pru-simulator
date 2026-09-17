@@ -2011,7 +2011,7 @@ function requestGraphDraw() {
   });
 }
 
-function graphFindNewestSsiFrame(samples, preferredCore = "pru0", clockPin = 0) {
+function graphFindNewestSsiFrame(samples, preferredCore = "pru1", clockPin = 0) {
   if (!Array.isArray(samples) || samples.length < 2) return null;
 
   const cores = [...new Set(samples.map(s => s.core || "pru0"))];
@@ -3319,7 +3319,7 @@ document.getElementById("graph-clear-btn").addEventListener("click", () => {
 });
 
 document.getElementById("graph-fit-frame-btn").addEventListener("click", () => {
-  const frame = graphFindNewestSsiFrame(graphGetSamples(), "pru0", 0);
+  const frame = graphFindNewestSsiFrame(graphGetSamples(), "pru1", 0);
   if (!frame) {
     const label = document.getElementById("graph-step-label");
     if (label) label.textContent = "No complete SSI frame in capture";

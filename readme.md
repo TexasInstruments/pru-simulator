@@ -17,7 +17,7 @@ A cycle-accurate PRU assembly simulator with an interactive HTML dashboard. Targ
 - **MAC accelerator** — ICSSG broadside multiply-accumulate unit (device_id=0)
 - **Multi-core** — simultaneous PRU0 + RTU0 debug view
 - **Tiling window manager** — drag, split, collapse/expand, and persist panel layouts
-- **MCP server** — AI assistant integration via Model Context Protocol
+- **MCP server** — exposes simulator operations to external tools via Model Context Protocol
 
 ## Requirements
 
@@ -27,6 +27,9 @@ A cycle-accurate PRU assembly simulator with an interactive HTML dashboard. Targ
 ```
 pip install -r requirements.txt
 ```
+
+The standard install includes the MCP transport used by the simulator's
+external-tool interface.
 
 ## Quick Start
 
@@ -43,7 +46,7 @@ pru_simulator/
 ├── config/             Memory layout configs (AM243x, AM263x)
 ├── core/               PRU ISA implementation (ALU, parser, disassembler, ELF loader, …)
 ├── mem/                Memory bus and region model
-├── mcp_server/         MCP server for AI tool integration
+├── mcp_server/         MCP protocol adapter
 ├── pru_io/             GPO/GPI port model, SD filter (R30/R31 interface)
 ├── perif/              3-channel Peripheral Interface (SCU), GPCFG mux, TX→RX loopback
 ├── source/             Example PRU assembly programs
@@ -53,7 +56,7 @@ pru_simulator/
 │   └── static/         Dashboard HTML/JS (index.html, app.js, layout.js)
 ├── xfr/                XFR scratchpad + MAC accelerator
 ├── memory.cfg          Default memory configuration (AM243x)
-├── requirements.txt
+├── requirements.txt    Runtime, test, and MCP dependencies
 └── simulator.py        Simulator entry point
 ```
 

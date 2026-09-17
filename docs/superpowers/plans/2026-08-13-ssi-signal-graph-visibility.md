@@ -41,10 +41,10 @@
 - Modify: `pru-simulator/ui/static/index.html`
 
 **Interfaces:**
-- Produces: `graphFindNewestSsiFrame(samples, preferredCore="pru0", clockPin=0)` returning `{minStep,maxStep}` or `null`.
+- Produces: `graphFindNewestSsiFrame(samples, preferredCore="pru1", clockPin=0)` returning `{minStep,maxStep}` or `null`.
 - Produces: toolbar button `#graph-fit-frame-btn`.
 
-- [ ] Add assertions for newest complete 24-transition group, idle-high separation, incomplete rejection, PRU0 preference, current-core fallback, bounds clamping, and no mutation.
+- [ ] Add assertions for newest complete 24-transition group, idle-high separation, incomplete rejection, PRU1 preference, current-core fallback, bounds clamping, and no mutation.
 - [ ] Run the Node test; verify RED because frame detection is absent.
 - [ ] Implement the pure detector exactly as specified: median half-period, threshold `max(20, median*5)`, newest complete group, padded and clamped range.
 - [ ] Wire `Fit frame` to set `signalGraph.view` only on success; on failure leave it unchanged and display `No complete SSI frame in capture`.
@@ -100,7 +100,7 @@
 **Files:** None.
 
 **Interfaces:**
-- Consumes: `PRUSimulatorMCP.pru_ssi_inject` and `source/ssi_reader/ssi_reader.asm`.
+- Consumes: `PRUSimulatorMCP.pru_ssi_inject` and `source/ssi_reader_4mhz_12bit/ssi_reader_4mhz_12bit.asm`.
 
 - [ ] Run a Python validation for values `0x000`, `0xA5A`, and `0xFFF` using `memory.cfg`.
 - [ ] Require `status == "success"`, `match is True`, and `frames_captured >= 1` for every value.
@@ -112,11 +112,11 @@
 
 **Interfaces:**
 - Loads: simulator-compatible reader and emulator sources.
-- Wires: PRU0 GPO0 -> PRU1 GPI16 and PRU1 GPO0 -> PRU0 GPI8.
+- Wires: PRU1 GPO0 -> PRU0 GPI16 and PRU0 GPO0 -> PRU1 GPI8.
 
 - [ ] Identify simulator-loadable firmware without changing it.
 - [ ] Configure position `0xA5A`, pace both cores, and collect shared-step samples.
-- [ ] Require DRAM0 result `0xA5A`, both frame counters >= 1, and zero loopback mismatches.
+- [ ] Require DRAM1 result `0xA5A`, both frame counters >= 1, and zero loopback mismatches.
 - [ ] If the existing emulator source cannot load, report the exact parser/runtime blocker; do not broaden this task into firmware porting.
 
 ### Task 8: Full Automated Regression

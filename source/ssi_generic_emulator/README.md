@@ -2,10 +2,10 @@
 
 Single-core **PRU0** firmware that emulates an SSI absolute encoder whose bit
 width, timing, sequence, and fault behavior are all driven by a shared-memory
-configuration block instead of hardcoded `.set` constants. It is the generic
-replacement for `ssi_encoder_sequence_emulator_12bit.asm` /
-`ssi_encoder_emulator_12bit.asm` — those fixed files are untouched and still
-work exactly as before.
+configuration block instead of hardcoded `.set` constants. It is the
+maintained configurable emulator for SSI testing. The fixed sequence emulator
+remains as a compatibility and regression fixture; new tests and interactive
+use should prefer this generic emulator.
 
 * **Config-driven, not hardcoded:** on load, this program reads the entire
   config block at `ICSS_SHARED` (`c28`, base `0x00010000`) once, then watches

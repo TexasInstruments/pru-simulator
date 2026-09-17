@@ -3,8 +3,9 @@
 Single-core **PRU1** firmware that reads an SSI absolute encoder whose bit
 width, clock timing, and structural field layout are all driven by a
 shared-memory configuration block instead of hardcoded `.set` constants. It
-is the generic replacement for `ssi_reader_4mhz_12bit.asm`, which remains
-untouched and still works exactly as before.
+is the maintained configurable reader for SSI testing. The fixed
+`ssi_reader_4mhz_12bit.asm` reader remains available as a compatibility path
+for the legacy regression fixtures.
 
 * **Config-driven, not hardcoded:** on load, this program reads the entire
   config block at `ICSS_SHARED` (`c28`, base `0x00010000`) once, then applies

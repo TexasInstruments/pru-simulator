@@ -59,7 +59,8 @@ To ensure reliable frame detection:
 
 1. Start the simulator dashboard: `python ui/server.py`
 2. Load this firmware on **PRU1**
-3. Load a compatible SSI encoder emulator on **PRU0** (fixed-value or sequence variant)
+3. Load a compatible SSI encoder emulator on **PRU0** (the retained sequence
+   fixture or the generic configurable emulator)
 4. Configure GPIO loopback in the IO panel:
    - PRU1 GPO0 (clock out) → PRU0 GPI16 (clock in)
    - PRU0 GPO0 (data out) → PRU1 GPI8 (data in)
@@ -79,15 +80,16 @@ To ensure reliable frame detection:
 ### MCP Server Validation
 
 ```python
-from mcp_server.simulator_mcp import PRUSimulatorMCP
+from mcp_server.server import PRUSimulatorMCP
 mcp = PRUSimulatorMCP()
 result = mcp.pru_ssi_inject(
     source=open("source/ssi_reader_4mhz_12bit/ssi_reader_4mhz_12bit.asm").read(),
     value=0xABC,
     clk_pin="GPO0",
     data_pin="GPI8",
+    core="pru1",
 )
-# Returns: {expected, captured, match, frames_captured, cycle_count}
+# Returns: {expected, captured, match, frames_captured, cycles}
 ```
 
 ## Notes for Hardware Adaptation

@@ -454,7 +454,7 @@
   <section id="prompt">
     <h2><span class="num">1</span> The Initial Request</h2>
     <p class="lede">Reconstructed from the session's documented scope — the original verbatim request wasn't preserved for this report:</p>
-    <div class="prompt-block">Document the SSI encoder simulator projects — the 4 MHz/12-bit reader on PRU0, the fixed-value emulator, and the sequence emulator on PRU1 — the same way pif_eth and the I2C TCA9538 running-LED project are documented: a README.md and PROJECT_REPORT.md per project, superpowers plan/spec docs, a session report, and a reusable documentation skill, so this becomes the standard for future simulator projects.</div>
+    <div class="prompt-block">Document the SSI encoder simulator projects — the 4 MHz/12-bit reader on PRU1, the retained sequence emulator on PRU0, and the configurable emulator — the same way pif_eth and the I2C TCA9538 running-LED project are documented: a README.md and PROJECT_REPORT.md per project, superpowers plan/spec docs, a session report, and a reusable documentation skill, so this becomes the standard for future simulator projects.</div>
     <p class="prompt-source">Reconstructed for this report — not a verbatim quote.</p>
   </section>
 
@@ -495,7 +495,7 @@
       <div class="idx">3.3</div>
       <div>
         <p class="title">Generic documentation skill in docs/skills/</p>
-        <p class="why">Moving the skill from .claude/ (gitignored) to docs/skills/ ensures it's available to all users of the repository, not just those with local .claude configurations.</p>
+        <p class="why">Moving the skill from local configuration into docs/skills/ ensures it's available to all users of the repository.</p>
       </div>
     </div>
 
@@ -519,14 +519,14 @@
       <div class="idx">3.6</div>
       <div>
         <p class="title">MCP injection tool for single-core validation</p>
-        <p class="why">Eliminates need for PRU1 emulator during development/testing by attaching SSIEncoderEdgeModel to simulator IO port.</p>
+        <p class="why">Eliminates the need for a second PRU during development/testing by attaching SSIEncoderGenerator to the selected simulator IO port.</p>
       </div>
     </div>
     <div class="decision">
       <div class="idx">3.7</div>
       <div>
         <p class="title">Standardized memory maps matching hardware projects</p>
-        <p class="why">Ensuring PRU0 DRAM0 offset 0x10 for captured word and PRU1 DRAM1 offsets 0x08 (value) and 0x14 (frame counter) match hardware project layouts for cross-validation.</p>
+        <p class="why">Ensuring PRU1 DRAM1 offset 0x10 for the captured word and PRU0 DRAM0 offsets 0x08 (value) and 0x14 (frame counter) match the current simulator role assignment and hardware project layouts for cross-validation.</p>
       </div>
     </div>
 
@@ -560,9 +560,9 @@
             <td>Added README.md and PROJECT_REPORT.md</td>
           </tr>
           <tr>
-            <td>Fixed-value SSI emulator</td>
-            <td>source/ssi_encoder_emulator_12bit/</td>
-            <td>Added README.md and PROJECT_REPORT.md</td>
+            <td>Fixed-value SSI emulator (retired)</td>
+            <td>—</td>
+            <td>Superseded by the configurable emulator</td>
           </tr>
           <tr>
             <td>Sequence SSI emulator</td>
@@ -571,7 +571,7 @@
           </tr>
           <tr>
             <td>MCP injection tool</td>
-            <td>mcp_server/simulator_mcp.py</td>
+            <td>mcp_server/server.py</td>
             <td>Extended with pru_ssi_inject method</td>
           </tr>
           <tr>
@@ -602,23 +602,19 @@
         <tbody>
           <tr>
             <td>source/ssi_reader_4mhz_12bit/README.md</td>
-            <td>User-focused quick start for PRU0 SSI reader</td>
+            <td>User-focused quick start for PRU1 SSI reader</td>
           </tr>
           <tr>
             <td>source/ssi_reader_4mhz_12bit/PROJECT_REPORT.md</td>
             <td>Developer-focused deep dive on SSI reader implementation</td>
           </tr>
           <tr>
-            <td>source/ssi_encoder_emulator_12bit/README.md</td>
-            <td>User-focused quick start for PRU1 fixed-value emulator</td>
-          </tr>
-          <tr>
-            <td>source/ssi_encoder_emulator_12bit/PROJECT_REPORT.md</td>
-            <td>Developer-focused deep dive on fixed-value emulator</td>
+            <td>Fixed-value emulator documentation</td>
+            <td>Retired; use the configurable emulator for fixed values</td>
           </tr>
           <tr>
             <td>source/ssi_encoder_sequence_emulator_12bit/README.md</td>
-            <td>User-focused quick start for PRU1 sequence emulator</td>
+            <td>User-focused quick start for PRU0 sequence emulator</td>
           </tr>
           <tr>
             <td>source/ssi_encoder_sequence_emulator_12bit/PROJECT_REPORT.md</td>
@@ -657,7 +653,7 @@
             <td>Generic documentation skill for simulator projects</td>
           </tr>
           <tr>
-            <td>mcp_server/simulator_mcp.py</td>
+            <td>mcp_server/server.py</td>
             <td>Extended with pru_ssi_inject method for single-core validation</td>
           </tr>
         </tbody>
@@ -671,36 +667,37 @@
     <h3><span class="num">6.1</span> Automated Regression Test</h3>
     <p>The sequence emulator test validates end-to-end dual-core capture:</p>
     <div class="prompt-block">python -m pytest tests/test_ssi_encoder_sequence_emulator.py -v</div>
-    <p>This test loads the SSI reader on PRU0 and sequence emulator on PRU1, wires the GPIO loopback, and verifies all five test values (0xABC → 0xAAA → 0xBCA → 0x12A → 0xCC2) are captured in order at DRAM0 offset 0x10.</p>
+    <p>This test loads the SSI reader on PRU1 and sequence emulator on PRU0, wires the GPIO loopback, and verifies all five test values (0xABC → 0xAAA → 0xBCA → 0x12A → 0xCC2) are captured in order at DRAM1 offset 0x10.</p>
     <h3><span class="num">6.2</span> Manual UI Validation</h3>
     <p>Validation using the browser-based simulator dashboard:</p>
     <ol>
       <li>Start dashboard: <code>python ui/server.py</code></li>
-      <li>Load SSI reader on PRU0</li>
-      <li>Load sequence emulator on PRU1</li>
+      <li>Load SSI reader on PRU1</li>
+      <li>Load sequence emulator on PRU0</li>
       <li>Configure GPIO loopback:
         <ul>
-          <li>PRU0 GPO0 (clock out) → PRU1 GPI16 (clock in)</li>
-          <li>PRU1 GPO0 (data out) → PRU0 GPI8 (data in)</li>
+          <li>PRU1 GPO0 (clock out) → PRU0 GPI16 (clock in)</li>
+          <li>PRU0 GPO0 (data out) → PRU1 GPI8 (data in)</li>
         </ul>
       </li>
       <li>Enable Signal Graph recording</li>
       <li>Run multi-core execution</li>
       <li>Observe clean 12-clock SSI transitions in both clock lanes</li>
       <li>Use "Fit frame" to zoom to newest complete SSI frame</li>
-      <li>Verify DRAM0 offset 0x10 matches expected sequence value</li>
+      <li>Verify DRAM1 offset 0x10 matches expected sequence value</li>
       <li>Check frame counters increment on both cores</li>
     </ol>
     <h3><span class="num">6.3</span> Single-Core Validation via MCP</h3>
-    <p>Quick validation without requiring PRU1 emulator:</p>
+    <p>Quick validation without requiring a second PRU emulator:</p>
     <div class="prompt-block">python3 -c "
-from mcp_server.simulator_mcp import PRUSimulatorMCP
+from mcp_server.server import PRUSimulatorMCP
 mcp = PRUSimulatorMCP()
 result = mcp.pru_ssi_inject(
     source=open('source/ssi_reader_4mhz_12bit/ssi_reader_4mhz_12bit.asm').read(),
     value=0xABC,
     clk_pin='GPO0',
-    data_pin='GPI8'
+    data_pin='GPI8',
+    core='pru1'
 )
 print(f'Expected: 0x{result[\"expected\"]:03X}')
 print(f'Captured: 0x{result[\"captured\"]:03X}')

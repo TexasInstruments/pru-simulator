@@ -212,7 +212,7 @@ async def _call_mcp(iterations: int) -> dict:
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
     except ImportError as exc:
-        raise RuntimeError("MCP SDK is not installed") from exc
+        raise RuntimeError("MCP SDK is not installed; install the project dependencies from requirements.txt") from exc
 
     server = SIMULATOR_ROOT / "mcp_server" / "server.py"
     env = os.environ.copy()
