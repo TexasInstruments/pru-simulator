@@ -32,7 +32,6 @@ A cycle-accurate PRU assembly simulator with an interactive HTML dashboard. Targ
 | Interface | SD Mode | Internal SDFM Blocks | Connects to external Sigma-Delta ADCs for isolated current/voltage sensing | ✅ |
 | Interface | MII / RGMII Mode | ICSSG Real-Time Ethernet Switch | Real-time industrial communication hardware layer (EtherCAT, PROFINET, EtherNet/IP) | ❌ |
 
-`GP Mux` selects between GP (GPIO), Peripheral IF, MII, and SD modes (`GPCFG.PRU_GP_MUX_SEL`); MII is enumerable in the mux but has no functional datapath model. GPI/GPO direct modes are always available regardless of mux selection.
 
 ## Requirements
 
