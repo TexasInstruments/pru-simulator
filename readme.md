@@ -1,6 +1,6 @@
 # PRU Simulator
 
-A cycle-accurate PRU assembly simulator with an interactive HTML dashboard. Targets the AM243x/AM263x ICSSG PRU core (V4 ISA) and runs entirely on a PC — no hardware required.
+A cycle-accurate PRU assembly simulator with an interactive HTML dashboard. Targets the both AM261/AM263/AM62x ICSS_M PRU core (V3 ISA) and AM243x/AM64x ICSSG PRU core (V4 ISA) and runs entirely on a PC — no hardware required.
 
 ## Features
 
