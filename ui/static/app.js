@@ -441,6 +441,12 @@ function updateUI(state) {
     carryEl.textContent = state.mac.acc_carry ? " CARRY" : "";
   }
 
+  // CRC accelerator indicator
+  if (state.crc) {
+    document.getElementById("crc-mode-label").textContent = state.crc.mode;
+    document.getElementById("crc-value-label").textContent = state.crc.value;
+  }
+
   // Registers + SPAD
   updateRegisters(state.registers, state.carry);
   updateSpad(state.spad);
@@ -3353,6 +3359,14 @@ function updateMCUI(state) {
     if (modeEl) modeEl.textContent = state.mac.mode ? "ACC" : "MPY";
     const macCarryEl = document.getElementById(`mc-${core}-mac-carry`);
     if (macCarryEl) macCarryEl.textContent = state.mac.acc_carry ? " CARRY" : "";
+  }
+
+  // CRC indicator
+  if (state.crc) {
+    const crcModeEl = document.getElementById(`mc-${core}-crc-mode`);
+    if (crcModeEl) crcModeEl.textContent = state.crc.mode;
+    const crcValueEl = document.getElementById(`mc-${core}-crc-value`);
+    if (crcValueEl) crcValueEl.textContent = state.crc.value;
   }
 
   // Registers

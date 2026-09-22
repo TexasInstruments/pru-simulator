@@ -29,6 +29,7 @@ from xfr.xfr_bus import XFRBus, IPC_SPAD, SPAD_BANK0, SPAD_BANK1, SPAD_BANK2
 from pru_io.io_port import IOPort
 from xfr.accelerator import Accelerator
 from xfr.mac_accelerator import MACAccelerator
+from xfr.crc_accelerator import CRCAccelerator
 from xfr.bswap_accelerator import (
     BSWAP_4_8,
     BSWAP_4_16,
@@ -119,6 +120,7 @@ class PRUCore:
         self._branch = BranchUnit()
         self.accelerators: dict[int, Accelerator] = {
             MACAccelerator.DEVICE_ID: MACAccelerator(self.registers),
+            CRCAccelerator.DEVICE_ID: CRCAccelerator(self.registers),
             BSWAP_BYTE_ORDER: BSwapAccelerator(self.registers, BSWAP_BYTE_ORDER),
             BSWAP_4_8: BSwapAccelerator(self.registers, BSWAP_4_8),
             BSWAP_4_16: BSwapAccelerator(self.registers, BSWAP_4_16),
