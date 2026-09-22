@@ -1,36 +1,85 @@
 # PRU Simulator
 
-A cycle-accurate PRU assembly simulator with an interactive HTML dashboard. Targets the both AM261/AM263/AM62x ICSS_M PRU core (V3 ISA) and AM243x/AM64x ICSSG PRU core (V4 ISA) and runs entirely on a PC — no hardware required.
+A cycle-accurate PRU assembly simulator with an interactive HTML dashboard. No
+hardware required: Runs entirely on a PC, with the option for your AI to use the
+simulator through an MCP server.
 
-## Features
+## Supported features
 
-- **Full PRU ISA** — ALU, branches, bit operations, LOOP, LBCO/SBCO, LBBO/SBBO, XIN/XOUT/XCHG, MVI (MVIB/MVIW/MVID)
-- **ELF binary loading** — load compiled .out files directly (TI PRU CGT ELF32) with automatic disassembly
-- **Sigma-delta filter** — full ICSS-G SCU SD peripheral (3 channels, CIC accumulators, Fast Detect, memory-mapped registers, pattern generators)
-- **Peripheral Interface** — 3-channel ICSS-G SCU serializer/deserializer (protocol-agnostic: EnDat/BiSS/HDSL/line-code). Per-channel TX FIFO/FSM/clock + RX FIFO/oversampler, selected via `GPCFG.PRU_GP_MUX_SEL`, with a timed PRU0-TX → core-1-RX loopback (latency / jitter / clock-drift). See `references/endat/ENDAT_INTERFACE_SPEC.md`.
-- **GPIO loopback** — wire GPO groups directly to GPI for firmware loopback testing without hardware
-- **UART decoder** — bit-bang UART decode in the IO panel (8N1, auto-detect bit period)
-- **Step-back** — reverse any instruction; full machine state including SD filter is restored
+The simulator currently models the PRU subsystems on the **AM243x** (PRU_ICSSG,
+V4 ISA) and **AM263x** (PRU-ICSS, V3 ISA).
+
+### Simulator features
+
+These are simulator-side capabilities, not features of the PRU hardware itself.
+
 - **Interactive dashboard** — register panel, memory panel, IO pin control, disassembly view
+- **ELF binary loading** — load compiled .out files directly (TI PRU CGT ELF32) with automatic disassembly
+- **Step-back** — reverse any instruction; full machine state including SD filter is restored
 - **Signal graph** — digital logic analyzer for GPO/GPI pin transitions
 - **Memory graph** — analog scope for memory buffer waveform visualization
-- **MAC accelerator** — ICSSG broadside multiply-accumulate unit (device_id=0)
-- **Multi-core** — simultaneous PRU0 + RTU0 debug view
+- **GPIO loopback** — wire GPO groups directly to GPI for firmware loopback testing without hardware
+- **UART decoder** — bit-bang UART decode in the IO panel (8N1, auto-detect bit period)
+- **Multi-core debug view** — simultaneous PRU0 + RTU0 debug view
+  <!-- FIXME: does this allow debug views of both slices, meaning AM263x would also support this (with PRU0 & PRU1, since it has no RTU cores) rather than being PRU0+RTU0-specific? -->
 - **Tiling window manager** — drag, split, collapse/expand, and persist panel layouts
 - **MCP server** — AI assistant integration via Model Context Protocol
 
-## PRU I/O Modes
+<!-- FIXME: does the simulator support simulating both slices/cores at once, or only one slice/core at a time right now? -->
 
-| Mode Class | Specific I/O Mode | Core Registers Used | Primary Use Case / Description | Supported |
-|---|---|---|---|---|
-| GPI (Input) | Direct Input Mode | `R31[31:0]` | Lowest latency direct pin sampling and software bit-banging | ✅ |
-| GPI (Input) | 16-Bit Parallel Capture | `R31` | Captures 16 bits of parallel data synchronous to a sampling clock | ❌ |
-| GPI (Input) | 28-Bit Shift In Mode | `R31` | Automatically deserializes incoming high-speed serial streams | ❌ |
-| GPO (Output) | Direct Output Mode | `R30[31:0]` | Direct software-driven pin control for custom low-latency protocols | ✅ |
-| GPO (Output) | Shift Out Mode | `R30` | Automatically serializes data written to the register over a clock pin | ❌ |
-| Interface | Peripheral IF Mode | Slice Hardware Co-processor | Industrial motor position encoder feedback (EnDAT, BiSS-C, Tamagawa) | ✅ |
-| Interface | SD Mode | Internal SDFM Blocks | Connects to external Sigma-Delta ADCs for isolated current/voltage sensing | ✅ |
-| Interface | MII / RGMII Mode | ICSSG Real-Time Ethernet Switch | Real-time industrial communication hardware layer (EtherCAT, PROFINET, EtherNet/IP) | ❌ |
+### PRU features
+
+Status per processor:
+- ✅ implemented in the simulator
+- ❌ present in silicon, not currently simulated
+- N/A not present on that processor (per the [PRU Subsystem Features Comparison](https://www.ti.com/lit/sprac90) app note)
+
+| Category | Feature | AM243x | AM263x |
+|---|---|---|---|
+| Core | Full PRU ISA (ALU, branches, bit ops, LOOP, LBCO/SBCO, LBBO/SBBO, XIN/XOUT/XCHG, MVI) | ✅ | ✅ |
+| General PRU Specs | PRU cores | ✅ | ✅ |
+| General PRU Specs | RTU_PRU (Auxiliary PRU) cores | ✅ | N/A |
+| General PRU Specs | TX_PRU (Transmit PRU) cores | ❌ | N/A |
+| General PRU Specs | INTC | ❌ | ❌ |
+| Accelerators: Data Processing | MPY/MAC | ✅ | ✅ |
+| Accelerators: Data Processing | Scratchpad | ✅ | ✅ |
+| Accelerators: Data Processing | IPC Scratch Pad | ❌ | N/A |
+<!-- FIXME: verify IPC Scratch Pad is not currently implemented -->
+| Accelerators: Data Processing | Broadside RAM | ❌ | N/A |
+| Accelerators: Data Processing | BSWAP | ✅ | N/A |
+<!-- FIXME: verify BSWAP is fully implemented, not a partial/incomplete implementation -->
+| Accelerators: Data Processing | CRC16/32 | ❌ | ❌ |
+| Accelerators: Data Processing | SUM32 | ❌ | N/A |
+| Accelerators: Data Processing | Task Manager | ❌ | N/A |
+| Accelerators: Data Processing | Spinlock | ❌ | N/A |
+| Accelerators: Data Processing | Filter Data Base (FDB) | ❌ | N/A |
+| Accelerators: Data Movement | XFR2VBUS | ❌ | N/A |
+<!-- FIXME: verify whether XFR2VBUS exists on AM263x -- the app note's Table 1-1 lists "No" for PRU-ICSS, but this may need to be re-checked against AM263x-specific documentation -->
+| Accelerators: Data Movement | PSI TX & RX | ❌ | N/A |
+| Accelerators: Data Movement | XFR2TR | ❌ | N/A |
+| Peripherals | Sigma-delta filter (3 ch, CIC accumulators, Fast Detect, pattern generators) | ✅ | ✅ |
+| Peripherals | Peripheral Interface / 3 ch EnDAT (protocol-agnostic serializer/deserializer, EnDat/BiSS/HDSL/line-code; timed PRU0-TX → core-1-RX loopback with latency/jitter/clock-drift) | ✅ | ✅ |
+| Peripherals | UART | ❌ | ❌ |
+<!-- FIXME: verify hardware UART is NOT currently implemented in the simulator -->
+| Peripherals | eCAP | ❌ | ❌ |
+| Peripherals | IEP (Industrial Ethernet Peripheral timer) | ❌ | ❌ |
+| Peripherals | MII_RT / MII_G_RT (RGMII) | ❌ | ❌ |
+| Peripherals | MDIO | ❌ | ❌ |
+| Peripherals | SGMII | ❌ | N/A |
+| Peripherals | PWM | ❌ | N/A |
+
+### PRU I/O modes
+
+| Mode Class | Specific I/O Mode | Core Registers Used | Primary Use Case / Description | AM243x | AM263x |
+|---|---|---|---|---|---|
+| GPI (Input) | Direct Input Mode | `R31[31:0]` | Lowest latency direct pin sampling and software bit-banging | ✅ | ✅ |
+| GPI (Input) | 16-Bit Parallel Capture | `R31` | Captures 16 bits of parallel data synchronous to a sampling clock | ❌ | ❌ |
+| GPI (Input) | 28-Bit Shift In Mode | `R31` | Automatically deserializes incoming high-speed serial streams | ❌ | ❌ |
+| GPO (Output) | Direct Output Mode | `R30[31:0]` | Direct software-driven pin control for custom low-latency protocols | ✅ | ✅ |
+| GPO (Output) | Shift Out Mode | `R30` | Automatically serializes data written to the register over a clock pin | ❌ | ❌ |
+| Interface | Peripheral IF Mode | Slice Hardware Co-processor | Industrial motor position encoder feedback (EnDAT, BiSS-C, Tamagawa) | ✅ | ✅ |
+| Interface | SD Mode | Internal SDFM Blocks | Connects to external Sigma-Delta ADCs for isolated current/voltage sensing | ✅ | ✅ |
+| Interface | MII / RGMII Mode | ICSSG Real-Time Ethernet Switch | Real-time industrial communication hardware layer (EtherCAT, PROFINET, EtherNet/IP) | ❌ | ❌ |
 
 
 ## Requirements
