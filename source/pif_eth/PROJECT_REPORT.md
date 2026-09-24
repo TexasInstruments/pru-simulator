@@ -79,9 +79,10 @@ A 2026-07-21 follow-up demonstrates the 125 Mbaud target is reachable at a
   **CRC-32** = 132 octets.
 - **UDP (option 2)** — Ethernet/IPv4/UDP, payload `"Hello World Text"`, padded
   to the 60-octet Ethernet minimum + 4-octet FCS = 64 octets.
-- **CRC-32** is firmware-generated (bit-serial, reflected `0xEDB88320`,
-  init/final `0xFFFFFFFF`), identical to `zlib.crc32`. A broadside CRC
-  accelerator is noted as the second stage.
+- **CRC-32** was firmware-generated in the first stage (bit-serial,
+  reflected `0xEDB88320`, init/final `0xFFFFFFFF`), identical to
+  `zlib.crc32`. The second stage the prompt asked for is now done: the FCS
+  runs on the ICSSG CRC16/32 broadside accelerator (2026-09-24, **§9**).
 
 ### 2.5 Firmware architecture
 
@@ -119,6 +120,8 @@ All under `source/pif_eth/` unless noted (≈1,400 lines total).
 | `pif_eth_tx.asm` | 260 | PRU0 firmware: self-config, PRNG, CRC-32, 8b/10b encode, stream |
 | `codec.py` | 155 | 8b/10b encode/decode + DRAM0 LUT builder (golden reference) |
 | `crc32.py` | 37 | Ethernet FCS (bit-serial + `zlib` references) |
+| `pif_eth_crc32.inc` | 50 | shared `crc32_core`, bit-serial software version (now the fallback, §9) |
+| `pif_eth_crc32_hw.inc` | 63 | 2026-09-24: shared `crc32_core` on the CRC16/32 broadside accelerator, included by all firmware (§9) |
 | `prng.py` | 30 | xorshift32 PRNG reference |
 | `frames.py` | 83 | BERT and UDP frame builders |
 | `decoder.py` | 63 | bit/symbol stream → frames (comma-delimited) |
@@ -402,3 +405,94 @@ combination first.
 
 Full design note: `docs/superpowers/specs/2026-07-21-pif-eth-n2-125mbaud-design.md`.
 Cross-PC handoff: `docs/handoff/2026-07-21-speed-selector-and-pif-eth-n2.md`.
+
+---
+
+## 9. Follow-up: CRC-32 on the broadside accelerator (2026-09-24)
+
+### 9.1 Goal
+
+The original prompt made a broadside CRC32 the second stage ("The CRC32 in
+a second stage will use broadside widget CRC32"). The simulator's `dev`
+branch now models the ICSSG CRC16/32 accelerator (`xfr/crc_accelerator.py`,
+XFR device 1; AM64x/AM243x TRM SPRUIM2H §6.4.6.2.2.1, Table 6-429;
+`references/icss_m_xfr_crc_functional_spec.md`). This follow-up moves every
+pif_eth FCS computation onto that accelerator.
+
+### 9.2 Implementation
+
+- **`pif_eth_crc32_hw.inc`** is a new `crc32_core` with the same contract as
+  the software routine: entry `r21` = buffer, `r8` = length; exit `r20` =
+  FCS, `r21` = end of buffer; return via `r26`. It works as follows:
+  1. `XOUT 1, &r25, 1` with `CRC_CFG = 0x01` selects CRC-32. That write
+     also seeds `0xFFFFFFFF`.
+  2. A zero-overhead `LOOP` runs `LBBO &r29` / `XOUT 1, &r29, 4` for each
+     32-bit word.
+  3. Two `NOP`s (TRM rule), then `XIN 1, &r29, 4`. The engine applies no
+     final XOR, so the firmware does `NOT`.
+- **Uneven lengths.** The TRM says one CRC session must keep one write
+  width. So 1–3 trailing bytes run as a second, byte-wide session seeded
+  via `CRC_SEED` (`R28`) with the word session's result. BERT (128) and
+  UDP (60) never need this; RX with `payload_len = 201` does.
+- **Register window.** The broadside window is fixed at `R25`–`R29`, which
+  overlaps the firmware's return-address registers `r28`/`r29`. In RX both
+  are live during `rx_crc_check`, so `crc32_core` saves them in `r22`/`r24`
+  and restores them.
+- **Firmware changes.** `pif_eth_tx.asm` and `pif_eth_rx_o1_raw.asm` only
+  swap their `.include`. `pif_eth_tx_n2.asm` and
+  `pif_eth_tx_n2_skipchecks.asm` each had an inlined copy of the
+  bit-serial loop. Both now call the shared routine, so all four images
+  use one CRC implementation. `pif_eth_crc32.inc` stays as the software
+  fallback for a core without the accelerator.
+
+### 9.3 Cycle savings (measured on the simulator)
+
+Cycles are counted from the `jal` into `crc32_compute` / `rx_crc_check` to
+its return, by single-stepping the simulator. They include DRAM stall
+cycles (`read_latency = 2` in both configs used).
+
+| Routine | Payload | Software (bit-serial) | Accelerator | Saving |
+|---|---|---|---|---|
+| TX `crc32_compute` | 128 B (BERT) | 9 488 – 9 552 | **181** | ~52× (−9.3k cycles) |
+| TX `crc32_compute` | 60 B (UDP) | 4 456 | **96** | ~46× |
+| RX `rx_crc_check` | 128 B (BERT) | 9 526 – 9 558 | **187** | ~51× |
+| TX / RX | 201 B (byte tail) | 14 864 / 14 873 | **283 / 289** | ~52× |
+
+- **Per octet.** The software loop costs about 74 cycles per octet. The
+  count depends on the data, which is why it varies between frames. The
+  accelerator costs 5 cycles per 4-octet word (`LBBO` 1 + 2 DRAM stall,
+  `XOUT` 1, `ADD` 1; `LOOP` adds nothing), about 1.25 cycles/octet. The
+  fixed setup and readout add about 20 cycles. The cost is now
+  deterministic. The remaining loop is bound by DRAM read latency, not by
+  the CRC.
+- **TX.** Per §2.5, the FCS is computed before `tx_go`, between bursts. So
+  the saving leaves the per-bit streaming budget alone (§8's n=2
+  zero-headroom analysis is unchanged) and shortens the dead time before
+  each frame instead. At n=2 / 250 MHz, a BERT burst is about 138 symbols
+  × 10 bits × 2 cycles ≈ 2 760 core cycles on the wire:
+  - The software CRC (≈9.5k cycles, 38 µs) took about 3.4× longer than
+    the frame it protected.
+  - The accelerator (181 cycles, 0.72 µs) takes about 7% of it.
+  - The PRNG fill (≈1.5k cycles for 128 octets) is now the largest
+    per-frame software cost.
+- **RX.** `rx_crc_check` runs post-frame, before PRU1 re-arms. The ≈9.4k
+  cycles saved come straight off the minimum inter-frame gap RX can
+  accept.
+
+These are simulator figures, not silicon measurements. The CRC model
+counts each `XOUT`/`XIN` as one cycle, and the `NOP` count follows the
+TRM's "1–2 NOPs" rule.
+
+### 9.4 Verification
+
+- `tests/test_pif_eth.py` adds three tests:
+  - `test_firmware_uses_shared_hw_crc32_include`: all four firmware images
+    include the hardware routine and none inlines a CRC.
+  - `test_crc32_core_matches_zlib`: both the hardware and software
+    `crc32_core` are checked against `zlib` for lengths 0–7, 60, 128 and
+    201, including that `r28`/`r29` survive the call.
+  - `test_hw_crc32_core_is_much_cheaper_than_software`: a cycle-cost check.
+- Full repo suite: 1407 passed, 2 xfailed.
+- `python3 source/pif_eth/rx_driver.py o1` still passes all 28
+  rung/seed combinations (n_tx = 2, 4, 6, 8 × 7 seeds) with `ovf = symerr
+  = biterr = 0` and `crc_ok = 1`, including the 125 Mbaud rung.

@@ -230,11 +230,72 @@ def test_mcp_pru_load_accepts_include_paths():
     assert "include_paths" in inspect.signature(PRUSimulatorMCP.pru_load).parameters
 
 
-def test_tx_firmware_uses_shared_crc32_include():
-    src = (Path(driver.ASM_DIR) / "pif_eth_tx.asm").read_text()
-    assert ".include" in src and "pif_eth_crc32.inc" in src
-    # The inner loop must live in exactly one place.
-    assert "0xEDB8" not in src
+@pytest.mark.parametrize("fw", ["pif_eth_tx.asm", "pif_eth_tx_n2.asm",
+                                "pif_eth_tx_n2_skipchecks.asm",
+                                "pif_eth_rx_o1_raw.asm"])
+def test_firmware_uses_shared_hw_crc32_include(fw):
+    src = (Path(driver.ASM_DIR) / fw).read_text()
+    assert '.include "pif_eth_crc32_hw.inc"' in src
+    # The CRC must live in exactly one place, not inlined per firmware.
+    assert "0xEDB8" not in src and "crc32_core:" not in src
+
+
+_CRC_HARNESS = """
+start:
+    ldi  r0, 0x0400
+    lbbo &r8, r0, 0, 4          ; byte count
+    ldi  r21, 0x0500
+    ldi  r28, 0x1234            ; r28/r29 must survive crc32_core
+    ldi  r29, 0x5678
+    jal  r26, crc32_core
+    ldi  r0, 0x0404
+    sbbo &r20, r0, 0, 4         ; FCS
+    sbbo &r21, r0, 4, 4         ; end pointer
+    sbbo &r28, r0, 8, 8         ; r28, r29
+    halt
+
+    .include "{inc}"
+"""
+
+
+@pytest.mark.parametrize("inc", ["pif_eth_crc32_hw.inc", "pif_eth_crc32.inc"])
+@pytest.mark.parametrize("length", [0, 1, 2, 3, 4, 5, 7, 60, 128, 201])
+def test_crc32_core_matches_zlib(inc, length):
+    """Both crc32_core builds honour the shared contract at every tail length."""
+    from simulator import Simulator
+    sim = Simulator()
+    data = bytes((i * 37 + 11) & 0xFF for i in range(length))
+    sim.memory.write(0x0400, length.to_bytes(4, "little"))
+    sim.memory.write(0x0500, data + b"\xAA" * 8)
+    assert sim.load("pru0", _CRC_HARNESS.format(inc=inc),
+                    include_paths=[driver.ASM_DIR]) == []
+    for _ in range(40_000):
+        if sim.step("pru0", 100)["halted"]:
+            break
+    out = bytes(sim.memory_read(0x0404, 16))
+    assert int.from_bytes(out[0:4], "little") == crc32.crc32(data)
+    assert int.from_bytes(out[4:8], "little") == 0x0500 + length
+    assert int.from_bytes(out[8:12], "little") == 0x1234
+    assert int.from_bytes(out[12:16], "little") == 0x5678
+
+
+def test_hw_crc32_core_is_much_cheaper_than_software():
+    """Cycle cost of the 128-octet BERT FCS, measured on the simulator."""
+    from simulator import Simulator
+
+    def cycles(inc):
+        sim = Simulator()
+        sim.memory.write(0x0400, (128).to_bytes(4, "little"))
+        sim.memory.write(0x0500, prng_bytes(128, DEFAULT_SEED))
+        assert sim.load("pru0", _CRC_HARNESS.format(inc=inc),
+                        include_paths=[driver.ASM_DIR]) == []
+        st = {"halted": False}
+        while not st["halted"]:
+            st = sim.step("pru0", 1)
+        return st["cycles"]
+
+    hw, sw = cycles("pif_eth_crc32_hw.inc"), cycles("pif_eth_crc32.inc")
+    assert hw < 200 and sw > 9000
 
 
 # --------------------------------------------------------------------------

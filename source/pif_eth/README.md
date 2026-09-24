@@ -23,15 +23,17 @@ renders it to a **Wireshark** trace.
   * **UDP (option 2)** — Ethernet/IPv4/UDP carrying `"Hello World Text"`,
     padded to 60 octets + 4-octet FCS = 64 octets. Dissects cleanly in
     Wireshark.
-* **CRC-32:** firmware-generated (bit-serial, reflected poly `0xEDB88320`),
-  matching `zlib.crc32` / Ethernet FCS.
+* **CRC-32:** computed on the ICSSG **CRC16/32 broadside accelerator** (XFR
+  device 1, reflected poly `0xEDB88320`), matching `zlib.crc32` / Ethernet
+  FCS — see [CRC-32 on the broadside accelerator](#crc-32-on-the-broadside-accelerator).
+  The original bit-serial firmware routine is kept as a fallback.
 
 ## Data flow
 
 ```
  PRNG/preload payload ──▶ DRAM0 frame buffer (0x0500)
         │                        │
-        │                  firmware CRC-32 ─▶ append 4-byte FCS
+        │                  CRC16/32 accel ─▶ append 4-byte FCS
         ▼                        ▼
  per octet: LBCO LUT[octet] (DRAM0, c24) ─▶ 10-bit symbol (RD tracked)
         ▼
@@ -49,6 +51,8 @@ which also give the decoder symbol alignment.
 |------|---------|
 | `pif_eth_tx.asm` | PRU0 firmware (self-config, PRNG, CRC-32, 8b/10b encode, stream) |
 | `codec.py` | 8b/10b encode/decode + DRAM0 LUT builder (golden reference) |
+| `pif_eth_crc32_hw.inc` | shared `crc32_core`: Ethernet FCS on the CRC16/32 broadside accelerator (used by all firmware) |
+| `pif_eth_crc32.inc` | same `crc32_core` contract, bit-serial software fallback (no longer included by default) |
 | `crc32.py`, `prng.py` | Ethernet FCS and xorshift32 references |
 | `frames.py` | BERT and UDP frame builders |
 | `decoder.py` | bit/symbol stream → frames |
@@ -96,6 +100,76 @@ server** wrapper.
 | `[10]` | RD after the symbol (0 = negative, 1 = positive) |
 | `[25:16]` | 10-bit symbol to send when running disparity is positive |
 | `[26]` | RD after the symbol |
+
+## CRC-32 on the broadside accelerator
+
+All four firmware images (`pif_eth_tx.asm`, `pif_eth_tx_n2.asm`,
+`pif_eth_tx_n2_skipchecks.asm`, `pif_eth_rx_o1_raw.asm`) include the same
+`crc32_core` from `pif_eth_crc32_hw.inc`. The routine keeps the software
+routine's contract (`r21` = buffer, `r8` = length → `r20` = FCS, `r21` =
+end of buffer, return via `r26`), so only the `.include` line changed in
+`pif_eth_tx.asm` and the RX firmware. The two n2 variants used to inline
+their own copy of the bit-serial loop; they now call the shared routine too.
+
+How it drives the hardware (TRM SPRUIM2H §6.4.6.2.2.1, Table 6-429):
+
+1. `XOUT 1, &r25, 1` with `CRC_CFG = 0x01` selects CRC-32 and seeds `0xFFFFFFFF`.
+2. A zero-overhead `LOOP` pushes the buffer one 32-bit word at a time:
+   `LBBO &r29` then `XOUT 1, &r29, 4`.
+3. Two `NOP`s, then `XIN 1, &r29, 4` reads the result. The read is
+   destructive. The engine applies no final XOR, so the firmware does
+   `NOT`.
+4. A session must keep one write width. So when the length is not a
+   multiple of 4, the 1–3 trailing bytes run as a second, byte-wide
+   session, seeded through `CRC_SEED` (`R28`) with the word session's
+   result. BERT (128) and UDP (60) are both multiples of 4 and never take
+   this path. RX tests with `payload_len=201` do.
+
+The broadside window is fixed at `R25`–`R29`, and the firmware already
+uses `r28`/`r29` as return-address registers (RX: both are live inside
+`post_frame`). So `crc32_core` saves them in `r22`/`r24` and restores
+them before returning.
+
+### Cycle savings (measured on the simulator)
+
+Cycles from the `jal` into `crc32_compute` / `rx_crc_check` to its return,
+taken by single-stepping the simulator (default memory config for
+`driver.py`; `config/memory_pif_eth_rx.cfg` for the TX+RX runs; both have
+DRAM `read_latency = 2`):
+
+| Routine | Payload | Software (bit-serial) | Accelerator | Saving |
+|---|---|---|---|---|
+| TX `crc32_compute` | 128 B (BERT) | 9 488 – 9 552 | **181** | ~52× (−9.3k cycles) |
+| TX `crc32_compute` | 60 B (UDP) | 4 456 | **96** | ~46× |
+| RX `rx_crc_check` | 128 B (BERT) | 9 526 – 9 558 | **187** | ~51× |
+| TX / RX | 201 B (byte tail) | 14 864 / 14 873 | **283 / 289** | ~52× |
+
+* **Per byte:** the software loop costs about 74 cycles per octet, and the
+  exact figure depends on the data (one extra `LDI`/`XOR` pair per `1`
+  shifted out). That is why it varies from frame to frame. The accelerator
+  loop costs 5 cycles per 4-octet word (`LBBO` 1 + 2 DRAM stall, `XOUT` 1,
+  `ADD` 1; `LOOP` adds nothing), about 1.25 cycles/octet. The fixed setup
+  and readout (save/restore, `CRC_CFG`, 2 `NOP`s, `XIN`, `NOT`) is about
+  20 cycles. The cost is now deterministic. The inner loop is bound by
+  DRAM read latency, not by the CRC.
+* **What it buys on TX:** the FCS is computed between bursts, not inside
+  the 8b/10b streaming loop. So it doesn't change the per-bit budget (the
+  n=2 zero-headroom analysis above is untouched). It shrinks the dead time
+  before each frame. At n=2 / 250 MHz, a BERT burst is 138 symbols × 10
+  bits × 2 cycles ≈ 2 760 core cycles on the wire. The software CRC
+  (≈9.5k cycles, 38 µs) took about 3.4× longer than the frame it was
+  protecting. The accelerator (181 cycles, 0.72 µs) takes about 7% of it.
+  The PRNG fill (≈1.5k cycles for 128 octets: 11 instructions + 1 write stall per octet) is now the larger per-frame
+  software cost.
+* **What it buys on RX:** `rx_crc_check` runs post-frame, before PRU1
+  re-arms for the next burst. Its ≈9.4k-cycle cut goes straight into the
+  minimum inter-frame gap RX can accept. The realtime capture loop is
+  unchanged, and `rx_driver.py o1` still passes all 28 ladder/seed
+  combinations, including n_tx=2.
+
+These are simulator figures. `XOUT`/`XIN` to the CRC model cost one cycle
+each, and the `NOP` count follows the TRM's "1–2 NOPs" rule. They are
+**not silicon measurements**.
 
 ## 125 Mbaud (n=2) follow-up (2026-07-21)
 
@@ -272,7 +346,6 @@ the full ladder and its results.
 
 ## Roadmap
 
-* Broadside CRC accelerator for the FCS (currently firmware bit-serial).
 * Striping across all three perif channels for aggregate throughput.
 * A *robust* n=2 (125 Mbaud) firmware would need to cut the bit-packing
   loop's cycle cost further (or a multi-byte FIFO push, which the perif

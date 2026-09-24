@@ -98,40 +98,15 @@ pf_done:
     jmp  r29
 
 ; -------------------------------------------------------------
-; crc32_compute: reflected CRC-32 over payload_len bytes at 0x0500,
-;   append 4 FCS bytes little-endian at 0x0500+payload_len. ret r29
-;   r20 crc  r21 ptr  r22 i  r23 byte  r24 j  r25 tmp/poly
+; crc32_compute: CRC-32 over payload_len bytes at 0x0500, append the
+;   4 FCS bytes little-endian at 0x0500+payload_len. ret r29
+;   Runs on the CRC16/32 broadside accelerator via the shared
+;   crc32_core in pif_eth_crc32_hw.inc (same routine as pif_eth_tx.asm).
+;   r26 is free here: this variant never uses it elsewhere.
 ; -------------------------------------------------------------
 crc32_compute:
-    ldi  r20, 0xFFFF
-    ldi  r20.w2, 0xFFFF        ; crc = 0xFFFFFFFF
     ldi  r21, 0x0500
-    ldi  r22, 0
-cc_byte:
-    qble cc_done, r22, r8      ; i >= payload_len
-    lbbo &r23, r21, 0, 1
-    xor  r20, r20, r23         ; crc ^= byte
-    ldi  r24, 0
-cc_bit:
-    qble cc_bitend, r24, 8     ; j >= 8
-    and  r25, r20, 1
-    qbeq cc_noxor, r25, 0      ; (crc & 1) == 0
-    lsr  r20, r20, 1
-    ldi  r25, 0x8320
-    ldi  r25.w2, 0xEDB8        ; poly 0xEDB88320
-    xor  r20, r20, r25
-    jmp  cc_bitnext
-cc_noxor:
-    lsr  r20, r20, 1
-cc_bitnext:
-    add  r24, r24, 1
-    jmp  cc_bit
-cc_bitend:
-    add  r21, r21, 1
-    add  r22, r22, 1
-    jmp  cc_byte
-cc_done:
-    not  r20, r20              ; final XOR 0xFFFFFFFF
+    jal  r26, crc32_core       ; -> r20 = FCS, r21 = 0x0500+payload_len
     sbbo &r20, r21, 0, 4       ; append FCS (little-endian)
     jmp  r29
 
@@ -392,3 +367,5 @@ drain_wait:
     and  r6, r31, 0x20         ; busy bit
     qbne drain_wait, r6, 0
     jmp  r28
+
+    .include "pif_eth_crc32_hw.inc"
