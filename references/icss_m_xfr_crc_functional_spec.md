@@ -306,3 +306,7 @@ using 4-byte (`ldi32`) writes instead of 2-byte ones — see
 > CRC standard doesn't have to reverse it in software — see §4's `bitswap`
 > discussion for why the accumulator is stored LSB-first to begin with.
 > Reading either mirror does **not** reset the accumulator.
+>
+> `source/crc_bitswap_example.asm` (tests: `tests/test_crc_bitswap_example.py`)
+> reads both mirrors after a CRC-32 run, with the data pushed byte-wide and
+> then 32-bit wide.
