@@ -9,25 +9,59 @@ let ws = null;
 let prevRegisters = new Array(32).fill("0x00000000");
 let currentCore = "pru0";
 let running = false;
-let runInterval = null;
+let runPumpTimer = null;
+let runRequestInFlight = false;
+let nextRunRequestId = 1;
+const pendingRunRequestIds = new Set();
+const abandonedRunRequestIds = new Set();
+let activeToolbarRequestId = null;
+let activeSimRequestId = null;
+let genericSsiLoaded = false;
+let simpleSsiLoaded = false;
+let genericSsiRunInFlight = false;
+let genericSsiRequestId = null;
+const RUN_PUMP_DELAY_MS = 1000 / 30;
+const SSI_RUNTIME_READ_THROTTLE_MS = 250;
+let ssiRuntimeReadTimer = null;
+let ssiRuntimeReadQueued = false;
+let ssiRuntimeLastReadAt = 0;
 let simRunning = false;
 let simTimer = null;
 let _flashTimer = null;
 let clientBreakpoints = new Set();
-let _lastSourceKey = '';
+let _lastSourceBreakpointKey = null;
+let _currentSourceLine = null;
+let _sourceInstructions = [];
+let _sourceLabels = {};
+let _renderedSourceInstructions = null;
+let _renderedSourceLabels = null;
+let panelVisibilityButtons = null;
+let protocolPanelButtons = null;
+let protocolPanelVisibleKeys = new Set(["i2c"]);
+let focLatestState = null;
+let focSamples = [];
+let focDialAnimationFrame = null;
 
 // ---- Multi-core state ------------------------------------------------------
 let multiCoreMode = false;
-let mcPartner = "rtu0";            // second core shown in multi-core view
+const MC_SLOT_KEYS = ["pru0", "rtu0", "rtu1"];
+let mcCores = ["pru0", "rtu0", null]; // selected core for each visible slot
+let mcPartner = "rtu0";                 // legacy alias for SSI pair controls
 let mcPrevRegs = {
   pru0: new Array(32).fill("0x00000000"),
   rtu0: new Array(32).fill("0x00000000"),
   pru1: new Array(32).fill("0x00000000"),
+  rtu1: new Array(32).fill("0x00000000"),
 };
-let mcLastSourceKey = { pru0: '', rtu0: '', pru1: '' };
-let mcBreakpoints   = { pru0: new Set(), rtu0: new Set(), pru1: new Set() };
-let mcHaltedState   = { pru0: false, rtu0: false, pru1: false };
-let mcBreakState    = { pru0: false, rtu0: false, pru1: false };
+let mcLastSourceBreakpointKey = { pru0: null, rtu0: null, rtu1: null };
+let mcCurrentSourceLine = { pru0: null, rtu0: null, rtu1: null };
+let mcSourceInstructions = { pru0: [], rtu0: [], rtu1: [] };
+let mcSourceLabels = { pru0: {}, rtu0: {}, rtu1: {} };
+let mcRenderedSourceInstructions = { pru0: null, rtu0: null, rtu1: null };
+let mcRenderedSourceLabels = { pru0: null, rtu0: null, rtu1: null };
+let mcBreakpoints   = { pru0: new Set(), rtu0: new Set(), rtu1: new Set() };
+let mcHaltedState   = { pru0: false, rtu0: false, rtu1: false };
+let mcBreakState    = { pru0: false, rtu0: false, rtu1: false };
 let mcSpadVisible   = new Set();   // SPAD banks visible in PRU0 MC reg panel
 let mcPrevSpad      = {};          // key -> Array for change detection
 
@@ -65,13 +99,19 @@ const GRAPH_HEIGHT_STEPS = [80, 140, 200, 280, 400, 560, 720, 960, 1200];
 const signalGraph = {
   recording: false,
   windowSize: 1024,
-  buf: [],        // circular buffer array, length === windowSize
+  buf: [],        // circular buffer array, length === window capacity
   head: 0,        // next write index
-  fill: 0,        // number of valid samples (0..windowSize)
+  fill: 0,        // number of valid records (0..window capacity)
   memChannels: [], // [{addr, length, color, label}], up to 8
   heightIdx: 1,   // index into GRAPH_HEIGHT_STEPS (default 140px)
   memHeightIdx: 1, // separate height index for memory graph canvas
+  view: null,      // null = full range; { minStep, maxStep } = zoomed
+  _dragStart: null, // { clientX, fracX, view } for pan tracking
 };
+// Multicore captures arrive as one message per selected core. Hold the group
+// until every selected batch arrives so they can be merged by run step before
+// entering the one circular graph buffer.
+const pendingGraphCaptures = new Map();
 
 // ---- DOM references -------------------------------------------------------
 const coreSelect    = document.getElementById("core-select");
@@ -101,6 +141,9 @@ const btnSaveAsm      = document.getElementById("btn-save-asm");
 const btnMulticore    = document.getElementById("btn-multicore");
 const editorPanel     = document.getElementById("editor-panel");
 const mcLoadCore      = document.getElementById("mc-load-core");
+const mcPrimarySelect = document.getElementById("mc-primary-select");
+const mcPartnerSelect = document.getElementById("mc-partner-select");
+const mcThirdSelect   = document.getElementById("mc-third-select");
 
 const btnOpenProject  = document.getElementById("btn-open-project");
 
@@ -111,6 +154,15 @@ const pruSpeedSelect  = document.getElementById("pru-speed-select");
 const configError     = document.getElementById("config-error");
 const btnConfigSave   = document.getElementById("btn-config-save");
 const btnConfigCancel = document.getElementById("btn-config-cancel");
+
+function setButtonLabel(button, label) {
+  const text = button && button.querySelector(".text");
+  if (text) {
+    text.textContent = label;
+  } else if (button) {
+    button.textContent = label;
+  }
+}
 
 // ---- Editor dirty tracking -----------------------------------------------
 asmSource.addEventListener('input', () => {
@@ -312,14 +364,286 @@ function buildPinGrid(container, count, cssClass, clickHandler) {
   }
 }
 
+function initTabList(tabListId, initialTabId, onActivate = null) {
+  const tabList = document.getElementById(tabListId);
+  if (!tabList) return null;
+
+  const tabs = Array.from(tabList.querySelectorAll('[role="tab"]'));
+
+  function activateTab(tab, focus = false) {
+    if (!tab) return;
+    tabs.forEach(candidate => {
+      const selected = candidate === tab;
+      candidate.setAttribute("aria-selected", selected ? "true" : "false");
+      candidate.tabIndex = selected ? 0 : -1;
+      const panel = document.getElementById(candidate.getAttribute("aria-controls"));
+      if (panel) {
+        panel.hidden = !selected;
+        panel.setAttribute("aria-hidden", selected ? "false" : "true");
+      }
+    });
+    if (onActivate) onActivate(tab);
+    if (focus) tab.focus();
+  }
+
+  tabList.addEventListener("click", (event) => {
+    const tab = event.target.closest('[role="tab"]');
+    if (tab && tabs.includes(tab)) activateTab(tab);
+  });
+
+  tabList.addEventListener("keydown", (event) => {
+    const tab = event.target.closest('[role="tab"]');
+    if (!tab || !tabs.includes(tab)) return;
+
+    // Keep the simulator's document-level Space/arrow shortcuts from seeing
+    // keyboard interaction that belongs to an application tab.
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      event.stopPropagation();
+      activateTab(tab);
+      return;
+    }
+
+    let nextIndex = -1;
+    const currentIndex = tabs.indexOf(tab);
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      nextIndex = (currentIndex + 1) % tabs.length;
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = tabs.length - 1;
+    }
+
+    if (nextIndex >= 0) {
+      event.preventDefault();
+      event.stopPropagation();
+      activateTab(tabs[nextIndex], true);
+    }
+  });
+
+  activateTab(document.getElementById(initialTabId) || tabs[0]);
+  return activateTab;
+}
+
+function syncWorkspaceSubnav(tab) {
+  const isSimulator = tab?.getAttribute("aria-controls") === "simulator-view";
+  const isProtocolTools = tab?.getAttribute("aria-controls") === "protocol-tools-view";
+  const isFoc = tab?.getAttribute("aria-controls") === "foc-view";
+  const panelVisibility = document.getElementById("panel-visibility");
+  const protocolToolTabs = document.getElementById("protocol-tool-tabs");
+
+  if (panelVisibility) {
+    panelVisibility.hidden = !isSimulator;
+    panelVisibility.setAttribute("aria-hidden", isSimulator ? "false" : "true");
+  }
+  if (protocolToolTabs) {
+    protocolToolTabs.hidden = !isProtocolTools;
+    protocolToolTabs.setAttribute("aria-hidden", isProtocolTools ? "false" : "true");
+  }
+  if (isFoc) requestGraphDraw();
+}
+
+const PROTOCOL_PANEL_VISIBILITY_KEY = "pru-protocol-panel-visibility";
+const PROTOCOL_PANEL_DEFS = [
+  { key: "i2c", label: "I2C", panelId: "protocol-i2c-panel", buttonId: "protocol-tab-i2c" },
+  { key: "uart", label: "UART", panelId: "protocol-uart-panel", buttonId: "protocol-tab-uart" },
+  { key: "ssi", label: "SSI", panelId: "protocol-ssi-panel", buttonId: "protocol-tab-ssi" },
+];
+
+function loadProtocolPanelVisibility() {
+  try {
+    const raw = localStorage.getItem(PROTOCOL_PANEL_VISIBILITY_KEY);
+    const saved = raw ? JSON.parse(raw) : null;
+    const allowed = new Set(PROTOCOL_PANEL_DEFS.map(definition => definition.key));
+    const visible = Array.isArray(saved)
+      ? saved.filter(key => allowed.has(key))
+      : [];
+    return new Set(visible.length ? visible : ["i2c"]);
+  } catch (e) {
+    return new Set(["i2c"]);
+  }
+}
+
+function saveProtocolPanelVisibility() {
+  try {
+    localStorage.setItem(
+      PROTOCOL_PANEL_VISIBILITY_KEY,
+      JSON.stringify(Array.from(protocolPanelVisibleKeys)),
+    );
+  } catch (e) { /* quota exceeded — ignore */ }
+}
+
+function applyProtocolPanelVisibility() {
+  for (const definition of PROTOCOL_PANEL_DEFS) {
+    const visible = protocolPanelVisibleKeys.has(definition.key);
+    const panel = document.getElementById(definition.panelId);
+    const button = document.getElementById(definition.buttonId);
+    if (panel) {
+      panel.hidden = !visible;
+      panel.setAttribute("aria-hidden", visible ? "false" : "true");
+    }
+    if (button) {
+      button.setAttribute("aria-pressed", visible ? "true" : "false");
+      button.title = visible
+        ? `Hide ${definition.label} panel`
+        : `Show ${definition.label} panel`;
+    }
+  }
+}
+
+function initProtocolPanelControls() {
+  protocolPanelButtons = document.getElementById("protocol-tool-tabs");
+  if (!protocolPanelButtons) return;
+
+  protocolPanelVisibleKeys = loadProtocolPanelVisibility();
+  protocolPanelButtons.querySelectorAll("[data-protocol-panel]").forEach(button => {
+    button.addEventListener("click", () => {
+      const key = button.dataset.protocolPanel;
+      if (!PROTOCOL_PANEL_DEFS.some(definition => definition.key === key)) return;
+
+      if (protocolPanelVisibleKeys.has(key)) {
+        if (protocolPanelVisibleKeys.size === 1) {
+          flashStatus("Keep one protocol panel visible", "halted");
+          return;
+        }
+        protocolPanelVisibleKeys.delete(key);
+      } else {
+        protocolPanelVisibleKeys.add(key);
+      }
+
+      saveProtocolPanelVisibility();
+      applyProtocolPanelVisibility();
+    });
+  });
+
+  applyProtocolPanelVisibility();
+}
+
+function initProtocolTools() {
+  initTabList("view-tabs", "tab-simulator", syncWorkspaceSubnav);
+
+  const protocolSlots = {
+    i2c: ["i2c-attach-strip", "i2c-interface"],
+    uart: ["uart-decoder", "uart-rx-inject"],
+    ssi: ["ssi-inject", "ssi-runtime"],
+  };
+
+  for (const [slotName, elementIds] of Object.entries(protocolSlots)) {
+    const slot = document.querySelector(`[data-protocol-slot="${slotName}"]`);
+    if (!slot) continue;
+    for (const elementId of elementIds) {
+      const element = document.getElementById(elementId);
+      if (element && !slot.contains(element)) slot.appendChild(element);
+    }
+  }
+
+  // The protocol sections are now owned by Protocol Tools. Remove only the
+  // separators left behind in the simulator's I/O observation panel.
+  const ioBody = document.querySelector("#io-panel .panel-body");
+  ioBody?.querySelectorAll(".uart-divider").forEach(separator => separator.remove());
+
+  initProtocolPanelControls();
+}
+
+const PANEL_TOGGLE_DEFS = [
+  {
+    key: "source",
+    label: "Source / Disassembly",
+    icon: "\u25a4",
+    ids: () => multiCoreMode
+      ? ["mc-pru0-source", "mc-rtu0-source", "mc-rtu1-source"]
+      : ["source"],
+  },
+  {
+    key: "registers",
+    label: "Registers",
+    icon: "\u25a6",
+    ids: () => multiCoreMode
+      ? ["mc-pru0-registers", "mc-rtu0-registers", "mc-rtu1-registers"]
+      : ["registers"],
+  },
+  { key: "io", label: "I/O Pins", icon: "\u2194", ids: () => ["io"] },
+  { key: "signal-graph", label: "Signal Graph", icon: "\u223f", ids: () => ["signal-graph"] },
+  { key: "mem-graph", label: "Memory Graph", icon: "\u2336", ids: () => ["mem-graph"] },
+  { key: "memory1", label: "Memory 1", icon: "M1", ids: () => ["memory1"] },
+  { key: "memory2", label: "Memory 2", icon: "M2", ids: () => ["memory2"] },
+  { key: "editor", label: "Assembly Editor", icon: "\u270e", ids: () => ["editor"] },
+];
+
+function panelToggleState(panelIds) {
+  const visibleCount = panelIds.filter(panelId => getPanelVisibility(panelId)).length;
+  if (visibleCount === 0) return "hidden";
+  if (visibleCount === panelIds.length) return "visible";
+  return "partial";
+}
+
+function updatePanelVisibilityButtons() {
+  if (!panelVisibilityButtons) return;
+
+  panelVisibilityButtons.querySelectorAll("[data-panel-toggle]").forEach(button => {
+    const definition = PANEL_TOGGLE_DEFS.find(
+      candidate => candidate.key === button.dataset.panelToggle,
+    );
+    if (!definition) return;
+    const state = panelToggleState(definition.ids());
+    const selected = state !== "hidden";
+    button.setAttribute("aria-pressed", selected ? "true" : "false");
+    button.title = selected ? `Hide ${definition.label} panel` : `Show ${definition.label} panel`;
+    if (state === "partial") button.dataset.partial = "true";
+    else delete button.dataset.partial;
+  });
+}
+
+function initPanelVisibilityControls() {
+  panelVisibilityButtons = document.getElementById("panel-visibility-buttons");
+  if (!panelVisibilityButtons) return;
+
+  for (const definition of PANEL_TOGGLE_DEFS) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "panel-toggle";
+    button.dataset.panelToggle = definition.key;
+    button.setAttribute("aria-pressed", "true");
+
+    const icon = document.createElement("span");
+    icon.className = "panel-toggle-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = definition.icon;
+
+    const label = document.createElement("span");
+    label.className = "panel-toggle-label";
+    label.textContent = definition.label;
+
+    button.append(icon, label);
+    button.addEventListener("click", () => {
+      const panelIds = definition.ids();
+      const show = panelToggleState(panelIds) === "hidden";
+      const changed = setPanelsVisibility(panelIds, show);
+      if (!changed && !show) flashStatus("Keep one panel visible", "halted");
+      updatePanelVisibilityButtons();
+    });
+    panelVisibilityButtons.appendChild(button);
+  }
+
+  document.addEventListener("pru-layout-changed", updatePanelVisibilityButtons);
+  updatePanelVisibilityButtons();
+}
+
 function initUI() {
   initSpadState();
   buildRegTable();
   buildPinGrid(gpoGrid, 20, "gpo", null);
   buildPinGrid(gpiGrid, 20, "gpi", handleGpiClick);
+  initProtocolTools();
+  initFocControls();
+  initPanelVisibilityControls();
   initLayout('sc');
+  updatePanelVisibilityButtons();
   initEditorTabs();
 }
+
 
 // ---- WebSocket setup ------------------------------------------------------
 
@@ -331,19 +655,29 @@ function connect() {
     wsStatus.textContent = "Connected";
     wsStatus.className = "connected";
     if (multiCoreMode) {
-      sendAction({ action: "get_state", core: "pru0" });
-      sendAction({ action: "get_state", core: mcPartner });
+      requestMCStates();
     } else {
       sendAction({ action: "get_state", core: currentCore });
     }
+    sendAction({ action: "foc_state" });
     refreshMemory();
     refreshMemory2();
     loadRegions();
+    sendAction({ action: "get_wires" });
   };
 
   ws.onclose = () => {
     wsStatus.textContent = "Disconnected";
     wsStatus.className = "error";
+    graphMemoryInFlight.clear();
+    graphMemoryRefreshAt = 0;
+    cancelAllRunRequests();
+    pendingGraphCaptures.clear();
+    memReadInFlight = false;
+    memReadInFlight2 = false;
+    memReadPending = false;
+    memReadPending2 = false;
+    cancelQueuedSsiRuntimeRead();
     stopRun();
     // Attempt reconnect after 2 s
     setTimeout(connect, 2000);
@@ -358,6 +692,7 @@ function connect() {
     try {
       const msg = JSON.parse(event.data);
       if (msg.type === "state") {
+        if (msg.wires !== undefined) renderWires(msg.wires);
         if (multiCoreMode) {
           updateMCUI(msg);
         } else if (!msg.core || msg.core === currentCore) {
@@ -365,11 +700,24 @@ function connect() {
         }
       } else if (msg.type === "capture") {
         graphHandleCapture(msg);
-        drawGraph();
+        requestGraphDraw();
       } else if (msg.type === "memory") {
         if (msg.tag === "mem2") renderMemory2(msg);
-        else if (msg.tag && msg.tag.startsWith("graph-")) { graphHandleMemory(msg); drawGraph(); }
+        else if (msg.tag && msg.tag.startsWith("graph-")) { graphHandleMemory(msg); requestGraphDraw(); }
         else renderMemory(msg);
+      } else if (msg.type === "run_done") {
+        const requestId = String(msg.request_id ?? "");
+        const currentRequest = completeRunRequest(requestId);
+        if (!currentRequest) return;
+        if (requestId === genericSsiRequestId) {
+          genericSsiRunInFlight = false;
+          genericSsiRequestId = null;
+          // A toolbar Run/SIM request can complete every few milliseconds.
+          // Do not put a full SSI status/render pass behind every one.  A
+          // standalone SSI run still gets an immediate final read.
+          queueSsiRuntimeRead(!(running || simRunning));
+        }
+        scheduleRunPump(RUN_PUMP_DELAY_MS);
       } else if (msg.type === "uart_inject_ok") {
         const st = document.getElementById("uart-inj-status");
         if (st) {
@@ -379,6 +727,38 @@ function connect() {
           st.style.color = "#6a9955";
           st.style.display = "";
         }
+      } else if (msg.type === "ssi_inject_ok") {
+        const st = document.getElementById("ssi-inj-status");
+        if (st) {
+          st.textContent = "\u2713 Armed: position " + msg.value_hex +
+            " (" + msg.bits + "-bit) \u00B7 CLK=GPO" + msg.clk_pin +
+            " DATA=GPI" + msg.data_pin + " \u00B7 run to capture";
+          st.style.color = "#6a9955";
+          st.style.display = "";
+        }
+      } else if (msg.type === "ssi_runtime_state") {
+        renderSsiRuntimeState(msg);
+      } else if (msg.type === "ssi_runtime_error") {
+        const st = document.getElementById("ssi-runtime-status");
+        if (st) {
+          st.textContent = "✗ " + msg.error;
+          st.style.color = "#f38ba8";
+          st.style.display = "";
+        }
+      } else if (msg.type === "ssi_simple_state") {
+        if (window.renderSsiSimpleState) window.renderSsiSimpleState(msg);
+      } else if (msg.type === "ssi_simple_progress") {
+        if (window.renderSsiSimpleProgress) window.renderSsiSimpleProgress(msg);
+      } else if (msg.type === "ssi_simple_error") {
+        if (window.renderSsiSimpleError) window.renderSsiSimpleError(msg);
+      } else if (msg.type === "foc_state") {
+        renderFocState(msg);
+        requestGraphDraw();
+      } else if (msg.type === "foc_error") {
+        const status = document.getElementById("foc-runtime-status");
+        const inline = document.getElementById("foc-control-status");
+        if (status) status.textContent = "FOC error · " + msg.error;
+        if (inline) inline.textContent = msg.error;
       } else if (msg.type === "perif_ok") {
         const st = document.getElementById("perif-lb-status");
         if (st) {
@@ -386,9 +766,27 @@ function connect() {
             (msg.enabled ? "enabled" : "disabled");
           st.style.display = "";
         }
+      } else if (msg.type === "wires") {
+        renderWires(msg.wires);
       } else if (msg.type === "error") {
         if (msg.tag && msg.tag.startsWith("graph-")) graphMarkChannelError(msg.tag);
-        else showErrors(msg.errors);
+        else {
+          if (msg.tag === "mem1") finishMemoryRequest(1);
+          if (msg.tag === "mem2") finishMemoryRequest(2);
+          if (msg.request_id !== undefined) {
+            const requestId = String(msg.request_id);
+            const currentRequest = completeRunRequest(requestId);
+            if (currentRequest && requestId === genericSsiRequestId) {
+              genericSsiRunInFlight = false;
+              genericSsiRequestId = null;
+            }
+          }
+          if (msg.code === "multicore_sync") {
+            stopRun();
+            graphSetRecording(false);
+          }
+          showErrors(msg.errors);
+        }
       }
     } catch (e) {
       console.error("Failed to parse message", e);
@@ -399,18 +797,102 @@ function connect() {
 function sendAction(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(obj));
+    return true;
   }
+  return false;
+}
+
+function queueSsiRuntimeRead(force = false) {
+  ssiRuntimeReadQueued = true;
+  if (force && ssiRuntimeReadTimer !== null) {
+    clearTimeout(ssiRuntimeReadTimer);
+    ssiRuntimeReadTimer = null;
+  }
+  if (ssiRuntimeReadTimer !== null) return;
+
+  const elapsed = Date.now() - ssiRuntimeLastReadAt;
+  const delay = force
+    ? 0
+    : Math.max(0, SSI_RUNTIME_READ_THROTTLE_MS - elapsed);
+  ssiRuntimeReadTimer = setTimeout(() => {
+    ssiRuntimeReadTimer = null;
+    if (!ssiRuntimeReadQueued) return;
+    ssiRuntimeReadQueued = false;
+    if (sendAction({ action: "ssi_runtime_read" })) {
+      ssiRuntimeLastReadAt = Date.now();
+    }
+  }, delay);
+}
+
+function cancelQueuedSsiRuntimeRead() {
+  if (ssiRuntimeReadTimer !== null) {
+    clearTimeout(ssiRuntimeReadTimer);
+    ssiRuntimeReadTimer = null;
+  }
+  ssiRuntimeReadQueued = false;
+}
+
+function trackRunRequest(requestId, owner = null) {
+  if (requestId === undefined || requestId === null) return;
+  const key = String(requestId);
+  pendingRunRequestIds.add(key);
+  if (owner === "toolbar") activeToolbarRequestId = key;
+  if (owner === "sim") activeSimRequestId = key;
+  runRequestInFlight = true;
+}
+
+function completeRunRequest(requestId) {
+  const key = String(requestId ?? "");
+  const abandoned = abandonedRunRequestIds.delete(key);
+  pendingRunRequestIds.delete(key);
+  if (activeToolbarRequestId === key) activeToolbarRequestId = null;
+  if (activeSimRequestId === key) activeSimRequestId = null;
+  runRequestInFlight = pendingRunRequestIds.size > 0;
+  return !abandoned;
+}
+
+function abandonRunRequest(requestId) {
+  if (requestId === undefined || requestId === null) return;
+  const key = String(requestId);
+  if (pendingRunRequestIds.delete(key)) abandonedRunRequestIds.add(key);
+  if (activeToolbarRequestId === key) activeToolbarRequestId = null;
+  if (activeSimRequestId === key) activeSimRequestId = null;
+  runRequestInFlight = pendingRunRequestIds.size > 0;
+}
+
+function cancelAllRunRequests() {
+  if (runPumpTimer !== null) {
+    clearTimeout(runPumpTimer);
+    runPumpTimer = null;
+  }
+  for (const requestId of pendingRunRequestIds) abandonedRunRequestIds.add(requestId);
+  pendingRunRequestIds.clear();
+  activeToolbarRequestId = null;
+  activeSimRequestId = null;
+  genericSsiRequestId = null;
+  genericSsiRunInFlight = false;
+  runRequestInFlight = false;
+}
+
+function canStartRunRequest(inFlight) {
+  return !inFlight;
 }
 
 // ---- UI update ------------------------------------------------------------
 
+function setTextIfChanged(element, value) {
+  if (!element) return;
+  const text = String(value);
+  if (element.textContent !== text) element.textContent = text;
+}
+
 function updateUI(state) {
   // Counters / header
-  cntCycles.textContent   = state.cycles;
-  cntStalls.textContent   = state.stall_cycles;
-  cntInstrs.textContent   = state.instruction_count;
-  cntIpc.textContent      = state.ipc.toFixed(3);
-  cntPc.textContent       = state.pc;
+  setTextIfChanged(cntCycles, state.cycles);
+  setTextIfChanged(cntStalls, state.stall_cycles);
+  setTextIfChanged(cntInstrs, state.instruction_count);
+  setTextIfChanged(cntIpc, state.ipc.toFixed(3));
+  setTextIfChanged(cntPc, state.pc);
 
   // Sync breakpoints from server
   if (state.breakpoints) clientBreakpoints = new Set(state.breakpoints);
@@ -436,17 +918,25 @@ function updateUI(state) {
 
   // MAC mode indicator
   if (state.mac) {
-    document.getElementById("mac-mode-label").textContent = state.mac.mode ? "ACC" : "MPY";
+    setTextIfChanged(
+      document.getElementById("mac-mode-label"),
+      state.mac.mode ? "ACC" : "MPY",
+    );
     const carryEl = document.getElementById("mac-carry-label");
-    carryEl.textContent = state.mac.acc_carry ? " CARRY" : "";
+    setTextIfChanged(carryEl, state.mac.acc_carry ? " CARRY" : "");
   }
 
   // Registers + SPAD
   updateRegisters(state.registers, state.carry);
   updateSpad(state.spad);
 
-  // Source listing
-  updateSource(state.instructions, state.pc, state.labels || {});
+  // Source text is included only when it changes; retain it for lightweight
+  // state packets that only carry the live CPU values.
+  if (Array.isArray(state.instructions)) {
+    _sourceInstructions = state.instructions;
+    _sourceLabels = state.labels || {};
+  }
+  updateSource(_sourceInstructions, state.pc, _sourceLabels);
 
   // IO pins
   updatePins(state.io);
@@ -456,7 +946,7 @@ function updateUI(state) {
 
   // Signal graph sample
   graphSample(state);
-  drawGraph();
+  requestGraphDraw();
 
   memAutoOnStateChange();
 }
@@ -470,7 +960,7 @@ function updateRegisters(regs, carry) {
     if (valEl.querySelector("input")) continue;
 
     const newVal = regs[i];
-    valEl.textContent = newVal;
+    if (newVal !== prevRegisters[i]) setTextIfChanged(valEl, newVal);
 
     if (newVal !== prevRegisters[i]) {
       rowEl.classList.add("changed");
@@ -480,7 +970,7 @@ function updateRegisters(regs, carry) {
   }
   prevRegisters = [...regs];
   if (carry !== null && carry !== undefined) {
-    regCarry.textContent = carry ? "1" : "0";
+    setTextIfChanged(regCarry, carry ? "1" : "0");
   }
 }
 
@@ -510,8 +1000,11 @@ function updateSpad(spad) {
 function renderBpBar(prefix, core, breakpoints) {
   const listEl = document.getElementById(`${prefix}bp-chip-list`);
   if (!listEl) return;
-  listEl.innerHTML = "";
   const addrs = [...breakpoints].sort((a, b) => a - b);
+  const key = addrs.join(",");
+  if (listEl.dataset?.bpKey === key) return;
+  if (listEl.dataset) listEl.dataset.bpKey = key;
+  listEl.innerHTML = "";
   if (addrs.length === 0) {
     const empty = document.createElement("span");
     empty.className = "bp-empty";
@@ -555,20 +1048,24 @@ function wireBpBar(prefix, coreOf) {
 }
 
 function updateSource(instructions, pc, labels) {
-  // Build addr -> [sorted label names] map
-  const addrToLabels = {};
-  for (const [name, addr] of Object.entries(labels)) {
-    if (!addrToLabels[addr]) addrToLabels[addr] = [];
-    addrToLabels[addr].push(name);
-  }
-  for (const addr of Object.keys(addrToLabels)) addrToLabels[addr].sort();
-
-  // Rebuild when instruction set or label set changes
-  const newKey = instructions.map(i => i.addr + ':' + i.text).join('|')
-               + '|' + Object.entries(labels).sort().join('|');
-  if (newKey !== _lastSourceKey) {
-    _lastSourceKey = newKey;
+  // State packets reuse the same source objects until a load changes them.
+  // Compare those references instead of hashing every instruction on every
+  // live PC update.
+  const sourceChanged = instructions !== _renderedSourceInstructions ||
+    labels !== _renderedSourceLabels;
+  if (sourceChanged) {
+    _renderedSourceInstructions = instructions;
+    _renderedSourceLabels = labels;
+    _lastSourceBreakpointKey = null;
+    _currentSourceLine = null;
     sourceList.innerHTML = "";
+
+    const addrToLabels = {};
+    for (const [name, addr] of Object.entries(labels)) {
+      if (!addrToLabels[addr]) addrToLabels[addr] = [];
+      addrToLabels[addr].push(name);
+    }
+    for (const addr of Object.keys(addrToLabels)) addrToLabels[addr].sort();
 
     instructions.forEach((instr) => {
       // Insert a label row for each label pointing to this address
@@ -612,21 +1109,67 @@ function updateSource(instructions, pc, labels) {
     });
   }
 
-  // Update breakpoint markers (instruction lines only)
-  sourceList.querySelectorAll("li[id^='src-line-']").forEach(li => {
-    const addr = +li.id.slice(9);
-    li.classList.toggle("has-bp", clientBreakpoints.has(addr));
-  });
-
-  // Update current-pc highlight
-  document.querySelectorAll("#source-list li.current-pc").forEach(el => el.classList.remove("current-pc"));
-  const currentLine = document.getElementById(`src-line-${pc}`);
-  if (currentLine) {
-    currentLine.classList.add("current-pc");
-    currentLine.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  // Update breakpoint markers only when the breakpoint set or source list
+  // changed; rebuilding these classes on every state packet is expensive.
+  const breakpointKey = [...clientBreakpoints].sort((a, b) => a - b).join(",");
+  if (breakpointKey !== _lastSourceBreakpointKey) {
+    sourceList.querySelectorAll("li[id^='src-line-']").forEach(li => {
+      const addr = +li.id.slice(9);
+      li.classList.toggle("has-bp", clientBreakpoints.has(addr));
+    });
+    _lastSourceBreakpointKey = breakpointKey;
   }
 
+  // Update current-pc highlight
+  const currentLine = document.getElementById(`src-line-${pc}`);
+  if (_currentSourceLine && _currentSourceLine !== currentLine) {
+    _currentSourceLine.classList.remove("current-pc");
+  }
+  if (currentLine && currentLine !== _currentSourceLine) {
+    currentLine.classList.add("current-pc");
+    queueSourceLineScroll("main", sourceList, currentLine);
+  }
+  _currentSourceLine = currentLine;
+
   renderBpBar("", currentCore, clientBreakpoints);
+}
+
+function sourceLineNeedsScroll(lineTop, lineBottom, viewportTop, viewportBottom) {
+  return lineTop < viewportTop || lineBottom > viewportBottom;
+}
+
+const pendingSourceScrolls = new Map();
+
+function queueSourceLineScroll(key, listEl, line) {
+  const pending = pendingSourceScrolls.get(key);
+  if (pending) {
+    pending.line = line;
+    return;
+  }
+
+  const request = { listEl, line };
+  pendingSourceScrolls.set(key, request);
+  const schedule = typeof requestAnimationFrame === "function"
+    ? requestAnimationFrame
+    : (callback) => setTimeout(callback, 0);
+  schedule(() => {
+    const current = pendingSourceScrolls.get(key);
+    pendingSourceScrolls.delete(key);
+    if (!current || !current.line || !current.line.isConnected) return;
+
+    const scroller = current.listEl.parentElement;
+    if (!scroller || scroller.clientHeight <= 0) return;
+    const lineRect = current.line.getBoundingClientRect();
+    const viewportRect = scroller.getBoundingClientRect();
+    if (sourceLineNeedsScroll(
+      lineRect.top,
+      lineRect.bottom,
+      viewportRect.top,
+      viewportRect.bottom,
+    )) {
+      current.line.scrollIntoView({ block: "nearest", behavior: "auto" });
+    }
+  });
 }
 
 function updatePins(io) {
@@ -682,9 +1225,9 @@ function updateSDPanel(io) {
   // R30 decode
   const r30El = document.getElementById('sd-r30-decode');
   if (r30El) {
-    r30El.innerHTML = '<span style="color:#ce93d8;">R30:</span> ' +
+    r30El.innerHTML = '<span style="color:var(--accent);">R30:</span> ' +
       `<span class="sd-r30-field">[29:26] ch_sel=<b>${sd.ch_sel}</b></span>` +
-      `<span class="sd-r30-field">[25] sd_en=<b style="color:#66bb6a;">${sd.sd_en ? 1 : 0}</b></span>` +
+      `<span class="sd-r30-field">[25] sd_en=<b style="color:var(--accent);">${sd.sd_en ? 1 : 0}</b></span>` +
       `<span class="sd-r30-field">[24] snoop=<b>${sd.snoop ? 1 : 0}</b></span>` +
       `<span class="sd-r30-field">[23] data_sel=<b>${sd.data_sel ? 1 : 0}</b></span>`;
   }
@@ -699,8 +1242,8 @@ function updateSDPanel(io) {
       const cfg = ch.config || {};
       const accName = _ACC_SEL_NAMES[cfg.acc_sel || 0] || 'sinc3';
       const clkName = _CLK_SEL_NAMES[cfg.clk_sel || 0] || 'own';
-      const titleColor = ch.selected ? '#4fc3f7' : '#888';
-      const dotColor = ch.valid ? '#66bb6a' : '#666';
+      const titleColor = ch.selected ? 'var(--accent)' : 'var(--text-dim)';
+      const dotColor = ch.valid ? 'var(--accent)' : 'var(--text-dim)';
       card.innerHTML = `
         <div class="sd-channel-title" style="color:${titleColor};">
           CH ${ch.id} <span style="color:${dotColor};">●</span>${ch.selected ? ' <span style="font-size:9px;">★</span>' : ''}
@@ -710,8 +1253,8 @@ function updateSDPanel(io) {
         <div class="sd-acc-row">acc2: <span class="sd-acc-val">0x${(ch.acc2 || 0).toString(16).toUpperCase().padStart(4,'0')}</span></div>
         <div class="sd-acc-row">acc3: <span class="sd-acc-val">0x${(ch.acc3 || 0).toString(16).toUpperCase().padStart(6,'0')}</span></div>
         <div class="sd-status">
-          <div style="color:${ch.valid ? '#ffb74d' : '#555'};">ovf=${ch.ovf ? 1 : 0} valid=<b style="color:${ch.valid ? '#66bb6a' : '#666'};">${ch.valid ? 1 : 0}</b></div>
-          <div style="color:#fff;">data=0x${(ch.shadow_acc3 || 0).toString(16).toUpperCase().padStart(7,'0')}</div>
+          <div style="color:${ch.valid ? 'var(--accent)' : 'var(--text-dim)'};">ovf=${ch.ovf ? 1 : 0} valid=<b style="color:${ch.valid ? 'var(--accent)' : 'var(--text-dim)'};">${ch.valid ? 1 : 0}</b></div>
+          <div style="color:var(--text);">data=0x${(ch.shadow_acc3 || 0).toString(16).toUpperCase().padStart(7,'0')}</div>
         </div>`;
       chContainer.appendChild(card);
     });
@@ -810,7 +1353,7 @@ function updateSDPanel(io) {
 // ---- Peripheral Interface (3-channel) panel --------------------------------
 
 function _fifoHex(arr) {
-  if (!arr || !arr.length) return '<span style="color:#555;">empty</span>';
+  if (!arr || !arr.length) return '<span style="color:var(--text-dim);">empty</span>';
   return arr.map(b => '0x' + b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
 }
 
@@ -846,7 +1389,7 @@ function updatePerifPanel(io) {
   const dec = document.getElementById('perif-r30-decode');
   if (dec) {
     const sh = p.shared || {};
-    dec.innerHTML = '<span style="color:#ce93d8;">shared:</span> ' +
+    dec.innerHTML = '<span style="color:var(--accent);">shared:</span> ' +
       `<span class="perif-r30-field">tx_clk_sel=<b>${sh.tx_clk_sel ?? 0}</b></span>` +
       `<span class="perif-r30-field">tx_div=<b>${sh.tx_div_factor ?? 0}</b></span>` +
       `<span class="perif-r30-field">rx_clk_sel=<b>${sh.rx_clk_sel ?? 0}</b></span>` +
@@ -968,11 +1511,19 @@ function updateI2CPanel(io) {
   document.getElementById('i2c-attach-btn')?.classList.toggle('active', !!(io && io.i2c));
 
   const i2c = io && io.i2c;
+  const emptyState = document.getElementById('i2c-empty-state');
   if (!i2c || !i2c.saw_start) {
     section.style.display = 'none';
+    if (emptyState) {
+      emptyState.textContent = i2c
+        ? 'Waiting for a valid I2C START on the attached TCA9538 interface.'
+        : 'Attach TCA9538 to monitor I2C transactions.';
+      emptyState.style.display = '';
+    }
     return;
   }
   section.style.display = '';
+  if (emptyState) emptyState.style.display = 'none';
 
   const infoEl = document.getElementById('i2c-mode-info');
   if (infoEl) {
@@ -1008,16 +1559,43 @@ function updateI2CPanel(io) {
  * sample = { step, mode, gpo: [20], gpi: [20], perif: [3], perifOe: [3],
  *            perifClk: [3], mem: [number|null, ...] }
  */
-function graphPushSample(sample) {
+function graphCoreCount() {
+  if (!multiCoreMode || typeof mcSelectedCores !== "function") return 1;
+  return Math.max(1, mcSelectedCores().length);
+}
+
+function graphWindowCapacity() {
+  return signalGraph.windowSize * graphCoreCount();
+}
+
+function graphStoreSample(sample) {
+  const capacity = signalGraph.buf.length;
   signalGraph.buf[signalGraph.head] = sample;
-  signalGraph.head = (signalGraph.head + 1) % signalGraph.windowSize;
-  if (signalGraph.fill < signalGraph.windowSize) signalGraph.fill++;
+  signalGraph.head = (signalGraph.head + 1) % capacity;
+  if (signalGraph.fill < capacity) signalGraph.fill++;
+}
+
+function graphEnsureCapacity() {
+  const capacity = graphWindowCapacity();
+  if (signalGraph.buf.length === capacity) return;
+  const samples = graphGetSamples();
+  signalGraph.buf = new Array(capacity);
+  signalGraph.head = 0;
+  signalGraph.fill = 0;
+  samples.slice(-capacity).forEach(graphStoreSample);
+}
+
+function graphPushSample(sample) {
+  graphEnsureCapacity();
+  graphStoreSample(sample);
   // Show Export CSV once we have data
   const exportRow = document.getElementById("graph-export-row");
   const countEl   = document.getElementById("graph-sample-count");
   if (exportRow && signalGraph.fill > 0) {
     exportRow.style.display = "";
-    if (countEl) countEl.textContent = `${signalGraph.fill} samples recorded`;
+    if (countEl) {
+      countEl.textContent = `${Math.ceil(signalGraph.fill / graphCoreCount())} time samples recorded`;
+    }
   }
 }
 
@@ -1025,12 +1603,13 @@ function graphPushSample(sample) {
  * Return samples in chronological order (oldest first).
  */
 function graphGetSamples() {
-  const { buf, head, fill, windowSize } = signalGraph;
+  const { buf, head, fill } = signalGraph;
   if (fill === 0) return [];
-  const start = fill < windowSize ? 0 : head;
+  const capacity = buf.length;
+  const start = fill < capacity ? 0 : head;
   const out = [];
   for (let i = 0; i < fill; i++) {
-    out.push(buf[(start + i) % windowSize]);
+    out.push(buf[(start + i) % capacity]);
   }
   return out;
 }
@@ -1129,17 +1708,78 @@ function renderUARTBytes(bytes) {
 }
 
 /**
- * Resize the circular buffer to newSize, keeping the most recent samples.
+ * Resize the circular buffer to newSize shared time samples.
  */
 function graphResizeWindow(newSize) {
-  const samples = graphGetSamples(); // oldest → newest
+  const samples = graphGetSamples(); // oldest → newest, chronological
   signalGraph.windowSize = newSize;
-  signalGraph.buf = new Array(newSize);
+  signalGraph.view = null;
+  const cores = [...new Set(samples.map(s => s.core || "pru0"))];
+  const coreCount = Math.max(1, cores.length, graphCoreCount());
+  signalGraph.buf = new Array(newSize * coreCount);
   signalGraph.head = 0;
   signalGraph.fill = 0;
-  // Re-insert keeping at most the last newSize samples
-  const keep = samples.slice(-newSize);
-  keep.forEach(s => graphPushSample(s));
+
+  if (cores.length <= 1) {
+    // Single-core path: simple slice
+    samples.slice(-newSize).forEach(s => graphPushSample(s));
+    return;
+  }
+  // Multi-core: keep the requested number of shared time samples per core.
+  const perCore = newSize;
+  const kept = [];
+  for (const c of cores) {
+    const cs = samples.filter(s => (s.core || "pru0") === c);
+    kept.push(...cs.slice(-perCore));
+  }
+  // Sort by runStep (shared axis) so the circular buffer is in order
+  kept.sort((a, b) => (a.runStep ?? a.step) - (b.runStep ?? b.step));
+  kept.forEach(s => graphPushSample(s));
+}
+
+// ---- Signal graph — zoom / pan -------------------------------------------
+
+/** Update canvas cursor to reflect zoom state (crosshair = full view, grab = zoomed). */
+function _graphSetCursor() {
+  const canvas = document.getElementById("signal-graph-canvas");
+  if (!canvas) return;
+  canvas.style.cursor = signalGraph.view ? "grab" : "crosshair";
+}
+
+function graphViewReset() {
+  signalGraph.view = null;
+  _graphSetCursor();
+  drawDigitalGraph();
+}
+
+/**
+ * Zoom the view by `factor` centered on `fracX` (0..1 position across canvas).
+ * factor < 1 zooms in; factor > 1 zooms out.
+ */
+function graphViewZoom(factor, fracX) {
+  const samples = graphGetSamples();
+  if (samples.length < 2) return;
+  const allSteps = samples.map(s => s.runStep ?? s.step);
+  const dataMin = Math.min(...allSteps);
+  const dataMax = Math.max(...allSteps);
+  const v = signalGraph.view || { minStep: dataMin, maxStep: dataMax };
+  const range = v.maxStep - v.minStep;
+  const pivot = v.minStep + fracX * range;
+  const newRange = Math.max(20, Math.min(range * factor, dataMax - dataMin));
+  let newMin = pivot - fracX * newRange;
+  let newMax = newMin + newRange;
+  // Clamp to data bounds
+  if (newMin < dataMin) { newMin = dataMin; newMax = newMin + newRange; }
+  if (newMax > dataMax) { newMax = dataMax; newMin = newMax - newRange; }
+  if (newMin < dataMin) newMin = dataMin;
+  // If view covers full range, clear zoom state
+  if (newMin <= dataMin && newMax >= dataMax) {
+    signalGraph.view = null;
+  } else {
+    signalGraph.view = { minStep: newMin, maxStep: newMax };
+  }
+  _graphSetCursor();
+  drawDigitalGraph();
 }
 
 // ---- Signal graph — sampling -----------------------------------------------
@@ -1149,17 +1789,12 @@ function graphResizeWindow(newSize) {
  * Pushes a new sample and fires read_memory for each memory channel.
  */
 const GRAPH_MEM_BPS = { uint8: 1, uint16: 2, uint32: 4, int32: 4 };
+const GRAPH_MEMORY_REFRESH_MS = 100;
+let graphMemoryRefreshAt = 0;
+const graphMemoryInFlight = new Set();
 
 function graphSample(state) {
-  // Always refresh memory snapshots if channels are configured
-  signalGraph.memChannels.forEach((ch, i) => {
-    sendAction({
-      action: "read_memory",
-      addr: ch.addr,
-      length: ch.count * (GRAPH_MEM_BPS[ch.format] || 4),
-      tag: `graph-M${i}`,
-    });
-  });
+  graphRequestSnapshots();
 
   // A run loop's samples already arrived in a "capture" message; sampling this
   // closing state push too would append a duplicate of its last sample.
@@ -1167,9 +1802,11 @@ function graphSample(state) {
   const perifChannels = (state.io.perif && state.io.perif.channels) || [];
   const sample = {
     step: state.instruction_count,
+    runStep: state.instruction_count,
     // IO mux mode at capture time: in perif mode the GPO/GPI pins are owned by
     // the Peripheral Interface, so R30/R31 must not be plotted as pin state.
     mode: state.io.mode || "gpio",
+    core: state.core || "pru0",
     gpo: (state.io.gpo_pins || []).slice(0, 20),
     gpi: (state.io.gpi_pins || []).slice(0, 20),
     perif: perifChannels.map(ch => ch.tx_line ? 1 : 0),
@@ -1191,26 +1828,30 @@ function graphSample(state) {
  * the same firmware traced fine under SIM (one instruction per push).
  *
  * Wire format is packed ints, see _capture_sample() in ui/server.py:
- *   [step, r30(20 bits), gpi bits, perif out bits, out_en bits, clk bits]
+ *   [step, r30(20 bits), gpi bits, perif out bits, out_en bits, clk bits, run_step]
  */
-function graphHandleCapture(msg) {
+function graphHandleCaptureLegacy(msg) {
+  return graphHandleCapture(msg); /* legacy implementation retained below for reference
   if (!signalGraph.recording) return;
   const mode = msg.mode || "gpio";
+  const core = msg.core || "pru0";
   // Single-shot, perif captures only: those sample every instruction, so a run
   // fills the whole window within a few ms of wall clock and a rolling buffer
   // would just blur — evicting the transmission before anyone could look at it.
   // Fill once, then stop recording, the way a logic analyzer does. GP-mode
-  // captures are decimated 100:1 and keep rolling as before.
+  // captures use fixed-stride sampling and keep rolling as before.
   const singleShot = mode === "perif";
   for (const s of (msg.samples || [])) {
     if (singleShot && signalGraph.fill >= signalGraph.windowSize) {
       graphSetRecording(false);
       break;
     }
-    const [step, r30, gpiBits, outBits, oeBits, clkBits] = s;
+    const [step, r30, gpiBits, outBits, oeBits, clkBits, runStep] = s;
     graphPushSample({
       step,
+      runStep: runStep ?? step,
       mode,
+      core,
       gpo: Array.from({ length: 20 }, (_, i) => (r30 >> i) & 1),
       gpi: Array.from({ length: 20 }, (_, i) => (gpiBits >> i) & 1),
       perif: [0, 1, 2].map(i => (outBits >> i) & 1),
@@ -1218,6 +1859,92 @@ function graphHandleCapture(msg) {
       perifClk: [0, 1, 2].map(i => (clkBits >> i) & 1),
     });
   }
+*/
+}
+
+function graphAppendCaptureSample(msg, s) {
+  if (!signalGraph.recording) return false;
+  const mode = msg.mode || "gpio";
+  const core = msg.core || "pru0";
+  const singleShot = mode === "perif";
+  // Peripheral captures are intentionally single-shot: sampling every
+  // instruction would otherwise roll the transmission out of view quickly.
+  if (singleShot && signalGraph.fill >= graphWindowCapacity()) {
+    graphSetRecording(false);
+    return false;
+  }
+  const [step, r30, gpiBits, outBits, oeBits, clkBits, runStep] = s;
+  graphPushSample({
+    step,
+    runStep: runStep ?? step,
+    mode,
+    core,
+    edgeTimestamped: Boolean(msg.edge_timestamps),
+    gpo: Array.from({ length: 20 }, (_, i) => (r30 >> i) & 1),
+    gpi: Array.from({ length: 20 }, (_, i) => (gpiBits >> i) & 1),
+    perif: [0, 1, 2].map(i => (outBits >> i) & 1),
+    perifOe: [0, 1, 2].map(i => (oeBits >> i) & 1),
+    perifClk: [0, 1, 2].map(i => (clkBits >> i) & 1),
+  });
+  return true;
+}
+
+function graphMergeCaptureGroup(group) {
+  // Selected cores use the same runStep values. Interleave by that shared
+  // time axis so the circular buffer retains each core's recent history.
+  const merged = [];
+  for (const batch of group.values()) {
+    for (const sample of (batch.samples || [])) {
+      merged.push({ core: batch.core || "pru0", batch, sample });
+    }
+  }
+  merged.sort((a, b) => {
+    const aStep = a.sample[6] ?? a.sample[0];
+    const bStep = b.sample[6] ?? b.sample[0];
+    return aStep - bStep || a.core.localeCompare(b.core);
+  });
+  for (const item of merged) {
+    if (!graphAppendCaptureSample(item.batch, item.sample)) break;
+  }
+}
+
+let flushingPendingGraphCaptures = false;
+
+function graphFlushPendingCaptures() {
+  if (flushingPendingGraphCaptures) return;
+  flushingPendingGraphCaptures = true;
+  try {
+    for (const group of pendingGraphCaptures.values()) {
+      graphMergeCaptureGroup(group);
+    }
+  } finally {
+    pendingGraphCaptures.clear();
+    flushingPendingGraphCaptures = false;
+  }
+}
+
+function graphHandleCapture(msg) {
+  if (!signalGraph.recording) return;
+  const groupId = msg.capture_group;
+  if (groupId === undefined || groupId === null) {
+    for (const sample of (msg.samples || [])) {
+      if (!graphAppendCaptureSample(msg, sample)) break;
+    }
+    return;
+  }
+
+  let group = pendingGraphCaptures.get(String(groupId));
+  if (!group) {
+    group = new Map();
+    pendingGraphCaptures.set(String(groupId), group);
+  }
+  group.set(msg.core || "pru0", msg);
+  const expectedCaptureCount = Array.isArray(msg.capture_cores)
+    ? msg.capture_cores.length
+    : String(groupId).split(":", 1)[0].split(",").filter(Boolean).length || 1;
+  if (group.size < expectedCaptureCount) return;
+  pendingGraphCaptures.delete(String(groupId));
+  graphMergeCaptureGroup(group);
 }
 
 /**
@@ -1231,6 +1958,7 @@ function _graphChannelIdxFromTag(tag) {
 function graphMarkChannelError(tag) {
   const idx = _graphChannelIdxFromTag(tag);
   if (isNaN(idx)) return;
+  graphMemoryInFlight.delete(idx);
   const row = document.querySelector(`.graph-mem-row[data-index="${idx}"]`);
   if (row) row.querySelector(".graph-ch-addr")?.classList.add("addr-error");
 }
@@ -1238,7 +1966,9 @@ function graphMarkChannelError(tag) {
 function graphHandleMemory(msg) {
   // tag format: "graph-M{channelIdx}"
   const idx = _graphChannelIdxFromTag(msg.tag);
-  if (isNaN(idx) || idx >= signalGraph.memChannels.length) return;
+  if (isNaN(idx)) return;
+  graphMemoryInFlight.delete(idx);
+  if (idx >= signalGraph.memChannels.length) return;
   const ch = signalGraph.memChannels[idx];
   const raw = msg.data || msg.bytes || msg.values;
   if (!Array.isArray(raw) || raw.length === 0) return;
@@ -1264,6 +1994,157 @@ function graphHandleMemory(msg) {
 function drawGraph() {
   drawDigitalGraph();
   drawMemGraph();
+  drawFocWorkspace();
+}
+
+let graphDrawPending = false;
+
+function requestGraphDraw() {
+  if (graphDrawPending) return;
+  graphDrawPending = true;
+  const schedule = typeof requestAnimationFrame === "function"
+    ? requestAnimationFrame
+    : (callback) => setTimeout(callback, 0);
+  schedule(() => {
+    graphDrawPending = false;
+    drawGraph();
+  });
+}
+
+function graphFindNewestSsiFrame(samples, preferredCore = "pru1", clockPin = 0) {
+  if (!Array.isArray(samples) || samples.length < 2) return null;
+
+  const cores = [...new Set(samples.map(s => s.core || "pru0"))];
+  const core = cores.includes(preferredCore) ? preferredCore : cores[0];
+  if (!core) return null;
+
+  const lane = samples
+    .filter(s => (s.core || "pru0") === core)
+    .map(s => ({ step: s.runStep ?? s.step, value: (s.gpo && s.gpo[clockPin]) ? 1 : 0 }))
+    .filter(s => Number.isFinite(s.step))
+    .sort((a, b) => a.step - b.step);
+  if (lane.length < 2) return null;
+
+  const transitions = [];
+  for (let i = 1; i < lane.length; i++) {
+    if (lane[i].value !== lane[i - 1].value) transitions.push(lane[i].step);
+  }
+  if (transitions.length < 24) return null;
+
+  const gaps = [];
+  for (let i = 1; i < transitions.length; i++) {
+    const gap = transitions[i] - transitions[i - 1];
+    if (gap > 0) gaps.push(gap);
+  }
+  if (gaps.length === 0) return null;
+  const sortedGaps = [...gaps].sort((a, b) => a - b);
+  const halfPeriod = sortedGaps[Math.floor((sortedGaps.length - 1) / 2)];
+  const idleThreshold = Math.max(20, halfPeriod * 5);
+
+  const groups = [[]];
+  for (const transition of transitions) {
+    const group = groups[groups.length - 1];
+    if (group.length && transition - group[group.length - 1] > idleThreshold) {
+      groups.push([]);
+    }
+    groups[groups.length - 1].push(transition);
+  }
+  const group = [...groups].reverse().find(candidate => candidate.length >= 24);
+  if (!group) return null;
+
+  const dataMin = lane[0].step;
+  const dataMax = lane[lane.length - 1].step;
+  const minStep = Math.max(dataMin, group[0] - halfPeriod);
+  const end = group.length > 24 ? group[24] : group[23] + halfPeriod;
+  return { minStep, maxStep: Math.min(dataMax, end) };
+}
+
+function graphBuildDigitalBuckets(samples, data, visMin, visMax, width) {
+  const pixelWidth = Math.floor(width);
+  const visibleRange = visMax - visMin;
+  const count = Math.min(samples.length, data.length);
+  if (count === 0 || pixelWidth <= 0 || !Number.isFinite(visibleRange) || visibleRange <= 0) {
+    return [];
+  }
+
+  const times = new Array(count);
+  const values = new Array(count);
+  for (let i = 0; i < count; i++) {
+    times[i] = samples[i].runStep ?? samples[i].step;
+    values[i] = data[i] ? 1 : 0;
+    if (!Number.isFinite(times[i])) return [];
+  }
+
+  const bucketMap = new Map();
+  const getBucket = x => {
+    let bucket = bucketMap.get(x);
+    if (!bucket) {
+      bucket = { x, enter: null, exit: null, sawHigh: false, sawLow: false };
+      bucketMap.set(x, bucket);
+    }
+    return bucket;
+  };
+
+  const markSegment = (start, end, value) => {
+    if (end <= start || end < visMin || start > visMax) return;
+    const clippedStart = Math.max(start, visMin);
+    const clippedEnd = Math.min(end, visMax);
+    if (clippedEnd <= clippedStart) return;
+
+    const startX = (clippedStart - visMin) / visibleRange * pixelWidth;
+    const endX = (clippedEnd - visMin) / visibleRange * pixelWidth;
+    const firstPixel = Math.max(0, Math.min(pixelWidth - 1, Math.floor(startX)));
+    const lastPixel = Math.max(0, Math.min(pixelWidth - 1, Math.ceil(endX) - 1));
+    for (let x = firstPixel; x <= lastPixel; x++) {
+      const bucket = getBucket(x);
+      if (bucket.enter === null) bucket.enter = value;
+      bucket.exit = value;
+      if (value) bucket.sawHigh = true;
+      else bucket.sawLow = true;
+    }
+  };
+
+  let segmentStart = times[0];
+  let segmentValue = values[0];
+  for (let i = 1; i < count; i++) {
+    if (values[i] === values[i - 1]) continue;
+    const transition = samples[i].edgeTimestamped
+      ? times[i]
+      : (times[i - 1] + times[i]) / 2;
+    markSegment(segmentStart, transition, segmentValue);
+    segmentStart = transition;
+    segmentValue = values[i];
+  }
+  markSegment(segmentStart, times[count - 1], segmentValue);
+
+  if (bucketMap.size === 0 && times[0] >= visMin && times[0] <= visMax) {
+    const x = Math.max(0, Math.min(pixelWidth - 1,
+      Math.floor((times[0] - visMin) / visibleRange * pixelWidth)));
+    const bucket = getBucket(x);
+    bucket.enter = values[0];
+    bucket.exit = values[0];
+    if (values[0]) bucket.sawHigh = true;
+    else bucket.sawLow = true;
+  }
+
+  return [...bucketMap.values()].sort((a, b) => a.x - b.x);
+}
+
+function graphResolutionInfo(channels, visMin, visMax, width) {
+  const cyclesPerPixel = width > 0 ? Math.max(0, visMax - visMin) / width : 0;
+  if (cyclesPerPixel <= 0) return { cyclesPerPixel, subPixel: false };
+
+  const subPixel = channels.some(channel => {
+    let runStart = null;
+    for (let i = 1; i < channel.data.length; i++) {
+      if (channel.data[i] === channel.data[i - 1]) continue;
+      const step = channel.samples[i].runStep ?? channel.samples[i].step;
+      if (runStart !== null && step > runStart && step - runStart < cyclesPerPixel) return true;
+      runStart = step;
+    }
+    return false;
+  });
+  return { cyclesPerPixel, subPixel };
 }
 
 function drawDigitalGraph() {
@@ -1297,36 +2178,49 @@ function drawDigitalGraph() {
   const perifMode = samples.length > 0 &&
                     samples[samples.length - 1].mode === "perif";
   const activeDig = [];
+
+  // Collect the set of cores that appear in the buffer. In single-core mode
+  // this is just ["pru0"]. In multi-core mode it may be ["pru0","pru1"].
+  const coresInBuf = [...new Set(samples.map(s => s.core || "pru0"))].sort();
+  // Prefix labels with core name only when multiple cores are present.
+  const multiCoreBuf = coresInBuf.length > 1;
+
   if (samples.length >= 2) {
-    if (!perifMode) {
-      for (let i = 0; i < 20; i++) {
-        const vals = samples.map(s => s.gpo[i] || 0);
-        if (vals.some(v => v !== vals[0])) {
-          activeDig.push({ label: `GPO ${i}`, color: GRAPH_GPO_COLORS[i], data: vals });
+    for (const coreName of coresInBuf) {
+      // Work only on this core's own samples — no interleaving with other cores.
+      // Each core's channels are drawn independently at their own sample positions.
+      const coreSamples = samples.filter(s => (s.core || "pru0") === coreName);
+      if (coreSamples.length < 2) continue;
+
+      const prefix = multiCoreBuf ? coreName.toUpperCase() + ":" : "";
+
+      if (!perifMode) {
+        for (let i = 0; i < 20; i++) {
+          const vals = coreSamples.map(s => s.gpo[i] || 0);
+          if (vals.some(v => v !== vals[0])) {
+            activeDig.push({ label: `${prefix}GPO ${i}`, color: GRAPH_GPO_COLORS[i],
+                             data: vals, samples: coreSamples });
+          }
+        }
+        for (let i = 0; i < 20; i++) {
+          const vals = coreSamples.map(s => s.gpi[i] || 0);
+          if (vals.some(v => v !== vals[0])) {
+            activeDig.push({ label: `${prefix}GPI ${i}`, color: GRAPH_GPI_COLORS[i],
+                             data: vals, samples: coreSamples });
+          }
         }
       }
-      for (let i = 0; i < 20; i++) {
-        const vals = samples.map(s => s.gpi[i] || 0);
-        if (vals.some(v => v !== vals[0])) {
-          activeDig.push({ label: `GPI ${i}`, color: GRAPH_GPI_COLORS[i], data: vals });
-        }
+      for (let i = 0; i < 3; i++) {
+        const out = coreSamples.map(s => (s.perif && s.perif[i]) || 0);
+        const oe  = coreSamples.map(s => (s.perifOe && s.perifOe[i]) || 0);
+        const clk = coreSamples.map(s => (s.perifClk && s.perifClk[i]) || 0);
+        const moved = a => a.some(v => v !== a[0]);
+        const chActive = moved(out) || moved(oe) || moved(clk);
+        if (!chActive) continue;
+        activeDig.push({ label: `${prefix}perif${i}_out`,    color: GRAPH_PERIF_COLORS[i],     data: out, samples: coreSamples });
+        activeDig.push({ label: `${prefix}perif${i}_out_en`, color: GRAPH_PERIF_OE_COLORS[i],  data: oe,  samples: coreSamples });
+        activeDig.push({ label: `${prefix}perif${i}_clk`,    color: GRAPH_PERIF_CLK_COLORS[i], data: clk, samples: coreSamples });
       }
-    }
-    for (let i = 0; i < 3; i++) {
-      // Data lane first, then out_en and the bit clock, so the group reads
-      // together: out_en says when the pad is driven, the clock says where the
-      // bits start (the perif serializer has no framing of its own).
-      const out = samples.map(s => (s.perif && s.perif[i]) || 0);
-      const oe  = samples.map(s => (s.perifOe && s.perifOe[i]) || 0);
-      const clk = samples.map(s => (s.perifClk && s.perifClk[i]) || 0);
-      const moved = a => a.some(v => v !== a[0]);
-      // A channel that moved at all shows its full group, so a steady out_en
-      // stays visible next to the data it qualifies.
-      const chActive = moved(out) || moved(oe) || moved(clk);
-      if (!chActive) continue;
-      activeDig.push({ label: `perif${i}_out`,    color: GRAPH_PERIF_COLORS[i],     data: out });
-      activeDig.push({ label: `perif${i}_out_en`, color: GRAPH_PERIF_OE_COLORS[i],  data: oe  });
-      activeDig.push({ label: `perif${i}_clk`,    color: GRAPH_PERIF_CLK_COLORS[i], data: clk });
     }
   }
 
@@ -1336,10 +2230,24 @@ function drawDigitalGraph() {
     return;
   }
 
-  const N = samples.length;
-
   // ---- Draw digital lanes --------------------------------------------------
+  // All channels share a common time axis based on step numbers so that
+  // signals from different cores align correctly on screen.
+  let resolutionInfo = null;
   if (activeDig.length > 0) {
+    // Compute global step range across all samples in the buffer.
+    const allSteps = samples.map(s => s.runStep ?? s.step);
+    const stepMin = Math.min(...allSteps);
+    const stepMax = Math.max(...allSteps);
+    const stepRange = stepMax - stepMin || 1;
+
+    // Apply zoom view if set
+    const view = signalGraph.view;
+    const visMin = view ? view.minStep : stepMin;
+    const visMax = view ? view.maxStep : stepMax;
+    const visRange = visMax - visMin || 1;
+    resolutionInfo = graphResolutionInfo(activeDig, visMin, visMax, W);
+
     const rowH = H / activeDig.length;
     activeDig.forEach((ch, ri) => {
       const yBase = ri * rowH;
@@ -1348,25 +2256,46 @@ function drawDigitalGraph() {
       ctx.strokeStyle = ch.color;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ch.data.forEach((v, i) => {
-        const x = (i / (N - 1)) * W;
-        const y = v ? yHigh : yLow;
-        if (i === 0) { ctx.moveTo(x, y); return; }
-        if (v !== ch.data[i - 1]) {
-          const xm = ((i - 0.5) / (N - 1)) * W;
-          ctx.lineTo(xm, ch.data[i - 1] ? yHigh : yLow);
-          ctx.lineTo(xm, y);
+      const buckets = graphBuildDigitalBuckets(ch.samples, ch.data, visMin, visMax, W);
+      let previousBucket = null;
+      const yFor = value => value ? yHigh : yLow;
+      buckets.forEach(bucket => {
+        const x = bucket.x + 0.5;
+        if (previousBucket === null) {
+          ctx.moveTo(x, yFor(bucket.enter));
+        } else {
+          ctx.lineTo(x, yFor(previousBucket.exit));
+          if (previousBucket.exit !== bucket.enter) {
+            ctx.lineTo(x, yFor(bucket.enter));
+          }
         }
-        ctx.lineTo(x, y);
+        if (bucket.sawHigh && bucket.sawLow) {
+          ctx.lineTo(x, yHigh);
+          ctx.lineTo(x, yLow);
+          ctx.lineTo(x, yFor(bucket.exit));
+        } else {
+          ctx.lineTo(x, yFor(bucket.exit));
+        }
+        previousBucket = bucket;
       });
       ctx.stroke();
       ctx.fillStyle = ch.color;
       ctx.font = "8px Consolas, monospace";
       ctx.fillText(ch.label, 3, yBase + 9);
     });
+
+    // Zoom indicator overlay
+    if (signalGraph.view) {
+      ctx.fillStyle = "rgba(255,255,255,0.15)";
+      ctx.fillRect(W - 60, H - 12, 58, 10);
+      ctx.fillStyle = "#aaa";
+      ctx.font = "8px Consolas, monospace";
+      const zoomPct = Math.round((visRange / (stepMax - stepMin || 1)) * 100);
+      ctx.fillText(`zoom ${zoomPct}%`, W - 58, H - 4);
+    }
   }
 
-  _graphUpdateStepLabel(samples);
+  _graphUpdateStepLabel(samples, resolutionInfo);
   _graphUpdateLegend(activeDig, "graph-legend");
 }
 
@@ -1462,11 +2391,14 @@ function drawMemGraph() {
   _graphUpdateLegend(activeAna, "mgraph-legend");
 }
 
-function _graphUpdateStepLabel(samples) {
+function _graphUpdateStepLabel(samples, resolutionInfo = null) {
   const el = document.getElementById("graph-step-label");
   if (!el) return;
   if (samples.length === 0) { el.textContent = ""; return; }
-  el.textContent = `step ${samples[samples.length - 1].step} / ${signalGraph.windowSize}`;
+  const resolution = resolutionInfo
+    ? ` · ${resolutionInfo.cyclesPerPixel.toFixed(2)} cycles/pixel${resolutionInfo.subPixel ? " · sub-pixel transitions" : ""}`
+    : "";
+  el.textContent = `step ${samples[samples.length - 1].step} / ${signalGraph.windowSize}${resolution}`;
 }
 
 function _graphUpdateLegend(channels, containerId) {
@@ -1481,14 +2413,24 @@ function _graphUpdateLegend(channels, containerId) {
 
 // ---- Signal graph — memory channel management ------------------------------
 
-function graphRequestSnapshots() {
+function graphRequestSnapshots(force = false) {
+  if (!force && !signalGraph.recording) return;
+  const now = Date.now();
+  if (!force && now < graphMemoryRefreshAt) return;
+  graphMemoryRefreshAt = Math.max(
+    graphMemoryRefreshAt,
+    now + GRAPH_MEMORY_REFRESH_MS,
+  );
   signalGraph.memChannels.forEach((ch, i) => {
-    sendAction({
+    if (graphMemoryInFlight.has(i)) return;
+    graphMemoryInFlight.add(i);
+    if (sendAction({
       action: "read_memory",
       addr: ch.addr,
       length: ch.count * (GRAPH_MEM_BPS[ch.format] || 4),
       tag: `graph-M${i}`,
-    });
+    })) return;
+    graphMemoryInFlight.delete(i);
   });
 }
 
@@ -1519,7 +2461,7 @@ function renderMemChannelRows() {
         signalGraph.memChannels[i].addr = v >>> 0;
         addrInput.value = "0x" + (v >>> 0).toString(16).toUpperCase().padStart(8, "0");
         signalGraph.memChannels[i].snapshot = null;
-        graphRequestSnapshots(); drawGraph();
+        graphRequestSnapshots(true); drawGraph();
       }
     };
     addrInput.addEventListener("change", applyAddr);
@@ -1535,7 +2477,7 @@ function renderMemChannelRows() {
       if (!isNaN(v) && v >= 1 && v <= 8192) {
         signalGraph.memChannels[i].count = v;
         signalGraph.memChannels[i].snapshot = null;
-        graphRequestSnapshots(); drawGraph();
+        graphRequestSnapshots(true); drawGraph();
       }
     };
     cntInput.addEventListener("change", applyCnt);
@@ -1552,7 +2494,7 @@ function renderMemChannelRows() {
     fmtSel.addEventListener("change", () => {
       signalGraph.memChannels[i].format = fmtSel.value;
       signalGraph.memChannels[i].snapshot = null;
-      graphRequestSnapshots(); drawGraph();
+      graphRequestSnapshots(true); drawGraph();
     });
 
     const rm = document.createElement("span");
@@ -1577,7 +2519,7 @@ function addMemChannel() {
     snapshot: null,
   });
   renderMemChannelRows();
-  graphRequestSnapshots();
+  graphRequestSnapshots(true);
   drawGraph();
 }
 
@@ -1585,6 +2527,508 @@ function removeMemChannel(index) {
   signalGraph.memChannels.splice(index, 1);
   signalGraph.memChannels.forEach((ch, i) => { ch.label = `M${i + 1}`; });
   renderMemChannelRows();
+}
+
+// ---- Open-loop FOC workspace ----------------------------------------------
+
+const FOC_Q_ONE = 1 << 24;
+const FOC_PHASE_U32 = 0x100000000;
+const FOC_POLE_PAIRS = 4;
+// Decimate stored samples by theta (not by emission count) so the plot
+// buffer holds a fixed resolution per electrical revolution regardless of
+// motor speed -- a fast motor emits far more foc_state messages per
+// revolution than a slow one at the server's fixed instruction cadence.
+const FOC_POINTS_PER_REV = 256;
+const FOC_MIN_THETA_STEP = FOC_PHASE_U32 / FOC_POINTS_PER_REV;
+const FOC_SAMPLE_PERIOD_SECONDS = 0.0001;
+const FOC_WINDOW_SECONDS = 0.1;
+const FOC_MAX_SAMPLES = Math.ceil(FOC_WINDOW_SECONDS / FOC_SAMPLE_PERIOD_SECONDS) + 16;
+const FOC_COLORS = {
+  a: "#70d6b4",
+  b: "#7eb8e8",
+  c: "#e5a66d",
+  alpha: "#da8ee6",
+  beta: "#e4d27d",
+};
+
+function focQ24(value) {
+  return Number(value || 0) / FOC_Q_ONE;
+}
+
+function focCanvas(canvasId) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return null;
+  const rect = canvas.getBoundingClientRect();
+  const width = Math.floor(rect.width);
+  const height = Math.floor(rect.height);
+  if (width <= 0 || height <= 0) return null;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const pixelWidth = Math.max(1, Math.floor(width * dpr));
+  const pixelHeight = Math.max(1, Math.floor(height * dpr));
+  if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { canvas, ctx, width, height };
+}
+
+function focThemeColor(name, fallback) {
+  const value = getComputedStyle(document.documentElement)
+    .getPropertyValue(name).trim();
+  return value || fallback;
+}
+
+function focRotorAngle(value) {
+  return ((Number(value || 0) >>> 0) / FOC_PHASE_U32) * Math.PI * 2;
+}
+
+function focNeedleEndpoint(angle, length) {
+  return {
+    x: length * Math.cos(angle),
+    y: -Math.sin(angle) * length,
+  };
+}
+
+function focFormatThroughput(clock) {
+  const ratio = Number(clock?.sim_wall_ratio);
+  if (!Number.isFinite(ratio)) return "--";
+  const digits = ratio < 0.01 ? 4 : ratio < 0.1 ? 3 : ratio < 1 ? 2 : 1;
+  const milliseconds = Number(clock?.simulated_ms_per_wall_second);
+  const rate = Number.isFinite(milliseconds)
+    ? ` (${milliseconds < 10 ? milliseconds.toFixed(2) : milliseconds.toFixed(1)} ms/s)`
+    : "";
+  return `${ratio.toFixed(digits)}x${rate}`;
+}
+
+function renderLegacyFocState(message) {
+  const wasLoaded = !!focLatestState?.loaded;
+  focLatestState = message;
+  if (!message.loaded || (message.loaded && !wasLoaded)) focSamples = [];
+
+  const status = document.getElementById("foc-runtime-status");
+  const controlStatus = document.getElementById("foc-control-status");
+  const pwm = message.pwm;
+  const fb = message.fb;
+  const model = message.model;
+  const loaded = !!message.loaded;
+  const runningNow = !!model?.running;
+
+  if (status) {
+    status.textContent = loaded
+      ? (runningNow ? "Runtime active · IEP observer running" : "Runtime ready · observer stopped")
+      : (message.status || "Firmware not loaded");
+    status.style.color = loaded && runningNow ? "var(--green)" : "var(--text-dim)";
+  }
+  if (controlStatus) {
+    controlStatus.textContent = loaded
+      ? (runningNow ? "Streaming feedback from the PMSM plant." : "Ready · apply references and start.")
+      : "Load firmware to begin.";
+  }
+
+  const start = document.getElementById("foc-start");
+  const stop = document.getElementById("foc-stop");
+  if (start) start.disabled = !loaded || runningNow;
+  if (stop) stop.disabled = !loaded || !runningNow;
+
+  const speedRpm = fb ? focQ24(fb.speed_rpm_q24) * 1000 : null;
+  const theta = fb ? focRotorAngle(fb.rotor_theta_u32) : null;
+  const dutyText = pwm
+    ? [pwm.ta_q24, pwm.tb_q24, pwm.tc_q24]
+      .map(value => focQ24(value).toFixed(3)).join(" / ")
+    : "— / — / —";
+  const setText = (id, value) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+  };
+  setText("foc-speed-readout", speedRpm === null ? "— RPM" : `${speedRpm.toFixed(1)} RPM`);
+  setText("foc-theta-readout", theta === null ? "—°" : `${(theta * 180 / Math.PI).toFixed(1)}°`);
+  setText("foc-duty-readout", dutyText);
+  setText("foc-time-readout", fb ? `0x${Number(fb.timestamp || 0).toString(16).toUpperCase().padStart(8, "0")}` : "—");
+  setText("foc-dial-state", loaded ? (runningNow ? "live" : "paused") : "waiting");
+
+  if (pwm && fb) {
+    const timestamp = Number(fb.timestamp || 0);
+    const theta = Number(pwm.theta_cmd_u32 || 0) >>> 0;
+    const previous = focSamples[focSamples.length - 1];
+    const thetaAdvance = previous
+      ? ((theta - previous.theta) % FOC_PHASE_U32 + FOC_PHASE_U32) % FOC_PHASE_U32
+      : FOC_MIN_THETA_STEP;
+    if (thetaAdvance >= FOC_MIN_THETA_STEP) {
+      focSamples.push({
+        timestamp,
+        loop: Number(pwm.loop_counter || 0),
+        theta,
+        ta: focQ24(pwm.ta_q24),
+        tb: focQ24(pwm.tb_q24),
+        tc: focQ24(pwm.tc_q24),
+        ia: focQ24(fb.ia_q24) * 10,
+        ib: focQ24(fb.ib_q24) * 10,
+        ic: focQ24(fb.ic_q24) * 10,
+        valpha: focQ24(pwm.valpha_q24),
+        vbeta: focQ24(pwm.vbeta_q24),
+      });
+      if (focSamples.length > FOC_MAX_SAMPLES) focSamples.shift();
+    }
+  }
+  if (runningNow) scheduleFocDialAnimation();
+}
+
+function focLegacyAdaptiveWindow() {
+  // Samples are now stored at a fixed theta spacing (one per
+  // FOC_MIN_THETA_STEP of electrical revolution), so a target number of
+  // revolutions is just a constant sample count -- no unwrapping needed.
+  const TARGET_TURNS = 2;
+  return Math.min(focSamples.length, TARGET_TURNS * FOC_POINTS_PER_REV);
+}
+
+function drawFocLineChart(canvasId, samples, series, minValue, maxValue) {
+  const surface = focCanvas(canvasId);
+  if (!surface) return;
+  const { ctx, width: W, height: H } = surface;
+  const inset = focThemeColor("--panel-inset", "#1b2127");
+  const grid = focThemeColor("--border", "#39434d");
+  const text = focThemeColor("--text-dim", "#8996a1");
+  ctx.fillStyle = inset;
+  ctx.fillRect(0, 0, W, H);
+
+  const left = 34, right = 8, top = 12, bottom = 18;
+  const plotW = Math.max(1, W - left - right);
+  const plotH = Math.max(1, H - top - bottom);
+  ctx.strokeStyle = grid;
+  ctx.globalAlpha = 0.55;
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = top + (i / 4) * plotH + 0.5;
+    ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(W - right, y); ctx.stroke();
+  }
+  for (let i = 1; i < 6; i++) {
+    const x = left + (i / 6) * plotW + 0.5;
+    ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, H - bottom); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  const formatAxis = value => Math.abs(value) >= 10 ? value.toFixed(0) : value.toFixed(2);
+  ctx.fillStyle = text;
+  ctx.font = "9px Consolas, monospace";
+  ctx.fillText(formatAxis(maxValue), 3, top + 3);
+  ctx.fillText(formatAxis(minValue), 3, H - bottom + 1);
+  if (minValue < 0 && maxValue > 0) {
+    const y = top + (maxValue / (maxValue - minValue)) * plotH + 0.5;
+    ctx.strokeStyle = text;
+    ctx.globalAlpha = 0.45;
+    ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(W - right, y); ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  const labelWidth = series.reduce((total, lane) => total + lane.label.length * 6 + 14, 0);
+  let labelX = Math.max(left, W - labelWidth - 4);
+  series.forEach(lane => {
+    ctx.fillStyle = lane.color;
+    ctx.fillRect(labelX, 3, 6, 6);
+    ctx.fillText(lane.label, labelX + 9, 9);
+    labelX += lane.label.length * 6 + 14;
+  });
+
+  if (samples.length < 2) {
+    ctx.fillStyle = text;
+    ctx.fillText("waiting for foc_state…", left + 5, top + plotH / 2);
+    return;
+  }
+
+  const yFor = value => top + (maxValue - value) / (maxValue - minValue) * plotH;
+  series.forEach(lane => {
+    ctx.strokeStyle = lane.color;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    const firstTimestamp = Number(samples[0]?.timestamp || 0);
+    const lastTimestamp = Number(samples[samples.length - 1]?.timestamp || firstTimestamp);
+    const timestampSpan = Math.max(1, lastTimestamp - firstTimestamp);
+    samples.forEach((sample, index) => {
+      const timestamp = Number(sample.timestamp ?? firstTimestamp);
+      const x = left + Math.max(0, Math.min(1,
+        (timestamp - firstTimestamp) / timestampSpan)) * plotW;
+      const y = yFor(lane.value(sample));
+      if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  });
+}
+
+function drawFocDial() {
+  const surface = focCanvas("foc-rotor-dial");
+  if (!surface) return;
+  const { ctx, width: W, height: H } = surface;
+  const bg = focThemeColor("--panel-inset", "#1b2127");
+  const border = focThemeColor("--border-strong", "#707d88");
+  const dim = focThemeColor("--text-dim", "#8996a1");
+  const cx = W / 2;
+  const cy = H / 2;
+  const radius = Math.max(30, Math.min(W, H) * 0.38);
+  const fb = focLatestState?.fb;
+  const pwm = focLatestState?.pwm;
+  const rotor = fb ? focRotorAngle(fb.rotor_theta_u32) : 0;
+  const command = pwm ? focRotorAngle(pwm.theta_cmd_u32) : 0;
+
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.strokeStyle = border;
+  ctx.lineWidth = 1;
+  ctx.globalAlpha = 0.65;
+  ctx.beginPath(); ctx.arc(0, 0, radius, 0, Math.PI * 2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(0, 0, radius * 0.72, 0, Math.PI * 2); ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  for (let pole = 0; pole < FOC_POLE_PAIRS * 2; pole++) {
+    ctx.save();
+    ctx.rotate(pole * Math.PI / FOC_POLE_PAIRS);
+    ctx.fillStyle = pole % 2 ? "#da8ee6" : "#7eb8e8";
+    ctx.globalAlpha = 0.6;
+    ctx.fillRect(-5, -radius * 0.92, 10, radius * 0.18);
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+
+  const needle = (angle, length, color, lineWidth, dash) => {
+    const endpoint = focNeedleEndpoint(angle, length);
+    ctx.save();
+    if (dash) ctx.setLineDash([5, 4]);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = lineWidth;
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(endpoint.x, endpoint.y); ctx.stroke();
+    if (!dash) {
+      ctx.fillStyle = color;
+      const direction = Math.atan2(endpoint.y, endpoint.x);
+      const left = direction + Math.PI - Math.PI / 7;
+      const right = direction + Math.PI + Math.PI / 7;
+      ctx.beginPath();
+      ctx.moveTo(endpoint.x, endpoint.y);
+      ctx.lineTo(endpoint.x + 9 * Math.cos(left), endpoint.y + 9 * Math.sin(left));
+      ctx.lineTo(endpoint.x + 9 * Math.cos(right), endpoint.y + 9 * Math.sin(right));
+      ctx.closePath(); ctx.fill();
+    }
+    ctx.restore();
+  };
+  needle(command, radius * 0.82, "#da8ee6", 1.5, true);
+  needle(rotor, radius * 0.68, "#70d6b4", 3, false);
+  ctx.fillStyle = "#70d6b4";
+  ctx.beginPath(); ctx.arc(0, 0, 5, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = dim;
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(-radius - 8, 0); ctx.lineTo(radius + 8, 0); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, -radius - 8); ctx.lineTo(0, radius + 8); ctx.stroke();
+  ctx.restore();
+
+  ctx.fillStyle = dim;
+  ctx.font = "9px Consolas, monospace";
+  ctx.fillText("0°", cx + radius + 4, cy + 3);
+  ctx.fillText("90°", cx - 11, cy - radius - 8);
+  ctx.fillText("180°", cx - radius - 30, cy + 3);
+  ctx.fillText("270°", cx - 14, cy + radius + 15);
+}
+
+function drawFocWorkspace() {
+  const duties = [
+    { label: "Ta", color: FOC_COLORS.a, value: sample => sample.ta },
+    { label: "Tb", color: FOC_COLORS.b, value: sample => sample.tb },
+    { label: "Tc", color: FOC_COLORS.c, value: sample => sample.tc },
+  ];
+  const currents = [
+    { label: "Ia", color: FOC_COLORS.a, value: sample => sample.ia },
+    { label: "Ib", color: FOC_COLORS.b, value: sample => sample.ib },
+    { label: "Ic", color: FOC_COLORS.c, value: sample => sample.ic },
+  ];
+  const voltages = [
+    { label: "Vα", color: FOC_COLORS.alpha, value: sample => sample.valpha },
+    { label: "Vβ", color: FOC_COLORS.beta, value: sample => sample.vbeta },
+  ];
+  const visible = focSamples.slice(-focAdaptiveWindow());
+  let currentPeak = 1;
+  visible.forEach(sample => {
+    currents.forEach(lane => { currentPeak = Math.max(currentPeak, Math.abs(lane.value(sample))); });
+  });
+  drawFocDial();
+  drawFocLineChart("foc-duty-plot", visible, duties, 0, 1);
+  drawFocLineChart("foc-current-plot", visible, currents, -currentPeak * 1.15, currentPeak * 1.15);
+  drawFocLineChart("foc-voltage-plot", visible, voltages, -1, 1);
+}
+
+function scheduleFocDialAnimation() {
+  // Redraw only from the latest timestamped simulator state.  The needles
+  // must not advance on a browser animation clock between simulation samples.
+  drawFocDial();
+}
+
+// The FOC stream is timestamp-driven.  The runtime batches 100 us samples
+// and publishes those batches at roughly 30 Hz, so zero-speed and reverse
+// motion remain visible instead of being discarded by an angle-delta filter.
+function focAdaptiveWindow() {
+  return focSamples.length;
+}
+
+function renderFocState(message) {
+  const wasLoaded = !!focLatestState?.loaded;
+  const sessionChanged = focLatestState?.session_id &&
+    focLatestState.session_id !== message.session_id;
+  focLatestState = message;
+  if (!message.loaded || (message.loaded && !wasLoaded) || sessionChanged) {
+    focSamples = [];
+  }
+
+  const setText = (id, value) => {
+    const element = document.getElementById(id);
+    if (element) element.textContent = value;
+  };
+  const pwm = message.pwm;
+  const fb = message.fb;
+  const model = message.model;
+  const telemetry = message.telemetry || {};
+  const clock = message.clock || {};
+  const loaded = !!message.loaded;
+  const runningNow = !!model?.running;
+  const speedRpm = Number.isFinite(telemetry.measured_speed_rpm)
+    ? Number(telemetry.measured_speed_rpm)
+    : (fb ? focQ24(fb.speed_rpm_q24) * 1000 : null);
+
+  const status = document.getElementById("foc-runtime-status");
+  const controlStatus = document.getElementById("foc-control-status");
+  if (status) {
+    status.textContent = loaded
+      ? (runningNow ? "Runtime active - IEP observer running" : "Runtime ready - observer stopped")
+      : (message.status || "Firmware not loaded");
+    status.style.color = loaded && runningNow ? "var(--green)" : "var(--text-dim)";
+  }
+  if (controlStatus) {
+    controlStatus.textContent = loaded
+      ? (runningNow ? "Streaming feedback from the PMSM plant." : "Ready - apply references and start.")
+      : "Load firmware to begin.";
+  }
+  const start = document.getElementById("foc-start");
+  const stop = document.getElementById("foc-stop");
+  if (start) start.disabled = !loaded || runningNow;
+  if (stop) stop.disabled = !loaded || !runningNow;
+
+  setText("foc-speed-readout", speedRpm === null ? "-- RPM" : `${speedRpm.toFixed(1)} RPM`);
+  setText("foc-requested-speed-readout", Number.isFinite(telemetry.requested_speed_rpm)
+    ? `${Number(telemetry.requested_speed_rpm).toFixed(1)} RPM` : "-- RPM");
+  setText("foc-ramped-speed-readout", Number.isFinite(telemetry.ramped_speed_rpm)
+    ? `${Number(telemetry.ramped_speed_rpm).toFixed(1)} RPM` : "-- RPM");
+  const rotor = fb ? focRotorAngle(fb.rotor_theta_u32) : null;
+  setText("foc-theta-readout", rotor === null ? "-- deg" : `${(rotor * 180 / Math.PI).toFixed(1)} deg`);
+  setText("foc-angle-error-readout", Number.isFinite(telemetry.angle_error_deg)
+    ? `${Number(telemetry.angle_error_deg).toFixed(1)} deg` : "-- deg");
+  setText("foc-duty-readout", pwm
+    ? [pwm.ta_q24, pwm.tb_q24, pwm.tc_q24].map(value => focQ24(value).toFixed(3)).join(" / ")
+    : "-- / -- / --");
+  setText("foc-time-readout", Number.isFinite(clock.sim_time_s)
+    ? `${Number(clock.sim_time_s).toFixed(4)} s` : "--");
+  const formatClock = value => Number.isFinite(Number(value))
+    ? `${(Number(value) / 1e6).toFixed(3)} MHz`
+    : "--";
+  setText("foc-pru-clock-readout", formatClock(clock.pru_clock_hz));
+  setText("foc-iep-clock-readout", formatClock(clock.iep_clock_hz ?? clock.iep_hz));
+  const controlLoopHz = clock.control_loop_frequency_hz ?? clock.loop_frequency_hz;
+  setText("foc-loop-frequency-readout", Number.isFinite(Number(controlLoopHz))
+    ? `${Number(controlLoopHz).toFixed(0)} Hz` : "-- Hz");
+  setText("foc-sim-wall-readout", focFormatThroughput(clock));
+  const statusFlags = Number(pwm?.status || 0);
+  const faultText = message.fault
+    ? (message.fault.error || "firmware fault")
+    : (statusFlags & 4 ? "deadline miss" : "none");
+  setText("foc-fault-readout", faultText);
+  setText("foc-dial-state", loaded ? (runningNow ? "live" : "paused") : "waiting");
+
+  const append = sample => {
+    if (!sample) return;
+    const timestamp = Number(sample.timestamp ?? fb?.timestamp ?? 0);
+    const previous = focSamples[focSamples.length - 1];
+    if (previous && timestamp === previous.timestamp) return;
+    focSamples.push({
+      timestamp,
+      loop: Number(sample.loop_counter || pwm?.loop_counter || 0),
+      theta: Number(sample.theta_cmd_u32 ?? pwm?.theta_cmd_u32 ?? 0) >>> 0,
+      ta: focQ24(sample.ta_q24 ?? pwm?.ta_q24),
+      tb: focQ24(sample.tb_q24 ?? pwm?.tb_q24),
+      tc: focQ24(sample.tc_q24 ?? pwm?.tc_q24),
+      ia: focQ24(sample.ia_q24 ?? fb?.ia_q24) * 10,
+      ib: focQ24(sample.ib_q24 ?? fb?.ib_q24) * 10,
+      ic: focQ24(sample.ic_q24 ?? fb?.ic_q24) * 10,
+      valpha: focQ24(sample.valpha_q24 ?? pwm?.valpha_q24),
+      vbeta: focQ24(sample.vbeta_q24 ?? pwm?.vbeta_q24),
+    });
+  };
+  const samples = Array.isArray(message.samples) ? message.samples : [];
+  samples.forEach(append);
+  if (pwm && fb && samples.length === 0) {
+    append({
+      timestamp: fb.timestamp,
+      loop_counter: pwm.loop_counter,
+      theta_cmd_u32: pwm.theta_cmd_u32,
+      ta_q24: pwm.ta_q24,
+      tb_q24: pwm.tb_q24,
+      tc_q24: pwm.tc_q24,
+      ia_q24: fb.ia_q24,
+      ib_q24: fb.ib_q24,
+      ic_q24: fb.ic_q24,
+      valpha_q24: pwm.valpha_q24,
+      vbeta_q24: pwm.vbeta_q24,
+    });
+  }
+  const now = Number(model?.timestamp ?? fb?.timestamp ?? 0);
+  const windowTicks = Number(clock.iep_hz || 0) * FOC_WINDOW_SECONDS;
+  if (windowTicks > 0) {
+    focSamples = focSamples.filter(sample => now - sample.timestamp <= windowTicks);
+  }
+  while (focSamples.length > FOC_MAX_SAMPLES) focSamples.shift();
+  if (runningNow) scheduleFocDialAnimation();
+}
+
+function initFocControls() {
+  const form = document.getElementById("foc-reference-form");
+  const speed = document.getElementById("foc-speed-rpm");
+  const speedPu = document.getElementById("foc-speed-pu");
+  const load = document.getElementById("foc-load");
+  const start = document.getElementById("foc-start");
+  const stop = document.getElementById("foc-stop");
+  const controlStatus = document.getElementById("foc-control-status");
+  const updateSpeed = () => {
+    if (speedPu) speedPu.textContent = `${(Number(speed?.value || 0) / 1000).toFixed(3)} pu`;
+  };
+  speed?.addEventListener("input", updateSpeed);
+  updateSpeed();
+
+  load?.addEventListener("click", () => {
+    if (controlStatus) controlStatus.textContent = "Loading open-loop firmware…";
+    sendAction({ action: "foc_load", filename: "foc_open_loop/foc_open_loop.asm" });
+  });
+  form?.addEventListener("submit", event => {
+    event.preventDefault();
+    const sent = sendAction({
+      action: "foc_set_reference",
+      speed_rpm: Number(speed?.value || 0),
+      vd_ref: Number(document.getElementById("foc-id-ref")?.value || 0),
+      vq_ref: Number(document.getElementById("foc-iq-ref")?.value || 0),
+      acceleration_rpm_s: Number(document.getElementById("foc-ramp-rate")?.value || 0),
+    });
+    if (sent && controlStatus) controlStatus.textContent = "References staged for the next control commit.";
+  });
+  const startFoc = () => {
+    const sent = sendAction({
+      action: "foc_start",
+      speed_rpm: Number(speed?.value || 0),
+      vd_ref: Number(document.getElementById("foc-id-ref")?.value || 0),
+      vq_ref: Number(document.getElementById("foc-iq-ref")?.value || 0),
+      acceleration_rpm_s: Number(document.getElementById("foc-ramp-rate")?.value || 0),
+    });
+    if (sent && controlStatus) controlStatus.textContent = "Starting the IEP-clocked plant…";
+  };
+  start?.addEventListener("click", startFoc);
+  stop?.addEventListener("click", () => {
+    if (sendAction({ action: "foc_stop" }) && controlStatus) controlStatus.textContent = "Stopping the plant observer…";
+  });
 }
 
 // ---- Signal graph — CSV export ---------------------------------------------
@@ -1598,7 +3042,7 @@ function exportGraphCSV() {
   const perifHeaders = Array.from({ length: 3 }, (_, i) => `perif${i}_out`);
   const perifOeHeaders = Array.from({ length: 3 }, (_, i) => `perif${i}_out_en`);
   const perifClkHeaders = Array.from({ length: 3 }, (_, i) => `perif${i}_clk`);
-  const header = ["step", "mode", ...gpoHeaders, ...gpiHeaders,
+  const header = ["step", "core", "mode", ...gpoHeaders, ...gpiHeaders,
                   ...perifHeaders, ...perifOeHeaders, ...perifClkHeaders].join(",");
 
   const rows = samples.map(s => {
@@ -1607,7 +3051,7 @@ function exportGraphCSV() {
     const perif = Array.from({ length: 3 }, (_, i) => (s.perif && s.perif[i]) ?? 0);
     const perifOe = Array.from({ length: 3 }, (_, i) => (s.perifOe && s.perifOe[i]) ?? 0);
     const perifClk = Array.from({ length: 3 }, (_, i) => (s.perifClk && s.perifClk[i]) ?? 0);
-    return [s.step, s.mode ?? "gpio", ...gpo, ...gpi,
+    return [s.step, s.core ?? "pru0", s.mode ?? "gpio", ...gpo, ...gpi,
             ...perif, ...perifOe, ...perifClk].join(",");
   });
 
@@ -1641,6 +3085,7 @@ function exportGraphCSV() {
 
 coreSelect.addEventListener("change", () => {
   stopRun(); stopSim();
+  graphClear();
   // Reset loopback state on the core we're leaving
   for (let g = 0; g < 5; g++) {
     sendAction({ action: 'set_loopback', core: currentCore, group: g, enabled: false });
@@ -1653,15 +3098,50 @@ coreSelect.addEventListener("change", () => {
   document.querySelectorAll('#loopback-strip .lb-btn').forEach(b => b.classList.remove('active'));
   initSpadState();
   sourceList.innerHTML = "";
+  _sourceInstructions = [];
+  _sourceLabels = {};
+  _lastSourceBreakpointKey = null;
+  _currentSourceLine = null;
   sendAction({ action: "get_state", core: currentCore });
   updateCtableForCore();
 });
 
+function sendMCRun(max_steps, capture = false, request_id = undefined) {
+  const cores = mcSelectedCores();
+  if (cores.length === 0) {
+    flashStatus("SELECT A CORE", "halted");
+    return false;
+  }
+  const action = {
+    action: "run_multicore",
+    cores,
+    max_steps,
+    capture,
+  };
+  if (request_id !== undefined) action.request_id = request_id;
+  return sendAction(action);
+}
+
 btnStep.addEventListener("click", () => {
   stopRun(); stopSim();
-  if (multiCoreMode) {
-    sendAction({ action: "step", core: "pru0", count: 1 });
-    sendAction({ action: "step", core: mcPartner, count: 1 });
+  if (genericSsiLoaded) {
+    if (genericSsiRunInFlight) return;
+    const request_id = "ssi-runtime-step-" + nextRunRequestId++;
+    const sent = sendAction({
+      action: "run_multicore",
+      core: "pru1",
+      partner: "pru0",
+      max_steps: 1,
+      capture: signalGraph.recording,
+      request_id,
+    });
+    if (sent) {
+      genericSsiRunInFlight = true;
+      genericSsiRequestId = request_id;
+      trackRunRequest(request_id);
+    }
+  } else if (multiCoreMode) {
+    sendMCRun(1);
   } else {
     sendAction({ action: "step", core: currentCore, count: 1 });
   }
@@ -1678,12 +3158,25 @@ btnRun.addEventListener("click", () => {
 
 btnReset.addEventListener("click", () => {
   stopRun(); stopSim();
+  cancelAllRunRequests();
+  graphClear();
   clearErrors();
   prevRegisters = new Array(32).fill("0x00000000");
-  if (multiCoreMode) {
-    mcPrevRegs = { pru0: new Array(32).fill("0x00000000"), rtu0: new Array(32).fill("0x00000000") };
+  if (genericSsiLoaded) {
+    mcPrevRegs = {
+      pru0: new Array(32).fill("0x00000000"),
+      rtu0: new Array(32).fill("0x00000000"),
+      pru1: new Array(32).fill("0x00000000"),
+      rtu1: new Array(32).fill("0x00000000"),
+    };
+    sendAction({ action: "reset", core: "pru1" });
     sendAction({ action: "reset", core: "pru0" });
-    sendAction({ action: "reset", core: mcPartner });
+    sendAction({ action: "ssi_runtime_read" });
+  } else if (multiCoreMode) {
+    MC_SLOT_KEYS.forEach(resetMCSlot);
+    const selected = mcSelectedCores();
+    for (const core of selected) sendAction({ action: "reset", core });
+    requestMCStates();
   } else {
     sendAction({ action: "reset", core: currentCore });
   }
@@ -1691,12 +3184,32 @@ btnReset.addEventListener("click", () => {
 
 btnHardReset.addEventListener("click", () => {
   stopRun(); stopSim();
+  cancelAllRunRequests();
+  graphClear();
   clearErrors();
   prevRegisters = new Array(32).fill("0x00000000");
-  if (multiCoreMode) {
-    mcPrevRegs = { pru0: new Array(32).fill("0x00000000"), rtu0: new Array(32).fill("0x00000000") };
-    sendAction({ action: "hard_reset", core: "pru0" });
-    sendAction({ action: "get_state", core: mcPartner });
+  if (genericSsiLoaded) {
+    genericSsiLoaded = false;
+    genericSsiRunInFlight = false;
+    mcPrevRegs = {
+      pru0: new Array(32).fill("0x00000000"),
+      rtu0: new Array(32).fill("0x00000000"),
+      pru1: new Array(32).fill("0x00000000"),
+      rtu1: new Array(32).fill("0x00000000"),
+    };
+    sendAction({ action: "hard_reset", core: "pru1" });
+    // Hard reset clears the runtime object as well as the cores.  Reload the
+    // complete pair so the normal Run and Apply controls remain usable.
+    sendAction({ action: "ssi_runtime_load" });
+  } else if (multiCoreMode) {
+    mcPrevRegs = {
+      pru0: new Array(32).fill("0x00000000"),
+      rtu0: new Array(32).fill("0x00000000"),
+      pru1: new Array(32).fill("0x00000000"),
+      rtu1: new Array(32).fill("0x00000000"),
+    };
+    sendAction({ action: "hard_reset", core: mcSelectedCores()[0] || "pru0" });
+    requestMCStates();
   } else {
     sendAction({ action: "hard_reset", core: currentCore });
   }
@@ -1704,6 +3217,7 @@ btnHardReset.addEventListener("click", () => {
 
 btnLoad.addEventListener("click", async () => {
   stopRun(); stopSim();
+  graphClear();
   clearErrors();
 
   // Sync active textarea content into tab buffer
@@ -1750,13 +3264,20 @@ btnLoad.addEventListener("click", async () => {
   if (multiCoreMode) {
     const targetCore = mcLoadCore.value || "pru0";
     mcPrevRegs[targetCore] = new Array(32).fill("0x00000000");
-    mcLastSourceKey[targetCore] = '';
+    mcSourceInstructions[targetCore] = [];
+    mcSourceLabels[targetCore] = {};
+    mcLastSourceBreakpointKey[targetCore] = null;
     const srcList = document.getElementById(`mc-${targetCore}-source-list`);
     if (srcList) srcList.innerHTML = "";
+    simpleSsiLoaded = false;
     sendAction({ action: "load", core: targetCore, source, filename });
   } else {
     prevRegisters = new Array(32).fill("0x00000000");
+    _sourceInstructions = [];
+    _sourceLabels = {};
+    _lastSourceBreakpointKey = null;
     sourceList.innerHTML = "";
+    simpleSsiLoaded = false;
     sendAction({ action: "load", core: currentCore, source, filename });
   }
 });
@@ -1764,11 +3285,28 @@ btnLoad.addEventListener("click", async () => {
 // ---- Signal graph controls -------------------------------------------------
 
 function graphSetRecording(on) {
+  if (!on) {
+    graphFlushPendingCaptures();
+    requestGraphDraw();
+  }
   signalGraph.recording = on;
+  if (on) graphRequestSnapshots();
   const btn = document.getElementById("graph-rec-btn");
   const dot = document.getElementById("graph-rec-dot");
   if (btn) btn.classList.toggle("rec-on", on);
   if (dot) dot.classList.toggle("active", on);
+}
+
+function graphClear() {
+  signalGraph.buf = new Array(graphWindowCapacity());
+  signalGraph.head = 0;
+  signalGraph.fill = 0;
+  signalGraph.view = null;
+  pendingGraphCaptures.clear();
+  graphMemoryRefreshAt = 0;
+  graphMemoryInFlight.clear();
+  const exportRow = document.getElementById("graph-export-row");
+  if (exportRow) exportRow.style.display = "none";
 }
 
 document.getElementById("graph-rec-btn").addEventListener("click", () => {
@@ -1776,12 +3314,20 @@ document.getElementById("graph-rec-btn").addEventListener("click", () => {
 });
 
 document.getElementById("graph-clear-btn").addEventListener("click", () => {
-  signalGraph.buf = new Array(signalGraph.windowSize);
-  signalGraph.head = 0;
-  signalGraph.fill = 0;
-  const exportRow = document.getElementById("graph-export-row");
-  if (exportRow) exportRow.style.display = "none";
+  graphClear();
   drawGraph();
+});
+
+document.getElementById("graph-fit-frame-btn").addEventListener("click", () => {
+  const frame = graphFindNewestSsiFrame(graphGetSamples(), "pru1", 0);
+  if (!frame) {
+    const label = document.getElementById("graph-step-label");
+    if (label) label.textContent = "No complete SSI frame in capture";
+    return;
+  }
+  signalGraph.view = frame;
+  _graphSetCursor();
+  drawDigitalGraph();
 });
 
 document.getElementById("graph-win-sel").addEventListener("change", (e) => {
@@ -1789,8 +3335,63 @@ document.getElementById("graph-win-sel").addEventListener("change", (e) => {
   drawGraph();
 });
 
+// ---- Signal graph — zoom / pan event listeners ---------------------------
+(function() {
+  const canvas = document.getElementById("signal-graph-canvas");
+  if (!canvas) return;
+
+  // Mouse wheel: zoom
+  canvas.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const fracX = (e.clientX - rect.left) / rect.width;
+    const factor = e.deltaY > 0 ? 1.3 : (1 / 1.3);
+    graphViewZoom(factor, fracX);
+  }, { passive: false });
+
+  // Double-click: reset zoom
+  canvas.addEventListener("dblclick", () => {
+    graphViewReset();
+  });
+
+  // Drag to pan
+  canvas.addEventListener("mousedown", (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const v = signalGraph.view;
+    if (!v) return; // can't pan when not zoomed (view is null)
+    signalGraph._dragStart = { clientX: e.clientX, view: { ...v } };
+    canvas.style.cursor = "grabbing";
+  });
+
+  window.addEventListener("mousemove", (e) => {
+    const ds = signalGraph._dragStart;
+    if (!ds) return;
+    const rect = canvas.getBoundingClientRect();
+    const dFrac = (ds.clientX - e.clientX) / rect.width;
+    const range = ds.view.maxStep - ds.view.minStep;
+    const samples = graphGetSamples();
+    if (samples.length < 2) return;
+    const allSteps = samples.map(s => s.runStep ?? s.step);
+    const dataMin = Math.min(...allSteps);
+    const dataMax = Math.max(...allSteps);
+    let newMin = ds.view.minStep + dFrac * range;
+    let newMax = ds.view.maxStep + dFrac * range;
+    if (newMin < dataMin) { newMin = dataMin; newMax = newMin + range; }
+    if (newMax > dataMax) { newMax = dataMax; newMin = newMax - range; }
+    signalGraph.view = { minStep: newMin, maxStep: newMax };
+    drawDigitalGraph();
+  });
+
+  window.addEventListener("mouseup", () => {
+    if (signalGraph._dragStart) {
+      signalGraph._dragStart = null;
+      _graphSetCursor();
+    }
+  });
+})();
+
 document.getElementById("graph-mem-refresh-btn").addEventListener("click", () => {
-  graphRequestSnapshots();
+  graphRequestSnapshots(true);
   drawGraph();
 });
 
@@ -1926,25 +3527,25 @@ btnFile.addEventListener("click", async () => {
 
   const menu = document.createElement("div");
   menu.id = "_src-menu";
-  menu.style.cssText = "position:fixed;background:#252526;border:1px solid #3c3c3c;border-radius:4px;z-index:2000;min-width:200px;max-height:300px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,.6);font-size:12px;";
+  menu.style.cssText = "position:fixed;background:var(--panel);border:1px solid var(--border);border-radius:5px;z-index:2000;min-width:200px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.55);font-size:12px;";
   const rect = btnFile.getBoundingClientRect();
   menu.style.left = rect.left + "px";
   menu.style.top  = (rect.bottom + 4) + "px";
 
   // "Browse..." item at top — opens native file picker for .asm/.out files
   const browseItem = document.createElement("div");
-  browseItem.style.cssText = "padding:6px 12px;cursor:pointer;color:#569cd6;border-bottom:1px solid #3c3c3c;font-style:italic;";
+  browseItem.style.cssText = "padding:6px 12px;cursor:pointer;color:var(--accent);border-bottom:1px solid var(--border);font-style:italic;";
   browseItem.textContent = "Browse file system...";
-  browseItem.addEventListener("mouseover", () => browseItem.style.background = "#094771");
+  browseItem.addEventListener("mouseover", () => browseItem.style.background = "var(--highlight)");
   browseItem.addEventListener("mouseout",  () => browseItem.style.background = "");
   browseItem.addEventListener("click", () => { menu.remove(); fileInput.click(); });
   menu.appendChild(browseItem);
 
   allFiles.forEach(path => {
     const item = document.createElement("div");
-    item.style.cssText = "padding:6px 12px;cursor:pointer;color:#d4d4d4;";
+    item.style.cssText = "padding:6px 12px;cursor:pointer;color:var(--text);";
     item.textContent = path;
-    item.addEventListener("mouseover", () => item.style.background = "#094771");
+    item.addEventListener("mouseover", () => item.style.background = "var(--highlight)");
     item.addEventListener("mouseout",  () => item.style.background = "");
     item.addEventListener("click", async () => {
       menu.remove();
@@ -1996,6 +3597,15 @@ fileInput.addEventListener("change", (e) => {
       const core = multiCoreMode
         ? document.getElementById("mc-load-core").value
         : currentCore;
+      graphClear();
+      if (multiCoreMode) {
+        mcSourceInstructions[core] = [];
+        mcSourceLabels[core] = {};
+      } else {
+        _sourceInstructions = [];
+        _sourceLabels = {};
+      }
+      simpleSsiLoaded = false;
       sendAction({ action: "load_elf", core, data: b64 });
       // Show loaded filename in source panel title
       const srcTitle = document.querySelector('#source-panel .panel-title');
@@ -2066,16 +3676,16 @@ btnOpenProject.addEventListener("click", async () => {
 
   const menu = document.createElement("div");
   menu.id = "_proj-menu";
-  menu.style.cssText = "position:fixed;background:#252526;border:1px solid #3c3c3c;border-radius:4px;z-index:2000;min-width:200px;max-height:300px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,.6);font-size:12px;";
+  menu.style.cssText = "position:fixed;background:var(--panel);border:1px solid var(--border);border-radius:5px;z-index:2000;min-width:200px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.55);font-size:12px;";
   const rect = btnOpenProject.getBoundingClientRect();
   menu.style.left = rect.left + "px";
   menu.style.top  = (rect.bottom + 4) + "px";
 
   projectNames.forEach(projName => {
     const item = document.createElement("div");
-    item.style.cssText = "padding:6px 12px;cursor:pointer;color:#d4d4d4;";
+    item.style.cssText = "padding:6px 12px;cursor:pointer;color:var(--text);";
     item.textContent = projName;
-    item.addEventListener("mouseover", () => item.style.background = "#094771");
+    item.addEventListener("mouseover", () => item.style.background = "var(--highlight)");
     item.addEventListener("mouseout",  () => item.style.background = "");
     item.addEventListener("click", async () => {
       menu.remove();
@@ -2199,51 +3809,103 @@ document.addEventListener("keydown", (e) => {
 
 // ---- Run mode -------------------------------------------------------------
 
+function scheduleRunPump(delayMs = 0) {
+  if (!running || runPumpTimer !== null) return;
+  runPumpTimer = setTimeout(() => {
+    runPumpTimer = null;
+    pumpRun();
+  }, Math.max(0, delayMs));
+}
+
+function pumpRun() {
+  if (!running || runRequestInFlight) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+  const capture = signalGraph.recording;
+  const max_steps = simpleSsiLoaded ? 3000 : 1000;
+  if (!canStartRunRequest(runRequestInFlight)) return;
+  const request_id = genericSsiLoaded
+    ? "ssi-runtime-general-" + nextRunRequestId++
+    : nextRunRequestId++;
+  let sent;
+  if (genericSsiLoaded) {
+    sent = sendAction({ action: "run_multicore", core: "pru1",
+                        partner: "pru0", max_steps, capture, request_id });
+  } else if (multiCoreMode) {
+    sent = sendMCRun(max_steps, capture, request_id);
+  } else {
+    sent = sendAction({ action: "run", core: currentCore, max_steps, capture,
+                        request_id });
+  }
+  if (sent) trackRunRequest(request_id, "toolbar");
+}
+
 function startRun() {
   stopSim();
+  if (multiCoreMode && mcSelectedCores().length === 0) {
+    flashStatus("SELECT A CORE", "halted");
+    return;
+  }
   running = true;
-  btnRun.textContent = "Stop";
+  setButtonLabel(btnRun, "Stop");
   btnRun.classList.add("btn-reset");
   btnRun.classList.remove("btn-run");
-  runInterval = setInterval(() => {
-    // While recording, the server samples the graph inside its run loop and
-    // ships the batch as a "capture" message (per instruction in perif mode,
-    // 100:1 otherwise). The chunk size no longer sets the sample rate, so it
-    // stays at the fast 1000.
-    const capture = signalGraph.recording;
-    const max_steps = 1000;
-    if (multiCoreMode) {
-      sendAction({ action: "run_multicore", core: "pru0",
-                   partner: mcPartner, max_steps, capture });
-    } else {
-      sendAction({ action: "run", core: currentCore, max_steps, capture });
-    }
-  }, 10);
+  scheduleRunPump();
 }
 
 function stopRun() {
+  graphFlushPendingCaptures();
+  requestGraphDraw();
+  if (runPumpTimer !== null) {
+    clearTimeout(runPumpTimer);
+    runPumpTimer = null;
+  }
   if (!running) return;
   running = false;
-  btnRun.textContent = "Run";
+  setButtonLabel(btnRun, "Run");
   btnRun.classList.add("btn-run");
   btnRun.classList.remove("btn-reset");
-  if (runInterval !== null) {
-    clearInterval(runInterval);
-    runInterval = null;
+  if (activeToolbarRequestId !== null) {
+    const requestId = activeToolbarRequestId;
+    abandonRunRequest(requestId);
+    if (requestId === genericSsiRequestId) {
+      genericSsiRunInFlight = false;
+      genericSsiRequestId = null;
+    }
   }
+  if (genericSsiLoaded) queueSsiRuntimeRead(true);
 }
 
 function startSim() {
   stopRun();
+  if (multiCoreMode && mcSelectedCores().length === 0) {
+    flashStatus("SELECT A CORE", "halted");
+    return;
+  }
   simRunning = true;
-  btnSim.textContent = "Stop SIM";
+  setButtonLabel(btnSim, "Stop SIM");
   btnSim.classList.add("btn-reset");
   btnSim.classList.remove("btn-sim");
   const ms = Math.round((parseFloat(simIntervalInput.value) || 1.0) * 1000);
   simTimer = setInterval(() => {
-    if (multiCoreMode) {
-      sendAction({ action: "step", core: "pru0", count: 1 });
-      sendAction({ action: "step", core: mcPartner, count: 1 });
+    if (genericSsiLoaded) {
+      if (runRequestInFlight) return;
+      const request_id = "ssi-runtime-sim-" + nextRunRequestId++;
+      const sent = sendAction({
+        action: "run_multicore",
+        core: "pru1",
+        partner: "pru0",
+        max_steps: 1,
+        capture: signalGraph.recording,
+        request_id,
+      });
+      if (sent) {
+        genericSsiRunInFlight = true;
+        genericSsiRequestId = request_id;
+        trackRunRequest(request_id, "sim");
+      }
+    } else if (multiCoreMode) {
+      sendMCRun(1, signalGraph.recording);
     } else {
       sendAction({ action: "step", core: currentCore, count: 1 });
     }
@@ -2251,15 +3913,26 @@ function startSim() {
 }
 
 function stopSim() {
+  graphFlushPendingCaptures();
+  requestGraphDraw();
   if (!simRunning) return;
   simRunning = false;
-  btnSim.textContent = "SIM";
+  setButtonLabel(btnSim, "SIM");
   btnSim.classList.remove("btn-reset");
   btnSim.classList.add("btn-sim");
   if (simTimer !== null) {
     clearInterval(simTimer);
     simTimer = null;
   }
+  if (activeSimRequestId !== null) {
+    const requestId = activeSimRequestId;
+    abandonRunRequest(requestId);
+    if (requestId === genericSsiRequestId) {
+      genericSsiRunInFlight = false;
+      genericSsiRequestId = null;
+    }
+  }
+  if (genericSsiLoaded) queueSsiRuntimeRead(true);
 }
 
 btnSim.addEventListener("click", () => {
@@ -2275,6 +3948,135 @@ function handleGpiClick(pinIndex, pinEl) {
   const targetCore = multiCoreMode ? "pru0" : currentCore;
   sendAction({ action: "set_input", core: targetCore, pin: pinIndex, value: newVal });
 }
+
+// ---- GPIO Wires -----------------------------------------------------------
+
+const WIRE_CORES = ["pru0", "rtu0", "pru1"];
+let renderedWireKey = null;
+
+function wireListKey(wires) {
+  return (wires || []).map(w =>
+    `${w.src_core}:${w.src_pin}->${w.dst_core}:${w.dst_pin}`
+  ).join("|");
+}
+
+function buildPinSelect(selectedPin, type) {
+  // type: "gpo" (0-19) or "gpi" (0-19)
+  const sel = document.createElement("select");
+  for (let i = 0; i < 20; i++) {
+    const opt = document.createElement("option");
+    opt.value = i;
+    opt.textContent = (type === "gpo" ? "GPO" : "GPI") + i;
+    if (i === selectedPin) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  return sel;
+}
+
+function buildCoreSelect(selectedCore) {
+  const sel = document.createElement("select");
+  WIRE_CORES.forEach(c => {
+    const opt = document.createElement("option");
+    opt.value = c;
+    opt.textContent = c.toUpperCase();
+    if (c === selectedCore) opt.selected = true;
+    sel.appendChild(opt);
+  });
+  return sel;
+}
+
+function renderWires(wires) {
+  const tbody = document.getElementById("wire-tbody");
+  const empty = document.getElementById("wire-empty");
+  if (!tbody) return;
+  const key = wireListKey(wires);
+  if (key === renderedWireKey) return;
+  renderedWireKey = key;
+  wires = wires || [];
+  tbody.innerHTML = "";
+  if (empty) empty.style.display = wires.length === 0 ? "" : "none";
+
+  wires.forEach(w => {
+    const tr = document.createElement("tr");
+    tr.className = "wire-row";
+
+    const srcCoreSel = buildCoreSelect(w.src_core);
+    const srcPinSel  = buildPinSelect(w.src_pin, "gpo");
+    const dstCoreSel = buildCoreSelect(w.dst_core);
+    const dstPinSel  = buildPinSelect(w.dst_pin, "gpi");
+    const rmBtn      = document.createElement("button");
+    rmBtn.className  = "wire-rm";
+    rmBtn.textContent = "×";
+
+    const onRemove = () =>
+      sendAction({ action: "remove_wire",
+        src_core: w.src_core, src_pin: w.src_pin,
+        dst_core: w.dst_core, dst_pin: w.dst_pin });
+
+    const onChangeWire = () => {
+      // Remove old wire, add new wire with updated selects
+      sendAction({ action: "remove_wire",
+        src_core: w.src_core, src_pin: w.src_pin,
+        dst_core: w.dst_core, dst_pin: w.dst_pin });
+      w.src_core = srcCoreSel.value;
+      w.src_pin  = parseInt(srcPinSel.value, 10);
+      w.dst_core = dstCoreSel.value;
+      w.dst_pin  = parseInt(dstPinSel.value, 10);
+      sendAction({ action: "add_wire",
+        src_core: w.src_core, src_pin: w.src_pin,
+        dst_core: w.dst_core, dst_pin: w.dst_pin });
+    };
+
+    srcCoreSel.addEventListener("change", onChangeWire);
+    srcPinSel.addEventListener("change", onChangeWire);
+    dstCoreSel.addEventListener("change", onChangeWire);
+    dstPinSel.addEventListener("change", onChangeWire);
+    rmBtn.addEventListener("click", onRemove);
+
+    [srcCoreSel, srcPinSel].forEach(el => {
+      const td = document.createElement("td"); td.appendChild(el); tr.appendChild(td);
+    });
+    const arrowTd = document.createElement("td");
+    arrowTd.className = "wire-arrow"; arrowTd.textContent = "→"; tr.appendChild(arrowTd);
+    [dstCoreSel, dstPinSel].forEach(el => {
+      const td = document.createElement("td"); td.appendChild(el); tr.appendChild(td);
+    });
+    const rmTd = document.createElement("td"); rmTd.appendChild(rmBtn); tr.appendChild(rmTd);
+    tbody.appendChild(tr);
+  });
+}
+
+document.getElementById("btn-add-wire").addEventListener("click", () => {
+  // Read existing wires directly from the rendered DOM rows — reliable regardless of async timing
+  const existingWires = [];
+  document.querySelectorAll("#wire-tbody .wire-row").forEach(tr => {
+    const sels = tr.querySelectorAll("select");
+    if (sels.length >= 4) {
+      existingWires.push({
+        src_core: sels[0].value,
+        src_pin:  parseInt(sels[1].value, 10),
+        dst_core: sels[2].value,
+        dst_pin:  parseInt(sels[3].value, 10),
+      });
+    }
+  });
+
+  const hasDup = (sc, sp, dc, dp) =>
+    existingWires.some(w => w.src_core === sc && w.src_pin === sp && w.dst_core === dc && w.dst_pin === dp);
+
+  // Try SSI defaults first, then scan for any non-duplicate
+  const preferred = [
+    { src_core: "pru0", src_pin: 0,  dst_core: "pru1", dst_pin: 16 },
+    { src_core: "pru1", src_pin: 0,  dst_core: "pru0", dst_pin: 8  },
+  ];
+  let wire = preferred.find(w => !hasDup(w.src_core, w.src_pin, w.dst_core, w.dst_pin));
+  if (!wire) {
+    for (let pin = 0; pin < 20 && !wire; pin++) {
+      if (!hasDup("pru0", pin, "pru1", pin)) wire = { src_core: "pru0", src_pin: pin, dst_core: "pru1", dst_pin: pin };
+    }
+  }
+  if (wire) sendAction({ action: "add_wire", ...wire });
+});
 
 // ---- Loopback strip -------------------------------------------------------
 
@@ -2319,8 +4121,13 @@ let memBaseAddr = 0;
 let memFormat = "32b";
 let memMsbFirst = false;
 let regionMap = {};  // name -> base address
-let memAutoRefresh = false;
+let memAutoRefresh = memAutoRefreshBox.checked;
 let _memAutoLastFetch = 0;
+let memRequestId = 0;
+let memViewKey = "";
+let memReadInFlight = false;
+let memReadPending = false;
+let memReadPendingAuto = false;
 
 // ---- Memory panel 2 -------------------------------------------------------
 const memAddrInput2  = document.getElementById("mem-addr-input-2");
@@ -2333,8 +4140,13 @@ let prevMemData2 = [];
 let memBaseAddr2 = 0x00010000;  // default: Shared RAM (C28)
 let memFormat2   = "32b";
 let memMsbFirst2 = false;
-let memAutoRefresh2 = false;
+let memAutoRefresh2 = memAutoRefreshBox2.checked;
 let _memAutoLastFetch2 = 0;
+let memRequestId2 = 0;
+let memViewKey2 = "";
+let memReadInFlight2 = false;
+let memReadPending2 = false;
+let memReadPendingAuto2 = false;
 
 // Auto-refresh: throttled trigger on every simulation "state" update (near
 // real-time while stepping/running), plus a 1 s floor interval that catches
@@ -2346,11 +4158,11 @@ function memAutoOnStateChange() {
   const now = Date.now();
   if (memAutoRefresh && now - _memAutoLastFetch >= MEM_AUTO_THROTTLE_MS) {
     _memAutoLastFetch = now;
-    refreshMemory();
+    refreshMemory(true);
   }
   if (memAutoRefresh2 && now - _memAutoLastFetch2 >= MEM_AUTO_THROTTLE_MS) {
     _memAutoLastFetch2 = now;
-    refreshMemory2();
+    refreshMemory2(true);
   }
 }
 
@@ -2358,27 +4170,53 @@ setInterval(() => {
   const now = Date.now();
   if (memAutoRefresh && now - _memAutoLastFetch >= 1000) {
     _memAutoLastFetch = now;
-    refreshMemory();
+    refreshMemory(true);
   }
   if (memAutoRefresh2 && now - _memAutoLastFetch2 >= 1000) {
     _memAutoLastFetch2 = now;
-    refreshMemory2();
+    refreshMemory2(true);
   }
 }, 1000);
 
 memAutoRefreshBox.addEventListener("change", () => {
   memAutoRefresh = memAutoRefreshBox.checked;
-  if (memAutoRefresh) { _memAutoLastFetch = Date.now(); refreshMemory(); }
+  if (memAutoRefresh) {
+    _memAutoLastFetch = Date.now();
+    refreshMemory(true);
+  } else if (memReadPendingAuto) {
+    memReadPending = false;
+    memReadPendingAuto = false;
+  }
 });
 
 memAutoRefreshBox2.addEventListener("change", () => {
   memAutoRefresh2 = memAutoRefreshBox2.checked;
-  if (memAutoRefresh2) { _memAutoLastFetch2 = Date.now(); refreshMemory2(); }
+  if (memAutoRefresh2) {
+    _memAutoLastFetch2 = Date.now();
+    refreshMemory2(true);
+  } else if (memReadPendingAuto2) {
+    memReadPending2 = false;
+    memReadPendingAuto2 = false;
+  }
 });
 
 btnMemRefresh2.addEventListener("click", refreshMemory2);
 memAddrInput2.addEventListener("keydown", (e) => { if (e.key === "Enter") refreshMemory2(); });
 memAddrInput2.addEventListener("change", refreshMemory2);
+
+// Region quick-jump selectors — set address and refresh
+document.getElementById("mem-region-sel").addEventListener("change", (e) => {
+  if (!e.target.value) return;
+  memAddrInput.value = e.target.value;
+  e.target.value = "";
+  refreshMemory();
+});
+document.getElementById("mem-region-sel-2").addEventListener("change", (e) => {
+  if (!e.target.value) return;
+  memAddrInput2.value = e.target.value;
+  e.target.value = "";
+  refreshMemory2();
+});
 
 document.getElementById("mem-fmt-group-2").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-fmt]");
@@ -2398,7 +4236,26 @@ document.getElementById("mem-end-group-2").addEventListener("click", (e) => {
   if (prevMemData2.length > 0) renderMemory2({ tag: "mem2", addr: memBaseAddr2, data: prevMemData2 });
 });
 
-function refreshMemory2() {
+function finishMemoryRequest(panel) {
+  const second = panel === 2;
+  const pending = second ? memReadPending2 : memReadPending;
+  const pendingAuto = second ? memReadPendingAuto2 : memReadPendingAuto;
+  const autoEnabled = second ? memAutoRefresh2 : memAutoRefresh;
+  if (second) {
+    memReadInFlight2 = false;
+    memReadPending2 = false;
+    memReadPendingAuto2 = false;
+  } else {
+    memReadInFlight = false;
+    memReadPending = false;
+    memReadPendingAuto = false;
+  }
+  if (pending && (!pendingAuto || autoEnabled)) {
+    setTimeout(() => second ? refreshMemory2(pendingAuto) : refreshMemory(pendingAuto), 0);
+  }
+}
+
+function refreshMemory2(fromAuto = false) {
   const raw = memAddrInput2.value.trim();
   let addr;
   if (regionMap[raw] !== undefined) {
@@ -2408,12 +4265,43 @@ function refreshMemory2() {
     addr = parseInt(raw, 16) || parseInt(raw, 10) || 0x00010000;
   }
   const length = parseInt(memLenInput2.value, 10) || 1024;
-  sendAction({ action: "read_memory", addr, length, tag: "mem2" });
+  const viewKey = `${addr}:${length}`;
+  if (viewKey !== memViewKey2) prevMemData2 = [];
+  memViewKey2 = viewKey;
+  if (memReadInFlight2) {
+    memReadPending2 = true;
+    memReadPendingAuto2 = fromAuto;
+    return;
+  }
+  const request_id = ++memRequestId2;
+  memReadInFlight2 = sendAction({
+    action: "read_memory", addr, length, tag: "mem2", request_id,
+  });
+}
+
+function memoryBytesEqual(left, right) {
+  if (left === right) return true;
+  if (!left || !right || left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i++) {
+    if (left[i] !== right[i]) return false;
+  }
+  return true;
 }
 
 function renderMemory2(msg) {
+  if (msg.request_id !== undefined && msg.request_id !== null &&
+      msg.request_id !== memRequestId2) return;
+  if (msg.request_id !== undefined && msg.request_id !== null) {
+    finishMemoryRequest(2);
+    const responseKey = `${msg.addr}:${msg.length ?? (msg.data || []).length}`;
+    if (responseKey !== memViewKey2) return;
+  }
   const addr = msg.addr;
   const data = msg.data;
+  const isReadResponse = msg.request_id !== undefined && msg.request_id !== null;
+  if (isReadResponse && addr === memBaseAddr2 && memoryBytesEqual(prevMemData2, data)) {
+    return;
+  }
   memBaseAddr2 = addr;
 
   const { wordSize, wordsPerRow } = MEM_FORMATS[memFormat2];
@@ -2474,7 +4362,7 @@ function editWord2(el, absoluteAddr, wordSize) {
   const maxLen = wordSize * 2;
   const oldVal = el.textContent;
   const input = document.createElement("input");
-  input.style.cssText = `width:${Math.max(56, maxLen * 8)}px;font-size:13px;text-align:center;background:#1a1a1a;color:#fff;border:1px solid var(--accent);padding:0;font-family:inherit;`;
+  input.style.cssText = `width:${Math.max(56, maxLen * 8)}px;font-size:13px;text-align:center;background:var(--panel-inset);color:var(--text);border:1px solid var(--accent);padding:0;font-family:inherit;`;
   input.value = oldVal;
   input.maxLength = maxLen;
   el.textContent = "";
@@ -2543,7 +4431,7 @@ function drawWavePreview() {
   fillWaveCanvas.height = H;
 
   const ctx = fillWaveCanvas.getContext("2d");
-  ctx.fillStyle = "#1a1a1a";
+  ctx.fillStyle = getThemeColor("--graph-bg", "#ffffff");
   ctx.fillRect(0, 0, W, H);
 
   // ---- Compute y range from current parameters ----------------------------
@@ -2571,13 +4459,15 @@ function drawWavePreview() {
   // ---- Y reference lines --------------------------------------------------
   ctx.lineWidth = 1;
   for (const [py, bright] of [[yTopPx, false], [midY, true], [yBotPx, false]]) {
-    ctx.strokeStyle = bright ? "#3c3c3c" : "#262626";
+    ctx.strokeStyle = bright
+      ? getThemeColor("--graph-grid-strong", "#c2cbd4")
+      : getThemeColor("--graph-grid", "#d8dee5");
     ctx.beginPath(); ctx.moveTo(Y_MAR, py); ctx.lineTo(W, py); ctx.stroke();
   }
 
   // ---- Y-axis labels -------------------------------------------------------
   ctx.font      = "9px Consolas, monospace";
-  ctx.fillStyle = "#858585";
+  ctx.fillStyle = getThemeColor("--graph-label", "#53616d");
   ctx.textAlign = "right";
   ctx.fillText(fmtYLabel(yMax), Y_MAR - 4, yTopPx + 4);
   ctx.fillText(fmtYLabel(yMid), Y_MAR - 4, midY   + 3);
@@ -2585,7 +4475,7 @@ function drawWavePreview() {
 
   // ---- Waveform -----------------------------------------------------------
   const cycles = parseFloat(fillWaveCycles.value) || 1;
-  ctx.strokeStyle = "#569cd6";
+  ctx.strokeStyle = getThemeColor("--graph-wave", "#b6202b");
   ctx.lineWidth   = 1.5;
   ctx.beginPath();
   for (let xi = 0; xi < WAVE_W; xi++) {
@@ -2606,13 +4496,13 @@ function drawWavePreview() {
   const nTicks = 5;
 
   ctx.font      = "9px Consolas, monospace";
-  ctx.fillStyle = "#858585";
+  ctx.fillStyle = getThemeColor("--graph-label", "#53616d");
   for (let i = 0; i <= nTicks; i++) {
     const frac  = i / nTicks;
     const px    = Y_MAR + Math.round(frac * WAVE_W);
     const label = Math.round(frac * nElems).toString();
 
-    ctx.strokeStyle = "#555";
+    ctx.strokeStyle = getThemeColor("--graph-grid-strong", "#c2cbd4");
     ctx.lineWidth   = 1;
     ctx.beginPath(); ctx.moveTo(px + 0.5, WAVE_H); ctx.lineTo(px + 0.5, WAVE_H + 3); ctx.stroke();
 
@@ -2735,7 +4625,7 @@ document.getElementById("mem-end-group").addEventListener("click", (e) => {
   if (prevMemData.length > 0) renderMemory({ addr: memBaseAddr, data: prevMemData });
 });
 
-function refreshMemory() {
+function refreshMemory(fromAuto = false) {
   const raw = memAddrInput.value.trim();
   let addr;
   if (regionMap[raw] !== undefined) {
@@ -2745,7 +4635,18 @@ function refreshMemory() {
     addr = parseInt(raw, 16) || parseInt(raw, 10) || 0;
   }
   const length = parseInt(memLenInput.value, 10) || 1024;
-  sendAction({ action: "read_memory", addr, length, tag: "mem1" });
+  const viewKey = `${addr}:${length}`;
+  if (viewKey !== memViewKey) prevMemData = [];
+  memViewKey = viewKey;
+  if (memReadInFlight) {
+    memReadPending = true;
+    memReadPendingAuto = fromAuto;
+    return;
+  }
+  const request_id = ++memRequestId;
+  memReadInFlight = sendAction({
+    action: "read_memory", addr, length, tag: "mem1", request_id,
+  });
 }
 
 async function loadRegions() {
@@ -2796,8 +4697,19 @@ function assembleBytes(data, offset, wordSize) {
 }
 
 function renderMemory(msg) {
+  if (msg.request_id !== undefined && msg.request_id !== null &&
+      msg.request_id !== memRequestId) return;
+  if (msg.request_id !== undefined && msg.request_id !== null) {
+    finishMemoryRequest(1);
+    const responseKey = `${msg.addr}:${msg.length ?? (msg.data || []).length}`;
+    if (responseKey !== memViewKey) return;
+  }
   const addr = msg.addr;
   const data = msg.data;
+  const isReadResponse = msg.request_id !== undefined && msg.request_id !== null;
+  if (isReadResponse && addr === memBaseAddr && memoryBytesEqual(prevMemData, data)) {
+    return;
+  }
   memBaseAddr = addr;
 
   const { wordSize, wordsPerRow } = MEM_FORMATS[memFormat];
@@ -2847,7 +4759,7 @@ function editWord(el, absoluteAddr, wordSize) {
   const maxLen = wordSize * 2;
   const oldVal = el.textContent;
   const input = document.createElement("input");
-  input.style.cssText = `width:80px;font-size:13px;text-align:center;background:#1a1a1a;color:#fff;border:1px solid var(--accent);padding:0;font-family:inherit;`;
+  input.style.cssText = `width:80px;font-size:13px;text-align:center;background:var(--panel-inset);color:var(--text);border:1px solid var(--accent);padding:0;font-family:inherit;`;
   input.value = oldVal;
   input.maxLength = maxLen;
   el.textContent = "";
@@ -2882,7 +4794,7 @@ function editWord(el, absoluteAddr, wordSize) {
 function editRegister(valEl, index) {
   const oldVal = valEl.textContent;
   const input = document.createElement("input");
-  input.style.cssText = "width:88px;font-size:13px;text-align:right;background:#1a1a1a;color:#fff;border:1px solid var(--accent);padding:0 2px;font-family:inherit;";
+  input.style.cssText = "width:88px;font-size:13px;text-align:right;background:var(--panel-inset);color:var(--text);border:1px solid var(--accent);padding:0 2px;font-family:inherit;";
   input.value = oldVal.slice(2);  // strip leading "0x"
   input.maxLength = 8;
   valEl.textContent = "";
@@ -3177,55 +5089,196 @@ function flashStatus(text, cssClass) {
 
 btnMulticore.addEventListener("click", toggleMultiCore);
 document.getElementById("btn-reset-layout").addEventListener("click", resetLayout);
+document.getElementById("btn-reset-layout").addEventListener("click", () => {
+  if (multiCoreMode) syncMCPanelVisibility();
+});
 
-// ---- Multi-core partner (second core in the MC view: RTU0 or PRU1) --------
-const mcPartnerSelect = document.getElementById("mc-partner-select");
+// ---- Multi-core core selection --------------------------------------------
 
-function applyMCPartnerLabels() {
-  const label = mcPartner === "pru1" ? "PRU1" : "RTU0";
-  const srcTitle = document.getElementById("mc-partner-source-title");
-  const regTitle = document.getElementById("mc-partner-reg-title");
-  const cntLabel = document.getElementById("cnt-p1-label");
-  if (srcTitle) srcTitle.textContent = `${label} Source`;
-  if (regTitle) regTitle.textContent = `${label} Registers`;
-  if (cntLabel) cntLabel.textContent = label;
+const mcSelects = [mcPrimarySelect, mcPartnerSelect, mcThirdSelect];
+const MC_SLOT_PANEL_IDS = [
+  ["mc-pru0-source", "mc-pru0-registers"],
+  ["mc-rtu0-source", "mc-rtu0-registers"],
+  ["mc-rtu1-source", "mc-rtu1-registers"],
+];
+const MC_COUNTER_SLOTS = [
+  {
+    label: "cnt-p0-label",
+    separator: null,
+    cycles: "cnt-cycles-wrap",
+    stalls: "cnt-stalls-wrap",
+    pc: "cnt-pc-wrap",
+    cycleValue: "cnt-cycles",
+    stallValue: "cnt-stalls",
+    pcValue: "cnt-pc",
+  },
+  {
+    label: "cnt-p1-label",
+    separator: "cnt-sep",
+    cycles: "cnt-rtu-cycles-wrap",
+    stalls: "cnt-rtu-stalls-wrap",
+    pc: "cnt-rtu-pc-wrap",
+    cycleValue: "cnt-rtu-cycles",
+    stallValue: "cnt-rtu-stalls",
+    pcValue: "cnt-rtu-pc",
+  },
+  {
+    label: "cnt-p2-label",
+    separator: "cnt-sep2",
+    cycles: "cnt-p2-cycles-wrap",
+    stalls: "cnt-p2-stalls-wrap",
+    pc: "cnt-p2-pc-wrap",
+    cycleValue: "cnt-p2-cycles",
+    stallValue: "cnt-p2-stalls",
+    pcValue: "cnt-p2-pc",
+  },
+];
+
+function mcCoreLabel(core) {
+  if (core === "pru0") return "PRU0";
+  if (core === "rtu0") return "RTU0";
+  if (core === "pru1") return "PRU1";
+  if (core === "rtu1") return "RTU_PRU1";
+  return "None";
 }
 
-mcPartnerSelect.addEventListener("change", () => {
-  stopRun(); stopSim();
-  mcPartner = mcPartnerSelect.value;
-  applyMCPartnerLabels();
-  if (multiCoreMode) {
-    // Reset the partner DOM slot and re-request state for the new core.
-    mcPrevRegs.rtu0 = new Array(32).fill("0x00000000");
-    mcLastSourceKey.rtu0 = '';
-    mcBreakpoints.rtu0 = new Set();
-    mcHaltedState.rtu0 = false;
-    mcBreakState.rtu0 = false;
-    buildMCRegTable("rtu0");
-    sendAction({ action: "get_state", core: "pru0" });
-    sendAction({ action: "get_state", core: mcPartner });
+function mcReadSelections() {
+  return mcSelects.map(select => {
+    if (!select || select.value === "none") return null;
+    return select.value;
+  });
+}
+
+function mcSelectedCores() {
+  return mcCores.filter(Boolean);
+}
+
+function mcCoreForSlot(slotKey) {
+  const slotIndex = MC_SLOT_KEYS.indexOf(slotKey);
+  return slotIndex < 0 ? null : mcCores[slotIndex];
+}
+
+function resetMCSlot(slotKey) {
+  mcPrevRegs[slotKey] = new Array(32).fill("0x00000000");
+  mcSourceInstructions[slotKey] = [];
+  mcSourceLabels[slotKey] = {};
+  mcRenderedSourceInstructions[slotKey] = null;
+  mcRenderedSourceLabels[slotKey] = null;
+  mcLastSourceBreakpointKey[slotKey] = null;
+  mcCurrentSourceLine[slotKey] = null;
+  mcBreakpoints[slotKey] = new Set();
+  mcHaltedState[slotKey] = false;
+  mcBreakState[slotKey] = false;
+  const srcList = document.getElementById(`mc-${slotKey}-source-list`);
+  if (srcList) srcList.innerHTML = "";
+  if (typeof buildMCRegTable === "function") buildMCRegTable(slotKey);
+}
+
+function applyMCSlotLabels() {
+  const sourceTitleIds = [
+    "mc-primary-source-title", "mc-partner-source-title", "mc-third-source-title",
+  ];
+  const registerTitleIds = [
+    "mc-primary-reg-title", "mc-partner-reg-title", "mc-third-reg-title",
+  ];
+  mcCores.forEach((core, index) => {
+    const label = mcCoreLabel(core);
+    const sourceTitle = document.getElementById(sourceTitleIds[index]);
+    const registerTitle = document.getElementById(registerTitleIds[index]);
+    if (sourceTitle) sourceTitle.textContent = `${label} Source`;
+    if (registerTitle) registerTitle.textContent = `${label} Registers`;
+    const counter = MC_COUNTER_SLOTS[index];
+    const counterLabel = document.getElementById(counter.label);
+    if (counterLabel) counterLabel.textContent = label;
+  });
+  mcPartner = mcCores[1] || "rtu0";
+}
+
+function updateMCSelectionOptions() {
+  const selected = new Set(mcCores.filter(Boolean));
+  mcSelects.forEach((select, index) => {
+    if (!select) return;
+    for (const option of select.options) {
+      option.disabled = option.value !== "none" &&
+        selected.has(option.value) && option.value !== mcCores[index];
+    }
+  });
+}
+
+function updateMCCounterVisibility() {
+  MC_COUNTER_SLOTS.forEach((counter, index) => {
+    const visible = multiCoreMode && Boolean(mcCores[index]);
+    for (const id of [counter.label, counter.cycles, counter.stalls, counter.pc]) {
+      const element = document.getElementById(id);
+      if (element) element.style.display = visible ? "" : "none";
+    }
+    const hasPrevious = mcCores.slice(0, index).some(Boolean);
+    if (counter.separator) {
+      const separator = document.getElementById(counter.separator);
+      if (separator) separator.style.display = visible && hasPrevious ? "" : "none";
+    }
+  });
+}
+
+function syncMCPanelVisibility() {
+  if (!multiCoreMode || typeof setPanelsVisibility !== "function") return;
+  const allPanelIds = MC_SLOT_PANEL_IDS.flat();
+  const visiblePanelIds = MC_SLOT_PANEL_IDS.flatMap((panelIds, index) =>
+    mcCores[index] ? panelIds : []
+  );
+  setPanelsVisibility(allPanelIds, false);
+  if (visiblePanelIds.length > 0) setPanelsVisibility(visiblePanelIds, true);
+}
+
+function applyMCSelections({ resetSlots = true } = {}) {
+  mcCores = mcReadSelections();
+  if (resetSlots) MC_SLOT_KEYS.forEach(resetMCSlot);
+  applyMCSlotLabels();
+  updateMCSelectionOptions();
+  updateMCCounterVisibility();
+  syncMCPanelVisibility();
+}
+
+function requestMCStates() {
+  for (const core of mcSelectedCores()) {
+    sendAction({ action: "get_state", core });
   }
+}
+
+function selectGenericSsiPartner() {
+  if (mcPrimarySelect) mcPrimarySelect.value = "pru0";
+  if (mcPartnerSelect) mcPartnerSelect.value = "pru1";
+  if (mcThirdSelect) mcThirdSelect.value = "none";
+  applyMCSelections({ resetSlots: multiCoreMode });
+  if (multiCoreMode) requestMCStates();
+}
+
+mcSelects.forEach((select, index) => {
+  select?.addEventListener("change", () => {
+    stopRun(); stopSim();
+    graphClear();
+    const selected = select.value;
+    if (selected !== "none") {
+      mcSelects.forEach((other, otherIndex) => {
+        if (otherIndex !== index && other?.value === selected) other.value = "none";
+      });
+    }
+    applyMCSelections();
+    requestMCStates();
+  });
 });
 
 function toggleMultiCore() {
   multiCoreMode = !multiCoreMode;
   stopRun(); stopSim();
+  graphClear();
 
   if (multiCoreMode) {
     coreSelect.style.display = "none";
     mcLoadCore.style.display = "";
-    mcPartnerSelect.style.display = "";
-    applyMCPartnerLabels();
+    mcSelects.forEach(select => { if (select) select.style.display = ""; });
+    applyMCSelections();
     btnMulticore.classList.add("mc-active");
-
-    // Show per-core counter labels and RTU0 counter spans
-    document.getElementById("cnt-p0-label").style.display = "";
-    document.getElementById("cnt-sep").style.display = "";
-    document.getElementById("cnt-p1-label").style.display = "";
-    document.getElementById("cnt-rtu-cycles-wrap").style.display = "";
-    document.getElementById("cnt-rtu-stalls-wrap").style.display = "";
-    document.getElementById("cnt-rtu-pc-wrap").style.display = "";
     document.getElementById("cnt-instrs-wrap").style.display = "none";
     document.getElementById("cnt-ipc-wrap").style.display = "none";
 
@@ -3234,30 +5287,30 @@ function toggleMultiCore() {
       mcPrevSpad[b.key] = new Array(b.count).fill("0x00000000");
     }
 
-    // Build register tables for both cores
-    buildMCRegTable("pru0");
-    buildMCRegTable("rtu0");
+    // Build register tables for all available slots.
+    MC_SLOT_KEYS.forEach(buildMCRegTable);
 
     // Switch to MC layout
     switchLayoutMode("mc");
+    syncMCPanelVisibility();
 
-    // Request state for both cores
-    sendAction({ action: "get_state", core: "pru0" });
-    sendAction({ action: "get_state", core: mcPartner });
+    // Request state for all selected cores.
+    requestMCStates();
 
   } else {
     coreSelect.style.display = "";
     mcLoadCore.style.display = "none";
-    mcPartnerSelect.style.display = "none";
+    mcSelects.forEach(select => { if (select) select.style.display = "none"; });
     btnMulticore.classList.remove("mc-active");
 
     // Restore SC counter layout
-    document.getElementById("cnt-p0-label").style.display = "none";
-    document.getElementById("cnt-sep").style.display = "none";
-    document.getElementById("cnt-p1-label").style.display = "none";
-    document.getElementById("cnt-rtu-cycles-wrap").style.display = "none";
-    document.getElementById("cnt-rtu-stalls-wrap").style.display = "none";
-    document.getElementById("cnt-rtu-pc-wrap").style.display = "none";
+    MC_COUNTER_SLOTS.forEach(counter => {
+      document.getElementById(counter.label).style.display = "none";
+      if (counter.separator) document.getElementById(counter.separator).style.display = "none";
+      document.getElementById(counter.cycles).style.display = "none";
+      document.getElementById(counter.stalls).style.display = "none";
+      document.getElementById(counter.pc).style.display = "none";
+    });
     document.getElementById("cnt-instrs-wrap").style.display = "";
     document.getElementById("cnt-ipc-wrap").style.display = "";
 
@@ -3306,7 +5359,7 @@ function buildMCRegTable(core) {
 function editMCRegister(valEl, core, index) {
   const oldVal = valEl.textContent;
   const input = document.createElement("input");
-  input.style.cssText = "width:88px;font-size:13px;text-align:right;background:#1a1a1a;color:#fff;border:1px solid var(--accent);padding:0 2px;font-family:inherit;";
+  input.style.cssText = "width:88px;font-size:13px;text-align:right;background:var(--panel-inset);color:var(--text);border:1px solid var(--accent);padding:0 2px;font-family:inherit;";
   input.value = oldVal.slice(2);
   input.maxLength = 8;
   valEl.textContent = "";
@@ -3319,8 +5372,9 @@ function editMCRegister(valEl, core, index) {
     if (committed) return;
     committed = true;
     const newVal = parseInt(input.value, 16);
-    if (!isNaN(newVal) && newVal >= 0 && newVal <= 0xFFFFFFFF) {
-      sendAction({ action: "set_register", core, index, value: newVal });
+    const actualCore = mcCoreForSlot(core);
+    if (actualCore && !isNaN(newVal) && newVal >= 0 && newVal <= 0xFFFFFFFF) {
+      sendAction({ action: "set_register", core: actualCore, index, value: newVal });
       valEl.textContent = "0x" + newVal.toString(16).padStart(8, "0").toUpperCase();
     } else {
       valEl.textContent = oldVal;
@@ -3334,32 +5388,41 @@ function editMCRegister(valEl, core, index) {
 }
 
 function updateMCUI(state) {
-  if (state.core !== "pru0" && state.core !== mcPartner) return;   // core not shown
-  // The second MC panel's DOM ids are the "rtu0" slot; the partner core
-  // (RTU0 or PRU1) renders into it.
-  const core = state.core === "pru0" ? "pru0" : "rtu0";
+  const slotIndex = mcCores.indexOf(state.core);
+  if (slotIndex < 0) return;   // core is not selected in the view
+  const core = MC_SLOT_KEYS[slotIndex];
 
   // PC badge in panel title
   const pcBadge = document.getElementById(`mc-${core}-pc`);
-  if (pcBadge) pcBadge.textContent = `PC: ${state.pc}`;
+  setTextIfChanged(pcBadge, `PC: ${state.pc}`);
 
   // Carry
   const carryEl = document.getElementById(`mc-${core}-carry`);
-  if (carryEl) carryEl.textContent = state.carry ? "1" : "0";
+  setTextIfChanged(carryEl, state.carry ? "1" : "0");
 
   // MAC indicator
   if (state.mac) {
     const modeEl = document.getElementById(`mc-${core}-mac-mode`);
-    if (modeEl) modeEl.textContent = state.mac.mode ? "ACC" : "MPY";
+    setTextIfChanged(modeEl, state.mac.mode ? "ACC" : "MPY");
     const macCarryEl = document.getElementById(`mc-${core}-mac-carry`);
-    if (macCarryEl) macCarryEl.textContent = state.mac.acc_carry ? " CARRY" : "";
+    setTextIfChanged(macCarryEl, state.mac.acc_carry ? " CARRY" : "");
   }
 
   // Registers
   updateMCRegisters(core, state.registers);
 
-  // Source listing
-  updateMCSource(core, state.instructions, state.pc, state.labels || {});
+  // Source text is included only when it changes; retain it between ticks.
+  if (Array.isArray(state.instructions)) {
+    mcSourceInstructions[core] = state.instructions;
+    mcSourceLabels[core] = state.labels || {};
+  }
+  updateMCSource(
+    core,
+    mcSourceInstructions[core],
+    state.pc,
+    mcSourceLabels[core],
+    state.core,
+  );
 
   // Breakpoints
   if (state.breakpoints) mcBreakpoints[core] = new Set(state.breakpoints);
@@ -3369,23 +5432,27 @@ function updateMCUI(state) {
   mcBreakState[core]  = !!state.at_breakpoint;
   updateMCStatus();
 
-  // Per-core counters and IO
-  if (core === "pru0") {
-    cntCycles.textContent = state.cycles;
-    cntStalls.textContent = state.stall_cycles;
-    cntInstrs.textContent = state.instruction_count;
-    cntIpc.textContent    = state.ipc.toFixed(3);
-    cntPc.textContent     = state.pc;
+  // Per-core counters and IO. The first selected slot owns the shared IO
+  // panel; source/register panels remain independent for all three slots.
+  const counter = MC_COUNTER_SLOTS[slotIndex];
+  if (counter) {
+    setTextIfChanged(document.getElementById(counter.cycleValue), state.cycles);
+    setTextIfChanged(document.getElementById(counter.stallValue), state.stall_cycles);
+    setTextIfChanged(document.getElementById(counter.pcValue), state.pc);
+  }
+  const firstSelectedIndex = mcCores.findIndex(Boolean);
+  if (slotIndex === firstSelectedIndex) {
     updatePins(state.io);
     updateSDPanel(state.io);
     updateI2CPanel(state.io);
-    // Update SPAD columns in PRU0 MC reg panel
-    if (mcSpadVisible.size > 0) updateMCSpad(state.spad);
-  } else if (core === "rtu0") {
-    document.getElementById("cnt-rtu-cycles").textContent = state.cycles;
-    document.getElementById("cnt-rtu-stalls").textContent = state.stall_cycles;
-    document.getElementById("cnt-rtu-pc").textContent     = state.pc;
+    if (state.core === "pru0" && mcSpadVisible.size > 0) {
+      updateMCSpad(state.spad);
+    }
   }
+
+  // Signal graph: sample every selected core in MC mode.
+  graphSample(state);
+  requestGraphDraw();
 
   memAutoOnStateChange();
 }
@@ -3410,8 +5477,14 @@ function updateMCSpad(spad) {
 }
 
 function updateMCStatus() {
-  const anyBreak  = mcBreakState.pru0  || mcBreakState.rtu0;
-  const anyHalted = mcHaltedState.pru0 || mcHaltedState.rtu0;
+  const selectedSlots = MC_SLOT_KEYS.filter((_, index) => Boolean(mcCores[index]));
+  const anyBreak = selectedSlots.some(core => mcBreakState[core]);
+  const anyHalted = selectedSlots.some(core => mcHaltedState[core]);
+  if (selectedSlots.length === 0) {
+    statusBadge.textContent = "IDLE";
+    statusBadge.className = "";
+    return;
+  }
   if (anyBreak) {
     statusBadge.textContent = "BREAK";
     statusBadge.className   = "halted";
@@ -3434,29 +5507,32 @@ function updateMCRegisters(core, regs) {
     if (!valEl) continue;
     if (valEl.querySelector("input")) continue;
     const newVal = regs[i];
-    valEl.textContent = newVal;
+    if (newVal !== prev[i]) setTextIfChanged(valEl, newVal);
     rowEl.classList.toggle("changed", newVal !== prev[i]);
   }
   mcPrevRegs[core] = [...regs];
 }
 
-function updateMCSource(core, instructions, pc, labels) {
+function updateMCSource(core, instructions, pc, labels, actualCore = mcCoreForSlot(core)) {
   const listEl = document.getElementById(`mc-${core}-source-list`);
   if (!listEl) return;
 
-  const addrToLabels = {};
-  for (const [name, addr] of Object.entries(labels)) {
-    if (!addrToLabels[addr]) addrToLabels[addr] = [];
-    addrToLabels[addr].push(name);
-  }
-  for (const addr of Object.keys(addrToLabels)) addrToLabels[addr].sort();
-
-  const newKey = instructions.map(i => i.addr + ':' + i.text).join('|')
-               + '|' + Object.entries(labels).sort().join('|');
-
-  if (newKey !== mcLastSourceKey[core]) {
-    mcLastSourceKey[core] = newKey;
+  // State packets reuse the same source objects until a load changes them.
+  const sourceChanged = instructions !== mcRenderedSourceInstructions[core] ||
+    labels !== mcRenderedSourceLabels[core];
+  if (sourceChanged) {
+    mcRenderedSourceInstructions[core] = instructions;
+    mcRenderedSourceLabels[core] = labels;
+    mcLastSourceBreakpointKey[core] = null;
+    mcCurrentSourceLine[core] = null;
     listEl.innerHTML = "";
+
+    const addrToLabels = {};
+    for (const [name, addr] of Object.entries(labels)) {
+      if (!addrToLabels[addr]) addrToLabels[addr] = [];
+      addrToLabels[addr].push(name);
+    }
+    for (const addr of Object.keys(addrToLabels)) addrToLabels[addr].sort();
 
     instructions.forEach((instr) => {
       (addrToLabels[instr.addr] || []).forEach(name => {
@@ -3491,46 +5567,51 @@ function updateMCSource(core, instructions, pc, labels) {
     });
   }
 
-  // Breakpoint markers
-  listEl.querySelectorAll(`li[id^='mc-${core}-src-line-']`).forEach(li => {
-    const addr = parseInt(li.id.replace(`mc-${core}-src-line-`, ""), 10);
-    li.classList.toggle("has-bp", mcBreakpoints[core].has(addr));
-  });
-
-  // Current PC highlight
-  listEl.querySelectorAll("li.current-pc").forEach(el => el.classList.remove("current-pc"));
-  const currentLine = document.getElementById(`mc-${core}-src-line-${pc}`);
-  if (currentLine) {
-    currentLine.classList.add("current-pc");
-    currentLine.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  // Breakpoint markers only need to be touched when the set or source list
+  // changes; doing this for every state packet makes the source view lag.
+  const breakpointKey = [...mcBreakpoints[core]].sort((a, b) => a - b).join(",");
+  if (breakpointKey !== mcLastSourceBreakpointKey[core]) {
+    listEl.querySelectorAll(`li[id^='mc-${core}-src-line-']`).forEach(li => {
+      const addr = parseInt(li.id.replace(`mc-${core}-src-line-`, ""), 10);
+      li.classList.toggle("has-bp", mcBreakpoints[core].has(addr));
+    });
+    mcLastSourceBreakpointKey[core] = breakpointKey;
   }
 
-  // "rtu0" is this panel's fixed DOM slot; the core actually loaded into it
-  // (RTU0 or PRU1) is whatever mcPartner currently points at.
-  const realCore = core === "pru0" ? "pru0" : mcPartner;
-  renderBpBar(`mc-${core}-`, realCore, mcBreakpoints[core]);
+  // Current PC highlight
+  const currentLine = document.getElementById(`mc-${core}-src-line-${pc}`);
+  if (mcCurrentSourceLine[core] && mcCurrentSourceLine[core] !== currentLine) {
+    mcCurrentSourceLine[core].classList.remove("current-pc");
+  }
+  if (currentLine && currentLine !== mcCurrentSourceLine[core]) {
+    currentLine.classList.add("current-pc");
+    queueSourceLineScroll(`mc-${core}`, listEl, currentLine);
+  }
+  mcCurrentSourceLine[core] = currentLine;
+
+  renderBpBar(`mc-${core}-`, actualCore, mcBreakpoints[core]);
 }
 
-// Breakpoint toggle via dblclick on MC source panels
-document.getElementById("mc-pru0-source-panel").addEventListener("dblclick", (e) => {
-  const li = e.target.closest("li[id^='mc-pru0-src-line-']");
-  if (!li) return;
-  const addr = parseInt(li.id.replace("mc-pru0-src-line-", ""), 10);
-  if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: "pru0", addr });
-});
-
-document.getElementById("mc-rtu0-source-panel").addEventListener("dblclick", (e) => {
-  const li = e.target.closest("li[id^='mc-rtu0-src-line-']");
-  if (!li) return;
-  const addr = parseInt(li.id.replace("mc-rtu0-src-line-", ""), 10);
-  if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: mcPartner, addr });
+// Breakpoint toggle via dblclick on any selected MC source panel.
+MC_SLOT_KEYS.forEach((slotKey, slotIndex) => {
+  const panel = document.getElementById(`mc-${slotKey}-source-panel`);
+  panel?.addEventListener("dblclick", (e) => {
+    const li = e.target.closest(`li[id^='mc-${slotKey}-src-line-']`);
+    if (!li) return;
+    const addr = parseInt(li.id.replace(`mc-${slotKey}-src-line-`, ""), 10);
+    const actualCore = mcCores[slotIndex];
+    if (actualCore && !isNaN(addr)) {
+      sendAction({ action: "toggle_breakpoint", core: actualCore, addr });
+    }
+  });
 });
 
 // ---- Init -----------------------------------------------------------------
 
 wireBpBar("", () => currentCore);
-wireBpBar("mc-pru0-", () => "pru0");
-wireBpBar("mc-rtu0-", () => mcPartner);
+MC_SLOT_KEYS.forEach((slotKey, slotIndex) => {
+  wireBpBar(`mc-${slotKey}-`, () => mcCores[slotIndex]);
+});
 
 initUI();
 connect();
@@ -3553,16 +5634,14 @@ document.addEventListener("keydown", (e) => {
   if (e.key === " ") {
     e.preventDefault();
     if (multiCoreMode) {
-      const pru0Line = document.querySelector("#mc-pru0-source-list li.current-pc");
-      if (pru0Line) {
-        const addr = parseInt(pru0Line.id.replace("mc-pru0-src-line-", ""), 10);
-        if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: "pru0", addr });
-      }
-      const partnerLine = document.querySelector("#mc-rtu0-source-list li.current-pc");
-      if (partnerLine) {
-        const addr = parseInt(partnerLine.id.replace("mc-rtu0-src-line-", ""), 10);
-        if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: mcPartner, addr });
-      }
+      MC_SLOT_KEYS.forEach((slotKey, slotIndex) => {
+        const actualCore = mcCores[slotIndex];
+        if (!actualCore) return;
+        const line = document.querySelector(`#mc-${slotKey}-source-list li.current-pc`);
+        if (!line) return;
+        const addr = parseInt(line.id.replace(`mc-${slotKey}-src-line-`, ""), 10);
+        if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: actualCore, addr });
+      });
     } else {
       const pcLine = sourceList.querySelector("li.current-pc");
       if (!pcLine) return;
@@ -3572,18 +5651,21 @@ document.addEventListener("keydown", (e) => {
   } else if (e.key === "ArrowRight") {
     e.preventDefault();
     stopRun(); stopSim();
-    if (multiCoreMode) {
-      sendAction({ action: "step", core: "pru0", count: 1 });
-      sendAction({ action: "step", core: mcPartner, count: 1 });
+    if (genericSsiLoaded) {
+      btnStep.click();
+    } else if (multiCoreMode) {
+      sendMCRun(1);
     } else {
       sendAction({ action: "step", core: currentCore, count: 1 });
     }
   } else if (e.key === "ArrowLeft") {
     e.preventDefault();
     stopRun(); stopSim();
+    graphClear();
     if (multiCoreMode) {
-      sendAction({ action: "step_back", core: "pru0" });
-      sendAction({ action: "step_back", core: mcPartner });
+      for (const core of mcSelectedCores()) {
+        sendAction({ action: "step_back", core });
+      }
     } else {
       sendAction({ action: "step_back", core: currentCore });
     }
@@ -3606,7 +5688,7 @@ document.getElementById("uart-decode-btn").addEventListener("click", () => {
   };
 
   if (samples.length === 0) {
-    return showHint("Use Signal Graph ● REC to capture GPO0 first");
+    return showHint("Run or step the simulator to capture GPO0 first");
   }
 
   const { bytes, tBit, error } = decodeUART(samples);
@@ -3628,7 +5710,7 @@ document.getElementById("uart-decode-btn").addEventListener("click", () => {
 document.getElementById("uart-clear-btn").addEventListener("click", () => {
   document.getElementById("uart-status").style.display = "none";
   document.getElementById("uart-output").style.display = "none";
-  document.getElementById("uart-hint").textContent = "Use Signal Graph ● REC to capture GPO0 first";
+  document.getElementById("uart-hint").textContent = "Run or step the simulator to capture GPO0 first";
   document.getElementById("uart-hint").style.display = "";
 });
 
@@ -3721,7 +5803,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
 
     if (!bytes || bytes.length === 0) {
       statusEl.textContent = "\u2717 Invalid payload \u2014 enter space-separated hex bytes or ASCII text";
-      statusEl.style.color = "#f38ba8";
+      statusEl.style.color = "var(--halted)";
       statusEl.style.display = "";
       return;
     }
@@ -3730,7 +5812,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     const baudMb = parseFloat(baudStr);
     if (isNaN(baudMb) || baudMb <= 0 || baudMb > 10) {
       statusEl.textContent = "\u2717 Baud must be between 0.01 and 10.00 Mb";
-      statusEl.style.color = "#f38ba8";
+      statusEl.style.color = "var(--halted)";
       statusEl.style.display = "";
       return;
     }
@@ -3739,7 +5821,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     const framesVal = parseInt(document.getElementById("uart-inj-frames").value, 10);
     if (isNaN(framesVal) || framesVal < 1 || framesVal > 100) {
       statusEl.textContent = "\u2717 Frames must be between 1 and 100";
-      statusEl.style.color = "#f38ba8";
+      statusEl.style.color = "var(--halted)";
       statusEl.style.display = "";
       return;
     }
@@ -3756,9 +5838,544 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     });
 
     statusEl.textContent = "\u231B Arming...";
-    statusEl.style.color = "#888";
+    statusEl.style.color = "var(--text-dim)";
     statusEl.style.display = "";
   });
+})();
+
+// ---- SSI Encoder Inject panel -----------------------------------------------
+(function () {
+  const injBtn = document.getElementById("ssi-inj-btn");
+  if (!injBtn) { console.warn("SSI Inject: btn not found"); return; }
+
+  // Hex / Dec mode toggle
+  const modeHex = document.getElementById("ssi-inj-mode-hex");
+  const modeDec = document.getElementById("ssi-inj-mode-dec");
+  let ssiMode = "hex";
+  if (modeHex && modeDec) {
+    modeHex.addEventListener("click", () => {
+      ssiMode = "hex";
+      modeHex.classList.add("active");
+      modeDec.classList.remove("active");
+      document.getElementById("ssi-inj-value").placeholder = "Position (0-FFF)";
+    });
+    modeDec.addEventListener("click", () => {
+      ssiMode = "dec";
+      modeDec.classList.add("active");
+      modeHex.classList.remove("active");
+      document.getElementById("ssi-inj-value").placeholder = "Position (0-4095)";
+    });
+  }
+
+  injBtn.addEventListener("click", () => {
+    const statusEl = document.getElementById("ssi-inj-status");
+    const rawVal = document.getElementById("ssi-inj-value").value.trim();
+    const bits = parseInt(document.getElementById("ssi-inj-bits").value, 10) || 12;
+    const maxVal = (1 << bits) - 1;
+
+    let value;
+    try {
+      value = ssiMode === "hex" ? parseInt(rawVal, 16) : parseInt(rawVal, 10);
+    } catch (e) { value = NaN; }
+
+    if (isNaN(value) || value < 0 || value > maxVal) {
+      statusEl.textContent = "✗ Value must be 0–" + (ssiMode === "hex" ? maxVal.toString(16).toUpperCase() : maxVal) + " (" + bits + " bits)";
+      statusEl.style.color = "var(--halted)";
+      statusEl.style.display = "";
+      return;
+    }
+
+    const clkPin = parseInt(document.getElementById("ssi-inj-clk-pin").value, 10);
+    const dataPin = parseInt(document.getElementById("ssi-inj-data-pin").value, 10);
+
+    sendAction({
+      action: "ssi_inject",
+      core: currentCore,
+      clk_pin: clkPin,
+      data_pin: dataPin,
+      value: value,
+      bits: bits,
+    });
+
+    statusEl.textContent = "⏳ Arming...";
+    statusEl.style.color = "var(--text-dim)";
+    statusEl.style.display = "";
+  });
+})();
+
+// ---- Generic SSI runtime panel ----------------------------------------------
+(function () {
+  const loadBtn = document.getElementById("ssi-runtime-load");
+  if (!loadBtn) return;
+
+  const profileSelect = document.getElementById("ssi-runtime-profile");
+  const fieldIds = {
+    topology: "ssi-runtime-topology",
+    encoding_type: "ssi-runtime-encoding",
+    alignment: "ssi-runtime-alignment",
+    formation_mode: "ssi-runtime-formation",
+    frame_width_bits: "ssi-runtime-frame-bits",
+    position_offset_bits: "ssi-runtime-position-offset",
+    position_width_bits: "ssi-runtime-position-bits",
+    singleturn_width_bits: "ssi-runtime-singleturn-bits",
+    multiturn_width_bits: "ssi-runtime-multiturn-bits",
+    error_offset_bits: "ssi-runtime-error-offset",
+    error_width_bits: "ssi-runtime-error-bits",
+    padding_width_bits: "ssi-runtime-padding-bits",
+    clock_high_cycles: "ssi-runtime-clock-high",
+    clock_low_cycles: "ssi-runtime-clock-low",
+    sample_delay_cycles: "ssi-runtime-sample-delay",
+    tv_cycles: "ssi-runtime-tv",
+    tm_pause_outer_iters: "ssi-runtime-tm",
+    tp_pause_outer_iters: "ssi-runtime-tp",
+    formation_pause_outer_iters: "ssi-runtime-formation-pause",
+    sequence_hold_mode: "ssi-runtime-hold-mode",
+    sequence_hold_count: "ssi-runtime-hold",
+    capture_mode: "ssi-runtime-capture",
+    fault_mode: "ssi-runtime-fault",
+    fault_argument: "ssi-runtime-fault-argument",
+    fault_repeat_count: "ssi-runtime-fault-repeat",
+    producer_mode: "ssi-runtime-producer-mode",
+    producer_period_iep_ticks: "ssi-runtime-producer-period",
+  };
+
+  function setRuntimeStatus(text, color) {
+    const el = document.getElementById("ssi-runtime-status");
+    if (!el) return;
+    el.textContent = text;
+    el.style.color = color || "";
+  }
+
+  function setRuntimeFields(values) {
+    if (!values) return;
+    Object.entries(fieldIds).forEach(([key, id]) => {
+      const el = document.getElementById(id);
+      if (el && values[key] !== undefined && document.activeElement !== el) {
+        const value = String(values[key]);
+        if (el.value !== value) el.value = value;
+      }
+    });
+  }
+
+  function renderRuntimeProfiles(profiles) {
+    if (!profileSelect || !Array.isArray(profiles)) return;
+    const profileKey = profiles.map((profile) =>
+      `${profile.name}:${profile.frame_width_bits}:${profile.clock_hz}`
+    ).join("|");
+    if (profileSelect.dataset.profileKey === profileKey) return;
+
+    const selected = profileSelect.value;
+    profileSelect.innerHTML = "";
+    profiles.forEach((profile) => {
+      const option = document.createElement("option");
+      option.value = profile.name;
+      const mhz = (profile.clock_hz / 1e6).toFixed(3);
+      option.textContent = profile.name + " · " + profile.frame_width_bits + "b · " + mhz + " MHz default";
+      profileSelect.appendChild(option);
+    });
+    if (selected && profiles.some((p) => p.name === selected)) {
+      profileSelect.value = selected;
+    }
+    profileSelect.dataset.profileKey = profileKey;
+  }
+
+  function formatDebugHex(value, width) {
+    if (value === null || value === undefined) return "\u2014";
+    try {
+      const bits = width * 4;
+      return "0x" + BigInt.asUintN(bits, BigInt(String(value)))
+        .toString(16).toUpperCase().padStart(width, "0");
+    } catch (_) {
+      return "\u2014";
+    }
+  }
+
+  function mailboxAddress(msg, field, fallback) {
+    const layout = msg.mailbox_layout && msg.mailbox_layout.fields;
+    return formatDebugHex(layout && layout[field] !== undefined ? layout[field] : fallback, 8);
+  }
+
+  function traceAddress(msg, field, fallback) {
+    const layout = msg.trace_layout && msg.trace_layout.fields;
+    return formatDebugHex(layout && layout[field] !== undefined ? layout[field] : fallback, 8);
+  }
+
+  function mailboxValue(msg, field, fallback, width) {
+    const display = msg.mailbox_display && msg.mailbox_display[field];
+    return display !== undefined && display !== null
+      ? display
+      : formatDebugHex(fallback, width);
+  }
+
+  function traceValue(msg, field, fallback) {
+    const display = msg.trace_display && msg.trace_display[field];
+    return display !== undefined && display !== null
+      ? display
+      : formatDebugHex(fallback, 8);
+  }
+
+  window.renderSsiRuntimeState = function (msg) {
+    renderRuntimeProfiles(msg.profiles);
+    const staged = msg.staged || msg.active || {};
+    const profileName = msg.staged_profile || msg.selected_profile;
+    if (profileName && [...profileSelect.options].some((o) => o.value === profileName)) {
+      profileSelect.value = profileName;
+    }
+    setRuntimeFields(staged);
+
+    const status = msg.loaded ? msg.status : (msg.status || "Not loaded");
+    const generation = msg.loaded
+      ? " · gen " + msg.requested_generation +
+        " ack " + msg.pru0_ack_generation + "/" + msg.pru1_ack_generation +
+        " · " + (Number(msg.effective_clock_hz || 0) / 1e6).toFixed(3) + " MHz"
+      : "";
+    setRuntimeStatus(status + generation, msg.loaded ? "#6a9955" : "var(--text-dim)");
+
+    const wires = document.getElementById("ssi-runtime-wires");
+    if (wires) {
+      const wireText = (msg.wires || []).map((wire) =>
+        `${wire.src_core}:GPO${wire.src_pin} -> ${wire.dst_core}:GPI${wire.dst_pin}`
+      );
+      wires.textContent = wireText.length
+        ? "Wires: " + wireText.join(" | ")
+        : "Wires: ...";
+    }
+
+    const mailbox = document.getElementById("ssi-runtime-mailbox");
+    if (mailbox) {
+      const mb = msg.mailbox;
+      if (!mb) {
+        mailbox.textContent = "Mailbox: ...";
+      } else {
+        const position = mailboxValue(msg, "position", mb.position_value, 8) ||
+          "invalid for active width";
+        const frameCounter = msg.mailbox_display &&
+          msg.mailbox_display.frame_counter_decimal !== undefined
+          ? msg.mailbox_display.frame_counter_decimal
+          : (mb.frame_counter || 0);
+        mailbox.textContent = [
+          "Shared RAM mailbox (seqlock snapshot)",
+          "sequence       [" + mailboxAddress(msg, "sequence", 0x00010200) + "] = " +
+            mailboxValue(msg, "sequence", mb.seq, 8),
+          "raw frame      [" + mailboxAddress(msg, "raw_frame", 0x00010204) + "] = " +
+            mailboxValue(msg, "raw_frame", mb.raw_frame, 16),
+          "raw position   [" + mailboxAddress(msg, "raw_position", 0x0001020C) + "] = " +
+            mailboxValue(msg, "raw_position", mb.raw_position_value, 8),
+          "position       [" + mailboxAddress(msg, "position", 0x0001020C) + "] = " +
+            position + " (decoded)",
+          "status         [" + mailboxAddress(msg, "status", 0x00010210) + "] = " +
+            mailboxValue(msg, "status", mb.status_bits, 8),
+          "frame counter  [" + mailboxAddress(msg, "frame_counter", 0x00010214) + "] = " +
+            mailboxValue(msg, "frame_counter", mb.frame_counter, 8) +
+            " (" + frameCounter + ")",
+          "timestamp      [" + mailboxAddress(msg, "timestamp", 0x00010218) + "] = " +
+            mailboxValue(msg, "timestamp", mb.timestamp_cycles, 16),
+        ].join("\n");
+      }
+    }
+    const trace = document.getElementById("ssi-runtime-trace");
+    if (trace) {
+      const tr = msg.trace;
+      if (!tr) {
+        trace.textContent = "Trace: ...";
+      } else {
+        const records = msg.trace_display &&
+          msg.trace_display.write_index_decimal !== undefined
+          ? msg.trace_display.write_index_decimal
+          : tr.write_index;
+        const overruns = msg.trace_display &&
+          msg.trace_display.overrun_count_decimal !== undefined
+          ? msg.trace_display.overrun_count_decimal
+          : tr.overrun_count;
+        trace.textContent = [
+          "Trace counters",
+          "write index    [" + traceAddress(msg, "write_index", 0x00010240) + "] = " +
+            traceValue(msg, "write_index", tr.write_index) +
+            " (" + records + " records)",
+          "overruns       [" + traceAddress(msg, "overrun_count", 0x00010244) + "] = " +
+            traceValue(msg, "overrun_count", tr.overrun_count) +
+            " (" + overruns + ")",
+        ].join("\n");
+      }
+    }
+    const producerDiagnostics = document.getElementById("ssi-runtime-producer-diagnostics");
+    if (producerDiagnostics) {
+      const producer = msg.producer;
+      const diag = msg.producer_diagnostics;
+      if (!producer || !diag) {
+        producerDiagnostics.textContent = "Timestamped producer: ...";
+      } else {
+        producerDiagnostics.textContent = [
+          "Timestamped ARM producer / PRU0 estimator",
+          "state          = " + (producer.running ? "RUNNING" : "stopped") +
+            " · " + producer.trajectory + " · " + producer.period_iep_ticks +
+            " ticks (" + producer.period_ns + " ns)",
+          "published      = " + producer.published_count +
+            " · skipped/overwritten=" + producer.skipped_overwritten_count,
+          "latest seq     [0x00018400] = " + formatDebugHex(diag.latest_write_seq, 16),
+          "accepted       [0x00018408] = " + diag.accepted_count,
+          "coherence retry[0x0001840C] = " + diag.coherence_retry_count,
+          "stale          [0x00018410] = " + diag.stale_sample_count,
+          "ring overrun   [0x00018414] = " + diag.ring_overrun_count,
+          "request time   [0x00018418] = " + formatDebugHex(diag.last_request_timestamp_iep, 16),
+          "estimate Q31.32[0x00018420] = " + formatDebugHex(diag.last_estimate_position_q31_32, 16),
+          "status         [0x00018428] = " + formatDebugHex(diag.status, 8),
+          "generation     [0x0001842C] = " + formatDebugHex(diag.generation, 8),
+          "head seq       [0x00018430] = " + formatDebugHex(diag.head_seq, 8),
+          "latest slot    [0x00018434] = " + diag.latest_slot_index,
+          "sample seq     [0x00018438] = " + formatDebugHex(diag.latest_stable_sample_seq, 16),
+        ].join("\n");
+        const trajectory = document.getElementById("ssi-runtime-producer-trajectory");
+        if (trajectory && document.activeElement !== trajectory) trajectory.value = producer.trajectory;
+      }
+    }
+    if (Array.isArray(msg.frames) && msg.frames.length) {
+      const frames = msg.frames.map((value) => BigInt(value).toString(16).toUpperCase());
+      document.getElementById("ssi-runtime-frames").value = frames.join(", ");
+    }
+  };
+
+  function numericOverrides() {
+    const overrides = {};
+    Object.entries(fieldIds).forEach(([key, id]) => {
+      const value = Number(document.getElementById(id).value);
+      if (Number.isFinite(value)) overrides[key] = Math.trunc(value);
+    });
+    return overrides;
+  }
+
+  function selectedProfile() {
+    return profileSelect && profileSelect.value ? profileSelect.value : "";
+  }
+
+  function frameTokens() {
+    return document.getElementById("ssi-runtime-frames").value
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .map((value) => value.startsWith("0x") || value.startsWith("0X") ? value : "0x" + value);
+  }
+
+  function positionTokens() {
+    return document.getElementById("ssi-runtime-positions").value
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .map((value) => value.startsWith("0x") || value.startsWith("0X") ? value : "0x" + value);
+  }
+
+  function optionalNumber(id) {
+    const value = document.getElementById(id).value.trim();
+    return value === "" ? undefined : Math.trunc(Number(value));
+  }
+
+  function sendPositionPacking() {
+    const message = {
+      action: "ssi_runtime_positions",
+      positions: positionTokens(),
+    };
+    const count = optionalNumber("ssi-runtime-position-count");
+    const offset = optionalNumber("ssi-runtime-gray-excess-offset");
+    if (count !== undefined) message.position_count = count;
+    if (offset !== undefined) message.gray_excess_offset = offset;
+    sendAction(message);
+  }
+
+  loadBtn.addEventListener("click", () => {
+    simpleSsiLoaded = false;
+    genericSsiLoaded = false;
+    stopRun();
+    stopSim();
+    cancelAllRunRequests();
+    graphClear();
+    clearErrors();
+    setRuntimeStatus("Loading generic PRU0 emulator / PRU1 reader...", "#888");
+    sendAction({ action: "ssi_runtime_load" });
+  });
+
+  document.getElementById("ssi-runtime-refresh").addEventListener("click", () => {
+    sendAction({ action: "ssi_runtime_read" });
+  });
+
+  document.getElementById("ssi-runtime-pack").addEventListener("click", () => {
+    sendPositionPacking();
+    setRuntimeStatus("Natural positions packed into staged frame slots.", "var(--accent)");
+  });
+
+  profileSelect.addEventListener("change", () => {
+    const selected = [...(window.ssiRuntimeProfileCatalog || [])]
+      .find((profile) => profile.name === profileSelect.value);
+    if (selected) setRuntimeFields(selected);
+  });
+
+  document.getElementById("ssi-runtime-stage").addEventListener("click", () => {
+    sendAction({
+      action: "ssi_runtime_stage",
+      profile: selectedProfile(),
+      overrides: numericOverrides(),
+    });
+    setRuntimeStatus("Configuration staged; press Apply atomically.", "var(--accent)");
+  });
+
+  document.getElementById("ssi-runtime-producer-configure").addEventListener("click", () => {
+    sendAction({
+      action: "ssi_runtime_producer_configure",
+      trajectory: document.getElementById("ssi-runtime-producer-trajectory").value,
+      initial_position: document.getElementById("ssi-runtime-producer-initial").value,
+      velocity_counts_per_second: document.getElementById("ssi-runtime-producer-velocity").value,
+      triangle_low: document.getElementById("ssi-runtime-producer-low").value,
+      triangle_high: document.getElementById("ssi-runtime-producer-high").value,
+      period_iep_ticks: Math.trunc(Number(document.getElementById("ssi-runtime-producer-period").value)),
+    });
+    setRuntimeStatus("Timestamped producer configured; Start when ready.", "var(--accent)");
+  });
+
+  document.getElementById("ssi-runtime-producer-start").addEventListener("click", () => {
+    sendAction({ action: "ssi_runtime_producer_start" });
+  });
+
+  document.getElementById("ssi-runtime-producer-stop").addEventListener("click", () => {
+    sendAction({ action: "ssi_runtime_producer_stop" });
+  });
+
+  document.getElementById("ssi-runtime-producer-step").addEventListener("click", () => {
+    sendAction({ action: "ssi_runtime_producer_step" });
+  });
+
+  document.getElementById("ssi-runtime-apply").addEventListener("click", () => {
+    if (!genericSsiLoaded) {
+      setRuntimeStatus("Load the generic SSI pair before Apply.", "var(--halted)");
+      return;
+    }
+    if (running || genericSsiRunInFlight) {
+      setRuntimeStatus("Wait for the current paired run to finish before Apply.", "var(--halted)");
+      return;
+    }
+    graphClear();
+    // Send one complete transaction.  The server validates the layout and
+    // every frame before publishing a new generation.
+    sendAction({
+      action: "ssi_runtime_apply",
+      profile: selectedProfile(),
+      overrides: numericOverrides(),
+      frames: frameTokens(),
+    });
+    setRuntimeStatus("Applying at an idle SSI frame boundary...", "var(--accent)");
+  });
+
+  document.getElementById("ssi-runtime-run").addEventListener("click", () => {
+    if (!genericSsiLoaded) {
+      setRuntimeStatus("Load the generic SSI pair before running it.", "var(--halted)");
+      return;
+    }
+    if (running || genericSsiRunInFlight) {
+      setRuntimeStatus("A paired run is already in progress.", "var(--halted)");
+      return;
+    }
+    const steps = Math.max(100, Math.min(
+      200000,
+      Number(document.getElementById("ssi-runtime-run-steps").value) || 20000,
+    ));
+    const request_id = "ssi-runtime-run-" + nextRunRequestId++;
+    const sent = sendAction({
+      action: "run_multicore",
+      core: "pru1",
+      partner: "pru0",
+      max_steps: Math.trunc(steps),
+      capture: signalGraph.recording,
+      request_id,
+    });
+    genericSsiRunInFlight = sent;
+    if (sent) {
+      genericSsiRequestId = request_id;
+      trackRunRequest(request_id);
+    }
+    setRuntimeStatus("Running paired SSI cores...", "#888");
+  });
+
+  // Keep the catalog available to the profile-change handler without coupling
+  // it to the websocket message format.
+  const originalRender = window.renderSsiRuntimeState;
+  window.renderSsiRuntimeState = function (msg) {
+    window.ssiRuntimeProfileCatalog = msg.profiles || window.ssiRuntimeProfileCatalog || [];
+    const newlyLoaded = msg.loaded === true && !genericSsiLoaded;
+    genericSsiLoaded = msg.loaded === true;
+    originalRender(msg);
+    if (newlyLoaded) selectGenericSsiPartner();
+  };
+})();
+
+// ---- Simple SSI realtime panel ---------------------------------------------
+(function () {
+  const loadBtn = document.getElementById("ssi-simple-load");
+  if (!loadBtn) return;
+
+  const resetBtn = document.getElementById("ssi-simple-reset");
+  const refreshBtn = document.getElementById("ssi-simple-refresh");
+  const statusEl = document.getElementById("ssi-simple-status");
+  const profileEl = document.getElementById("ssi-simple-profile");
+  const resultsEl = document.getElementById("ssi-simple-results");
+
+  function setStatus(text, color) {
+    if (!statusEl) return;
+    statusEl.textContent = text;
+    statusEl.style.color = color || "";
+  }
+
+  function renderJson(element, value, emptyText) {
+    if (!element) return;
+    element.textContent = value === null || value === undefined
+      ? emptyText
+      : JSON.stringify(value, null, 2);
+  }
+
+  function updateControls(loaded) {
+    if (loadBtn) loadBtn.disabled = false;
+    if (resetBtn) resetBtn.disabled = !loaded;
+    if (refreshBtn) refreshBtn.disabled = false;
+  }
+
+  window.renderSsiSimpleState = function (msg) {
+    simpleSsiLoaded = Boolean(msg.loaded);
+    renderJson(profileEl, msg.profile, "Generated profile is unavailable.");
+    renderJson(resultsEl, msg.result, "No simulator progress yet.");
+    updateControls(Boolean(msg.loaded));
+
+    if (msg.error) {
+      setStatus("✗ " + msg.error, "#f38ba8");
+    } else {
+      setStatus(msg.status || "Not loaded", msg.loaded ? "#6a9955" : "var(--text-dim)");
+    }
+  };
+
+  window.renderSsiSimpleProgress = function (msg) {
+    renderJson(resultsEl, msg.result, "No simulator progress yet.");
+  };
+
+  window.renderSsiSimpleError = function (msg) {
+    simpleSsiLoaded = false;
+    setStatus("✗ " + (msg.error || "SSI realtime error"), "#f38ba8");
+  };
+
+  loadBtn.addEventListener("click", () => {
+    simpleSsiLoaded = false;
+    genericSsiLoaded = false;
+    graphClear();
+    setStatus("Loading PRU0, PRU1, and RTU_PRU1 into the simulator...", "var(--accent)");
+    sendAction({ action: "ssi_simple_load" });
+  });
+
+  resetBtn.addEventListener("click", () => {
+    graphClear();
+    setStatus("Reloading the three SSI firmware images...", "var(--accent)");
+    sendAction({ action: "ssi_simple_reset" });
+  });
+
+  refreshBtn.addEventListener("click", () => {
+    sendAction({ action: "ssi_simple_read" });
+  });
+
+  sendAction({ action: "ssi_simple_state" });
 })();
 
 // ---- GP Mux mode selector (GPCFG.PRU_GP_MUX_SEL) ---------------------------
@@ -3767,6 +6384,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
   if (!sel) return;
   sel.addEventListener("change", () => {
     const mux = parseInt(sel.value, 10) || 0;
+    graphClear();
     sendAction({ action: "gpcfg_write", core: currentCore, mux_sel: mux });
   });
 })();

@@ -1,0 +1,556 @@
+<title>SSI Timestamped Producer — Task D</title>
+<style>
+  :root {
+    --bg: #F0F3F1;
+    --surface: #FFFFFF;
+    --surface-2: #E7ECE9;
+    --border: #D3DBD6;
+    --text: #16201C;
+    --text-muted: #55645C;
+    --text-faint: #7C8A82;
+    --accent: #B25C25;
+    --accent-strong: #8F481B;
+    --good: #2E8B67;
+    --warn: #B23B3B;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #101512;
+      --surface: #171D1A;
+      --surface-2: #1E2622;
+      --border: #2B3530;
+      --text: #E8EDEA;
+      --text-muted: #93A39B;
+      --text-faint: #6D7B74;
+      --accent: #E58A4C;
+      --accent-strong: #F3A466;
+      --good: #4FBF93;
+      --warn: #E48383;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #101512;
+    --surface: #171D1A;
+    --surface-2: #1E2622;
+    --border: #2B3530;
+    --text: #E8EDEA;
+    --text-muted: #93A39B;
+    --text-faint: #6D7B74;
+    --accent: #E58A4C;
+    --accent-strong: #F3A466;
+    --good: #4FBF93;
+    --warn: #E48383;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--serif);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 64px 24px 96px;
+  }
+
+  @media (max-width: 600px) {
+    .page { padding: 40px 16px 64px; }
+  }
+
+  /* ---- Header block ---- */
+
+  .titleblock {
+    border-bottom: 2px solid var(--text);
+    padding-bottom: 22px;
+    margin-bottom: 40px;
+  }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin: 0 0 10px;
+  }
+
+  h1 {
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: clamp(1.7rem, 4vw, 2.3rem);
+    letter-spacing: -0.01em;
+    line-height: 1.15;
+    margin: 0 0 14px;
+    text-wrap: balance;
+  }
+
+  .meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 18px;
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--text-muted);
+  }
+
+  .meta-row span b {
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  .status-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--good);
+    border: 1px solid color-mix(in srgb, var(--good) 45%, transparent);
+    background: color-mix(in srgb, var(--good) 12%, transparent);
+    padding: 3px 9px;
+    border-radius: 3px;
+  }
+
+  .status-chip::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--good);
+    flex: none;
+  }
+
+  /* ---- Sections ---- */
+
+  section { margin-bottom: 52px; }
+
+  h2 {
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: 0.95rem;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 18px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+
+  h2 .num {
+    color: var(--text-faint);
+    font-weight: 500;
+  }
+
+  p {
+    font-size: 1.03rem;
+    line-height: 1.7;
+    color: var(--text);
+    max-width: 66ch;
+    margin: 0 0 16px;
+  }
+
+  p.lede {
+    color: var(--text-muted);
+  }
+
+  /* ---- Prompt block ---- */
+
+  .prompt-block {
+    font-family: var(--mono);
+    font-size: 0.88rem;
+    line-height: 1.65;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 2px;
+    padding: 18px 20px;
+    color: var(--text);
+    white-space: pre-wrap;
+  }
+
+  .prompt-source {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    color: var(--text-faint);
+    margin: 10px 0 0;
+  }
+
+  /* ---- Process steps ---- */
+
+  .steps {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+    background: var(--surface);
+  }
+
+  .step {
+    flex: 1 1 140px;
+    padding: 14px 16px;
+    border-right: 1px solid var(--border);
+    font-family: var(--mono);
+  }
+
+  .step:last-child { border-right: none; }
+
+  .step .n {
+    font-size: 0.7rem;
+    color: var(--accent);
+    letter-spacing: 0.06em;
+  }
+
+  .step .label {
+    font-size: 0.83rem;
+    color: var(--text);
+    margin-top: 4px;
+    font-weight: 600;
+  }
+
+  /* ---- Decision log ---- */
+
+  .decision-group-label {
+    font-family: var(--mono);
+    font-size: 0.76rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin: 28px 0 12px;
+  }
+
+  .decision-group-label:first-child { margin-top: 0; }
+
+  .decision {
+    display: grid;
+    grid-template-columns: 34px 1fr;
+    gap: 4px 16px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .decision:last-child { border-bottom: none; }
+
+  .decision .idx {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--text-faint);
+    padding-top: 2px;
+  }
+
+  .decision .title {
+    font-weight: 700;
+    font-size: 1rem;
+    color: var(--text);
+    margin: 0 0 4px;
+  }
+
+  .decision .why {
+    font-size: 0.95rem;
+    color: var(--text-muted);
+    line-height: 1.6;
+    margin: 0;
+    max-width: 62ch;
+  }
+
+  .decision.fixed .title::after {
+    content: "bug found in review";
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--warn);
+    border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+    background: color-mix(in srgb, var(--warn) 12%, transparent);
+    padding: 2px 6px;
+    border-radius: 3px;
+    margin-left: 10px;
+    font-weight: 600;
+    vertical-align: middle;
+  }
+
+  /* ---- Context usage ---- */
+
+  .arch-note {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 16px 20px;
+    margin-bottom: 22px;
+  }
+
+  .arch-note p { margin-bottom: 0; }
+
+  .table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-size: 0.83rem;
+    background: var(--surface);
+  }
+
+  thead th {
+    text-align: left;
+    font-size: 0.68rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    font-weight: 600;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+
+  thead th.num, td.num { text-align: right; }
+
+  tbody td {
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    vertical-align: middle;
+  }
+
+  tbody tr:last-child td { border-bottom: none; }
+
+  tbody tr.rounds td { color: var(--text-muted); }
+
+  .bar-cell {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 160px;
+  }
+
+  .bar-track {
+    flex: 1 1 auto;
+    height: 7px;
+    background: var(--surface-2);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .bar-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+  }
+
+  tfoot td {
+    padding: 12px 14px;
+    font-weight: 700;
+    color: var(--text);
+    border-top: 2px solid var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .task-name { color: var(--text); font-weight: 600; font-family: var(--serif); font-size: 0.92rem; }
+
+  /* ---- Footer stats ---- */
+
+  .statgrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  .stat {
+    background: var(--surface);
+    padding: 16px 18px;
+  }
+
+  .stat .v {
+    font-family: var(--mono);
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .stat .k {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin-top: 4px;
+  }
+
+  footer {
+    margin-top: 60px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    color: var(--text-faint);
+  }
+</style>
+
+<div class="page">
+
+  <div class="titleblock">
+    <p class="eyebrow">Session Report · pru-simulator</p>
+    <h1>SSI Timestamped Producer — Task D</h1>
+    <div class="meta-row">
+      <span>Validation session · 2026-08-25</span>
+      <span class="status-chip">PRU0 estimator and bounded dynamic wire packing implemented</span>
+    </div>
+  </div>
+
+  <section id="prompt">
+    <h2><span class="num">1</span> The Initial Request</h2>
+    <p class="lede">Reconstructed from the session's documented scope — the original verbatim request wasn't preserved for this report:</p>
+    <div class="prompt-block">Task D: integrate the accepted timestamped-producer design with the simulator's SSIRuntime. Implement the PRU0 ring consumer and request-time position estimator, have PRU1 initialize the shared 300 MHz IEP timebase, and keep the CCS sources, UI, and MCP controls in sync with the simulator. Validate with the full SSI/producer/estimator test suite.</div>
+    <p class="prompt-source">Reconstructed for this report — not a verbatim quote.</p>
+  </section>
+
+  <section id="scope">
+    <h2><span class="num">2</span> Scope</h2>
+    <p>This task integrates the accepted timestamped producer with the
+    simulator <code>SSIRuntime</code>, implements the PRU0 ring consumer and
+    request-time estimator, initializes the shared 300 MHz IEP from PRU1, and
+    keeps the simulator, CCS sources, UI, and MCP controls aligned.</p>
+  </section>
+
+  <section id="implemented">
+    <h2><span class="num">3</span> Implemented Behavior</h2>
+
+    <p class="decision-group-label">Implemented in this session</p>
+
+    <div class="decision">
+      <div class="idx">3.1</div>
+      <div>
+        <p class="title">Coherent single-read producer head, no ring scan</p>
+        <p class="why">PRU0 reads a coherent producer head and exactly the latest sample and predecessor; it never scans the 256-entry ring.</p>
+      </div>
+    </div>
+    <div class="decision">
+      <div class="idx">3.2</div>
+      <div>
+        <p class="title">Estimator work moved to idle time, falling edge kept minimal</p>
+        <p class="why">Ring reads, period/age/horizon checks, signed estimate arithmetic, and prepared-frame publication run during idle <code>tm</code>. The falling edge only captures IEP COUNT_LO plus latched COUNT_HI before entering the existing bit loop.</p>
+      </div>
+    </div>
+    <div class="decision">
+      <div class="idx">3.3</div>
+      <div>
+        <p class="title">PRU1 initializes the shared IEP0 at 300 MHz</p>
+        <p class="why">PRU1 selects the OCP clock through <code>c4 + 0x30</code> and enables IEP0 through <code>c26 + 0x00</code> with <code>0x11</code>, giving one IEP tick per 300 MHz PRU cycle.</p>
+      </div>
+    </div>
+    <div class="decision">
+      <div class="idx">3.4</div>
+      <div>
+        <p class="title">Static mode stays default; timestamped mode adds bounded dynamic packing</p>
+        <p class="why">Static mode remains the default and preserves prepacked 1..64-bit frames. Timestamped mode supports binary or reflected Gray, integer positions up to 31 bits, explicit/right-aligned placement, zero padding, and 1..64-bit raw frames. Metadata absent from the sample ABI is rejected explicitly and the last frame is held.</p>
+      </div>
+    </div>
+    <div class="decision">
+      <div class="idx">3.5</div>
+      <div>
+        <p class="title">Fault paths hold the last frame; PRU0 stops touching the producer head</p>
+        <p class="why">Stale, horizon, generation, coherence, overflow, missed-preparation, and ring-overrun paths retain the last prepared frame. PRU0 no longer rewrites the producer-owned head while publishing diagnostics.</p>
+      </div>
+    </div>
+
+  </section>
+
+  <section id="verification">
+    <h2><span class="num">4</span> Verification</h2>
+    <p class="lede">The focused Task D and supporting SSI suite passed <strong>148 tests</strong>
+    in <strong>72.60 seconds</strong>.</p>
+    <div class="prompt-block">python -m pytest -q --basetemp=..\tmp\pytest-ssi-focused-final2 tests/test_ssi_task_d.py tests/test_ssi_config_abi_generated.py tests/test_ssi_position_estimator.py tests/test_ssi_position_producer.py tests/test_ssi_runtime.py tests/test_ssi_generic_emulator.py tests/test_ssi_generic_reader.py tests/test_iep_timebase.py</div>
+    <p class="lede">The complete simulator run produced <strong>1432 passed, 1 failed,
+    2 xfailed</strong> in <strong>132.80 seconds</strong>. The sole failure is
+    the unrelated pre-existing
+    <code>tests/test_perif_drift_experiment.py::test_roundtrip_with_no_host_register_setup</code>.
+    All SSI, producer, estimator, IEP, runtime, trace, reader/emulator, and
+    MCP regression tests passed.</p>
+    <div class="prompt-block">python -m pytest -q --basetemp=..\tmp\pytest-full-ssi-finish</div>
+    <p class="lede">The parent CCS/UART contract suite also passed <strong>27 tests</strong>;
+    the simulator UI/MCP subset passed <strong>56 tests</strong>.</p>
+  </section>
+
+  <section id="measured">
+    <h2><span class="num">5</span> Measured PRU Behavior</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Measurement</th>
+            <th>Result</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="task-name">Producer cadence</td>
+            <td>288 IEP ticks = 960 ns at 300 MHz.</td>
+          </tr>
+          <tr>
+            <td class="task-name">Default SSI clock</td>
+            <td>Steady paired phases: 35-cycle low and 40-cycle high, 75 cycles per bit, i.e. 4 MHz.</td>
+          </tr>
+          <tr>
+            <td class="task-name">PRU0 edge hot path</td>
+            <td>Steady timestamped edge-to-first-data transition measured at 18 PRU cycles; test bound is 24 cycles.</td>
+          </tr>
+          <tr>
+            <td class="task-name">IEP rollover</td>
+            <td>Low-word rollover with the latched high word remains coherent and continues accepting estimates.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="docs">
+    <h2><span class="num">6</span> Documentation Updated</h2>
+    <p>The PRU0 and PRU1 READMEs/project reports now describe Task D, the
+    producer ring/head ownership, IEP startup, safe arithmetic subset,
+    fallback status, and simulator commands. The implementation checklist is
+    in <code>docs/superpowers/plans/2026-08-25-ssi-timestamped-producer-task-d.md</code>.</p>
+  </section>
+
+  <section id="repo-state">
+    <h2><span class="num">7</span> Repository State</h2>
+    <p>This work remains local for review. No files were staged, committed, or
+    pushed.</p>
+  </section>
+
+  <div class="statgrid">
+    <div class="stat"><div class="v">148</div><div class="k">Tests passed, focused suite</div></div>
+    <div class="stat"><div class="v">1432</div><div class="k">Tests passed, full suite</div></div>
+    <div class="stat"><div class="v">18</div><div class="k">PRU0 edge hot path, cycles</div></div>
+    <div class="stat"><div class="v">288</div><div class="k">Producer cadence, IEP ticks</div></div>
+  </div>
+
+  <footer>
+    pru-simulator · local working tree · generated from session transcript
+  </footer>
+
+</div>

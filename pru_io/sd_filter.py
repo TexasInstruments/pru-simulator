@@ -103,6 +103,24 @@ class SigmaDeltaFilter:
                 bit = mod.next_bit()
                 self.channels[i].tick(bit)
 
+    def advance_cycles(self, cycles: int) -> None:
+        """Advance independent channels over a batch of PRU cycles.
+
+        This preserves each channel's fractional clock accumulator and bit
+        sequence while avoiding a Python call for every idle PRU instruction.
+        It is used only by the explicitly enabled FOC timer-wait fast path.
+        """
+        if cycles < 0:
+            raise ValueError("SD cycles cannot be negative")
+        for i in range(_NUM_CHANNELS):
+            mod = self.modulators[i]
+            total = self._clock_acc[i] + (mod.sd_clock_mhz / self.pru_clock_mhz) * cycles
+            ticks = int(total)
+            self._clock_acc[i] = total - ticks
+            channel = self.channels[i]
+            for _ in range(ticks):
+                channel.tick(mod.next_bit())
+
     def _on_config_change(self, ch: int, field: str, value: int) -> None:
         """Handle config register changes."""
         if ch < 0:

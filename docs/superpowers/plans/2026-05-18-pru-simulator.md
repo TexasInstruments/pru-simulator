@@ -2,11 +2,14 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a dual-core PRU assembly simulator (PRU0 + RTU0) with MCP server integration for AI-driven code generation and an HTML dashboard for human visualization.
+**Goal:** Build a dual-core PRU assembly simulator (PRU0 + RTU0) with MCP
+server integration for external tooling and an HTML dashboard for human
+visualization.
 
 **Architecture:** Modular pipeline — each hardware component is a separate Python module with clean interfaces. The Simulator orchestrator wires cores to shared memory/XFR bus. Interface layer (MCP + HTML) wraps the orchestrator.
 
-**Tech Stack:** Python 3.11+, FastAPI, uvicorn, websockets, mcp SDK, pytest
+**Tech Stack:** Python 3.11+, FastAPI, uvicorn, websockets, MCP SDK,
+pytest
 
 ---
 
@@ -3114,7 +3117,7 @@ Expected: FAIL with ModuleNotFoundError
 
 ```python
 # mcp_server/server.py
-"""PRU Simulator MCP Server — exposes simulator as tools for Claude Code."""
+"""PRU Simulator MCP Server — exposes simulator as tools for an MCP client."""
 import json
 import sys
 import logging
@@ -3190,7 +3193,7 @@ class PRUSimulatorMCP:
 
 
 def run_stdio_server():
-    """Run as stdio-based MCP server (for Claude Code integration)."""
+    """Run as stdio-based MCP server for an MCP-compatible client."""
     try:
         from mcp.server import Server
         from mcp.server.stdio import stdio_server
@@ -3257,7 +3260,7 @@ def run_stdio_server():
         asyncio.run(stdio_server(server).run())
 
     except ImportError:
-        logger.error("MCP SDK not installed. Run: pip install mcp")
+        logger.error("MCP SDK not installed. Run: pip install -r requirements.txt")
         sys.exit(1)
 
 
@@ -3505,7 +3508,7 @@ function toggleGPI(pin) {
 
 - [ ] **Step 4: Verify server starts**
 
-Run: `cd C:/Users/a0746725/ai_code/pru_simulator && python -c "from ui.server import app; print('OK')"`
+Run: `cd /path/to/pru_simulator && python -c "from ui.server import app; print('OK')"`
 Expected: `OK`
 
 - [ ] **Step 5: Commit**

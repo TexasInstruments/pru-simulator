@@ -17,9 +17,7 @@
 - Bit clock for the experiment: core clock, div=7 → 200/8 = 25 MHz → 40 ns/bit, 320 ns/byte (64 PRU cycles/byte — firmware refill loops fit easily).
 - RX framing: `sb_pol=1`, `sample_size=7`; the single start bit is consumed by the RX, so the TX stream is `[1, p0(8b), p1(8b), …]` and the firmware pre-shifts bytes so received bytes equal the counter pattern `0x00, 0x01, … 0xFF, 0x00 …` exactly.
 - Run the full suite (`python3 -m pytest tests/ -q`) before every commit; all tests green (2 pre-existing xfail allowed).
-- Commit messages end with:
-  `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>` and
-  `Claude-Session: https://claude.ai/code/session_012ySENRf9Aqtzx5awFaRPYV`
+- Keep commit messages focused on the change and its verification results.
 
 ---
 

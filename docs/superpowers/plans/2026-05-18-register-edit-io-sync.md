@@ -105,7 +105,7 @@ def test_gpo_zero_after_reset(fresh_sim):
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-cd C:/Users/a0746725/ai_code/pru_simulator
+cd /path/to/pru_simulator
 python -m pytest tests/test_server.py -v -k "set_register or r31 or r30 or gpo or gpi"
 ```
 

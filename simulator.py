@@ -7,7 +7,9 @@ reading memory, and querying I/O state.
 import configparser
 import os
 import re
+from typing import Callable
 
+from core.iep import IEPClockRegisterRegion, IEPRegisterRegion, IEPTimebase
 from core.pru_core import PRUCore
 from mem.memory_bus import MemoryBus
 from mem.regions import MemoryRegion
@@ -23,7 +25,7 @@ from perif.perif_registers import PerifRegisters
 from perif.gpcfg import GpcfgRegisters, MUX_PERIF
 from perif.loopback import Loopback
 
-_GPCFG_INDEX = {"pru0": 0, "pru1": 1}   # rtu0 has no GPCFG GP-mux (TRM)
+_GPCFG_INDEX = {"pru0": 0, "pru1": 1}   # RTU cores have no GPCFG GP-mux (TRM)
 
 
 class SDRegisterRegion(MemoryRegion):
@@ -96,30 +98,79 @@ class IepRegisterRegion(MemoryRegion):
 
 
 class Simulator:
-    """Orchestrates two PRU cores (PRU0, RTU0) sharing a memory bus and XFR bus."""
+    """Orchestrates ICSSG cores sharing one memory bus, XFR bus, and IEP."""
 
     def __init__(self, config_path: str = "memory.cfg"):
+        self._hard_reset_hooks: list[Callable[[], None]] = []
         self.xfr = XFRBus()
         self.memory = self._load_memory(config_path)
         self.constant_table = self._load_constants(config_path)
+        dev = self._get_device_config(config_path)
+        target = str(dev.get("target", "")).strip().lower()
+        is_am243x = target == "am243x"
+        default_clock_mhz = "300" if is_am243x else "200"
+        pru_clock_mhz = float(dev.get("pru_clock_mhz", default_clock_mhz))
+        pru1_clock_mhz = float(dev.get("pru1_clock_mhz", str(pru_clock_mhz)))
+
+        if is_am243x:
+            # The SSI hardware images perform their normal AM243x pad/GPIO
+            # mux writes before entering the wire loops. The simulator does
+            # not model pad electrical state, but it must accept those MMIO
+            # writes so the same firmware image can reach its ready flags.
+            self.memory.add_region(
+                MemoryRegion("AM243X_PADCFG", 0x000F0000, 0x6000, 0, 0, 0)
+            )
+            self.constant_table.set(26, IEPRegisterRegion.BASE_ADDR)
+            self.constant_table.set(28, 0x00010000)
+            core_clocks = {
+                "pru0": pru_clock_mhz,
+                "rtu0": pru_clock_mhz,
+                "pru1": pru1_clock_mhz,
+                "rtu1": pru1_clock_mhz,
+            }
+            self.iep = IEPTimebase(
+                external_clock_mhz=float(dev.get("iep_clock_mhz", "200")),
+                ocp_clock_mhz=pru_clock_mhz,
+                core_clocks_mhz=core_clocks,
+            )
+            self.iep_counter = self.iep
+            self.memory.add_region(IEPRegisterRegion(self.iep))
+            self.memory.add_region(IEPClockRegisterRegion(self.iep))
+
+        def cycle_observer(name: str):
+            if not is_am243x:
+                return None
+            return lambda cycles: self.iep.observe_core_cycles(name, cycles)
+
         io_pru0 = IOPort()
         io_rtu0 = IOPort()
         io_pru1 = IOPort()
+        io_rtu1 = IOPort()
         self.cores: dict[str, PRUCore] = {
-            "pru0": PRUCore("PRU0", self.memory, self.xfr, io_pru0, self.constant_table),
-            "rtu0": PRUCore("RTU0", self.memory, self.xfr, io_rtu0, self.constant_table),
+            "pru0": PRUCore(
+                "PRU0", self.memory, self.xfr, io_pru0, self.constant_table,
+                cycle_observer=cycle_observer("pru0"),
+            ),
+            "rtu0": PRUCore(
+                "RTU0", self.memory, self.xfr, io_rtu0, self.constant_table,
+                cycle_observer=cycle_observer("rtu0"),
+            ),
             "pru1": PRUCore("PRU1", self.memory, self.xfr, io_pru1, self.constant_table,
-                            dram_swap=True),
+                            dram_swap=True, cycle_observer=cycle_observer("pru1")),
+            # RTU_PRU1 executes on slice 1 and therefore sees DRAM1 at its
+            # local C24/0x0000 window, like PRU1. It has no GP-mux or
+            # Peripheral Interface block; the SSI rebuild only needs its
+            # instruction stream, shared memory, and common IEP timeline.
+            "rtu1": PRUCore("RTU1", self.memory, self.xfr, io_rtu1, self.constant_table,
+                            dram_swap=True, cycle_observer=cycle_observer("rtu1")),
         }
+        self._gpio_wires: list[dict] = []
 
         # Wire SD filters to each core's IOPort (PRU1 runs on its own clock)
-        dev = self._get_device_config(config_path)
-        pru_clock_mhz = float(dev.get("pru_clock_mhz", "200"))
-        pru1_clock_mhz = float(dev.get("pru1_clock_mhz", str(pru_clock_mhz)))
         self._pru_clock_mhz = pru_clock_mhz
         self._pru1_clock_mhz = pru1_clock_mhz
         core_clocks = {"pru0": pru_clock_mhz, "rtu0": pru_clock_mhz,
-                       "pru1": pru1_clock_mhz}
+                       "pru1": pru1_clock_mhz, "rtu1": pru1_clock_mhz}
         for name, core in self.cores.items():
             core.io_port.sd_filter = SigmaDeltaFilter(pru_clock_mhz=core_clocks[name])
 
@@ -164,11 +215,15 @@ class Simulator:
         self._gpcfg.on_mux_change = _on_mux_change
         self.memory.add_region(GpcfgRegion(self._gpcfg))
 
-        # IEP0 timer. Shared by all cores on the ICSSG, like the real peripheral.
-        self.iep = IepTimer()
-        self.memory.add_region(IepRegisterRegion(self.iep))
-        for core in self.cores.values():
-            core.iep = self.iep
+        # Configurations without an explicit target retain the standalone
+        # timer used by the generic simulator fallback. AM243x uses the
+        # clock-ratio-aware shared IEPTimebase above; other explicit targets
+        # intentionally keep the historical "no local IEP" behavior.
+        if not is_am243x and not target:
+            self.iep = IepTimer()
+            self.memory.add_region(IepRegisterRegion(self.iep))
+            for core in self.cores.values():
+                core.iep = self.iep
 
         # Loopback: PRU0 TX channel-N -> PRU1 RX channel-N.
         self._loopback = Loopback(self._perif["pru0"], self._perif["pru1"])
@@ -208,11 +263,18 @@ class Simulator:
         return bus
 
     def _load_constants(self, config_path: str) -> ConstantTable:
-        """Load constant table from constants_am243x.cfg alongside the project root."""
+        """Load constants from a project root or its config directory."""
         table = ConstantTable()
         project_root = os.path.dirname(os.path.abspath(config_path))
-        constants_path = os.path.join(project_root, "config", "constants_am243x.cfg")
-        if not os.path.exists(constants_path):
+        candidates = (
+            os.path.join(project_root, "config", "constants_am243x.cfg"),
+            os.path.join(project_root, "constants_am243x.cfg"),
+        )
+        constants_path = next(
+            (path for path in candidates if os.path.exists(path)),
+            None,
+        )
+        if constants_path is None:
             return table
         cfg = configparser.ConfigParser()
         cfg.read(constants_path)
@@ -281,6 +343,7 @@ class Simulator:
             "cycles": pru.counters.cycles,
             "stall_cycles": pru.counters.stall_cycles,
             "halted": pru.halted,
+            "fault": pru.fault,
         }
 
     def step_paced(self, lead: str, follow: str, count: int = 1,
@@ -290,28 +353,55 @@ class Simulator:
         After each lead instruction, *follow* is stepped until its perif
         clock trails lead's by at most *guard_ns* — follow never leads, so
         an RX on follow only samples line history a TX on lead has already
-        recorded. Falls back to 1:1 instruction interleave when either
-        core has no perif block (e.g. rtu0).
+        recorded.
+
+        When perif is not active on either core (GPIO/SSI mode), falls back
+        to instruction-count pacing: after each lead step, follow is stepped
+        until its total instruction count equals the lead's. This keeps the
+        two cores in approximate lockstep so GPIO edge polling sees changes.
+        """
+        self.step_paced_many(lead, [follow], count=count, guard_ns=guard_ns)
+
+    def step_paced_many(self, lead: str, followers: list[str], count: int = 1,
+                        guard_ns: float = 20.0) -> None:
+        """Step one lead core while pacing zero or more follower cores.
+
+        Peripheral-mode followers catch up to the lead's virtual clock while
+        GPIO/SSI followers catch up to its instruction count.  The pairwise
+        :meth:`step_paced` API delegates here so existing two-core callers
+        retain the same scheduling behavior.
         """
         lead_pru = self._get_core(lead)
-        follow_pru = self._get_core(follow)
         lead_perif = self._perif.get(lead)
-        follow_perif = self._perif.get(follow)
-        paced = lead_perif is not None and follow_perif is not None
+        follower_states = [
+            (self._get_core(follower), self._perif.get(follower))
+            for follower in followers
+        ]
         for _ in range(count):
             if not lead_pru.halted and lead_pru.pc < len(lead_pru.instructions):
                 lead_pru.step()
-            if not paced:
-                if not follow_pru.halted and follow_pru.pc < len(follow_pru.instructions):
-                    follow_pru.step()
-                continue
-            target = lead_perif._now_ns - guard_ns
-            safety = 1000
-            while (follow_perif._now_ns < target and safety > 0
-                   and not follow_pru.halted
-                   and follow_pru.pc < len(follow_pru.instructions)):
-                follow_pru.step()
-                safety -= 1
+            for follow_pru, follow_perif in follower_states:
+                perif_active = (
+                    lead_perif is not None and follow_perif is not None
+                    and lead_perif.enabled and follow_perif.enabled
+                )
+                if perif_active:
+                    target = lead_perif._now_ns - guard_ns
+                    safety = 1000
+                    while (follow_perif._now_ns < target and safety > 0
+                           and not follow_pru.halted
+                           and follow_pru.pc < len(follow_pru.instructions)):
+                        follow_pru.step()
+                        safety -= 1
+                else:
+                    target_ic = lead_pru.counters.instruction_count
+                    safety = 1000
+                    while (follow_pru.counters.instruction_count < target_ic
+                           and safety > 0
+                           and not follow_pru.halted
+                           and follow_pru.pc < len(follow_pru.instructions)):
+                        follow_pru.step()
+                        safety -= 1
 
     def registers(self, core: str) -> list[int]:
         """Return the 32 general-purpose register values for *core*."""
@@ -343,6 +433,49 @@ class Simulator:
     def set_loopback(self, core: str, group: int, enabled: bool) -> None:
         """Enable/disable GPO→GPI loopback for a 4-bit *group* (0–4) on *core*."""
         self._get_core(core).io_port.set_loopback_group(group, enabled)
+
+    def add_gpio_wire(self, src_core: str, src_pin: int,
+                      dst_core: str, dst_pin: int) -> None:
+        """Add a GPIO wire from a source GPO pin to a destination GPI pin."""
+        for wire in self._gpio_wires:
+            if (wire["src_core"] == src_core and wire["src_pin"] == src_pin
+                    and wire["dst_core"] == dst_core and wire["dst_pin"] == dst_pin):
+                return
+        dst_io = self._get_core(dst_core).io_port
+        callback = lambda gpo, sp=src_pin, dp=dst_pin, d=dst_io: d.set_gpi_pin(
+            dp, (gpo >> sp) & 1
+        )
+        self._get_core(src_core).io_port.add_wire_callback(callback)
+        callback(self._get_core(src_core).io_port.gpo)
+        self._gpio_wires.append({
+            "src_core": src_core,
+            "src_pin": src_pin,
+            "dst_core": dst_core,
+            "dst_pin": dst_pin,
+            "_cb": callback,
+        })
+
+    def remove_gpio_wire(self, src_core: str, src_pin: int,
+                         dst_core: str, dst_pin: int) -> None:
+        """Remove a previously registered GPIO wire."""
+        for index, wire in enumerate(self._gpio_wires):
+            if (wire["src_core"] == src_core and wire["src_pin"] == src_pin
+                    and wire["dst_core"] == dst_core and wire["dst_pin"] == dst_pin):
+                self._get_core(src_core).io_port.remove_wire_callback(wire["_cb"])
+                del self._gpio_wires[index]
+                return
+
+    def list_gpio_wires(self) -> list[dict]:
+        """Return GPIO wires without their internal callback objects."""
+        return [
+            {
+                "src_core": wire["src_core"],
+                "src_pin": wire["src_pin"],
+                "dst_core": wire["dst_core"],
+                "dst_pin": wire["dst_pin"],
+            }
+            for wire in self._gpio_wires
+        ]
 
     def sd_state(self, core: str) -> dict | None:
         """Return SD filter state for *core*, or None if no SD filter attached."""
@@ -415,6 +548,22 @@ class Simulator:
     def reset(self, core: str) -> None:
         """Reset *core* to its initial state (registers, counters, PC, halted flag)."""
         self._get_core(core).reset()
+        if hasattr(self, "iep") and hasattr(self.iep, "rebase_core"):
+            self.iep.rebase_core(core)
+
+    def add_hard_reset_hook(self, callback: Callable[[], None]) -> None:
+        """Register owner cleanup that must run before a full hardware reset."""
+        if not callable(callback):
+            raise TypeError("hard-reset hook must be callable")
+        if callback not in self._hard_reset_hooks:
+            self._hard_reset_hooks.append(callback)
+
+    def remove_hard_reset_hook(self, callback: Callable[[], None]) -> None:
+        """Remove a previously registered full-reset cleanup callback."""
+        try:
+            self._hard_reset_hooks.remove(callback)
+        except ValueError:
+            pass
 
     def set_strict_unsupported_xfr(self, enabled: bool) -> None:
         """Choose what happens when firmware drives an unmodelled XFR device ID.
@@ -445,10 +594,16 @@ class Simulator:
         (TX/RX FIFOs, overrun/underrun, RX valid/overflow, busy, line history),
         so the UI's status bits start clean.  Configuration entered in the UI --
         perif config registers, GPCFG mux, loopback parameters -- is kept.
+        Registered component hooks run first to unregister live callbacks and
+        clear memory owned by those components.
         """
+        for callback in tuple(self._hard_reset_hooks):
+            callback()
         for core in self.cores.values():
             core.reset()
         self.xfr.reset()
+        if hasattr(self, "iep"):
+            self.iep.hardware_reset()
 
     def uart_inject(
         self,
@@ -481,6 +636,41 @@ class Simulator:
         pru.io_port.uart_generator = gen
         pru.io_port.set_gpi_pin(pin, True)  # Set idle HIGH
 
+    def ssi_inject(
+        self,
+        core: str = "pru0",
+        clk_pin: int = 0,
+        data_pin: int = 8,
+        value: int = 0,
+        bits: int = 12,
+        msb_first: bool = True,
+    ) -> None:
+        """Attach an edge-driven SSI encoder generator to a PRU input."""
+        from pru_io.ssi_encoder_generator import SSIEncoderGenerator
+
+        pru = self._get_core(core)
+        generator = SSIEncoderGenerator(
+            clk_pin=clk_pin,
+            data_pin=data_pin,
+            value=value,
+            bits=bits,
+            msb_first=msb_first,
+        )
+        generator.attach(pru.io_port)
+        pru.io_port.ssi_generator = generator
+
+    def motor_attach(self):
+        """Attach and return the Python PMSM model used by open-loop FOC."""
+        from pru_io.foc_motor_model import FocMotorModel
+
+        previous = getattr(self, "foc_motor_model", None)
+        if previous is not None:
+            previous.stop()
+            self.remove_hard_reset_hook(previous.reset)
+        model = FocMotorModel(self)
+        self.foc_motor_model = model
+        return model
+
     def status(self) -> dict:
         """Return a status snapshot for all cores.
 
@@ -496,5 +686,6 @@ class Simulator:
                 "instruction_count": pru.counters.instruction_count,
                 "ipc": pru.counters.ipc,
                 "halted": pru.halted,
+                "fault": pru.fault,
             }
         return result

@@ -1,0 +1,234 @@
+{
+  "config": {
+    "base": "0x0000",
+    "fields": [
+      {"name": "abi_version", "offset": "0x00", "size": 4, "type": "u32",
+       "doc": "Fixed 1 for this schema. A core that finds an unrecognized version halts/faults rather than misreading the layout."},
+      {"name": "struct_size", "offset": "0x04", "size": 4, "type": "u32",
+       "doc": "Bytes of the config block actually in use; lets a future larger struct coexist with an older reader of the same major version."},
+      {"name": "requested_generation", "offset": "0x08", "size": 4, "type": "u32",
+       "doc": "Written last by the config-writer when committing a staged change. The single 'something changed' signal."},
+      {"name": "pru0_ack_generation", "offset": "0x0C", "size": 4, "type": "u32",
+       "doc": "PRU0 (emulator) writes this equal to requested_generation once it has applied it."},
+      {"name": "pru1_ack_generation", "offset": "0x10", "size": 4, "type": "u32",
+       "doc": "PRU1 (reader) writes this equal to requested_generation once it has applied it."},
+      {"name": "topology", "offset": "0x14", "size": 1, "type": "u8",
+       "doc": "0=loopback (PRU0 emulator + PRU1 reader both active, PRU1 waits for PRU0's ack), 1=reader-only (PRU1 only; PRU0 ack is skipped)."},
+      {"name": "encoding_type", "offset": "0x15", "size": 1, "type": "u8",
+       "doc": "0=binary, 1=gray, 2=gray-excess, 3=tannenbaum. Informational for PRU1's decode step; PRU0 never encodes."},
+      {"name": "alignment", "offset": "0x16", "size": 1, "type": "u8",
+       "doc": "0=left-justified (position starts at frame bit 0, MSB-first), 1=right-justified (position ends at the last clock, per family docs)."},
+      {"name": "formation_mode", "offset": "0x17", "size": 1, "type": "u8",
+       "doc": "0=asynchronous, 1=synchronous position formation."},
+      {"name": "frame_width_bits", "offset": "0x18", "size": 2, "type": "u16",
+       "doc": "Total bits clocked per frame. 1..64."},
+      {"name": "position_offset_bits", "offset": "0x1A", "size": 2, "type": "u16",
+       "doc": "Bit offset of the position field from the frame's first clock."},
+      {"name": "position_width_bits", "offset": "0x1C", "size": 2, "type": "u16",
+       "doc": "Total position bits (singleturn + multiturn)."},
+      {"name": "singleturn_width_bits", "offset": "0x1E", "size": 2, "type": "u16",
+       "doc": "Singleturn portion of position_width_bits."},
+      {"name": "multiturn_width_bits", "offset": "0x20", "size": 2, "type": "u16",
+       "doc": "Multiturn portion; 0 for singleturn-only families."},
+      {"name": "error_offset_bits", "offset": "0x22", "size": 2, "type": "u16",
+       "doc": "Bit offset of the error/status field; 0xFFFF if none."},
+      {"name": "error_width_bits", "offset": "0x24", "size": 2, "type": "u16",
+       "doc": "Error/status bit count."},
+      {"name": "padding_width_bits", "offset": "0x26", "size": 2, "type": "u16",
+       "doc": "Zero-fill bits when resolution is below the allocated width."},
+      {"name": "clock_high_cycles", "offset": "0x28", "size": 4, "type": "u32",
+       "doc": "Single-loop iterations for the high-phase body (<=256); the generic reader adds a fixed 11-cycle high-path overhead."},
+      {"name": "clock_low_cycles", "offset": "0x2C", "size": 4, "type": "u32",
+       "doc": "Single-loop iterations for the low-phase body (<=256); the generic reader adds a fixed 4-cycle low-path overhead."},
+      {"name": "sample_delay_cycles", "offset": "0x30", "size": 4, "type": "u32",
+       "doc": "Reader: single-loop iterations after the rising edge before sampling data (<=256, and < clock_high_cycles)."},
+      {"name": "tv_cycles", "offset": "0x34", "size": 4, "type": "u32",
+       "doc": "Emulator: single-loop iterations after the clock edge before data is valid (datasheet tv, <=256, and less than reader sample_delay_cycles)."},
+      {"name": "tm_pause_outer_iters", "offset": "0x38", "size": 4, "type": "u32",
+       "doc": "Outer-loop count (x fixed inner 250) for the monoflop / inter-frame idle time the emulator holds before accepting a new frame."},
+      {"name": "tp_pause_outer_iters", "offset": "0x3C", "size": 4, "type": "u32",
+       "doc": "Outer-loop count (x fixed inner 250) for the reader's inter-frame gap; must be > tm_pause_outer_iters."},
+      {"name": "formation_pause_outer_iters", "offset": "0x40", "size": 4, "type": "u32",
+       "doc": "Outer-loop count (x fixed inner 250). Sync mode: delay from clock-train end to position latch. Async mode: refresh interval."},
+      {"name": "sequence_hold_mode", "offset": "0x44", "size": 1, "type": "u8",
+       "doc": "0=hold each sequence value for a frame count, 1=hold for a time duration."},
+      {"name": "fault_mode", "offset": "0x45", "size": 1, "type": "u8",
+       "doc": "0=none, 1=status/error bits, 2=sentinel value, 3=all-ones, 4=missing response, 5=shortened frame, 6=excessive tv, 7=data stuck low, 8=data stuck high."},
+      {"name": "capture_mode", "offset": "0x46", "size": 1, "type": "u8",
+       "doc": "0=off, 1=latest-sample only, 2=latest-sample + trace."},
+      {"name": "producer_mode", "offset": "0x47", "size": 1, "type": "u8",
+       "doc": "0=static prepacked frame sequence (default; producer ring ignored), 1=timestamped producer samples."},
+      {"name": "sequence_hold_count", "offset": "0x48", "size": 4, "type": "u32",
+       "doc": "Frames (mode 0) or PRU cycles (mode 1) to hold each sequence value."},
+      {"name": "fault_argument", "offset": "0x4C", "size": 4, "type": "u32",
+       "doc": "Mode-specific: sentinel value, stuck-pin level, etc."},
+      {"name": "fault_repeat_count", "offset": "0x50", "size": 4, "type": "u32",
+       "doc": "Frames the fault persists before auto-reverting to valid operation; 0=until reconfigured."},
+      {"name": "producer_period_iep_ticks", "offset": "0x54", "size": 4, "type": "u32",
+       "doc": "Measured producer publication period in IEP ticks. The default is 288 ticks at a 300 MHz IEP timebase (960 ns)."},
+      {"name": "producer_sample_age_limit_iep_ticks", "offset": "0x58", "size": 4, "type": "u32",
+       "doc": "Maximum age of the newest sample at estimator observation time. Default: two measured producer periods (576 ticks, about 1.92 us at 300 MHz)."},
+      {"name": "producer_prediction_horizon_limit_iep_ticks", "offset": "0x5C", "size": 4, "type": "u32",
+       "doc": "Maximum request time ahead of estimator observation time. Default: 6000 ticks (20 us), covering the observed 16.3 us SSI frame period with 3.7 us margin."},
+      {"name": "_reserved1", "offset": "0x60", "size": 160, "type": "reserved",
+       "doc": "Reserved; zero-filled. Future fields land here without moving anything else."}
+    ]
+  },
+  "frame_slot": {
+    "base": "0x0100",
+    "count": 16,
+    "stride": 16,
+    "fields": [
+      {"name": "frame_bits", "offset": "0x0", "size": 8, "type": "u64",
+       "doc": "Raw wire value, right-aligned; PRU0 shifts out its low frame_width_bits bits, MSB-first. Already Gray/Tannenbaum/aligned/padded by the config-writer."},
+      {"name": "hold_override_cycles_or_frames", "offset": "0x8", "size": 4, "type": "u32",
+       "doc": "0 means 'use the config block's sequence_hold_count'; nonzero overrides it for this slot only."},
+      {"name": "_reserved0", "offset": "0xC", "size": 4, "type": "reserved",
+       "doc": "Reserved."}
+    ]
+  },
+  "mailbox": {
+    "base": "0x0200",
+    "fields": [
+      {"name": "seq", "offset": "0x00", "size": 4, "type": "u32",
+       "doc": "Odd while being written, even and stable when readable. Consumers retry while odd or while it changed mid-read."},
+      {"name": "raw_frame", "offset": "0x04", "size": 8, "type": "u64",
+       "doc": "Exactly what was clocked in, right-aligned."},
+      {"name": "position_value", "offset": "0x0C", "size": 4, "type": "u32",
+       "doc": "The position field's raw bits, structurally extracted at position_offset_bits/position_width_bits, zero-extended. Still wire-encoded (Gray/Tannenbaum, if any); PRU1 only ever does offset/width bit extraction."},
+      {"name": "status_bits", "offset": "0x10", "size": 4, "type": "u32",
+       "doc": "Error/status field, zero-extended, 0 if error_width_bits == 0."},
+      {"name": "frame_counter", "offset": "0x14", "size": 4, "type": "u32",
+       "doc": "Monotonic count of frames received."},
+      {"name": "timestamp_cycles", "offset": "0x18", "size": 8, "type": "u64",
+       "doc": "PRU cycle counter at frame completion (wide to avoid wraparound over a long run)."},
+      {"name": "_reserved0", "offset": "0x20", "size": 32, "type": "reserved",
+       "doc": "Reserved."}
+    ]
+  },
+  "capture": {
+    "base": "0x0240",
+    "fields": [
+      {"name": "trace_write_index", "offset": "0x00", "size": 4, "type": "u32",
+       "doc": "Monotonic; current slot is trace_write_index % 1024."},
+      {"name": "trace_overrun_count", "offset": "0x04", "size": 4, "type": "u32",
+       "doc": "Incremented once per write once trace_write_index >= 1024 (i.e. every write that overwrites a not-yet-read slot)."},
+      {"name": "_reserved0", "offset": "0x08", "size": 56, "type": "reserved",
+       "doc": "Reserved."}
+    ]
+  },
+  "trace_record": {
+    "base": "0x0400",
+    "count": 1024,
+    "stride": 24,
+    "fields": [
+      {"name": "timestamp_cycles", "offset": "0x0", "size": 8, "type": "u64",
+       "doc": "PRU cycle counter at frame completion."},
+      {"name": "raw_frame", "offset": "0x8", "size": 8, "type": "u64",
+       "doc": "Exactly what was clocked in, right-aligned."},
+      {"name": "position_value", "offset": "0x10", "size": 4, "type": "u32",
+       "doc": "Structurally extracted position field, zero-extended, still wire-encoded."},
+      {"name": "status_bits", "offset": "0x14", "size": 2, "type": "u16",
+       "doc": "Error/status field, zero-extended."},
+      {"name": "flags", "offset": "0x16", "size": 1, "type": "u8",
+       "doc": "Bit 0 = fault active."},
+      {"name": "_reserved0", "offset": "0x17", "size": 1, "type": "u8",
+       "doc": "Reserved."}
+    ]
+  },
+  "producer_sample": {
+    "base": "0x6400",
+    "count": 256,
+    "stride": 32,
+    "fields": [
+      {"name": "write_seq", "offset": "0x00", "size": 8, "type": "u64",
+       "doc": "Per-entry publication seqlock and monotonic stable sequence. Odd means writing; even means stable. It advances by 2 modulo 2^64, including through stable value 0 after wrap. A slot is valid only when named by a coherent non-empty producer head."},
+      {"name": "timestamp_iep", "offset": "0x08", "size": 8, "type": "u64",
+       "doc": "IEP timestamp captured by the producer for this position sample."},
+      {"name": "position_q31_32", "offset": "0x10", "size": 8, "type": "i64",
+       "doc": "Signed two's-complement Q31.32 continuous/unwrapped position in encoder counts. Range is -2^31 to 2^31-2^-32 counts; never mask or truncate it."},
+      {"name": "generation", "offset": "0x18", "size": 4, "type": "u32",
+       "doc": "Producer configuration generation associated with the sample."},
+      {"name": "flags", "offset": "0x1C", "size": 4, "type": "u32",
+       "doc": "Producer sample flags. Bit 0 VALID is mandatory for every published sample; zero-filled slots therefore remain invalid even when write_seq is zero."}
+    ]
+  },
+  "producer_sample_diagnostics": {
+    "base": "0x8400",
+    "stride": 64,
+    "fields": [
+      {"name": "latest_write_seq", "offset": "0x00", "size": 8, "type": "u64",
+       "doc": "Most recently accepted stable producer write sequence, or zero before the first accepted sample."},
+      {"name": "accepted_count", "offset": "0x08", "size": 4, "type": "u32",
+       "doc": "Number of coherent samples accepted by the consumer, modulo 2^32."},
+      {"name": "coherence_retry_count", "offset": "0x0C", "size": 4, "type": "u32",
+       "doc": "Number of sample reads retried because the publication was odd or changed during the read."},
+      {"name": "stale_sample_count", "offset": "0x10", "size": 4, "type": "u32",
+       "doc": "Number of requests for which the latest sample exceeded producer_sample_age_limit_iep_ticks."},
+      {"name": "ring_overrun_count", "offset": "0x14", "size": 4, "type": "u32",
+       "doc": "Producer samples overwritten before a consumer accepted them, modulo 2^32."},
+      {"name": "last_request_timestamp_iep", "offset": "0x18", "size": 8, "type": "u64",
+       "doc": "Latest request timestamp used by the estimator."},
+      {"name": "last_estimate_position_q31_32", "offset": "0x20", "size": 8, "type": "i64",
+       "doc": "Latest valid estimated position in signed Q31.32 format."},
+      {"name": "status", "offset": "0x28", "size": 4, "type": "u32",
+       "doc": "Estimator diagnostic flags; later tasks assign individual bits without changing this layout."},
+      {"name": "generation", "offset": "0x2C", "size": 4, "type": "u32",
+       "doc": "Generation of the latest accepted sample pair."},
+      {"name": "head_seq", "offset": "0x30", "size": 4, "type": "u32",
+       "doc": "Producer-head seqlock. Odd while latest_slot_index/latest_stable_sample_seq are written; matching even reads publish the head."},
+      {"name": "latest_slot_index", "offset": "0x34", "size": 4, "type": "u32",
+       "doc": "Index 0..255 of the latest fully published sample. The all-zero head triple is the reset/empty state."},
+      {"name": "latest_stable_sample_seq", "offset": "0x38", "size": 8, "type": "u64",
+       "doc": "Stable sample sequence expected in latest_slot_index. Publish the complete sample before publishing this head. Advances by 2 modulo 2^64."}
+    ]
+  },
+  "constants": {
+    "config_abi_version": 1,
+    "no_error_field": 65535,
+    "iepclk_ocp_en": 1,
+    "iep_tick_hz": 300000000,
+    "producer_sample_q_fraction_bits": 32,
+    "default_producer_period_iep_ticks": 288,
+    "default_producer_sample_age_limit_iep_ticks": 576,
+    "default_producer_prediction_horizon_limit_iep_ticks": 6000,
+    "enums": {
+      "topology": {
+        "SSI_TOPOLOGY_LOOPBACK": 0,
+        "SSI_TOPOLOGY_READER_ONLY": 1
+      },
+      "encoding": {
+        "SSI_ENCODING_BINARY": 0,
+        "SSI_ENCODING_GRAY": 1,
+        "SSI_ENCODING_GRAY_EXCESS": 2,
+        "SSI_ENCODING_TANNENBAUM": 3
+      },
+      "formation": {
+        "SSI_FORMATION_ASYNCHRONOUS": 0,
+        "SSI_FORMATION_SYNCHRONOUS": 1
+      },
+      "hold": {
+        "SSI_HOLD_FRAMES": 0,
+        "SSI_HOLD_TIME": 1
+      },
+      "producer_mode": {
+        "SSI_PRODUCER_MODE_STATIC_SEQUENCE": 0,
+        "SSI_PRODUCER_MODE_TIMESTAMPED": 1
+      },
+      "producer_sample_flags": {
+        "SSI_PRODUCER_SAMPLE_FLAG_VALID": 1
+      },
+      "fault": {
+        "SSI_FAULT_NONE": 0,
+        "SSI_FAULT_STATUS_BITS": 1,
+        "SSI_FAULT_SENTINEL": 2,
+        "SSI_FAULT_ALL_ONES": 3,
+        "SSI_FAULT_MISSING_RESPONSE": 4,
+        "SSI_FAULT_SHORT_FRAME": 5,
+        "SSI_FAULT_EXCESSIVE_TV": 6,
+        "SSI_FAULT_STUCK_LOW": 7,
+        "SSI_FAULT_STUCK_HIGH": 8
+      }
+    }
+  }
+}

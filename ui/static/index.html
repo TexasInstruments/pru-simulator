@@ -1,8 +1,8 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>PRU Simulator Dashboard</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -13,8 +13,8 @@
       --border: #3c3c3c;
       --text: #d4d4d4;
       --text-dim: #858585;
-      --accent: #569cd6;
-      --accent2: #4ec9b0;
+    --accent: #da291c;
+    --accent2: #da291c;
       --highlight: #264f78;
       --changed: #b5cea8;
       --halted: #f48771;
@@ -57,7 +57,9 @@
     }
 
     #core-select,
+    #mc-primary-select,
     #mc-partner-select,
+    #mc-third-select,
     #pru-speed-select {
       background: var(--btn);
       color: var(--text);
@@ -78,11 +80,22 @@
       font-family: inherit;
       font-size: 13px;
       cursor: pointer;
-      transition: background 0.15s;
+      transition: background-color 0.15s ease-out, border-color 0.15s ease-out,
+                  color 0.15s ease-out, transform 0.12s ease-out;
     }
     button:hover { background: var(--btn-hover); }
     button:active { background: var(--btn-active); }
+    button:active:not(:disabled) { transform: scale(0.98); }
     button:disabled { opacity: 0.4; cursor: default; }
+
+    button:focus-visible,
+    select:focus-visible,
+    input:focus-visible,
+    textarea:focus-visible,
+    a:focus-visible {
+      outline: 2px solid var(--accent2);
+      outline-offset: 2px;
+    }
 
     .btn-run { color: #89d185; border-color: #4d7a4d; }
     .btn-reset { color: var(--halted); border-color: #7a4d4d; }
@@ -118,6 +131,7 @@
     #main {
       display: flex;
       flex: 1;
+      min-width: 0;
       min-height: 0;
       overflow: hidden;
       padding: 6px;
@@ -173,6 +187,190 @@
     #error-band::before {
       content: '⚠ ';
       font-weight: bold;
+    }
+
+    /* ---- Application views and accessible tabs -------------------------- */
+    #view-tabs {
+      display: flex;
+      align-items: stretch;
+      gap: 0;
+      padding: 0 12px;
+      background: #202020;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      overflow-x: auto;
+      scrollbar-width: thin;
+    }
+
+    .view-tab,
+    .protocol-tool-tab {
+      appearance: none;
+      background: transparent;
+      border: 0;
+      border-bottom: 2px solid transparent;
+      border-radius: 0;
+      color: var(--text-dim);
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .view-tab {
+      padding: 8px 14px 7px;
+      font-size: 12px;
+    }
+
+    .view-tab:hover,
+    .protocol-tool-tab:hover {
+      background: #292929;
+      color: var(--text);
+    }
+
+    .view-tab[aria-selected="true"],
+    .protocol-tool-tab[aria-pressed="true"] {
+      background: var(--panel);
+      border-bottom-color: var(--accent);
+      color: var(--text);
+    }
+
+    #app-views {
+      display: flex;
+      flex: 1;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .app-view {
+      flex: 1;
+      min-width: 0;
+      min-height: 0;
+    }
+
+    .app-view[hidden],
+    .protocol-tool-panel[hidden] {
+      display: none !important;
+    }
+
+    #simulator-view {
+      display: flex;
+    }
+
+    #protocol-tools-view {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--bg);
+    }
+
+    .protocol-tools-header {
+      display: flex;
+      align-items: baseline;
+      gap: 18px;
+      padding: 10px 14px 8px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .protocol-tools-kicker {
+      color: var(--accent2);
+      font-size: 10px;
+      font-weight: bold;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .protocol-tools-title {
+      color: var(--text);
+      font-size: 15px;
+      font-weight: bold;
+      margin-top: 2px;
+    }
+
+    .protocol-tools-description {
+      color: var(--text-dim);
+      font-size: 11px;
+      margin-top: 3px;
+    }
+
+    #protocol-tool-tabs {
+      display: flex;
+      align-items: stretch;
+      gap: 0;
+      padding: 0 14px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      overflow-x: auto;
+      flex-shrink: 0;
+      scrollbar-width: thin;
+    }
+
+    .protocol-tool-tab {
+      padding: 7px 13px 6px;
+      font-size: 11px;
+    }
+
+    .protocol-tool-panels {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      padding: 12px 14px 18px;
+    }
+
+    .protocol-tool-panel {
+      max-width: 1440px;
+      margin: 0 auto;
+    }
+
+    .protocol-tool-panel-header {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+
+    .protocol-tool-panel-title {
+      color: var(--text);
+      font-size: 13px;
+      font-weight: bold;
+    }
+
+    .protocol-tool-panel-description {
+      color: var(--text-dim);
+      font-size: 11px;
+    }
+
+    .protocol-tool-content {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 10px 12px;
+    }
+
+    .protocol-tool-content > .io-section {
+      margin-bottom: 12px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid #333;
+    }
+
+    .protocol-tool-content > .io-section:last-child {
+      margin-bottom: 0;
+      padding-bottom: 0;
+      border-bottom: 0;
+    }
+
+    .protocol-tool-content > .lb-strip {
+      margin-top: 0;
+      margin-bottom: 12px;
+    }
+
+    .protocol-empty-state {
+      border: 1px dashed var(--border);
+      color: var(--text-dim);
+      font-size: 11px;
+      line-height: 1.5;
+      margin-top: 8px;
+      padding: 8px 10px;
     }
 
     /* ---- Source panel ---------------------------------------------------- */
@@ -439,6 +637,15 @@
       background: #252535;
       border-radius: 4px;
     }
+    .wire-row td { padding: 2px 3px; }
+    .wire-row select { font-size: 10px; background: #252535; color: #ccc; border: 1px solid #444; border-radius: 3px; padding: 1px 2px; }
+    .wire-row .wire-arrow { color: #888; text-align: center; }
+    .wire-row .wire-rm { background: #3a2020; color: #f88; border: 1px solid #5a3030; border-radius: 3px; font-size: 10px; padding: 1px 6px; cursor: pointer; }
+    .wire-row .wire-rm:hover { background: #5a2020; }
+    .wire-table { width: 100%; border-collapse: collapse; }
+    .wire-empty { font-size: 10px; color: var(--text-dim); margin-top: 3px; }
+    .wire-title-row { display: flex; align-items: center; justify-content: space-between; }
+    .wire-add-btn { padding: 1px 6px; font-size: 10px; }
     .lb-label {
       font-size: 10px;
       color: #888;
@@ -673,7 +880,7 @@
     .graph-ch-len  { width: 44px; }
 
     .graph-ch-fmt {
-      background: var(--bg-panel);
+      background: var(--panel-inset);
       color: var(--text);
       border: 1px solid var(--border);
       border-radius: 2px;
@@ -735,14 +942,32 @@
       right: 0;
       height: 6px;
       cursor: ns-resize;
-      background: linear-gradient(to bottom, transparent, #333);
+      background: #1c2a35;
       border-radius: 0 0 3px 3px;
       z-index: 10;
     }
 
-    .graph-resize-handle:hover { background: linear-gradient(to bottom, transparent, #555); }
+    .graph-resize-handle:hover { background: #32495a; }
 
-    #signal-graph-canvas { width: 100%; height: 100%; display: block; }
+    #signal-graph-canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      cursor: default;
+    }
+
+    .graph-step-label {
+      position: absolute;
+      bottom: 4px;
+      right: 6px;
+      font-size: 9px;
+      color: #555;
+      font-family: monospace;
+      pointer-events: none;
+      z-index: 4;
+    }
 
     .graph-rec-dot {
       position: absolute;
@@ -760,14 +985,15 @@
 
     @keyframes recBlink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 
-    .graph-step-label {
-      position: absolute;
-      bottom: 4px;
-      right: 6px;
-      font-size: 9px;
-      color: #555;
-      font-family: monospace;
-      pointer-events: none;
+    #signal-graph-panel > .panel-body {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    #signal-graph-panel .graph-canvas-wrap {
+      flex: 0 1 auto;
+      min-height: 0;
     }
 
     .graph-legend {
@@ -1136,7 +1362,8 @@
 
     /* Reg panel body must scroll in MC mode (panel is now flex-leaf, body gets flex:1) */
     #mc-pru0-reg-panel .panel-body,
-    #mc-rtu0-reg-panel .panel-body { overflow-y: auto; padding: 0; }
+    #mc-rtu0-reg-panel .panel-body,
+    #mc-rtu1-reg-panel .panel-body { overflow-y: auto; padding: 0; }
 
     /* Drag ghost */
     .tile-drag-ghost {
@@ -1212,7 +1439,7 @@
     .panel.panel-collapsed > .panel-title > *:not(.panel-collapse-btn):not(span:first-child) {
       display: none !important;
     }
-    /* Label injected for non-panel-title headers — hidden normally, shown when collapsed */
+    /* Label injected for non-panel-title headers - hidden normally, shown when collapsed */
     .panel-collapse-label {
       display: none;
       font-size: 11px;
@@ -1327,18 +1554,2735 @@
     .i2c-led { width: 18px; height: 18px; border-radius: 3px; background: #333; border: 1px solid #555; }
     .i2c-led.on { background: #66bb6a; border-color: #66bb6a; }
     .i2c-log { font-family: monospace; font-size: 11px; color: #bbb; white-space: pre-wrap; }
+
+    /* ---- Reduced motion and compact workbench fallback ------------------ */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+      }
+      button:active:not(:disabled) { transform: none; }
+    }
+
+    @media (max-width: 720px) {
+      #controls {
+        padding: 6px 8px;
+        gap: 5px;
+      }
+
+      #controls .logo { margin-right: 2px; }
+
+      #counters {
+        flex-basis: 100%;
+        margin-left: 0;
+        gap: 10px;
+        overflow-x: auto;
+        padding-top: 1px;
+      }
+
+      #view-tabs { padding: 0 8px; }
+      .view-tab { padding-left: 12px; padding-right: 12px; }
+
+      #protocol-tools-view .protocol-tools-header {
+        align-items: flex-start;
+        gap: 8px;
+        padding: 9px 10px 8px;
+      }
+
+      #protocol-tools-view .protocol-tools-title { font-size: 14px; }
+      #protocol-tool-tabs { padding: 0 8px; }
+      .protocol-tool-tab { padding-left: 12px; padding-right: 12px; }
+      .protocol-tool-panels { padding: 8px 8px 14px; }
+      .protocol-tool-content { padding: 8px; }
+      .protocol-tool-panel-header { align-items: flex-start; }
+      #protocol-i2c-content #i2c-attach-btn {
+        flex: 1 1 240px;
+        min-width: 0;
+        text-align: left;
+        white-space: normal;
+      }
+      .protocol-tool-content > .lb-strip { flex-wrap: wrap; }
+
+      .protocol-tool-content .uart-inj-input {
+        min-width: 120px !important;
+        max-width: 100%;
+        flex: 1 1 140px !important;
+      }
+
+      .protocol-tool-content .uart-inj-select { max-width: 100%; }
+      #ssi-runtime .uart-controls { row-gap: 6px; }
+
+      /* Keep the simulator workbench usable on narrow screens while its
+         existing tiled geometry remains intact. */
+      #simulator-view #main {
+        overflow: auto;
+      }
+
+      #simulator-view #tile-root {
+        min-width: 680px;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .protocol-tool-panel-header { display: block; }
+      .protocol-tool-panel-description { display: block; margin-top: 3px; }
+      .protocol-tool-content { padding: 7px; }
+      .protocol-tool-content > .lb-strip {
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
+      .protocol-tool-content .uart-controls { align-items: flex-start; }
+    }
+
+    /* ---- Modern operator workbench skin ------------------------------- */
+    :root {
+      color-scheme: dark;
+      --brand-red: #b5202c;
+      --brand-red-bright: #ff7c84;
+      --bg: #20262d;
+      --panel: #2c333b;
+      --border: #4b5660;
+      --text: #f2f4f5;
+      --text-dim: #c0c7cd;
+      --accent: #ff7c84;
+      --accent2: #ff9aa0;
+      --highlight: #4b282d;
+      --changed: #ffffff;
+      --halted: #ff7b82;
+      --green: #80d6a6;
+      --gray: #5e6872;
+      --btn: #39424b;
+      --btn-hover: #47525d;
+      --btn-active: #a92a35;
+      --panel-raised: #353d45;
+      --panel-inset: #1b2127;
+      --border-strong: #707d88;
+      --graph-bg: #1b2127;
+      --graph-grid: #35414b;
+      --graph-grid-strong: #4b5863;
+      --graph-label: #c0c7cd;
+      --graph-placeholder: #9da9b3;
+      --graph-wave: #ff7c84;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI Variable", "Segoe UI", Inter, system-ui, sans-serif;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.005em;
+    }
+
+    code,
+    pre,
+    #asm-source,
+    #source-list,
+    .source-list,
+    .reg-table,
+    #mem-grid,
+    #mem-grid-2,
+    .uart-output,
+    .i2c-interface,
+    #ssi-runtime {
+      font-family: "Cascadia Code", "SFMono-Regular", Consolas, "Courier New", monospace;
+      letter-spacing: 0;
+    }
+
+    #controls {
+      background: #101820;
+      border-bottom-color: #2a3948;
+      padding: 8px 12px;
+      gap: 7px;
+      box-shadow: 0 1px 0 rgba(255, 255, 255, 0.025);
+    }
+
+    .toolbar-group {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 36px;
+      padding: 4px 7px;
+      background: #16212b;
+      border: 1px solid #293a4a;
+      border-radius: 7px;
+    }
+
+    .toolbar-group::before {
+      color: #718395;
+      content: "";
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.09em;
+      line-height: 1;
+      margin-right: 2px;
+      text-transform: uppercase;
+    }
+
+    .toolbar-context::before { content: "Target"; }
+    .toolbar-execution::before { content: "Execute"; }
+    .toolbar-actions::before { content: "Session"; }
+    .toolbar-status::before { content: "Status"; }
+
+    #controls .logo {
+      color: var(--accent2);
+      font-family: inherit;
+      font-size: 13px;
+      letter-spacing: 0.08em;
+      margin-right: 3px;
+    }
+
+    #core-select,
+    #mc-primary-select,
+    #mc-partner-select,
+    #mc-third-select,
+    #pru-speed-select,
+    #sim-interval {
+      background: #0d151d;
+      border-color: #3a4d60;
+      border-radius: 5px;
+      color: var(--text);
+      min-height: 28px;
+      padding: 5px 8px;
+    }
+
+    #controls button {
+      border-color: #3a4b5d;
+      border-radius: 5px;
+      min-height: 28px;
+      padding: 5px 10px;
+    }
+
+    .sim-interval-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      color: var(--text-dim);
+      font-size: 11px;
+    }
+
+    #sim-interval {
+      width: 52px;
+      text-align: right;
+    }
+
+    #counters {
+      align-items: center;
+      background: #111a22;
+      border: 1px solid #293a4a;
+      border-radius: 7px;
+      gap: 12px;
+      margin-left: auto;
+      min-height: 36px;
+      padding: 4px 9px;
+    }
+
+    #counters::before {
+      color: var(--accent2);
+      content: "Telemetry";
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+    }
+
+    #counters .val {
+      color: #91d8ff;
+      font-weight: 600;
+    }
+
+    #status-badge,
+    #ws-status {
+      border: 1px solid #365064;
+      border-radius: 5px;
+      font-size: 10px;
+      min-height: 22px;
+      padding: 3px 7px;
+    }
+
+    #status-badge {
+      background: #17382b;
+      color: #8de7b0;
+    }
+
+    #status-badge.halted {
+      background: #422328;
+      color: var(--halted);
+    }
+
+    #ws-status {
+      background: #111a22;
+      color: var(--text-dim);
+    }
+
+    #view-tabs {
+      background: #0f171f;
+      border-bottom-color: #2a3948;
+      padding: 0 14px;
+    }
+
+    .view-tab {
+      min-height: 44px;
+      padding: 11px 17px 10px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .view-tab[aria-selected="true"] {
+      background: transparent;
+      border-bottom-color: var(--accent2);
+      color: #f1f6fa;
+    }
+
+    #app-views { background: var(--bg); }
+
+    #simulator-view #main { padding: 9px; }
+
+    .panel {
+      background: var(--panel);
+      border-color: var(--border);
+      border-radius: 7px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+    }
+
+    .panel-title {
+      align-items: center;
+      background: var(--panel-raised);
+      border-bottom-color: #304252;
+      color: #aab9c7;
+      font-family: inherit;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      min-height: 33px;
+      padding: 8px 10px;
+    }
+
+    .panel-title[data-panel-id]::before {
+      background: var(--accent);
+      border-radius: 2px;
+      content: "";
+      display: inline-block;
+      height: 14px;
+      margin-right: 8px;
+      opacity: 0.8;
+      vertical-align: -3px;
+      width: 3px;
+    }
+
+    .panel-title button,
+    #memory-controls button,
+    #memory-controls-2 button {
+      min-height: 24px;
+      padding: 3px 7px;
+    }
+
+    .source-list li.current-pc .addr { color: var(--accent); }
+
+    .panel-body { padding: 9px; }
+
+    #memory-controls,
+    #memory-controls-2 {
+      flex-wrap: wrap;
+      gap: 5px;
+      padding: 6px 8px;
+      background: var(--panel-raised);
+      border-bottom: 1px solid #304252;
+    }
+
+    #memory-controls label,
+    #memory-controls-2 label {
+      color: var(--text-dim);
+      font-size: 10px;
+    }
+
+    .tile-divider,
+    .divider,
+    .inner-divider-h {
+      background: #243442;
+    }
+
+    .tile-divider:hover,
+    .tile-divider.dragging,
+    .divider:hover,
+    .inner-divider-h:hover,
+    .inner-divider-h.dragging {
+      background: var(--accent);
+    }
+
+    #error-band {
+      background: #2a1d23;
+      border-bottom-color: #68343d;
+      padding: 7px 12px;
+    }
+
+    #editor-tab-bar {
+      background: #101820;
+      border-bottom-color: #2b3a49;
+    }
+
+    .editor-tab {
+      color: #8192a3;
+      font-family: inherit;
+      padding: 7px 11px;
+    }
+
+    .editor-tab.active {
+      background: var(--panel);
+      border-top-color: var(--accent2);
+      color: var(--text);
+    }
+
+    #asm-source {
+      background: #0c141b;
+      color: #dce8f2;
+      line-height: 1.55;
+    }
+
+    #asm-source:focus-visible {
+      outline: 2px solid var(--accent2);
+      outline-offset: -2px;
+    }
+
+    .bp-bar {
+      background: #111a22;
+      border-bottom-color: #2b3a49;
+      padding: 5px 8px;
+    }
+
+    .bp-bar input[type="text"],
+    .graph-ch-addr,
+    .graph-ch-len,
+    .graph-ch-fmt {
+      background: #0e171f;
+      border-color: #3a4d5f;
+      border-radius: 4px;
+      color: var(--text);
+    }
+
+    .bp-bar button.bp-action {
+      background: #1b2935;
+      border-color: #3b4d5f;
+      border-radius: 4px;
+      color: #b8c8d5;
+    }
+
+    .bp-bar .bp-chip {
+      background: #35252a;
+      border-color: #75424a;
+      border-radius: 5px;
+      color: #f0a6aa;
+    }
+
+    .graph-step-label,
+    .graph-legend,
+    .graph-sample-count {
+      color: #8ea0af;
+    }
+
+    .graph-add-ch {
+      border-color: #3b4d5f;
+      border-radius: 4px;
+      color: var(--accent);
+      padding: 4px 8px;
+    }
+
+    .graph-add-ch:hover { background: #1a2b38; }
+
+    .io-section-title,
+    .graph-section-title,
+    .graph-mem-section-title {
+      color: #afbfce;
+      font-family: inherit;
+      font-weight: 700;
+      letter-spacing: 0.09em;
+    }
+
+    .io-section-title {
+      border-bottom: 1px solid #2a3948;
+      padding-bottom: 5px;
+    }
+
+    .pin {
+      background: #273744;
+      border-color: #3b4d5c;
+      border-radius: 7px;
+      color: #a7b7c5;
+      height: 32px;
+      width: 32px;
+    }
+
+    .pin.high {
+      background: #2e8b65;
+      border-color: #6ad7af;
+      color: #f3fffa;
+    }
+
+    .lb-strip {
+      background: #101920;
+      border: 1px solid #2d3d4c;
+      border-radius: 6px;
+      padding: 6px 8px;
+    }
+
+    .lb-btn {
+      background: #1c2b36;
+      border-color: #3b4c5c;
+      border-radius: 5px;
+      color: #9eafbe;
+      min-height: 26px;
+    }
+
+    .lb-btn.active {
+      background: #17382f;
+      border-color: var(--accent2);
+      color: var(--accent2);
+    }
+
+    .graph-header {
+      border-bottom: 1px solid #2b3a49;
+      margin-bottom: 8px;
+      padding-bottom: 7px;
+    }
+
+    .graph-btn {
+      background: #1b2935;
+      border-color: #3b4d5f;
+      border-radius: 5px;
+      min-height: 26px;
+      padding: 4px 8px;
+    }
+
+    .graph-canvas-wrap {
+      border: 1px solid #2b3b4b;
+      border-radius: 5px;
+      overflow: hidden;
+    }
+
+    .wire-table td,
+    .reg-table td {
+      border-bottom-color: #22303d;
+    }
+
+    .protocol-tools-header {
+      background: #121c25;
+      border-bottom-color: #2a3a49;
+      padding: 16px 18px 13px;
+    }
+
+    .protocol-tools-kicker {
+      color: var(--accent2);
+      font-family: inherit;
+      letter-spacing: 0.12em;
+    }
+
+    .protocol-tools-title { letter-spacing: -0.02em; }
+
+    #protocol-tool-tabs {
+      background: #121c25;
+      border-bottom-color: #2a3a49;
+      padding: 0 18px;
+    }
+
+    .protocol-tool-tab {
+      font-weight: 600;
+      min-height: 38px;
+      padding: 9px 15px 8px;
+    }
+
+    .protocol-tool-tab[aria-pressed="true"] {
+      background: transparent;
+      border-bottom-color: var(--accent2);
+      color: #f1f6fa;
+    }
+
+    .protocol-tool-panels {
+      padding: 18px 18px 26px;
+    }
+
+    .protocol-tool-panel-title {
+      color: #f0f5f8;
+      font-size: 14px;
+      letter-spacing: -0.01em;
+    }
+
+    .protocol-tool-panel-header {
+      border-top: 1px solid #3b4e61;
+      padding-top: 9px;
+    }
+
+    .protocol-tool-content {
+      background: #151f28;
+      border-color: #2c3d4d;
+      border-radius: 7px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+      padding: 14px;
+    }
+
+    .protocol-tool-content > .io-section {
+      border-bottom-color: #2b3a49;
+      padding-bottom: 14px;
+    }
+
+    #ssi-runtime > .uart-controls {
+      margin-bottom: 0 !important;
+      padding: 6px 0;
+    }
+
+    #ssi-runtime > .uart-controls + .uart-controls {
+      border-top: 1px solid #243442;
+    }
+
+    #ssi-runtime > .uart-hint {
+      line-height: 1.45;
+    }
+
+    .protocol-empty-state {
+      background: #101920;
+      border-color: #3a4d5e;
+      border-radius: 5px;
+      color: #a3b2c0;
+    }
+
+    .uart-inject-mode-toggle {
+      border-color: #3b4d5f;
+      border-radius: 5px;
+    }
+
+    .uart-inj-mode.active {
+      background: #1b4c62;
+      color: #a8e7ff;
+    }
+
+    .uart-inj-input,
+    .uart-inj-select,
+    .uart-inj-num,
+    .io-mux-sel {
+      background: #0e171f;
+      border-color: #3a4d5f;
+      border-radius: 5px;
+      color: var(--text);
+      min-height: 27px;
+      padding: 4px 6px;
+    }
+
+    .uart-inj-select { color: #b8d8f5; }
+
+    .uart-status,
+    .uart-hint,
+    .protocol-tool-panel-description {
+      color: #91a1b0;
+    }
+
+    .uart-output {
+      background: #0b141a;
+      border-color: #314454;
+      border-radius: 5px;
+      color: #91e0c7;
+      padding: 9px 10px;
+    }
+
+    .i2c-mode-bar,
+    .perif-mode-bar,
+    .sd-mode-bar {
+      border-bottom-color: #2b3a49;
+    }
+
+    @media (hover: hover) and (pointer: fine) {
+      .toolbar-group button:hover,
+      .graph-btn:hover,
+      .lb-btn:hover {
+        border-color: #5a7185;
+      }
+    }
+
+    @media (max-width: 900px) {
+      #controls { align-items: stretch; }
+      .toolbar-group { flex: 0 1 auto; }
+      .toolbar-status { margin-left: auto; }
+      #counters { flex-basis: 100%; margin-left: 0; }
+    }
+
+    @media (max-width: 720px) {
+      #controls { padding: 7px 8px; }
+      .toolbar-group {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .toolbar-group::before { font-size: 8px; }
+      .toolbar-context { flex-basis: 100%; }
+      .toolbar-execution { flex-basis: 100%; }
+      .toolbar-actions { flex-basis: 100%; }
+      .toolbar-status { flex-basis: 100%; margin-left: 0; }
+      #counters { overflow-x: auto; }
+      #counters::before { position: sticky; left: 0; }
+      #view-tabs { padding: 0 8px; }
+      .view-tab { flex: 1 0 auto; }
+      .protocol-tools-header { padding: 13px 12px 11px; }
+      #protocol-tool-tabs { padding: 0 10px; }
+      .protocol-tool-panels { padding: 12px 10px 18px; }
+      .protocol-tool-content { padding: 10px; }
+    }
+
+    @media (max-width: 480px) {
+      .toolbar-group {
+        flex-wrap: wrap;
+        gap: 4px;
+        padding: 4px 5px;
+      }
+      .toolbar-group::before { display: none; }
+      #controls button { padding-left: 8px; padding-right: 8px; }
+      #controls .logo { font-size: 12px; }
+      .protocol-tools-description { line-height: 1.45; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      button:active:not(:disabled) { transform: none; }
+    }
+
+    /* ---- Neutral operator theme calibration ---------------------------- */
+    #controls {
+      background: var(--panel);
+      border-bottom-color: var(--border);
+    }
+
+    .toolbar-group {
+      background: var(--panel-raised);
+      border-color: var(--border);
+    }
+
+    .toolbar-group::before { color: var(--text-dim); }
+
+    #controls .logo {
+      color: var(--text);
+      display: inline-flex;
+      align-items: center;
+      letter-spacing: 0.08em;
+    }
+
+    #core-select,
+    #mc-primary-select,
+    #mc-partner-select,
+    #mc-third-select,
+    #pru-speed-select,
+    #sim-interval {
+      background: var(--panel-inset);
+      border-color: var(--border-strong);
+      color: var(--text);
+    }
+
+    #controls button { border-color: var(--border-strong); }
+
+    #controls .btn-run {
+      background: var(--brand-red);
+      border-color: var(--brand-red-bright);
+      color: #ffffff;
+    }
+
+    #controls .btn-run:hover { background: var(--btn-active); }
+
+    #controls .btn-reset {
+      background: var(--highlight);
+      border-color: var(--brand-red-bright);
+      color: var(--halted);
+    }
+
+    #controls .toolbar-actions .btn-reset { background: var(--highlight); }
+
+    #controls .btn-load,
+    #controls .btn-sim {
+      border-color: var(--brand-red-bright);
+      color: var(--text);
+    }
+
+    #counters {
+      background: var(--panel-raised);
+      border-color: var(--border);
+    }
+
+    #counters::before { color: var(--accent); }
+    #counters .val { color: var(--text); }
+
+    #status-badge {
+      background: var(--panel-raised);
+      border-color: var(--border-strong);
+      color: var(--text);
+    }
+
+    #status-badge.halted {
+      background: var(--highlight);
+      border-color: var(--halted);
+      color: var(--halted);
+    }
+
+    #status-badge.reloaded {
+      background: var(--highlight);
+      color: var(--accent);
+    }
+
+    #ws-status { background: var(--panel-raised); border-color: var(--border-strong); }
+    #ws-status.connected { color: var(--green); }
+    #ws-status.error { color: var(--halted); }
+
+    #view-tabs,
+    #protocol-tool-tabs { background: var(--panel-raised); }
+    #protocol-tools-view { background: var(--bg); }
+    #protocol-tools-view .protocol-tools-header { background: var(--panel); }
+
+    #view-tabs,
+    #protocol-tools-view .protocol-tools-header,
+    #protocol-tool-tabs {
+      border-bottom-color: var(--border);
+    }
+
+    .view-tab:hover,
+    .protocol-tool-tab:hover {
+      background: var(--highlight);
+      color: var(--text);
+    }
+
+    .view-tab[aria-selected="true"],
+    .protocol-tool-tab[aria-pressed="true"] {
+      background: transparent;
+      border-bottom-color: var(--accent);
+      color: var(--text);
+    }
+
+    .panel {
+      background: var(--panel);
+      border-color: var(--border);
+    }
+
+    .panel-title {
+      background: var(--panel-raised);
+      border-bottom-color: var(--border);
+      color: var(--text);
+    }
+
+    #error-band {
+      background: var(--highlight);
+      border-bottom-color: var(--halted);
+      color: var(--halted);
+    }
+
+    #editor-tab-bar { background: var(--panel-raised); border-bottom-color: var(--border); }
+    .editor-tab { color: var(--text-dim); }
+    .editor-tab.active { background: var(--panel); border-top-color: var(--accent); color: var(--text); }
+    #asm-source { background: var(--panel-inset); color: var(--text); }
+
+    .hl-op  { color: #569cd6; }
+    .hl-reg { color: #4ec9b0; }
+    .hl-num { color: #ce9178; }
+    .hl-lbl,
+    .hl-sym { color: #dcdcaa; }
+    .hl-cmt { color: #6a9955; }
+
+    .spad-btn.active,
+    #btn-multicore.mc-active {
+      background: var(--highlight);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .spad-val,
+    .mc-pc-badge,
+    .mc-carry-val { color: var(--text); }
+
+    .wire-row select { background: var(--panel-inset); border-color: var(--border-strong); color: var(--text); }
+    .wire-row .wire-rm { background: var(--highlight); border-color: var(--brand-red-bright); color: var(--halted); }
+    .wire-row .wire-rm:hover { background: var(--btn-hover); }
+    #btn-config-save { border-color: var(--brand-red-bright); color: var(--accent); }
+    #ctable-table .ct-addr:hover { background: var(--highlight); color: var(--text); }
+    #ctable-table tr.ct-dep .ct-name,
+    #ctable-table tr.ct-dep .ct-idx { color: var(--accent); }
+
+    ::-webkit-scrollbar-track { background: var(--panel-inset); }
+    ::-webkit-scrollbar-thumb { background: var(--border-strong); }
+    ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+    .bp-bar,
+    #memory-controls,
+    #memory-controls-2 {
+      background: var(--panel-raised);
+      border-bottom-color: var(--border);
+    }
+
+    .bp-bar input[type="text"],
+    #memory-controls input,
+    #memory-controls-2 input,
+    .graph-ch-addr,
+    .graph-ch-len,
+    .graph-ch-fmt {
+      background: var(--panel-inset);
+      border-color: var(--border-strong);
+      color: var(--text);
+    }
+
+    .bp-bar button.bp-action,
+    .graph-btn {
+      background: var(--btn);
+      border-color: var(--border-strong);
+      color: var(--text);
+    }
+
+    .bp-bar button.bp-action:hover,
+    .graph-btn:hover { background: var(--btn-hover); }
+
+    .bp-bar .bp-chip {
+      background: var(--highlight);
+      border-color: var(--brand-red-bright);
+      color: var(--halted);
+    }
+
+    .graph-btn.export-csv {
+      border-color: var(--brand-red-bright);
+      color: var(--accent);
+    }
+
+    .graph-step-label,
+    .graph-legend,
+    .graph-sample-count { color: var(--text-dim); }
+
+    .graph-add-ch {
+      border-color: var(--border-strong);
+      color: var(--accent);
+    }
+
+    .graph-add-ch:hover { background: var(--btn-hover); }
+
+    .graph-ch-addr.addr-error,
+    .graph-ch-addr.addr-error:focus { border-color: var(--halted); }
+
+    .graph-canvas-wrap {
+      background: var(--graph-bg);
+      border-color: var(--border);
+    }
+
+    .pin {
+      background: var(--panel-inset);
+      border-color: var(--border-strong);
+      color: var(--text-dim);
+    }
+
+    .pin.high {
+      background: var(--brand-red);
+      border-color: var(--brand-red-bright);
+      color: #ffffff;
+    }
+
+    .lb-btn.active,
+    .mem-btn-group button.active {
+      background: var(--highlight);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .mem-byte.changed {
+      background: var(--highlight);
+      color: var(--changed);
+    }
+
+    .tile-drag-ghost {
+      background: rgba(195, 40, 52, 0.14);
+      border-color: var(--accent);
+    }
+
+    .tile-drop-zone:hover,
+    .tile-drop-zone.active {
+      background: rgba(195, 40, 52, 0.18);
+      outline-color: var(--accent);
+    }
+
+    .protocol-tools-kicker { color: var(--accent); }
+    .protocol-tool-panel-title { color: var(--text); }
+    .protocol-tool-panel-description,
+    .protocol-tools-description { color: var(--text-dim); }
+
+    .protocol-tool-panel-header { border-top-color: var(--border-strong); }
+    .protocol-tool-content { background: var(--panel); border-color: var(--border); }
+    .protocol-tool-content > .io-section { border-bottom-color: var(--border); }
+    .protocol-empty-state { background: var(--panel-inset); border-color: var(--border-strong); color: var(--text-dim); }
+
+    .uart-status,
+    .uart-hint { color: var(--text-dim); }
+
+    .io-section-title,
+    .graph-section-title,
+    .graph-mem-section-title { color: var(--text); }
+
+    .io-section-title { border-bottom-color: var(--border); }
+    .lb-strip { background: var(--panel-inset); border-color: var(--border); }
+    .lb-btn { background: var(--btn); border-color: var(--border-strong); color: var(--text); }
+
+    .sd-interface,
+    .perif-interface,
+    .i2c-interface { color: var(--text); }
+
+    .sd-mode-info,
+    .sd-channel-config,
+    .sd-acc-row,
+    .sd-config-bar span,
+    .sd-mod-label,
+    .perif-mode-info,
+    .perif-cfgreg-addr,
+    .perif-fifo,
+    .perif-cfg,
+    .perif-flags,
+    .perif-lb-row label,
+    .io-mux-label,
+    .i2c-log { color: var(--text-dim); }
+
+    .sd-acc-val,
+    .perif-fifo b { color: var(--text); }
+
+    .sd-mod-title,
+    .perif-cfgreg-name { color: var(--accent); }
+
+    .perif-flags .on,
+    .perif-lb-status { color: var(--green); }
+    .perif-flags .warn,
+    .perif-cfgreg-err { color: var(--halted); }
+
+    .sd-r30-field,
+    .perif-r30-field { background: var(--btn); color: var(--text); }
+
+    .sd-mode-bar,
+    .perif-mode-bar,
+    .i2c-mode-bar { border-bottom-color: var(--border); }
+
+    .sd-mode-badge,
+    .perif-mode-badge,
+    .i2c-mode-badge {
+      background: var(--highlight);
+      border: 1px solid var(--brand-red-bright);
+      color: var(--accent);
+    }
+
+    .sd-mode-switch,
+    .sd-section-title,
+    .perif-section-title,
+    .perif-cfgreg-name,
+    .perif-channel-title { color: var(--accent); }
+
+    .i2c-mode-info { color: var(--text-dim); }
+
+    .sd-r30-decode,
+    .sd-mod-card,
+    .perif-r30-decode,
+    .perif-cfg-regs,
+    .perif-lb-card {
+      background: var(--panel-inset);
+      border-color: var(--border);
+    }
+
+    .sd-channel-card,
+    .perif-channel-card { background: var(--panel); border-color: var(--border); }
+    .sd-channel-card.selected { background: var(--highlight); border-color: var(--accent); }
+    .perif-channel-card.busy { border-color: var(--brand-red-bright); }
+    .sd-r30-field,
+    .sd-mod-value select,
+    .sd-mod-value input[type="number"],
+    .perif-r30-field,
+    .perif-cfgreg-row input,
+    .perif-lb-row input,
+    .perif-lb-row select,
+    .io-mux-sel { background: var(--panel-inset); border-color: var(--border-strong); color: var(--text); }
+
+    .sd-config-bar { border-top-color: var(--border); }
+    .sd-config-chip,
+    .perif-cfgreg-btn,
+    .perif-lb-btn { background: var(--btn); border-color: var(--border-strong); color: var(--text); }
+    .sd-config-chip:hover,
+    .perif-cfgreg-btn:hover,
+    .perif-lb-btn:hover { background: var(--btn-hover); }
+    .i2c-led.on { background: var(--brand-red); border-color: var(--brand-red-bright); }
+
+    .uart-inject-mode-toggle { border-color: var(--border-strong); }
+    .uart-inj-mode.active { background: var(--highlight); color: var(--accent); }
+    .uart-inj-input,
+    .uart-inj-select,
+    .uart-inj-num,
+    .io-mux-sel { background: var(--panel-inset); border-color: var(--border-strong); color: var(--text); }
+    .uart-inj-select { color: var(--text); }
+    .uart-output { background: var(--panel-inset); border-color: var(--border-strong); color: var(--text); }
+
+    .wire-table td,
+    .reg-table td { border-bottom-color: var(--border); }
+
+    #config-card,
+    #fill-card,
+    #help-card { background: var(--panel); border-color: var(--border-strong); }
+    #config-modal-title,
+    #fill-modal-title,
+    .help-table td:first-child { color: var(--accent); }
+    #config-textarea,
+    #fill-wave-preview { background: var(--panel-inset); }
+
+    @media (pointer: coarse) and (max-width: 720px) {
+      #controls button,
+      #controls select { min-height: 40px; }
+      .view-tab,
+      .protocol-tool-tab { min-height: 44px; }
+      .graph-btn,
+      .lb-btn,
+      .spad-btn,
+      .mem-btn-group button,
+      .uart-inj-mode { min-height: 38px; }
+    }
+
+    @media (max-width: 720px) {
+      #view-tabs,
+      #protocol-tool-tabs { overflow-x: auto; scrollbar-width: thin; }
+    }
+
+    @supports (padding: max(0px)) {
+      @media (max-width: 720px) {
+        #controls {
+          padding-left: max(8px, env(safe-area-inset-left));
+          padding-right: max(8px, env(safe-area-inset-right));
+          padding-bottom: max(7px, env(safe-area-inset-bottom));
+        }
+      }
+    }
+
+    /* ---- Compact command rail ------------------------------------------ */
+    #controls {
+      display: grid;
+      grid-template-columns: max-content max-content max-content max-content minmax(0, 1fr);
+      grid-template-areas: "context execution actions status counters";
+      align-items: center;
+      column-gap: 6px;
+      row-gap: 5px;
+      min-height: 44px;
+      overflow: hidden;
+      padding: 5px 10px;
+    }
+
+    .toolbar-group {
+      min-width: 0;
+      min-height: 32px;
+      gap: 4px;
+      padding: 3px 6px;
+      border-radius: 5px;
+      white-space: nowrap;
+      transition: border-color 160ms ease-out, background-color 160ms ease-out;
+    }
+
+    .toolbar-group:focus-within {
+      border-color: var(--border-strong);
+    }
+
+    .toolbar-context { grid-area: context; }
+    .toolbar-execution { grid-area: execution; }
+    .toolbar-actions { grid-area: actions; }
+    .toolbar-status { grid-area: status; margin-left: 0; }
+
+    .toolbar-group::before {
+      flex: 0 0 auto;
+      font-size: 8px;
+      letter-spacing: 0.08em;
+      margin-right: 1px;
+    }
+
+    #controls .logo {
+      font-size: 12px;
+      letter-spacing: 0.07em;
+      margin-right: 1px;
+    }
+
+    #controls button,
+    #controls select {
+      min-height: 30px;
+    }
+
+    #controls button {
+      padding: 4px 8px;
+    }
+
+    #core-select,
+    #mc-primary-select,
+    #mc-partner-select,
+    #mc-third-select,
+    #pru-speed-select,
+    #sim-interval {
+      padding: 4px 7px;
+    }
+
+    #sim-interval {
+      width: 48px;
+    }
+
+    .sim-interval-control {
+      gap: 3px;
+      font-size: 10px;
+    }
+
+    #counters {
+      grid-area: counters;
+      align-self: stretch;
+      justify-self: stretch;
+      min-width: 0;
+      min-height: 32px;
+      gap: 10px;
+      margin-left: 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding: 3px 8px;
+      scrollbar-width: thin;
+    }
+
+    #counters::before,
+    #counters span {
+      flex: 0 0 auto;
+    }
+
+    #counters::before {
+      font-size: 8px;
+      letter-spacing: 0.08em;
+    }
+
+    @media (max-width: 2200px) {
+      #controls {
+        grid-template-columns: max-content minmax(0, 1fr) max-content max-content;
+        grid-template-areas:
+          "context execution actions status"
+          "counters counters counters counters";
+      }
+
+      #counters {
+        width: 100%;
+      }
+    }
+
+    @media (max-width: 1240px) {
+      #controls {
+        grid-template-columns: minmax(0, 1fr) max-content;
+        grid-template-areas:
+          "context status"
+          "execution execution"
+          "actions actions"
+          "counters counters";
+      }
+
+      .toolbar-context,
+      .toolbar-execution,
+      .toolbar-actions,
+      .toolbar-status {
+        width: 100%;
+      }
+
+      .toolbar-status {
+        justify-self: end;
+        width: max-content;
+      }
+    }
+
+    @media (max-width: 720px) {
+      #controls {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-areas:
+          "context"
+          "execution"
+          "actions"
+          "status"
+          "counters";
+        align-items: stretch;
+        gap: 5px;
+        min-height: 0;
+        padding-top: 6px;
+      }
+
+      .toolbar-group {
+        align-content: center;
+        flex-wrap: wrap;
+        row-gap: 4px;
+        width: 100%;
+      }
+
+      .toolbar-status {
+        justify-self: stretch;
+        width: 100%;
+      }
+
+      #counters {
+        min-height: 36px;
+        width: 100%;
+      }
+
+      #counters::before {
+        position: sticky;
+        left: 0;
+        z-index: 1;
+        background: var(--panel-raised);
+        padding-right: 8px;
+      }
+
+      #controls button,
+      #controls select {
+        min-height: 34px;
+      }
+    }
+
+    @media (max-width: 480px) {
+      #controls {
+        padding-top: 5px;
+      }
+
+      .toolbar-group {
+        gap: 4px;
+        padding: 4px 5px;
+      }
+
+      #controls button {
+        padding-left: 7px;
+        padding-right: 7px;
+      }
+    }
+
+    @media (pointer: coarse) and (max-width: 720px) {
+      #controls button,
+      #controls select {
+        min-height: 40px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      #controls *,
+      #controls *::before,
+      #controls *::after {
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+
+    /* ---- Workspace command deck ---------------------------------------- */
+    #controls {
+      grid-template-columns: max-content max-content max-content minmax(360px, 1fr);
+      grid-template-areas:
+        "context execution actions status"
+        "workspace workspace workspace telemetry";
+    }
+
+    #counters {
+      grid-area: telemetry;
+      align-self: stretch;
+      justify-self: stretch;
+      width: auto;
+    }
+
+    #controls .toolbar-status {
+      justify-self: start;
+      width: max-content;
+    }
+
+    #workspace-tools {
+      grid-area: workspace;
+      grid-row: auto;
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 4px;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      padding: 4px 6px;
+      background: var(--panel-raised);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+    }
+
+    #workspace-tools #view-tabs {
+      display: flex;
+      align-items: center;
+      flex: 0 0 auto;
+      gap: 2px;
+      min-width: 0;
+      overflow-x: auto;
+      padding: 0;
+      background: transparent;
+      border: 0;
+      scrollbar-width: thin;
+    }
+
+    #workspace-tools .view-tab {
+      flex: 0 0 auto;
+      min-height: 26px;
+      padding: 4px 8px;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    #workspace-tools .view-tab[aria-selected="true"] {
+      min-height: 26px;
+      padding: 4px 8px;
+      background: var(--highlight);
+      border-color: var(--accent);
+      border-bottom-color: var(--accent);
+      color: var(--text);
+      box-shadow: none;
+    }
+
+    #workspace-tools [hidden] {
+      display: none !important;
+    }
+
+    #workspace-secondary {
+      display: flex;
+      align-items: center;
+      flex: 1 1 auto;
+      gap: 5px;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      padding-left: 5px;
+      border-left: 1px solid var(--border);
+    }
+
+    #panel-visibility {
+      display: flex;
+      align-items: center;
+      flex: 1 1 auto;
+      gap: 5px;
+      min-width: 0;
+      padding: 0;
+      border: 0;
+    }
+
+    #workspace-tools #protocol-tool-tabs {
+      display: flex;
+      align-items: center;
+      flex: 1 1 auto;
+      gap: 3px;
+      min-width: 0;
+      padding: 0;
+      background: transparent;
+      border: 0;
+      overflow-x: auto;
+      scrollbar-width: thin;
+    }
+
+    #workspace-tools .protocol-tool-tab {
+      flex: 0 0 auto;
+      min-height: 26px;
+      padding: 4px 8px;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    #workspace-tools .protocol-tool-tab[aria-pressed="true"] {
+      min-height: 26px;
+      padding: 4px 8px;
+      background: var(--highlight);
+      border-color: var(--accent);
+      color: var(--text);
+      box-shadow: none;
+    }
+
+    #workspace-tools .protocol-tool-tab[aria-pressed="false"] {
+      color: var(--text-dim);
+    }
+
+    .workspace-control-label {
+      flex: 0 0 auto;
+      color: var(--text-dim);
+      font-size: 8px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    #panel-visibility-buttons {
+      display: flex;
+      flex: 1 1 auto;
+      gap: 3px;
+      min-width: 0;
+      overflow-x: auto;
+      padding-bottom: 1px;
+      scrollbar-width: thin;
+    }
+
+    .panel-toggle {
+      display: inline-flex;
+      align-items: center;
+      flex: 0 0 auto;
+      gap: 6px;
+      min-height: 26px;
+      padding: 3px 6px;
+      background: var(--panel-inset);
+      border-color: var(--border);
+      border-radius: 4px;
+      color: var(--text-dim);
+      font-size: 10px;
+      white-space: nowrap;
+    }
+
+    .panel-toggle:hover {
+      background: var(--btn-hover);
+      border-color: var(--border-strong);
+      color: var(--text);
+    }
+
+    .panel-toggle[aria-pressed="true"] {
+      background: var(--highlight);
+      border-color: var(--accent);
+      color: var(--text);
+    }
+
+    .panel-toggle[data-partial="true"] {
+      border-style: dashed;
+      color: var(--accent);
+    }
+
+    .panel-toggle-icon {
+      display: inline-grid;
+      flex: 0 0 auto;
+      place-items: center;
+      min-width: 18px;
+      color: var(--accent);
+      font-size: 12px;
+      line-height: 1;
+    }
+
+    .panel-toggle-label {
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    #protocol-tools-view .protocol-tool-panels {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+      align-content: start;
+      align-items: start;
+      gap: 12px;
+    }
+
+    #protocol-tools-view .protocol-tool-panel {
+      max-width: none;
+      min-width: 0;
+      margin: 0;
+    }
+
+    @media (max-width: 2200px) {
+      #controls {
+        grid-template-columns: max-content minmax(0, 1fr) max-content minmax(300px, 0.9fr);
+      }
+    }
+
+    @media (max-width: 1240px) {
+      #controls {
+        grid-template-columns: minmax(0, 1fr) max-content;
+        grid-template-areas:
+          "context status"
+          "execution execution"
+          "actions actions"
+          "workspace workspace"
+          "telemetry telemetry";
+      }
+
+      #workspace-tools {
+        grid-row: auto;
+        width: 100%;
+      }
+
+      #controls .toolbar-status {
+        justify-self: end;
+        width: max-content;
+      }
+    }
+
+    @media (max-width: 720px) {
+      #controls {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-areas:
+          "context"
+          "execution"
+          "actions"
+          "status"
+          "workspace"
+          "telemetry";
+      }
+
+      #workspace-tools {
+        flex-direction: column;
+        justify-content: center;
+        align-items: stretch;
+        gap: 5px;
+      }
+
+      #workspace-tools #view-tabs {
+        width: 100%;
+      }
+
+      #workspace-secondary {
+        align-items: stretch;
+        flex-direction: column;
+        gap: 5px;
+        padding-top: 4px;
+        padding-left: 0;
+        border-top: 1px solid var(--border);
+        border-left: 0;
+      }
+
+      #panel-visibility {
+        align-items: flex-start;
+        flex-direction: column;
+        width: 100%;
+      }
+
+      #workspace-tools #protocol-tool-tabs {
+        width: 100%;
+      }
+
+      #panel-visibility-buttons {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        overflow-x: visible;
+        width: 100%;
+      }
+
+      .panel-toggle {
+        min-width: 0;
+        width: 100%;
+        justify-content: flex-start;
+      }
+
+      #workspace-tools .view-tab {
+        min-height: 34px;
+        padding: 7px 10px;
+      }
+
+      #workspace-tools .view-tab[aria-selected="true"] {
+        min-height: 34px;
+        padding: 7px 10px;
+      }
+
+      #workspace-tools .protocol-tool-tab {
+        min-height: 34px;
+        padding: 7px 10px;
+      }
+
+      #workspace-tools .protocol-tool-tab[aria-pressed="true"] {
+        min-height: 34px;
+        padding: 7px 10px;
+      }
+
+      #protocol-tools-view .protocol-tool-panels {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 10px;
+      }
+    }
+
+    @media (max-width: 480px) {
+      #panel-visibility-buttons {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (pointer: coarse) and (max-width: 720px) {
+      .panel-toggle {
+        min-height: 40px;
+      }
+
+      #workspace-tools .view-tab,
+      #workspace-tools .view-tab[aria-selected="true"] {
+        min-height: 44px;
+      }
+
+      #workspace-tools .protocol-tool-tab {
+        min-height: 44px;
+      }
+    }
+
+    /* ---- Uiverse command buttons ----------------------------------------
+       Adapted from the linked btn-17 treatment: wrapped labels preserve
+       dynamic Run/SIM text while the skewed wipe stays limited to actions. */
+    .btn-17,
+    .btn-17 *,
+    .btn-17::after,
+    .btn-17::before {
+      border: 0 solid;
+      box-sizing: border-box;
+    }
+
+    .btn-17 {
+      -webkit-tap-highlight-color: transparent;
+      -webkit-appearance: button;
+      appearance: button;
+      background-color: var(--panel-inset);
+      background-image: none;
+      border: 2px solid var(--border-strong);
+      border-radius: 99rem;
+      color: #ffffff;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 900;
+      line-height: 1.5;
+      margin: 0;
+      overflow: hidden;
+      padding: 0.36rem 1rem;
+      position: relative;
+      isolation: isolate;
+      text-transform: uppercase;
+      touch-action: manipulation;
+      transition: background-color 160ms ease-out,
+                  border-color 160ms ease-out,
+                  transform 120ms ease-out;
+      z-index: 0;
+    }
+
+    .btn-17:disabled {
+      cursor: default;
+    }
+
+    .btn-17 svg {
+      display: block;
+      vertical-align: middle;
+    }
+
+    .btn-17 .text-container {
+      display: block;
+      mix-blend-mode: difference;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .btn-17 .text {
+      display: block;
+      position: relative;
+    }
+
+    .btn-17::after,
+    .btn-17::before {
+      --skew: 0.2;
+      --progress: 0%;
+      background: #ffffff;
+      content: "";
+      display: block;
+      height: 104%;
+      left: calc(-50% - 50% * var(--skew));
+      pointer-events: none;
+      position: absolute;
+      top: -104%;
+      transform: skew(calc(150deg * var(--skew))) translateY(var(--progress));
+      transition: transform 200ms cubic-bezier(0.23, 1, 0.32, 1);
+      width: 100%;
+    }
+
+    .btn-17::after {
+      left: calc(50% + 50% * var(--skew));
+      top: 100%;
+      z-index: -1;
+    }
+
+    @media (hover: hover) and (pointer: fine) {
+      .btn-17:hover:not(:disabled) {
+        border-color: var(--brand-red-bright);
+      }
+
+      .btn-17:hover:not(:disabled) .text {
+        animation: move-up-alternate 0.3s forwards;
+      }
+
+      .btn-17:hover:not(:disabled)::before {
+        --progress: 100%;
+      }
+
+      .btn-17:hover:not(:disabled)::after {
+        --progress: -102%;
+      }
+    }
+
+    @keyframes move-up-alternate {
+      0% { transform: translateY(0); }
+      50% { transform: translateY(80%); }
+      51% { transform: translateY(-80%); }
+      to { transform: translateY(0); }
+    }
+
+    .btn-17:active:not(:disabled) {
+      transform: scale(0.97);
+    }
+
+    .btn-17:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 3px;
+    }
+
+    .btn-17:disabled {
+      opacity: 0.4;
+    }
+
+    #controls .btn-17.btn-run {
+      background-color: var(--brand-red);
+      border-color: var(--brand-red-bright);
+      color: #ffffff;
+    }
+
+    #controls .btn-17.btn-reset {
+      background-color: var(--highlight);
+      border-color: var(--brand-red-bright);
+      color: var(--halted);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .btn-17,
+      .btn-17::after,
+      .btn-17::before,
+      .btn-17 .text {
+        animation: none !important;
+        transition: none !important;
+      }
+
+      .btn-17:hover:not(:disabled) .text {
+        animation: none !important;
+      }
+
+      .btn-17:hover:not(:disabled)::before,
+      .btn-17:hover:not(:disabled)::after {
+        --progress: 0%;
+      }
+
+      .btn-17:active:not(:disabled) {
+        transform: none;
+      }
+    }
+
+    /* ---- Glass workspace selector ---------------------------------------
+       The outer control borrows the reference's inset glass depth without
+       replacing the application's real tab buttons with radio inputs. */
+    #workspace-tools #view-tabs.glass-tab-group {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      flex: 0 1 320px;
+      width: 320px;
+      min-width: 0;
+      gap: 2px;
+      overflow: hidden;
+      padding: 3px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 8px;
+      -webkit-backdrop-filter: blur(8px);
+      backdrop-filter: blur(8px);
+      box-shadow: inset 1px 1px 3px rgba(255, 255, 255, 0.12),
+                  inset -1px -1px 4px rgba(0, 0, 0, 0.32),
+                  0 2px 8px rgba(0, 0, 0, 0.18);
+    }
+
+    #workspace-tools #view-tabs .view-tab-glider {
+      position: absolute;
+      z-index: 1;
+      top: 3px;
+      bottom: 3px;
+      left: 3px;
+      width: calc(33.333% - 4px);
+      border: 1px solid var(--border-strong);
+      border-radius: 5px;
+      background: var(--panel-raised);
+      box-shadow: inset 0 -2px 0 var(--brand-red),
+                  0 2px 5px rgba(0, 0, 0, 0.2);
+      pointer-events: none;
+      transition: transform 180ms cubic-bezier(0.23, 1, 0.32, 1);
+    }
+
+    #workspace-tools #tab-protocol-tools[aria-selected="true"] ~ .view-tab-glider {
+      transform: translateX(calc(100% + 2px));
+    }
+
+    #workspace-tools #tab-foc[aria-selected="true"] ~ .view-tab-glider {
+      transform: translateX(calc(200% + 4px));
+    }
+
+    #workspace-tools #view-tabs .view-tab {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex: 1 1 0;
+      min-width: 0;
+      min-height: 28px;
+      padding: 4px 8px;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 5px;
+      color: var(--text-dim);
+      font-size: 10px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    #workspace-tools #view-tabs .view-tab:hover {
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text);
+    }
+
+    #workspace-tools #view-tabs .view-tab[aria-selected="true"] {
+      background: transparent;
+      border-color: transparent;
+      border-bottom-color: transparent;
+      color: #ffffff;
+      box-shadow: none;
+    }
+
+    #workspace-tools #protocol-tool-tabs {
+      gap: 2px;
+      padding: 3px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 7px;
+      box-shadow: inset 1px 1px 3px rgba(255, 255, 255, 0.1),
+                  inset -1px -1px 4px rgba(0, 0, 0, 0.28);
+    }
+
+    #workspace-tools #protocol-tool-tabs .protocol-tool-tab {
+      min-height: 28px;
+      padding: 4px 8px;
+      border: 1px solid transparent;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--text-dim);
+      font-size: 10px;
+      font-weight: 700;
+    }
+
+    #workspace-tools #protocol-tool-tabs .protocol-tool-tab:hover {
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text);
+    }
+
+    #workspace-tools #protocol-tool-tabs .protocol-tool-tab[aria-pressed="true"] {
+      background: var(--highlight);
+      border-color: var(--border-strong);
+      border-bottom-color: var(--brand-red-bright);
+      color: #ffffff;
+      box-shadow: inset 0 -2px 0 var(--brand-red);
+    }
+
+    @media (max-width: 720px) {
+      #workspace-tools #view-tabs.glass-tab-group {
+        flex: 1 1 100%;
+        width: 100%;
+      }
+
+      #workspace-tools #view-tabs .view-tab {
+        padding: 4px 6px;
+        font-size: clamp(9px, 2.3vw, 10px);
+      }
+
+      #workspace-tools #view-tabs .view-tab,
+      #workspace-tools #protocol-tool-tabs .protocol-tool-tab {
+        min-height: 34px;
+      }
+    }
+
+    @media (pointer: coarse) and (max-width: 720px) {
+      #workspace-tools #view-tabs .view-tab,
+      #workspace-tools #protocol-tool-tabs .protocol-tool-tab {
+        min-height: 44px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      #workspace-tools #view-tabs .view-tab-glider {
+        transition: none;
+      }
+    }
+
+    /* ---- Shared operator glass controls ------------------------------- */
+    #controls .toolbar-execution .btn-17:not(.btn-run):not(.btn-reset),
+    #controls .toolbar-actions .btn-17:not(.btn-run):not(.btn-reset) {
+      background: rgba(255, 255, 255, 0.04);
+      border-color: rgba(255, 255, 255, 0.14);
+      box-shadow: inset 1px 1px 3px rgba(255, 255, 255, 0.1),
+                  inset -1px -1px 4px rgba(0, 0, 0, 0.28);
+    }
+
+    #controls .toolbar-execution .btn-17:hover:not(:disabled),
+    #controls .toolbar-actions .btn-17:hover:not(:disabled) {
+      background: rgba(255, 255, 255, 0.08);
+      border-color: var(--brand-red-bright);
+    }
+
+    #controls .toolbar-actions .btn-17.btn-reset {
+      background: var(--highlight);
+      border-color: var(--brand-red-bright);
+    }
+
+    #controls .toolbar-actions button:not(.btn-17) {
+      background: transparent;
+    }
+
+    #controls .toolbar-actions button:not(.btn-17):hover {
+      background: var(--btn-hover);
+    }
+
+    #controls .toolbar-actions .btn-reset:not(.btn-17) {
+      background: #2c2025;
+    }
+
+    #panel-visibility-buttons .panel-toggle {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 7px;
+      -webkit-backdrop-filter: blur(8px);
+      backdrop-filter: blur(8px);
+      box-shadow: inset 1px 1px 3px rgba(255, 255, 255, 0.1),
+                  inset -1px -1px 4px rgba(0, 0, 0, 0.28);
+      color: var(--text-dim);
+    }
+
+    #panel-visibility-buttons .panel-toggle:hover {
+      background: rgba(255, 255, 255, 0.08);
+      border-color: var(--border-strong);
+      color: var(--text);
+    }
+
+    #panel-visibility-buttons .panel-toggle[aria-pressed="true"] {
+      background: var(--highlight);
+      border-color: var(--border-strong);
+      border-bottom-color: var(--brand-red-bright);
+      color: #ffffff;
+      box-shadow: inset 0 -2px 0 var(--brand-red);
+    }
+
+    #panel-visibility-buttons .panel-toggle[data-partial="true"] {
+      border-style: dashed;
+      color: var(--accent);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      #controls .toolbar-execution .btn-17,
+      #controls .toolbar-actions .btn-17,
+      #panel-visibility-buttons .panel-toggle {
+        transition: none;
+      }
+    }
+
+    /* Match the hover surface to the wipe fill so skewed layers never reveal
+       a contrasting seam between them. Run and Reset retain their state colors. */
+    #controls .toolbar-execution .btn-17:hover:not(:disabled):not(.btn-run):not(.btn-reset),
+    #controls .toolbar-actions .btn-17:hover:not(:disabled):not(.btn-run):not(.btn-reset),
+    .btn-17.graph-btn:hover:not(:disabled),
+    .btn-17.btn-load:hover:not(:disabled) {
+      background: #ffffff;
+    }
+
+    /* ---- SSI workflow layout ------------------------------------------ */
+    #protocol-ssi-content {
+      display: grid;
+      gap: 12px;
+    }
+
+    #protocol-ssi-content > #ssi-inject,
+    #protocol-ssi-content > #ssi-runtime {
+      margin: 0;
+      padding: 12px;
+      background: var(--panel-raised);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+
+    #protocol-ssi-content > #ssi-inject {
+      box-shadow: inset 0 2px 0 var(--accent);
+    }
+
+    #protocol-ssi-content > #ssi-runtime {
+      box-shadow: inset 0 2px 0 var(--brand-red);
+    }
+
+    #ssi-inject .io-section-title,
+    #ssi-runtime > .io-section-title {
+      display: flex;
+      align-items: center;
+      min-height: 24px;
+      margin-bottom: 8px;
+    }
+
+    .ssi-quick-inject-guide {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      margin: 0 0 10px;
+      padding: 7px 9px;
+      background: var(--panel-inset);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text-dim);
+      font-size: 10px;
+      line-height: 1.4;
+    }
+
+    .ssi-workflow-eyebrow {
+      flex: 0 0 auto;
+      color: var(--accent);
+      font-size: 9px;
+      font-weight: 800;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .ssi-runtime-guide {
+      margin: 0 0 12px;
+      padding: 9px 10px 10px;
+      background: var(--panel-inset);
+      border: 1px solid var(--border-strong);
+      border-radius: 7px;
+    }
+
+    .ssi-runtime-guide-heading {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+    }
+
+    .ssi-runtime-guide-summary {
+      color: var(--text-dim);
+      font-size: 10px;
+    }
+
+    .ssi-test-flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 6px;
+      margin: 8px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .ssi-test-flow li {
+      display: flex;
+      align-items: flex-start;
+      gap: 7px;
+      min-width: 0;
+      padding: 7px;
+      background: var(--panel-raised);
+      border-left: 2px solid var(--brand-red);
+      border-radius: 4px;
+    }
+
+    .ssi-step-index {
+      display: inline-grid;
+      flex: 0 0 auto;
+      place-items: center;
+      width: 18px;
+      height: 18px;
+      background: var(--highlight);
+      border: 1px solid var(--brand-red-bright);
+      border-radius: 50%;
+      color: var(--text);
+      font-size: 9px;
+      font-weight: 800;
+    }
+
+    .ssi-test-flow strong {
+      display: block;
+      color: var(--text);
+      font-size: 10px;
+    }
+
+    .ssi-step-detail {
+      display: block;
+      margin-top: 2px;
+      color: var(--text-dim);
+      font-size: 9px;
+      line-height: 1.35;
+    }
+
+    .ssi-runtime-columns {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(300px, 0.8fr);
+      align-items: start;
+      gap: 12px;
+    }
+
+    .ssi-workflow-section {
+      min-width: 0;
+      padding: 11px;
+      background: var(--panel);
+      border: 1px solid var(--border-strong);
+      border-radius: 7px;
+    }
+
+    .ssi-workflow-section-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+
+    .ssi-workflow-section-header h3 {
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.01em;
+    }
+
+    .ssi-workflow-section-header p {
+      max-width: 58ch;
+      margin-top: 3px;
+      color: var(--text-dim);
+      font-size: 10px;
+      line-height: 1.4;
+    }
+
+    .ssi-workflow-subsection-title {
+      margin: 11px 0 2px;
+      padding-bottom: 4px;
+      border-bottom: 1px solid var(--border);
+      color: var(--accent);
+      font-size: 9px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .ssi-workflow-section-header + .ssi-workflow-subsection-title {
+      margin-top: 0;
+    }
+
+    #ssi-runtime .ssi-workflow-section .uart-controls {
+      align-items: center;
+      margin: 0 !important;
+      padding: 6px 0;
+      row-gap: 6px;
+    }
+
+    #ssi-runtime .ssi-workflow-section .uart-controls + .uart-controls {
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    #ssi-runtime .ssi-workflow-section .uart-hint {
+      line-height: 1.45;
+    }
+
+    #ssi-runtime .ssi-workflow-section .uart-inj-select {
+      max-width: 100%;
+    }
+
+    #ssi-runtime .ssi-workflow-section .uart-inj-input {
+      min-width: 120px;
+    }
+
+    #ssi-test-actions {
+      margin-top: 12px;
+      box-shadow: inset 0 2px 0 var(--brand-red-bright);
+    }
+
+    #ssi-test-actions .ssi-action-row {
+      align-items: center;
+      gap: 8px;
+      padding-top: 0;
+    }
+
+    #ssi-test-actions .ssi-action-row .uart-inj-num {
+      margin-left: auto;
+    }
+
+    #ssi-runtime .ssi-runtime-results {
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid var(--border);
+    }
+
+    #ssi-runtime .ssi-runtime-results pre {
+      overflow-x: auto;
+      margin-top: 5px !important;
+      padding: 7px 8px;
+      background: var(--panel-inset);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      line-height: 1.45;
+    }
+
+    #ssi-runtime .ssi-simple-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    #ssi-runtime .ssi-simple-output {
+      min-height: 150px;
+      max-height: 360px;
+      overflow: auto;
+      margin: 6px 0 0;
+      padding: 8px;
+      background: var(--panel-inset);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    #ssi-runtime-legacy {
+      display: none;
+    }
+
+    @media (max-width: 900px) {
+      .ssi-runtime-columns {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      #ssi-runtime .ssi-simple-grid {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      .ssi-test-flow {
+        grid-template-columns: repeat(5, minmax(130px, 1fr));
+        overflow-x: auto;
+        padding-bottom: 3px;
+      }
+
+      .ssi-test-flow li {
+        min-width: 130px;
+      }
+    }
+
+    @media (max-width: 560px) {
+      #protocol-ssi-content > #ssi-inject,
+      #protocol-ssi-content > #ssi-runtime {
+        padding: 9px;
+      }
+
+      .ssi-runtime-guide-heading,
+      .ssi-quick-inject-guide {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 3px;
+      }
+
+      .ssi-test-flow {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        overflow: visible;
+      }
+
+      .ssi-test-flow li {
+        min-width: 0;
+      }
+
+      #ssi-runtime .ssi-workflow-section .uart-controls {
+        align-items: flex-start;
+      }
+
+      #ssi-runtime .ssi-workflow-section .uart-inj-input {
+        flex: 1 1 140px !important;
+        max-width: 100%;
+      }
+
+      #ssi-test-actions .ssi-action-row {
+        align-items: stretch;
+      }
+
+      #ssi-test-actions .ssi-action-row .uart-inj-num {
+        margin-left: 0;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      #protocol-ssi-content .ssi-workflow-section,
+      #protocol-ssi-content .ssi-test-flow li {
+        transition: none;
+      }
+    }
+
+    /* ---- Open-loop FOC workspace --------------------------------------- */
+    #foc-view {
+      display: flex;
+      flex-direction: column;
+      overflow: auto;
+      background: var(--bg);
+    }
+
+    .foc-header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 24px clamp(16px, 3vw, 42px) 18px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+
+    .foc-kicker,
+    .foc-eyebrow {
+      color: var(--accent2);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .foc-title {
+      margin-top: 5px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: clamp(20px, 2.4vw, 30px);
+      letter-spacing: -0.04em;
+    }
+
+    .foc-description {
+      max-width: 760px;
+      margin-top: 7px;
+      color: var(--text-dim);
+      font-size: 11px;
+      line-height: 1.55;
+    }
+
+    .foc-status,
+    .foc-inline-status {
+      color: var(--text-dim);
+      font-size: 10px;
+      line-height: 1.4;
+    }
+
+    .foc-status {
+      flex: 0 0 auto;
+      max-width: 220px;
+      padding: 7px 9px;
+      border: 1px solid var(--border-strong);
+      border-radius: 5px;
+      background: var(--panel-inset);
+      text-align: right;
+    }
+
+    .foc-workspace {
+      display: grid;
+      grid-template-columns: minmax(230px, 280px) minmax(0, 1fr);
+      align-items: start;
+      gap: 16px;
+      width: min(1500px, 100%);
+      margin: 0 auto;
+      padding: 18px clamp(16px, 3vw, 42px) 32px;
+    }
+
+    .foc-control-panel,
+    .foc-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+    }
+
+    .foc-control-panel {
+      position: sticky;
+      top: 0;
+      padding: 16px;
+    }
+
+    .foc-section-heading {
+      display: flex;
+      align-items: flex-start;
+      gap: 9px;
+      margin-bottom: 14px;
+    }
+
+    .foc-section-heading-readout {
+      margin-top: 21px;
+      margin-bottom: 10px;
+    }
+
+    .foc-section-index {
+      color: var(--accent2);
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1.5;
+    }
+
+    .foc-section-heading h2,
+    .foc-card-heading h2 {
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .foc-section-heading p {
+      margin-top: 3px;
+      color: var(--text-dim);
+      font-size: 10px;
+      line-height: 1.4;
+    }
+
+    #foc-reference-form {
+      display: grid;
+      gap: 6px;
+      margin-top: 14px;
+    }
+
+    #foc-reference-form label {
+      margin-top: 4px;
+      color: var(--text-dim);
+      font-size: 10px;
+      font-weight: 700;
+    }
+
+    #foc-reference-form label span {
+      color: var(--text-dim);
+      font-weight: 400;
+    }
+
+    #foc-reference-form input {
+      width: 100%;
+      min-height: 30px;
+      padding: 5px 8px;
+      background: var(--panel-inset);
+      border: 1px solid var(--border-strong);
+      border-radius: 4px;
+      color: var(--text);
+      font: inherit;
+      font-size: 12px;
+    }
+
+    #foc-reference-form input:focus-visible {
+      outline: 2px solid var(--accent2);
+      outline-offset: 1px;
+    }
+
+    .foc-input-wrap {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 7px;
+    }
+
+    .foc-input-wrap output {
+      min-width: 47px;
+      color: var(--accent2);
+      font-size: 10px;
+      text-align: right;
+    }
+
+    .foc-button {
+      min-height: 31px;
+      padding: 6px 9px;
+      border: 1px solid var(--border-strong);
+      border-radius: 5px;
+      background: var(--panel-raised);
+      color: var(--text);
+      font-size: 10px;
+      font-weight: 700;
+    }
+
+    .foc-button:hover:not(:disabled) {
+      border-color: var(--accent2);
+      background: var(--highlight);
+    }
+
+    .foc-button-primary {
+      border-color: var(--brand-red-bright);
+      background: var(--brand-red);
+      color: #fff;
+    }
+
+    .foc-button-stop {
+      border-color: var(--halted);
+      color: var(--halted);
+    }
+
+    .foc-button-secondary {
+      width: 100%;
+      margin-bottom: 4px;
+    }
+
+    #foc-apply {
+      margin-top: 7px;
+    }
+
+    .foc-action-row {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+      margin-top: 12px;
+    }
+
+    .foc-inline-status {
+      min-height: 16px;
+      margin-top: 8px;
+    }
+
+    .foc-readout {
+      display: grid;
+      gap: 7px;
+    }
+
+    .foc-readout div {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .foc-readout dt {
+      color: var(--text-dim);
+      font-size: 10px;
+    }
+
+    .foc-readout dd {
+      color: var(--text);
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+    }
+
+    .foc-memory-hint {
+      margin-top: 15px;
+      color: var(--text-dim);
+      font-size: 9px;
+      line-height: 1.5;
+    }
+
+    .foc-visual-panel {
+      display: grid;
+      grid-template-columns: minmax(230px, 0.82fr) minmax(0, 1.18fr);
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .foc-card {
+      min-width: 0;
+      padding: 13px;
+    }
+
+    .foc-card-heading {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+
+    .foc-card-heading h2 {
+      margin-top: 3px;
+      font-size: 14px;
+      letter-spacing: -0.02em;
+    }
+
+    .foc-card-meta {
+      color: var(--text-dim);
+      font-size: 9px;
+      white-space: nowrap;
+    }
+
+    .foc-dial-card {
+      grid-row: span 2;
+    }
+
+    #foc-rotor-dial {
+      display: block;
+      width: 100%;
+      height: 280px;
+    }
+
+    .foc-legend {
+      display: flex;
+      justify-content: center;
+      gap: 15px;
+      margin-top: 4px;
+      color: var(--text-dim);
+      font-size: 9px;
+    }
+
+    .foc-legend-dot {
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      margin-right: 4px;
+      border-radius: 50%;
+    }
+
+    .foc-legend-rotor { background: var(--accent2); }
+    .foc-legend-command { background: var(--accent); }
+
+    .foc-plot-card canvas {
+      display: block;
+      width: 100%;
+      height: 190px;
+      background: var(--panel-inset);
+      border-radius: 4px;
+    }
+
+    .foc-plot-grid {
+      display: grid;
+      grid-column: 1 / -1;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    @media (max-width: 960px) {
+      .foc-workspace,
+      .foc-visual-panel {
+        grid-template-columns: 1fr;
+      }
+
+      .foc-control-panel {
+        position: static;
+      }
+
+      .foc-dial-card {
+        grid-row: auto;
+      }
+    }
+
+    @media (max-width: 600px) {
+      .foc-header {
+        display: block;
+      }
+
+      .foc-status {
+        display: inline-block;
+        margin-top: 12px;
+        text-align: left;
+      }
+
+      .foc-workspace {
+        padding: 12px 10px 24px;
+      }
+
+      .foc-plot-grid {
+        grid-template-columns: 1fr;
+      }
+
+      #foc-rotor-dial {
+        height: 240px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .foc-button,
+      .foc-card,
+      .foc-control-panel {
+        transition: none;
+      }
+    }
+
   </style>
 </head>
 <body>
 
   <!-- Controls bar -->
   <div id="controls">
+    <div class="toolbar-group toolbar-context" role="group" aria-label="Target selection">
     <span class="logo" title="PRU Simulator v0.2.6">PRU SIM</span>
 
     <select id="core-select">
       <option value="pru0">PRU0</option>
       <option value="rtu0">RTU0</option>
       <option value="pru1">PRU1</option>
+      <option value="rtu1">RTU_PRU1</option>
     </select>
 
     <select id="pru-speed-select" title="PRU core clock speed (applies to PRU0, RTU0, and PRU1)">
@@ -1348,48 +4292,127 @@
       <option value="300">300 MHz</option>
       <option value="333">333 MHz</option>
     </select>
+    </div>
 
-    <button id="btn-multicore" title="Toggle dual-core debug view">Multi-core</button>
-    <select id="mc-partner-select" title="Second core in multi-core view" style="display:none;">
+    <div class="toolbar-group toolbar-execution" role="group" aria-label="Execution controls">
+    <button id="btn-multicore" class="btn-17" title="Toggle one-, two-, or three-core debug view">
+      <span class="text-container"><span class="text">Multi-core</span></span>
+    </button>
+    <select id="mc-primary-select" title="Primary core in multi-core view" style="display:none;">
+      <option value="none">None</option>
+      <option value="pru0" selected>PRU0</option>
       <option value="rtu0">RTU0</option>
       <option value="pru1">PRU1</option>
+      <option value="rtu1">RTU_PRU1</option>
+    </select>
+    <select id="mc-partner-select" title="Second core in multi-core view" style="display:none;">
+      <option value="none">None</option>
+      <option value="pru0">PRU0</option>
+      <option value="rtu0" selected>RTU0</option>
+      <option value="pru1">PRU1</option>
+      <option value="rtu1">RTU_PRU1</option>
+    </select>
+    <select id="mc-third-select" title="Third core in multi-core view" style="display:none;">
+      <option value="none" selected>None</option>
+      <option value="pru0">PRU0</option>
+      <option value="rtu0">RTU0</option>
+      <option value="pru1">PRU1</option>
+      <option value="rtu1">RTU_PRU1</option>
     </select>
 
-    <button id="btn-step" class="btn-step">Step</button>
-    <button id="btn-run" class="btn-run">Run</button>
-    <button id="btn-sim" class="btn-sim">SIM</button>
+    <button id="btn-step" class="btn-17 btn-step">
+      <span class="text-container"><span class="text">Step</span></span>
+    </button>
+    <button id="btn-run" class="btn-17 btn-run">
+      <span class="text-container"><span class="text">Run</span></span>
+    </button>
+    <button id="btn-sim" class="btn-17 btn-sim">
+      <span class="text-container"><span class="text">SIM</span></span>
+    </button>
     <input id="sim-interval" type="text" value="1.0" placeholder="1.0" title="SIM step interval in seconds (e.g. 0.01)" />
     <span style="font-size:11px;color:var(--text-dim)">s</span>
-    <button id="btn-reset" class="btn-reset">Reset</button>
-    <button id="btn-hard-reset" class="btn-reset" title="Hardware reset: clears all SPAD banks, XFR config, all cores, and Peripheral Interface state (FIFOs, overrun/underrun, RX valid/overflow, busy) — perif config registers are kept">HW Reset</button>
-    <button id="btn-config">Config</button>
-    <button id="btn-reset-layout" title="Reset panel layout to default">⊞ Reset Layout</button>
-    <button id="btn-help" title="Keyboard shortcuts and feature reference">? Help</button>
+    </div>
 
-    <span id="status-badge">IDLE</span>
-    <span id="ws-status">Connecting...</span>
+    <div class="toolbar-group toolbar-actions" role="group" aria-label="Session actions">
+    <button id="btn-reset" class="btn-17 btn-reset">
+      <span class="text-container"><span class="text">Reset</span></span>
+    </button>
+    <button id="btn-hard-reset" class="btn-17 btn-reset" title="Hardware reset: clears all SPAD banks, XFR config, all cores, and Peripheral Interface state (FIFOs, overrun/underrun, RX valid/overflow, busy); perif config registers are kept">
+      <span class="text-container"><span class="text">HW Reset</span></span>
+    </button>
+    <button id="btn-config" class="btn-17">
+      <span class="text-container"><span class="text">Config</span></span>
+    </button>
+    <button id="btn-reset-layout" class="btn-17" title="Reset panel layout to default">
+      <span class="text-container"><span class="text">⊞ Reset Layout</span></span>
+    </button>
+    <button id="btn-help" class="btn-17" title="Keyboard shortcuts and feature reference">
+      <span class="text-container"><span class="text">? Help</span></span>
+    </button>
+    </div>
 
-    <div id="counters">
+    <div class="toolbar-group toolbar-status" role="group" aria-label="Runtime status">
+    <span id="status-badge" role="status" aria-live="polite">IDLE</span>
+    <span id="ws-status" role="status" aria-live="polite">Connecting...</span>
+    </div>
+
+    <div id="workspace-tools" role="group" aria-label="Workspace controls">
+      <nav id="view-tabs" class="glass-tab-group" role="tablist" aria-label="Application views">
+        <button id="tab-simulator" class="view-tab" type="button" role="tab"
+                aria-selected="true" aria-controls="simulator-view" tabindex="0">Simulator</button>
+        <button id="tab-protocol-tools" class="view-tab" type="button" role="tab"
+                aria-selected="false" aria-controls="protocol-tools-view" tabindex="-1">Protocol Tools</button>
+        <button id="tab-foc" class="view-tab" type="button" role="tab"
+                aria-selected="false" aria-controls="foc-view" tabindex="-1">Motor Control</button>
+        <span class="view-tab-glider" aria-hidden="true"></span>
+      </nav>
+      <div id="workspace-secondary">
+        <div id="panel-visibility" aria-label="Simulator panels">
+          <span class="workspace-control-label">Panels</span>
+          <div id="panel-visibility-buttons" role="group" aria-label="Show or hide simulator panels"></div>
+        </div>
+        <div id="protocol-tool-tabs" role="group" aria-label="Protocol tools" hidden aria-hidden="true">
+          <button id="protocol-tab-i2c" class="protocol-tool-tab" type="button"
+                  aria-pressed="true" aria-controls="protocol-i2c-panel" data-protocol-panel="i2c">I2C</button>
+          <button id="protocol-tab-uart" class="protocol-tool-tab" type="button"
+                  aria-pressed="false" aria-controls="protocol-uart-panel" data-protocol-panel="uart">UART</button>
+          <button id="protocol-tab-ssi" class="protocol-tool-tab" type="button"
+                  aria-pressed="false" aria-controls="protocol-ssi-panel" data-protocol-panel="ssi">SSI</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="counters" role="group" aria-label="Runtime telemetry">
       <span id="cnt-p0-label" style="display:none;color:var(--accent);font-weight:bold;">PRU0</span>
       <span id="cnt-cycles-wrap">Cycles: <span class="val" id="cnt-cycles">0</span></span>
       <span id="cnt-stalls-wrap">Stalls: <span class="val" id="cnt-stalls">0</span></span>
       <span id="cnt-instrs-wrap">Instructions: <span class="val" id="cnt-instrs">0</span></span>
       <span id="cnt-ipc-wrap">IPC: <span class="val" id="cnt-ipc">0.000</span></span>
       <span id="cnt-pc-wrap">PC: <span class="val" id="cnt-pc">0</span></span>
-      <!-- RTU0 counters — visible in MC mode only -->
+      <!-- RTU0 counters: visible in MC mode only -->
       <span id="cnt-sep" style="display:none;color:var(--border);">│</span>
       <span id="cnt-p1-label" style="display:none;color:var(--accent2);font-weight:bold;">RTU0</span>
       <span id="cnt-rtu-cycles-wrap" style="display:none;">Cycles: <span class="val" id="cnt-rtu-cycles">0</span></span>
       <span id="cnt-rtu-stalls-wrap" style="display:none;">Stalls: <span class="val" id="cnt-rtu-stalls">0</span></span>
       <span id="cnt-rtu-pc-wrap"     style="display:none;">PC: <span class="val" id="cnt-rtu-pc">0</span></span>
+      <span id="cnt-sep2" style="display:none;color:var(--border);">│</span>
+      <span id="cnt-p2-label" style="display:none;color:var(--accent);font-weight:bold;">None</span>
+      <span id="cnt-p2-cycles-wrap" style="display:none;">Cycles: <span class="val" id="cnt-p2-cycles">0</span></span>
+      <span id="cnt-p2-stalls-wrap" style="display:none;">Stalls: <span class="val" id="cnt-p2-stalls">0</span></span>
+      <span id="cnt-p2-pc-wrap"     style="display:none;">PC: <span class="val" id="cnt-p2-pc">0</span></span>
     </div>
   </div>
 
   <!-- Global error band (shown above main for both SC and MC modes) -->
-  <div id="error-band" style="display:none;"></div>
+  <div id="error-band" role="alert" aria-live="assertive" style="display:none;"></div>
 
-  <!-- Main layout -->
-  <div id="main">
+  <!-- Primary application views. Both remain mounted so live simulator and
+       protocol-tool state survive view changes. -->
+  <div id="app-views">
+    <!-- Main layout -->
+    <section id="simulator-view" class="app-view" role="tabpanel"
+             aria-labelledby="tab-simulator" aria-hidden="false" tabindex="-1">
+      <div id="main">
 
     <!-- Panel pool: holds panels not currently placed in the tile tree -->
     <div id="panel-pool" style="display:none">
@@ -1417,6 +4440,7 @@
             <option value="pru0">→ PRU0</option>
             <option value="rtu0">→ RTU0</option>
             <option value="pru1">→ PRU1</option>
+            <option value="rtu1">→ RTU_PRU1</option>
           </select>
           <input type="file" id="file-input" accept=".asm,.inc,.s,.out" style="display:none" />
           <button id="btn-file" class="btn-load">Open</button>
@@ -1463,6 +4487,13 @@ Example:
       <!-- Memory panel 1 -->
       <div class="panel" id="memory-panel">
         <div id="memory-controls" data-panel-id="memory1">
+          <select id="mem-region-sel" title="Jump to a known memory region" style="background:var(--btn);color:var(--text);border:1px solid var(--border);padding:2px 4px;border-radius:3px;font-family:inherit;font-size:11px;">
+            <option value="">Region…</option>
+            <option value="0x00000000">PRU0 DRAM (global 0x00000000)</option>
+            <option value="0x00002000">PRU1 DRAM (global 0x00002000)</option>
+            <option value="0x00010000">Shared RAM (global 0x00010000)</option>
+            <option value="0x00010200">SSI mailbox (global 0x00010200)</option>
+          </select>
           <label>Address:</label>
           <input type="text" id="mem-addr-input" list="mem-region-list" value="0x00000000" />
           <datalist id="mem-region-list"></datalist>
@@ -1491,6 +4522,13 @@ Example:
       <!-- Memory panel 2 (defaults to Shared RAM 0x00010000) -->
       <div class="panel" id="memory-panel-2">
         <div id="memory-controls-2" data-panel-id="memory2">
+          <select id="mem-region-sel-2" title="Jump to a known memory region" style="background:var(--btn);color:var(--text);border:1px solid var(--border);padding:2px 4px;border-radius:3px;font-family:inherit;font-size:11px;">
+            <option value="">Region…</option>
+            <option value="0x00000000">PRU0 DRAM (global 0x00000000)</option>
+            <option value="0x00002000">PRU1 DRAM (global 0x00002000)</option>
+            <option value="0x00010000">Shared RAM (global 0x00010000)</option>
+            <option value="0x00010200">SSI mailbox (global 0x00010200)</option>
+          </select>
           <label>Address:</label>
           <input type="text" id="mem-addr-input-2" list="mem-region-list-2" value="0x00010000" />
           <datalist id="mem-region-list-2"></datalist>
@@ -1523,14 +4561,14 @@ Example:
           <div class="io-section io-mux-row" id="io-mux-row">
             <span class="io-mux-label">GP Mux (GPCFG):</span>
             <select id="io-mux-sel" class="io-mux-sel">
-              <option value="0">0 — GPIO</option>
-              <option value="1">1 — Peripheral Interface</option>
-              <option value="3">3 — SD (Sigma-Delta)</option>
+              <option value="0">0: GPIO</option>
+              <option value="1">1: Peripheral Interface</option>
+              <option value="3">3: SD (Sigma-Delta)</option>
             </select>
             <span class="io-mux-note" id="io-mux-note"></span>
           </div>
           <div class="io-section">
-            <div class="io-section-title">GPO (R30) — Output</div>
+            <div class="io-section-title">GPO (R30): Output</div>
             <div class="pin-grid" id="gpo-grid"></div>
           </div>
           <div class="lb-strip" id="loopback-strip">
@@ -1546,8 +4584,16 @@ Example:
             <button class="lb-btn" id="i2c-attach-btn">Attach TCA9538 @ 0x23 (SCL=bit0, SDA=bit1)</button>
           </div>
           <div class="io-section">
-            <div class="io-section-title">GPI (R31) — Input (click to toggle)</div>
+            <div class="io-section-title">GPI (R31): Input (click to toggle)</div>
             <div class="pin-grid" id="gpi-grid"></div>
+          </div>
+          <div class="io-section" id="gpio-wires">
+            <div class="io-section-title wire-title-row">
+              <span>GPIO Wires (cross-core)</span>
+              <button id="btn-add-wire" class="graph-btn wire-add-btn">+ Add</button>
+            </div>
+            <div id="wire-empty" class="wire-empty">No cross-core wires configured</div>
+            <table class="wire-table"><tbody id="wire-tbody"></tbody></table>
           </div>
 
           <!-- SD Interface (shown when SD mode active, hidden in GPIO mode) -->
@@ -1597,12 +4643,14 @@ Example:
             <div class="uart-controls">
               <span class="uart-label">Pin: <span class="uart-pin">GPO0</span></span>
               <span class="uart-label">Format: <span class="uart-pin">8N1</span></span>
-              <button id="uart-decode-btn" class="graph-btn" style="color:var(--accent);border-color:#3a5a8a;">&#9654; Decode</button>
+              <button id="uart-decode-btn" class="btn-17 graph-btn" style="color:var(--accent);border-color:var(--accent);">
+                <span class="text-container"><span class="text">&#9654; Decode</span></span>
+              </button>
               <button id="uart-clear-btn"  class="graph-btn">Clear</button>
             </div>
-            <div id="uart-status" class="uart-status" style="display:none;"></div>
+            <div id="uart-status" class="uart-status" role="status" aria-live="polite" style="display:none;"></div>
             <div id="uart-output" class="uart-output" style="display:none;"></div>
-            <div id="uart-hint"   class="uart-hint">Use Signal Graph &#9679; REC to capture GPO0 first</div>
+            <div id="uart-hint"   class="uart-hint" role="status" aria-live="polite">The Signal Graph preview captures GPO0 automatically.</div>
           </div>
 
           <hr class="uart-divider" />
@@ -1628,14 +4676,319 @@ Example:
               </select>
               <span class="uart-label">Baud:</span>
               <input type="text" id="uart-inj-baud" class="uart-inj-num" value="4.00" />
-              <span class="uart-label" style="color:#666;">Mb</span>
+              <span class="uart-label" style="color:var(--text-dim);">Mb</span>
               <span class="uart-label">Frames:</span>
               <input type="text" id="uart-inj-frames" class="uart-inj-num" style="width:28px;text-align:center;" value="1" />
-              <button id="uart-inj-btn" class="graph-btn" style="color:var(--accent);border-color:#3a5a8a;margin-left:auto;">&#9654; Inject</button>
+              <button id="uart-inj-btn" class="btn-17 graph-btn" style="color:var(--accent);border-color:var(--accent);margin-left:auto;">
+                <span class="text-container"><span class="text">&#9654; Inject</span></span>
+              </button>
             </div>
             <!-- Status line -->
-            <div id="uart-inj-status" class="uart-hint" style="display:none;"></div>
+            <div id="uart-inj-status" class="uart-hint" role="status" aria-live="polite" style="display:none;"></div>
           </div>
+
+          <hr class="uart-divider" />
+          <div class="io-section" id="ssi-inject">
+            <div class="io-section-title">SSI Encoder Inject</div>
+            <div class="ssi-quick-inject-guide" role="note">
+              <span class="ssi-workflow-eyebrow">Quick test</span>
+              <span>Set the position, pins, and bit width, then select Inject for a single SSI frame.</span>
+            </div>
+            <!-- Row 1: Mode toggle + value input -->
+            <div class="uart-controls" style="margin-bottom:5px;">
+              <div class="uart-inject-mode-toggle">
+                <button id="ssi-inj-mode-hex" class="uart-inj-mode active">Hex</button>
+                <button id="ssi-inj-mode-dec" class="uart-inj-mode">Dec</button>
+              </div>
+              <input type="text" id="ssi-inj-value" class="uart-inj-input" value="000" spellcheck="false" placeholder="Position (0-FFF)" />
+            </div>
+            <!-- Row 2: CLK pin, DATA pin, Bits, Inject button -->
+            <div class="uart-controls">
+              <span class="uart-label">CLK:</span>
+              <select id="ssi-inj-clk-pin" class="uart-inj-select">
+                <option value="0">GPO0</option>
+                <option value="1">GPO1</option>
+              </select>
+              <span class="uart-label">DATA:</span>
+              <select id="ssi-inj-data-pin" class="uart-inj-select">
+                <option value="8" selected>GPI8</option>
+                <option value="9">GPI9</option>
+                <option value="0">GPI0</option>
+              </select>
+              <span class="uart-label">Bits:</span>
+              <input type="text" id="ssi-inj-bits" class="uart-inj-num" style="width:28px;text-align:center;" value="12" />
+              <button id="ssi-inj-btn" class="btn-17 graph-btn" style="color:var(--accent);border-color:var(--accent);margin-left:auto;">
+                <span class="text-container"><span class="text">&#9654; Inject</span></span>
+              </button>
+            </div>
+            <!-- Status line -->
+            <div id="ssi-inj-status" class="uart-hint" role="status" aria-live="polite" style="display:none;"></div>
+          </div>
+
+          <hr class="uart-divider" />
+          <div class="io-section" id="ssi-runtime">
+            <div class="io-section-title">Simple SSI Realtime</div>
+            <div class="ssi-simple-panel" aria-label="Simple SSI realtime test">
+              <div class="ssi-runtime-guide" aria-label="SSI realtime test workflow">
+                <div class="ssi-runtime-guide-heading">
+                  <span class="ssi-workflow-eyebrow">Actual firmware path</span>
+                  <span class="ssi-runtime-guide-summary">Run the checked-in PRU0, PRU1, and RTU_PRU1 images with the Python R5 model.</span>
+                </div>
+                <ol class="ssi-test-flow">
+                  <li><span class="ssi-step-index" aria-hidden="true">1</span><span><strong>Load build</strong><span class="ssi-step-detail">Validate the generated profile and all three assembly sources.</span></span></li>
+                  <li><span class="ssi-step-index" aria-hidden="true">2</span><span><strong>Use simulator controls</strong><span class="ssi-step-detail">Run, Step, or SIM advances all three images plus the functional R5 model.</span></span></li>
+                  <li><span class="ssi-step-index" aria-hidden="true">3</span><span><strong>Inspect results</strong><span class="ssi-step-detail">Check every scheduled publication, frame, timer, and wire mismatch.</span></span></li>
+                </ol>
+              </div>
+              <div class="ssi-action-row uart-controls" style="margin-top:8px;">
+                <button id="ssi-simple-load" class="btn-17 graph-btn" style="color:var(--accent);border-color:var(--accent);">
+                  <span class="text-container"><span class="text">Load actual firmware into simulator</span></span>
+                </button>
+                <button id="ssi-simple-reset" class="graph-btn">Reset</button>
+                <button id="ssi-simple-refresh" class="graph-btn">Refresh</button>
+              </div>
+              <div id="ssi-simple-status" class="uart-hint" role="status" aria-live="polite">Not loaded</div>
+              <div class="uart-hint" style="margin-top:4px;">Load installs PRU0, PRU1, and RTU_PRU1 into the normal simulator. Then use the top Run, Step, or SIM controls. SSI wires: PRU1:GPO0 -&gt; PRU0:GPI8 (clock), PRU0:GPO0 -&gt; PRU1:GPI16 (data). RTU_PRU1 owns the shared 300 MHz IEP grid; it is not a GPIO wire.</div>
+              <div class="ssi-simple-grid" style="margin-top:8px;">
+                <section class="ssi-workflow-section">
+                  <div class="ssi-workflow-subsection-title">Generated build profile · read-only</div>
+                  <pre id="ssi-simple-profile" class="ssi-simple-output" aria-label="Generated SSI build profile">Load actual firmware to inspect the generated profile.</pre>
+                </section>
+                <section class="ssi-workflow-section">
+                  <div class="ssi-workflow-subsection-title">Run result</div>
+                  <pre id="ssi-simple-results" class="ssi-simple-output" aria-label="SSI realtime run result">No run yet.</pre>
+                </section>
+              </div>
+            </div>
+            <details id="ssi-runtime-legacy" hidden>
+              <summary>Legacy Generic SSI Runtime</summary>
+            <div class="ssi-runtime-guide" aria-label="SSI test workflow">
+              <div class="ssi-runtime-guide-heading">
+                <span class="ssi-workflow-eyebrow">Test flow</span>
+                <span class="ssi-runtime-guide-summary">Configure the pair once, then run repeatable SSI frames.</span>
+              </div>
+              <ol class="ssi-test-flow">
+                <li>
+                  <span class="ssi-step-index" aria-hidden="true">1</span>
+                  <span><strong>Load pair</strong><span class="ssi-step-detail">Start the PRU0 emulator and PRU1 reader.</span></span>
+                </li>
+                <li>
+                  <span class="ssi-step-index" aria-hidden="true">2</span>
+                  <span><strong>Set encoder</strong><span class="ssi-step-detail">Choose the profile, encoding, frame, and timing.</span></span>
+                </li>
+                <li>
+                  <span class="ssi-step-index" aria-hidden="true">3</span>
+                  <span><strong>Choose source</strong><span class="ssi-step-detail">Use static frames or configure the timestamped producer.</span></span>
+                </li>
+                <li>
+                  <span class="ssi-step-index" aria-hidden="true">4</span>
+                  <span><strong>Stage + Apply</strong><span class="ssi-step-detail">Publish the complete configuration at a safe boundary.</span></span>
+                </li>
+                <li>
+                  <span class="ssi-step-index" aria-hidden="true">5</span>
+                  <span><strong>Run pair</strong><span class="ssi-step-detail">Run the test; the Signal Graph preview follows automatically.</span></span>
+                </li>
+              </ol>
+            </div>
+            <div class="ssi-runtime-columns">
+              <section id="ssi-encoder-config" class="ssi-workflow-section" aria-labelledby="ssi-encoder-config-title">
+                <div class="ssi-workflow-section-header">
+                  <div>
+                    <h3 id="ssi-encoder-config-title">Encoder configuration</h3>
+                    <p>Choose the profile and define the frame, timing, capture, and fault fields.</p>
+                  </div>
+                </div>
+                <div class="ssi-workflow-subsection-title">Pair setup</div>
+            <div class="uart-controls" style="margin-bottom:5px;">
+              <button id="ssi-runtime-load" class="btn-17 graph-btn" style="color:var(--accent);border-color:var(--accent);">
+                <span class="text-container"><span class="text">Load PRU0 emulator + PRU1 reader</span></span>
+              </button>
+              <button id="ssi-runtime-refresh" class="graph-btn">Refresh</button>
+            </div>
+            <div id="ssi-runtime-status" class="uart-hint" role="status" aria-live="polite">Not loaded</div>
+            <div class="uart-hint" style="margin-top:4px;">Default SSI wires: PRU1:GPO0 -&gt; PRU0:GPI8 (clock), PRU0:GPO0 -&gt; PRU1:GPI16 (data).</div>
+            <div id="ssi-runtime-wires" class="uart-hint" style="margin-top:2px;">Wires: ...</div>
+            <div class="uart-controls" style="margin-top:6px;">
+              <span class="uart-label">Profile:</span>
+              <select id="ssi-runtime-profile" class="uart-inj-select" style="min-width:210px;">
+                <option value="">Load the generic pair first</option>
+              </select>
+            </div>
+                <div class="ssi-workflow-subsection-title">Frame layout</div>
+            <div class="uart-controls" style="margin-top:5px;">
+              <span class="uart-label">Topology:</span>
+              <select id="ssi-runtime-topology" class="uart-inj-select" title="0 loopback, 1 reader-only">
+                <option value="0">Loopback</option>
+                <option value="1">Reader only</option>
+              </select>
+              <span class="uart-label">Encoding:</span>
+              <select id="ssi-runtime-encoding" class="uart-inj-select" title="0 binary, 1 Gray, 2 Gray-excess, 3 Tannenbaum">
+                <option value="0">Binary</option>
+                <option value="1">Gray</option>
+                <option value="2">Gray-excess</option>
+                <option value="3">Tannenbaum</option>
+              </select>
+              <span class="uart-label">Align:</span>
+              <select id="ssi-runtime-alignment" class="uart-inj-select" title="0 explicit offset, 1 right-justified when offset is zero">
+                <option value="0">Explicit</option>
+                <option value="1">Right</option>
+              </select>
+              <span class="uart-label">Formation:</span>
+              <select id="ssi-runtime-formation" class="uart-inj-select" title="0 asynchronous, 1 synchronous">
+                <option value="0">Async</option>
+                <option value="1">Sync</option>
+              </select>
+            </div>
+            <div class="uart-controls" style="margin-top:5px;">
+              <span class="uart-label">Frame:</span>
+              <input id="ssi-runtime-frame-bits" class="uart-inj-num" type="number" min="1" max="64" value="12" title="Total raw SSI frame width" />
+              <span class="uart-label">Offset:</span>
+              <input id="ssi-runtime-position-offset" class="uart-inj-num" type="number" min="0" max="64" value="0" title="Position field offset from the first clocked bit" />
+              <span class="uart-label">Pos:</span>
+              <input id="ssi-runtime-position-bits" class="uart-inj-num" type="number" min="1" max="64" value="12" title="Position field width" />
+              <span class="uart-label">ST:</span>
+              <input id="ssi-runtime-singleturn-bits" class="uart-inj-num" type="number" min="0" max="64" value="12" title="Single-turn position bits" />
+              <span class="uart-label">MT:</span>
+              <input id="ssi-runtime-multiturn-bits" class="uart-inj-num" type="number" min="0" max="64" value="0" title="Multi-turn position bits" />
+            </div>
+            <div class="uart-controls" style="margin-top:5px;">
+              <span class="uart-label">Err off:</span>
+              <input id="ssi-runtime-error-offset" class="uart-inj-num" type="number" min="0" max="65535" value="12" title="Status/error field offset; 65535 means none" />
+              <span class="uart-label">Err bits:</span>
+              <input id="ssi-runtime-error-bits" class="uart-inj-num" type="number" min="0" max="64" value="0" title="Status/error field width" />
+              <span class="uart-label">Pad:</span>
+              <input id="ssi-runtime-padding-bits" class="uart-inj-num" type="number" min="0" max="64" value="0" title="Zero-fill padding bits" />
+              <span class="uart-label">High:</span>
+              <input id="ssi-runtime-clock-high" class="uart-inj-num" type="number" min="1" max="256" value="33" title="Clock high phase in PRU cycles" />
+              <span class="uart-label">Low:</span>
+              <input id="ssi-runtime-clock-low" class="uart-inj-num" type="number" min="1" max="256" value="35" title="Clock low phase in PRU cycles" />
+            </div>
+                <div class="ssi-workflow-subsection-title">Timing and capture</div>
+            <div class="uart-controls" style="margin-top:5px;">
+              <span class="uart-label">Sample:</span>
+              <input id="ssi-runtime-sample-delay" class="uart-inj-num" type="number" min="1" max="256" value="15" title="Reader sample delay in PRU cycles" />
+              <span class="uart-label">tv:</span>
+              <input id="ssi-runtime-tv" class="uart-inj-num" type="number" min="0" max="256" value="10" title="Encoder data-valid delay in PRU cycles" />
+              <span class="uart-label">tm:</span>
+              <input id="ssi-runtime-tm" class="uart-inj-num" type="number" min="0" max="256" value="15" title="Encoder monoflop outer iterations" />
+              <span class="uart-label">Tp:</span>
+              <input id="ssi-runtime-tp" class="uart-inj-num" type="number" min="1" max="256" value="16" title="Inter-frame pause outer iterations" />
+              <span class="uart-label">Form:</span>
+              <input id="ssi-runtime-formation-pause" class="uart-inj-num" type="number" min="0" max="256" value="15" title="Formation/refresh pause outer iterations" />
+            </div>
+            <div class="uart-controls" style="margin-top:5px;">
+              <span class="uart-label">Hold:</span>
+              <input id="ssi-runtime-hold" class="uart-inj-num" type="number" min="1" max="4294967295" value="1" title="Frames or estimated time units per raw frame" />
+              <span class="uart-label">Mode:</span>
+              <select id="ssi-runtime-hold-mode" class="uart-inj-select" title="0 frame count, 1 estimated time">
+                <option value="0">Frames</option>
+                <option value="1">Time</option>
+              </select>
+              <span class="uart-label">Capture:</span>
+              <select id="ssi-runtime-capture" class="uart-inj-select" title="0 latest mailbox, 1 latest plus trace, 2 trace">
+                <option value="0">Mailbox</option>
+                <option value="1">Mailbox + trace</option>
+                <option value="2">Trace</option>
+              </select>
+              <span class="uart-label">Fault:</span>
+              <select id="ssi-runtime-fault" class="uart-inj-select" title="0 valid frames">
+                <option value="0">Valid</option>
+                <option value="1">Error bits</option>
+                <option value="2">Sentinel</option>
+                <option value="3">All ones</option>
+                <option value="5">Short frame</option>
+                <option value="6">Delayed tv</option>
+                <option value="7">Stuck low</option>
+                <option value="8">Stuck high</option>
+              </select>
+              <span class="uart-label">Arg:</span>
+              <input id="ssi-runtime-fault-argument" class="uart-inj-num" type="number" min="0" max="4294967295" value="0" title="Fault-specific argument" />
+              <span class="uart-label">Count:</span>
+              <input id="ssi-runtime-fault-repeat" class="uart-inj-num" type="number" min="0" max="4294967295" value="0" title="Fault repeat frames; zero means indefinitely" />
+            </div>
+                <div class="ssi-workflow-subsection-title">Test frame inputs</div>
+            <div class="uart-controls" style="margin-top:5px;">
+              <span class="uart-label">Raw frames (hex):</span>
+              <input id="ssi-runtime-frames" class="uart-inj-input" style="flex:1;min-width:180px;" value="ABC, AAA, BCA, 12A, CC2" spellcheck="false" title="Complete wire frames, MSB-first; values are hexadecimal" />
+            </div>
+            <div class="uart-controls" style="margin-top:5px;">
+              <span class="uart-label">Positions:</span>
+              <input id="ssi-runtime-positions" class="uart-inj-input" style="flex:1;min-width:180px;" value="ABC, AAA, BCA, 12A, CC2" spellcheck="false" title="Natural positions; binary, Gray, Gray-excess or Tannenbaum packing is applied" />
+              <span class="uart-label">Count:</span>
+              <input id="ssi-runtime-position-count" class="uart-inj-num" type="number" min="1" max="4294967295" placeholder="auto" title="Gray-excess position count; leave empty for other encodings" />
+              <span class="uart-label">GE off:</span>
+              <input id="ssi-runtime-gray-excess-offset" class="uart-inj-num" type="number" min="0" max="4294967295" placeholder="center" title="Optional Gray-excess code-window offset" />
+              <button id="ssi-runtime-pack" class="graph-btn">Pack positions</button>
+            </div>
+              </section>
+              <section id="ssi-timestamped-producer" class="ssi-workflow-section" aria-labelledby="ssi-timestamped-producer-title">
+                <div class="ssi-workflow-section-header">
+                  <div>
+                    <h3 id="ssi-timestamped-producer-title">Timestamped producer configuration</h3>
+                    <p>Generate positions from an ARM-side timestamped sample ring for repeatable motion tests.</p>
+                  </div>
+                </div>
+                <div class="ssi-workflow-subsection-title">Position source</div>
+            <div class="uart-controls" style="margin-top:7px;">
+              <span class="uart-label">Position source:</span>
+              <select id="ssi-runtime-producer-mode" class="uart-inj-select" title="Static frame sequence or timestamped ARM sample ring">
+                <option value="0">Static frames</option>
+                <option value="1">Timestamped producer</option>
+              </select>
+              <span class="uart-label">Period (IEP ticks):</span>
+              <input id="ssi-runtime-producer-period" class="uart-inj-num" type="number" min="1" max="4294967295" value="288" title="288 ticks at 300 MHz = 960 ns" />
+              <span class="uart-label">Trajectory:</span>
+              <select id="ssi-runtime-producer-trajectory" class="uart-inj-select">
+                <option value="constant">Constant</option>
+                <option value="linear">Linear</option>
+                <option value="triangle">Triangle</option>
+              </select>
+            </div>
+                <div class="ssi-workflow-subsection-title">Producer controls</div>
+            <div class="uart-controls" style="margin-top:5px;">
+              <span class="uart-label">Initial count:</span>
+              <input id="ssi-runtime-producer-initial" class="uart-inj-input" style="width:76px;" value="0x345" title="Signed encoder count; decimal or 0x-prefixed" />
+              <span class="uart-label">Velocity (counts/s):</span>
+              <input id="ssi-runtime-producer-velocity" class="uart-inj-input" style="width:92px;" value="0" />
+              <span class="uart-label">Triangle low/high:</span>
+              <input id="ssi-runtime-producer-low" class="uart-inj-input" style="width:64px;" value="0" />
+              <input id="ssi-runtime-producer-high" class="uart-inj-input" style="width:64px;" value="4095" />
+              <button id="ssi-runtime-producer-configure" class="graph-btn">Configure producer</button>
+              <button id="ssi-runtime-producer-start" class="graph-btn">Start</button>
+              <button id="ssi-runtime-producer-stop" class="graph-btn">Stop</button>
+              <button id="ssi-runtime-producer-step" class="graph-btn">Step once</button>
+            </div>
+            <div class="uart-hint" style="margin-top:4px;">For timestamped mode: select it here, Apply atomically, configure the trajectory, then Start. Generated trajectories are quantized to integer encoder counts at each publication, matching the hardware producer API; PRU0 estimates the request-time position from the two newest coherent samples.</div>
+              </section>
+            </div>
+            <section id="ssi-test-actions" class="ssi-workflow-section ssi-test-actions" aria-labelledby="ssi-test-actions-title">
+              <div class="ssi-workflow-section-header">
+                <div>
+                  <h3 id="ssi-test-actions-title">Run the test</h3>
+                  <p>Stage the encoder settings, apply them atomically, then run the paired PRU test.</p>
+                </div>
+              </div>
+            <div class="ssi-action-row uart-controls" style="margin-top:6px;">
+              <button id="ssi-runtime-stage" class="graph-btn">Stage</button>
+              <button id="ssi-runtime-apply" class="btn-17 graph-btn" style="color:var(--accent);border-color:var(--accent);">
+                <span class="text-container"><span class="text">Apply atomically</span></span>
+              </button>
+              <input id="ssi-runtime-run-steps" class="uart-inj-num" type="number" min="100" max="200000" value="20000" title="Instruction steps per paired run" />
+              <button id="ssi-runtime-run" class="btn-17 graph-btn">
+                <span class="text-container"><span class="text">&#9654; Run pair</span></span>
+              </button>
+            </div>
+            <div class="uart-hint" style="margin-top:5px;">Run pair advances PRU1 (clock/reader) and PRU0 (emulator). The Signal Graph preview follows the pair.</div>
+            </section>
+            <section class="ssi-runtime-results" aria-labelledby="ssi-runtime-results-title">
+              <div id="ssi-runtime-results-title" class="ssi-workflow-subsection-title">Results</div>
+            <div id="ssi-runtime-memory-hint" class="uart-hint" style="margin-top:4px;">Live SSI results are in the Shared RAM mailbox at <code>0x00010200</code>. PRU0/PRU1 DRAM are not written by this pair and remain zero. The mailbox uses a seqlock: a stable even sequence means the snapshot is coherent.</div>
+            <pre id="ssi-runtime-mailbox" class="uart-hint" style="white-space:pre-wrap;margin:5px 0 0;">Mailbox: ...</pre>
+            <pre id="ssi-runtime-trace" class="uart-hint" style="white-space:pre-wrap;margin:0;">Trace: ...</pre>
+            <pre id="ssi-runtime-producer-diagnostics" class="uart-hint" style="white-space:pre-wrap;margin:0;">Timestamped producer: ...</pre>
+            </section>
+          </div>
+            </details>
 
         </div>
       </div>
@@ -1657,6 +5010,7 @@ Example:
             </select>
             <button id="graph-rec-btn" class="graph-btn">● REC</button>
             <button id="graph-clear-btn" class="graph-btn">Clear</button>
+            <button id="graph-fit-frame-btn" class="graph-btn" title="Fit newest complete SSI frame">Fit frame</button>
             <button id="graph-taller-btn" class="graph-btn" title="Taller">▲</button>
             <button id="graph-shorter-btn" class="graph-btn" title="Shorter">▼</button>
           </div>
@@ -1699,7 +5053,7 @@ Example:
       <!-- MC PRU0 source panel -->
       <div class="panel" id="mc-pru0-source-panel">
         <div class="panel-title" data-panel-id="mc-pru0-source" style="display:flex;align-items:center;">
-          <span>PRU0 Source</span>
+          <span id="mc-primary-source-title">PRU0 Source</span>
           <span class="mc-pc-badge" id="mc-pru0-pc">PC: 0</span>
         </div>
         <div class="bp-bar" id="mc-pru0-bp-bar">
@@ -1717,7 +5071,7 @@ Example:
       <!-- MC PRU0 register panel -->
       <div class="panel" id="mc-pru0-reg-panel">
         <div class="panel-title mc-reg-title" data-panel-id="mc-pru0-registers">
-          <span>PRU0 Registers</span>
+          <span id="mc-primary-reg-title">PRU0 Registers</span>
           <span class="mc-carry-row">Carry: <span class="mc-carry-val" id="mc-pru0-carry">0</span></span>
           <span class="mc-mac-row">MAC: <span class="mc-mac-mode" id="mc-pru0-mac-mode">MPY</span><span class="mc-mac-carry" id="mc-pru0-mac-carry"></span></span>
           <span style="margin-left:6px;font-size:10px;color:var(--text-dim);">SPAD:</span>
@@ -1761,12 +5115,178 @@ Example:
         </div>
       </div>
 
+      <!-- MC third source panel -->
+      <div class="panel" id="mc-rtu1-source-panel">
+        <div class="panel-title" data-panel-id="mc-rtu1-source" style="display:flex;align-items:center;">
+          <span id="mc-third-source-title">None Source</span>
+          <span class="mc-pc-badge" id="mc-rtu1-pc">PC: 0</span>
+        </div>
+        <div class="bp-bar" id="mc-rtu1-bp-bar">
+          <span class="bp-bar-label">Breakpoints:</span>
+          <span class="bp-chip-list" id="mc-rtu1-bp-chip-list"></span>
+          <input type="text" id="mc-rtu1-bp-addr-input" placeholder="addr" title="Set a breakpoint at an address (hex 0x.. or decimal)">
+          <button class="bp-action" id="mc-rtu1-bp-add-btn" title="Set breakpoint at address">Set</button>
+          <button class="bp-action" id="mc-rtu1-bp-clear-btn" title="Clear all breakpoints on this core">Clear all</button>
+        </div>
+        <div class="panel-body">
+          <ul class="source-list" id="mc-rtu1-source-list"></ul>
+        </div>
+      </div>
+
+      <!-- MC third register panel -->
+      <div class="panel" id="mc-rtu1-reg-panel">
+        <div class="panel-title mc-reg-title" data-panel-id="mc-rtu1-registers">
+          <span id="mc-third-reg-title">None Registers</span>
+          <span class="mc-carry-row">Carry: <span class="mc-carry-val" id="mc-rtu1-carry">0</span></span>
+          <span class="mc-mac-row">MAC: <span class="mc-mac-mode" id="mc-rtu1-mac-mode">MPY</span><span class="mc-mac-carry" id="mc-rtu1-mac-carry"></span></span>
+        </div>
+        <div class="panel-body">
+          <table class="reg-table"><tbody id="mc-rtu1-reg-tbody"></tbody></table>
+        </div>
+      </div>
+
     </div><!-- /#panel-pool -->
 
     <!-- Tile root: layout engine renders here -->
     <div id="tile-root"></div>
 
-  </div><!-- /#main -->
+      </div><!-- /#main -->
+    </section><!-- /#simulator-view -->
+
+    <!-- Open-loop FOC workspace. The panel remains mounted so its plots keep
+         their client-side history when the operator changes workspace. -->
+    <section id="foc-view" class="app-view" role="tabpanel"
+             aria-labelledby="tab-foc" aria-hidden="true" tabindex="-1" hidden>
+      <header class="foc-header">
+        <div>
+          <div class="foc-kicker">Single PRU0 · Q24 shared-memory co-simulation</div>
+          <h1 class="foc-title">Motor Control</h1>
+          <p class="foc-description">Open-loop field-oriented control: the firmware drives the voltage vector while the Python PMSM plant supplies rotor and current feedback.</p>
+        </div>
+        <div id="foc-runtime-status" class="foc-status" role="status" aria-live="polite">Firmware not loaded</div>
+      </header>
+
+      <div class="foc-workspace">
+        <aside class="foc-control-panel" aria-label="FOC reference controls">
+          <div class="foc-section-heading">
+            <span class="foc-section-index">01</span>
+            <div><h2>References</h2><p>Stage values, then start the open-loop ramp.</p></div>
+          </div>
+          <button id="foc-load" class="foc-button foc-button-secondary" type="button">Load firmware</button>
+          <form id="foc-reference-form">
+            <label for="foc-speed-rpm">Speed reference <span>(RPM)</span></label>
+            <div class="foc-input-wrap"><input id="foc-speed-rpm" type="number" min="-1000" max="1000" step="1" value="400" /><output id="foc-speed-pu">0.400 pu</output></div>
+
+            <label for="foc-id-ref">Vd reference <span>(pu)</span></label>
+            <input id="foc-id-ref" type="number" min="-1" max="1" step="0.001" value="0" />
+
+            <label for="foc-iq-ref">Vq reference <span>(pu)</span></label>
+            <input id="foc-iq-ref" type="number" min="-1" max="1" step="0.001" value="0.25" />
+
+            <label for="foc-ramp-rate">Acceleration <span>(RPM/s)</span></label>
+            <input id="foc-ramp-rate" type="number" min="0" max="10000" step="1" value="1000" />
+            <button id="foc-apply" class="foc-button" type="submit">Apply references</button>
+          </form>
+
+          <div class="foc-action-row" role="group" aria-label="FOC run controls">
+            <button id="foc-start" class="foc-button foc-button-primary" type="button">Start</button>
+            <button id="foc-stop" class="foc-button foc-button-stop" type="button">Stop</button>
+          </div>
+          <p id="foc-control-status" class="foc-inline-status" role="status" aria-live="polite">Load firmware to begin.</p>
+
+          <div class="foc-section-heading foc-section-heading-readout">
+            <span class="foc-section-index">02</span>
+            <div><h2>Live readout</h2><p>Decoded from the coherent feedback block.</p></div>
+          </div>
+          <dl class="foc-readout">
+            <div><dt>Requested speed</dt><dd id="foc-requested-speed-readout">-- RPM</dd></div>
+            <div><dt>Ramped speed</dt><dd id="foc-ramped-speed-readout">-- RPM</dd></div>
+            <div><dt>Angle error</dt><dd id="foc-angle-error-readout">-- deg</dd></div>
+            <div><dt>PRU clock</dt><dd id="foc-pru-clock-readout">-- Hz</dd></div>
+            <div><dt>IEP clock</dt><dd id="foc-iep-clock-readout">-- Hz</dd></div>
+            <div><dt>Control loop</dt><dd id="foc-loop-frequency-readout">-- Hz</dd></div>
+            <div><dt>Sim / active wall</dt><dd id="foc-sim-wall-readout">--</dd></div>
+            <div><dt>Fault</dt><dd id="foc-fault-readout">none</dd></div>
+            <div><dt>Speed</dt><dd id="foc-speed-readout">— RPM</dd></div>
+            <div><dt>Rotor θ</dt><dd id="foc-theta-readout">—°</dd></div>
+            <div><dt>Duty span</dt><dd id="foc-duty-readout">— / — / —</dd></div>
+            <div><dt>IEP time</dt><dd id="foc-time-readout">—</dd></div>
+          </dl>
+          <p id="foc-memory-hint" class="foc-memory-hint">Shared RAM: control 0x00010000 · PWM 0x00010100 · feedback 0x00010200</p>
+        </aside>
+
+        <main class="foc-visual-panel">
+          <section class="foc-card foc-dial-card" aria-labelledby="foc-dial-title">
+            <div class="foc-card-heading"><div><span class="foc-eyebrow">Rotor observer</span><h2 id="foc-dial-title">Electrical position</h2></div><span id="foc-dial-state" class="foc-card-meta">waiting</span></div>
+            <canvas id="foc-rotor-dial" aria-label="Animated motor rotor showing measured and commanded electrical angle"></canvas>
+            <div class="foc-legend"><span><i class="foc-legend-dot foc-legend-rotor"></i>rotor</span><span><i class="foc-legend-dot foc-legend-command"></i>command</span></div>
+          </section>
+
+          <section class="foc-card foc-plot-card" aria-labelledby="foc-duty-title">
+            <div class="foc-card-heading"><div><span class="foc-eyebrow">PWM output</span><h2 id="foc-duty-title">Duty cycles</h2></div><span class="foc-card-meta">0 — 1 pu</span></div>
+            <canvas id="foc-duty-plot" aria-label="Live three-phase PWM duty waveform"></canvas>
+          </section>
+
+          <div class="foc-plot-grid">
+            <section class="foc-card foc-plot-card" aria-labelledby="foc-current-title">
+              <div class="foc-card-heading"><div><span class="foc-eyebrow">Motor feedback</span><h2 id="foc-current-title">Phase currents</h2></div><span class="foc-card-meta">A</span></div>
+              <canvas id="foc-current-plot" aria-label="Live three-phase current waveform"></canvas>
+            </section>
+            <section class="foc-card foc-plot-card" aria-labelledby="foc-voltage-title">
+              <div class="foc-card-heading"><div><span class="foc-eyebrow">Voltage vector</span><h2 id="foc-voltage-title">αβ components</h2></div><span class="foc-card-meta">pu</span></div>
+              <canvas id="foc-voltage-plot" aria-label="Live alpha beta voltage waveform"></canvas>
+            </section>
+          </div>
+        </main>
+      </div>
+    </section><!-- /#foc-view -->
+
+    <!-- Protocol workflows stay mounted and are relocated here once during
+         application initialization. The original element IDs are retained. -->
+    <section id="protocol-tools-view" class="app-view" role="tabpanel"
+             aria-labelledby="tab-protocol-tools" aria-hidden="true" tabindex="-1" hidden>
+      <div class="protocol-tools-header">
+        <div>
+          <div class="protocol-tools-kicker">Protocol workspace</div>
+          <h1 class="protocol-tools-title">Protocol Tools</h1>
+          <p class="protocol-tools-description">Configure, decode, inject, and encode protocol traffic.</p>
+        </div>
+      </div>
+
+      <div class="protocol-tool-panels">
+        <section id="protocol-i2c-panel" class="protocol-tool-panel" role="region"
+                 aria-labelledby="protocol-tab-i2c" aria-hidden="false" tabindex="-1">
+          <div class="protocol-tool-panel-header">
+            <h2 class="protocol-tool-panel-title">I2C</h2>
+            <p class="protocol-tool-panel-description">Attach and monitor the TCA9538 interface.</p>
+          </div>
+          <div id="protocol-i2c-content" class="protocol-tool-content" data-protocol-slot="i2c">
+            <div id="i2c-empty-state" class="protocol-empty-state" role="status" aria-live="polite">
+              Attach TCA9538 to monitor I2C transactions.
+            </div>
+          </div>
+        </section>
+
+        <section id="protocol-uart-panel" class="protocol-tool-panel" role="region"
+                 aria-labelledby="protocol-tab-uart" aria-hidden="true" tabindex="-1" hidden>
+          <div class="protocol-tool-panel-header">
+            <h2 class="protocol-tool-panel-title">UART</h2>
+            <p class="protocol-tool-panel-description">Decode captured output or inject receive data.</p>
+          </div>
+          <div id="protocol-uart-content" class="protocol-tool-content" data-protocol-slot="uart"></div>
+        </section>
+
+        <section id="protocol-ssi-panel" class="protocol-tool-panel" role="region"
+                 aria-labelledby="protocol-tab-ssi" aria-hidden="true" tabindex="-1" hidden>
+          <div class="protocol-tool-panel-header">
+            <h2 class="protocol-tool-panel-title">SSI</h2>
+          <p class="protocol-tool-panel-description">Use SSI Encoder Inject for a single frame or Simple SSI Realtime for the actual three-core firmware test.</p>
+          </div>
+          <div id="protocol-ssi-content" class="protocol-tool-content" data-protocol-slot="ssi"></div>
+        </section>
+      </div>
+    </section><!-- /#protocol-tools-view -->
+  </div><!-- /#app-views -->
 
   <!-- Config modal -->
   <div id="config-modal" role="dialog" aria-modal="true" aria-labelledby="config-modal-title">
@@ -1848,7 +5368,9 @@ Example:
       </div>
       <div id="fill-error"></div>
       <div id="fill-buttons">
-        <button id="btn-fill-apply" class="btn-load">Fill</button>
+        <button id="btn-fill-apply" class="btn-17 btn-load">
+          <span class="text-container"><span class="text">Fill</span></span>
+        </button>
         <button id="btn-fill-cancel">Cancel</button>
       </div>
     </div>
@@ -1858,16 +5380,16 @@ Example:
   <div id="help-modal" style="display:none">
     <div id="help-card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-        <span style="font-weight:600;font-size:13px;">PRU Simulator — Quick Reference</span>
+        <span style="font-weight:600;font-size:13px;">PRU Simulator: Quick Reference</span>
         <button id="btn-help-close" style="background:none;border:none;color:var(--text-dim);font-size:18px;cursor:pointer;padding:0 4px;">×</button>
       </div>
 
       <section class="help-section">
         <div class="help-heading">Keyboard Shortcuts</div>
         <table class="help-table">
-          <tr><td><kbd>→</kbd></td><td>Step — execute one instruction</td></tr>
-          <tr><td><kbd>←</kbd></td><td>Step Back — reverse one instruction</td></tr>
-          <tr><td><kbd>Space</kbd></td><td>Toggle breakpoint at current PC (both cores in Multi-core mode)</td></tr>
+          <tr><td><kbd>→</kbd></td><td>Step: execute one instruction</td></tr>
+          <tr><td><kbd>←</kbd></td><td>Step Back: reverse one instruction</td></tr>
+          <tr><td><kbd>Space</kbd></td><td>Toggle breakpoint at current PC on every selected core in Multi-core mode</td></tr>
           <tr><td><kbd>?</kbd></td><td>Open / close this help window</td></tr>
           <tr><td><kbd>Esc</kbd></td><td>Close open modal (help, config)</td></tr>
         </table>
@@ -1877,12 +5399,12 @@ Example:
         <div class="help-heading">Controls</div>
         <table class="help-table">
           <tr><td><b>Step</b></td><td>Execute one instruction</td></tr>
-          <tr><td><b>Step Back</b></td><td>Reverse the last instruction — full machine state (registers, memory, SD filter) restored</td></tr>
+          <tr><td><b>Step Back</b></td><td>Reverse the last instruction: full machine state (registers, memory, SD filter) restored</td></tr>
           <tr><td><b>Run</b></td><td>Toggle continuous execution</td></tr>
           <tr><td><b>SIM</b></td><td>Toggle timed simulation mode</td></tr>
-          <tr><td><b>Reset</b></td><td>Soft reset — registers and PC to 0, plus this core's Peripheral Interface status/FIFOs</td></tr>
-          <tr><td><b>HW Reset</b></td><td>Hard reset — clears SPAD, XFR config, and every core's Peripheral Interface state (FIFOs, overrun/underrun, RX valid/overflow, busy); perif config registers, GP Mux and loopback settings are kept</td></tr>
-          <tr><td><b>Multi-core</b></td><td>Toggle dual-core (PRU0 + RTU0) debug view</td></tr>
+          <tr><td><b>Reset</b></td><td>Soft reset: registers and PC to 0, plus this core's Peripheral Interface status/FIFOs</td></tr>
+          <tr><td><b>HW Reset</b></td><td>Hard reset: clears SPAD, XFR config, and every core's Peripheral Interface state (FIFOs, overrun/underrun, RX valid/overflow, busy); perif config registers, GP Mux and loopback settings are kept</td></tr>
+          <tr><td><b>Multi-core</b></td><td>Show and run one, two, or three selected cores together</td></tr>
           <tr><td><b>Config</b></td><td>Edit simulator configuration (JSON)</td></tr>
           <tr><td><b>⊞ Reset Layout</b></td><td>Restore default panel layout</td></tr>
         </table>
@@ -1892,8 +5414,8 @@ Example:
         <div class="help-heading">Assembly Editor</div>
         <table class="help-table">
           <tr><td><b>Open</b></td><td>Load a .asm/.inc file from the server, or browse for any file (.asm, .out)</td></tr>
-          <tr><td><b>Open .out</b></td><td>Browse for a compiled PRU ELF binary — loads and disassembles automatically</td></tr>
-          <tr><td><b>Project</b></td><td>Open a project folder — all files open as tabs in manifest order</td></tr>
+          <tr><td><b>Open .out</b></td><td>Browse for a compiled PRU ELF binary: loads and disassembles automatically</td></tr>
+          <tr><td><b>Project</b></td><td>Open a project folder: all files open as tabs in manifest order</td></tr>
           <tr><td><b>Save</b></td><td>Save the active tab to disk</td></tr>
           <tr><td><b>Load &amp; Assemble</b></td><td>Auto-save all tabs, assemble, and load into PRU; project files concatenated in manifest order</td></tr>
         </table>
@@ -1907,19 +5429,26 @@ Example:
           <tr><td><b>SPAD: IPC</b></td><td>Toggle IPC_SP scratch-pad columns R2–R9 (XFR device 15)</td></tr>
           <tr><td><b>XFR: SHF</b></td><td>Toggle XFR_SHIFT_EN bit (ICSSG_SPP_REG[1])</td></tr>
           <tr><td><b>Carry / MAC row</b></td><td>Shows Carry flag; in MAC mode also shows MAC mode (MPY/MAC/ACC) and carry state</td></tr>
-          <tr><td><b>Click register value</b></td><td>Edit the value inline — press Enter or click away to commit</td></tr>
+          <tr><td><b>Click register value</b></td><td>Edit the value inline: press Enter or click away to commit</td></tr>
         </table>
       </section>
 
       <section class="help-section">
         <div class="help-heading">IO Panel</div>
         <table class="help-table">
-          <tr><td><b>GPO pins</b></td><td>Live R30 bit indicators — updated every step</td></tr>
+          <tr><td><b>GPO pins</b></td><td>Live R30 bit indicators: updated every step</td></tr>
           <tr><td><b>Loopback strip</b></td><td>Five toggle buttons between GPO and GPI rows; each wires a 4-bit group (3:0, 7:4, …) of GPO directly to GPI combinatorially</td></tr>
-          <tr><td><b>GPI pins</b></td><td>R31 bit indicators — click any pin to drive it high/low when SD is disabled</td></tr>
-          <tr><td><b>▶ Decode</b></td><td>UART decode of recorded GPO0 transitions (8N1, auto-detect baud); shows hex + ASCII bytes</td></tr>
-          <tr><td><b>Clear</b></td><td>Clear UART decode output</td></tr>
+          <tr><td><b>GPI pins</b></td><td>R31 bit indicators: click any pin to drive it high/low when SD is disabled</td></tr>
           <tr><td><b>SD panel</b></td><td>Appears when firmware sets sd_en (R30 bit 25); shows R30 decode bar, per-channel CIC accumulator values, pattern generator controls, and OSR config chips</td></tr>
+        </table>
+      </section>
+
+      <section class="help-section">
+        <div class="help-heading">Protocol Tools</div>
+        <table class="help-table">
+          <tr><td><b>I2C</b></td><td>Attach the TCA9538 device and monitor decoded I2C transactions</td></tr>
+          <tr><td><b>UART</b></td><td>Decode captured GPO0 output or inject UART RX data on a GPI pin</td></tr>
+          <tr><td><b>SSI</b></td><td>Inject an encoder position or load, run, and inspect the actual three-core SSI realtime firmware</td></tr>
         </table>
       </section>
 
@@ -1946,7 +5475,7 @@ Example:
     </div>
   </div>
 
-  <script src="/static/layout.js"></script>
-  <script src="/static/app.js?v=20260729"></script>
+  <script src="/static/layout.js?v=20260914-1"></script>
+  <script src="/static/app.js?v=20260914-5"></script>
 </body>
 </html>

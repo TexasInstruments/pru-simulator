@@ -55,7 +55,7 @@ This design adds UART reception capability to the PRU simulator, completing the 
           │
           ▼
     ┌─────────────────────┐
-    │   Host (MCP/Claude) │
+    │   Host (MCP client) │
     └─────────────────────┘
 ```
 

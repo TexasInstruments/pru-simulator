@@ -1,49 +1,43 @@
 # PRU Simulator — MCP Server Guide
 
-## What Is the MCP Server?
+## What is the MCP server?
 
-The PRU Simulator exposes its simulation API as a
-[Model Context Protocol](https://modelcontextprotocol.io) (MCP) server.
-Any MCP-compatible AI assistant (including Claude Code) can load PRU assembly,
-step through execution, inspect registers and memory, and read I/O pin state
-as native tool calls — without leaving the conversation.
+The PRU Simulator exposes its simulation API through the
+[Model Context Protocol](https://modelcontextprotocol.io) (MCP). Any
+MCP-compatible client can load PRU assembly, step through execution, inspect
+registers and memory, and read I/O pin state as tool calls.
 
----
+The MCP SDK is part of the standard project installation. MCP is a generic
+protocol and is not tied to a particular model or vendor.
 
 ## Setup
 
-### Step 1 — Install the MCP SDK
-
-The `mcp` package is already listed in `requirements.txt`:
+### Step 1 — Install the project dependencies
 
 ```bash
-cd C:/ti/industrial-automation-lab/Projects/pru_simulator
 pip install -r requirements.txt
 ```
 
-### Step 2 — Register with Claude Code
+### Step 2 — Register the server with an MCP-compatible client
 
-Add a `pru-simulator` entry to `~/.claude/.mcp.json`. If the file already
-exists, merge into the `mcpServers` object; if it does not exist, create it:
+Add a server entry using the path to this checkout. Client configuration
+formats vary; the following JSON shape is a common example:
 
 ```json
 {
   "mcpServers": {
     "pru-simulator": {
       "command": "python",
-      "args": [
-        "C:/ti/industrial-automation-lab/Projects/pru_simulator/mcp_server/server.py"
-      ],
-      "cwd": "C:/ti/industrial-automation-lab/Projects/pru_simulator"
+      "args": ["<repo-root>/mcp_server/server.py"],
+      "cwd": "<repo-root>"
     }
   }
 }
 ```
 
-Restart Claude Code. Claude can now call `pru_load`, `pru_step`, etc. directly
-in any conversation where the simulator is relevant.
+The server starts when the external client launches `server.py`.
 
-### Python Direct Access (no MCP SDK required)
+### Python Direct Access
 
 ```python
 from mcp_server.server import PRUSimulatorMCP
@@ -53,6 +47,21 @@ mcp.pru_load("ldi r0, 42\nhalt")
 mcp.pru_run_until(core="pru0")
 print(mcp.pru_registers())           # {'r0': '0x0000002a', 'r1': '0x00000000', ...}
 ```
+
+### Simple SSI realtime firmware
+
+The repository includes the three-image SSI realtime firmware and its
+functional harness under `firmware/ssi_test`. It is self-contained and does
+not require the CCS workspace:
+
+```python
+result = mcp.pru_ssi_simple_run(iterations=1000)
+print(result["published"], result["frames"])
+```
+
+The dashboard's **Load actual firmware** action uses the same bundled files.
+Edit `firmware/ssi_test/ssi_test/ssi_hardware_config.h` and run its
+`tools/generate_config.py` command to test another validated profile.
 
 ---
 
@@ -69,7 +78,15 @@ print(mcp.pru_registers())           # {'r0': '0x0000002a', 'r1': '0x00000000', 
 | `pru_set_input` | `core="pru0"`, `pin: int`, `value: bool` | `{ok}` | Drive a GPI pin |
 | `pru_reset` | `core="pru0"` | `{ok}` | Reset core (PC=0, regs=0) |
 | `pru_breakpoint` | `core="pru0"`, `address: int` | `{id}` | Add a breakpoint |
+| `pru_uart_inject` | `source`, `payload`, `baudrate=4M`, `frames=1`, `core`, `pin`, `dram0_offset`, `max_steps` | `{status, frames_received, received_data, match}` | UART RX end-to-end test |
+| `pru_ssi_inject` | `source`, `value=0`, `bits=12`, `clk_pin=0`, `data_pin=8`, `core`, `dram0_offset=16`, `max_steps` | `{status, expected, captured, match, frames_captured, cycles}` | SSI encoder end-to-end test; `dram0_offset` is local to the selected core |
+| `pru_ssi_simple_run` | `iterations=100000` | SSI realtime result object | Run the bundled PRU0, PRU1, and RTU_PRU1 firmware images |
 | `pru_status` | — | `{cores: {name: {pc, cycles, halted}}}` | Snapshot all cores |
+
+For `pru_ssi_inject`, `dram0_offset` retains its historical name but is a
+local DRAM offset for the selected core. For example, offset `0x10` maps to
+global DRAM0 address `0x0010` on PRU0 and global DRAM1 address `0x2010` on
+PRU1.
 
 ---
 
@@ -152,7 +169,7 @@ delay_stop:
 ### Python MCP Driver
 
 ```python
-# Run from: C:/ti/industrial-automation-lab/Projects/pru_simulator
+# Run from: <repo-root>
 from mcp_server.server import PRUSimulatorMCP
 
 mcp = PRUSimulatorMCP()
@@ -280,7 +297,7 @@ done:
 ### Python MCP Driver
 
 ```python
-# Run from: C:/ti/industrial-automation-lab/Projects/pru_simulator
+# Run from: <repo-root>
 from mcp_server.server import PRUSimulatorMCP
 
 mcp = PRUSimulatorMCP()
