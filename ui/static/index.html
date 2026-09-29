@@ -679,6 +679,23 @@
 
     .graph-ch-addr { width: 88px; }
     .graph-ch-len  { width: 44px; }
+    /* Sweep Response (Memory Graph panel) */
+    .sweep-resp { margin-top: 8px; border-top: 1px solid #2a2a2a; padding-top: 6px; }
+    .sweep-resp .graph-header { flex-wrap: wrap; row-gap: 4px; }
+    .sweep-form { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 11px; color: #aaa; margin: 4px 0; }
+    .sweep-form label { display: inline-flex; align-items: center; gap: 4px; }
+    .sweep-form input, .sweep-form select {
+      background: #1e1e1e; color: #ddd; border: 1px solid #333; border-radius: 3px;
+      font-family: monospace; font-size: 11px; padding: 1px 4px; width: 64px;
+    }
+    .sweep-form input.graph-ch-addr { width: 88px; }
+    .sweep-progress { display: flex; align-items: center; gap: 8px; font-size: 11px; color: #aaa; margin: 4px 0; }
+    .sweep-bar { flex: 0 0 160px; height: 6px; background: #222; border-radius: 3px; overflow: hidden; }
+    #sweep-bar-fill { height: 100%; width: 0; background: #4fc3f7; }
+    #sweep-canvas-wrap { height: 240px; }
+    #sweep-response-canvas { width: 100%; height: 100%; display: block; }
+    .sweep-readout { font-family: monospace; font-size: 11px; color: #aaa; min-height: 14px; }
+    .graph-btn:disabled { opacity: 0.4; cursor: default; }
 
     .graph-ch-fmt {
       background: var(--bg-panel);
@@ -1701,6 +1718,33 @@ Example:
             <div class="graph-resize-handle" id="mgraph-resize-handle"></div>
           </div>
           <div class="graph-legend" id="mgraph-legend"></div>
+          <div class="sweep-resp" id="sweep-resp">
+            <div class="graph-header">
+              <span class="graph-section-title">Sweep Response</span>
+              <button id="sweep-run-btn" class="graph-btn" title="Play one sweep on the SD channel and record the firmware's output ring">&#9654; Run sweep</button>
+              <button id="sweep-cancel-btn" class="graph-btn" disabled title="Stop the capture; the samples so far are analysed">&#9632; Cancel</button>
+              <button id="sweep-axis-btn" class="graph-btn" title="Toggle log / linear frequency axis">log f</button>
+            </div>
+            <div class="sweep-form">
+              <label>Core <select id="sweep-core"><option value="pru0">pru0</option><option value="rtu0">rtu0</option><option value="pru1">pru1</option></select></label>
+              <label>SD ch <input id="sweep-ch" type="number" value="0" min="0" max="8"></label>
+              <label title="Address of the 32-bit sample count word">Count <input id="sweep-count-addr" class="graph-ch-addr" value="0x00000004"></label>
+              <label title="Address of the int32 ring">Ring <input id="sweep-ring-addr" class="graph-ch-addr" value="0x00000010"></label>
+              <label title="Ring length in samples">Len <input id="sweep-ring-len" value="256"></label>
+              <label>Type <select id="sweep-type"><option value="log">log</option><option value="linear">linear</option></select></label>
+              <label>f start Hz <input id="sweep-f-start" value="20"></label>
+              <label>f stop Hz <input id="sweep-f-stop" value="20000"></label>
+              <label>Duration s <input id="sweep-duration" value="0.5"></label>
+              <label>Amp <input id="sweep-amp" value="0.5"></label>
+              <label>SD clk MHz <input id="sweep-clk" value="3.072"></label>
+              <label title="Output value of a full-scale input (0 dB = Amp x full scale)">Full scale <input id="sweep-full" value="8388608"></label>
+              <label title="Filter delay: output sample k responds to the input at t_k - delay">Delay ms <input id="sweep-delay" value="1.0"></label>
+              <label title="Samples per fitted window">Window <input id="sweep-window" value="64"></label>
+            </div>
+            <div class="sweep-progress"><div class="sweep-bar"><div id="sweep-bar-fill"></div></div><span id="sweep-status">idle</span></div>
+            <div class="graph-canvas-wrap" id="sweep-canvas-wrap"><canvas id="sweep-response-canvas"></canvas></div>
+            <div class="sweep-readout" id="sweep-readout"></div>
+          </div>
         </div>
       </div>
 

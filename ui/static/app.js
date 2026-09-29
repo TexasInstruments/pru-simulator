@@ -386,6 +386,10 @@ function connect() {
             (msg.enabled ? "enabled" : "disabled");
           st.style.display = "";
         }
+      } else if (msg.type === "sweep_progress") {
+        sweepHandleProgress(msg);
+      } else if (msg.type === "sweep_result") {
+        sweepHandleResult(msg);
       } else if (msg.type === "error") {
         if (msg.tag && msg.tag.startsWith("graph-")) graphMarkChannelError(msg.tag);
         else showErrors(msg.errors);
@@ -723,6 +727,8 @@ function updateSDPanel(io) {
     });
   }
 
+  sweepPrefill(sd);
+
   // Pattern generator
   const pgContainer = document.getElementById('sd-pattern-gen');
   // Skip rebuild only when the user is actively editing a number input inside the
@@ -740,11 +746,30 @@ function updateSDPanel(io) {
         <span class="sd-mod-value"><select data-ch="${i}" data-param="signal">
           <option value="dc"${mod.signal === 'dc' ? ' selected' : ''}>DC</option>
           <option value="sine"${mod.signal === 'sine' ? ' selected' : ''}>Sine</option>
+          <option value="sweep"${mod.signal === 'sweep' ? ' selected' : ''}>Sweep</option>
         </select></span></div>`;
       rows += `<div class="sd-mod-row"><span class="sd-mod-label">Clk MHz:</span>
         <span class="sd-mod-value"><input type="number" data-ch="${i}" data-param="sd_clock_mhz"
-          value="${mod.sd_clock_mhz}" min="10" max="40" step="1"></span></div>`;
-      if (mod.signal === 'dc') {
+          value="${mod.sd_clock_mhz}" min="1" max="40" step="0.001"></span></div>`;
+      if (mod.signal === 'sweep') {
+        rows += `<div class="sd-mod-row"><span class="sd-mod-label">Amp:</span>
+          <span class="sd-mod-value"><input type="number" data-ch="${i}" data-param="amplitude"
+            value="${mod.amplitude}" min="0" max="1" step="0.1"></span></div>`;
+        rows += `<div class="sd-mod-row"><span class="sd-mod-label">Type:</span>
+          <span class="sd-mod-value"><select data-ch="${i}" data-param="sweep_type">
+            <option value="log"${mod.sweep_type === 'log' ? ' selected' : ''}>log</option>
+            <option value="linear"${mod.sweep_type === 'linear' ? ' selected' : ''}>linear</option>
+          </select></span></div>`;
+        rows += `<div class="sd-mod-row"><span class="sd-mod-label">f start Hz:</span>
+          <span class="sd-mod-value"><input type="number" data-ch="${i}" data-param="f_start"
+            value="${mod.f_start}" min="0" max="100000" step="1"></span></div>`;
+        rows += `<div class="sd-mod-row"><span class="sd-mod-label">f stop Hz:</span>
+          <span class="sd-mod-value"><input type="number" data-ch="${i}" data-param="f_stop"
+            value="${mod.f_stop}" min="1" max="100000" step="1"></span></div>`;
+        rows += `<div class="sd-mod-row"><span class="sd-mod-label">Duration s:</span>
+          <span class="sd-mod-value"><input type="number" data-ch="${i}" data-param="duration_s"
+            value="${mod.duration_s}" min="0.001" max="10" step="0.01"></span></div>`;
+      } else if (mod.signal === 'dc') {
         rows += `<div class="sd-mod-row"><span class="sd-mod-label">DC Level:</span>
           <span class="sd-mod-value"><input type="number" data-ch="${i}" data-param="dc_level"
             value="${mod.dc_level}" min="-1" max="1" step="0.1"></span></div>`;
@@ -3784,3 +3809,198 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     sendAction({ action: "gpcfg_write", core: currentCore, mux_sel: mux });
   });
 })();
+
+// ---- Sweep Response (Memory Graph panel) ---------------------------------
+// Plays one SD sweep, records the firmware's output ring on the server and
+// plots the level (dB) against the sweep's input frequency.
+
+const sweepState = { points: [], fsHz: 0, logAxis: true, running: false, startMs: 0, durationS: 0 };
+
+function sweepField(id) {
+  const v = document.getElementById(id).value.trim();
+  return /^0x/i.test(v) ? parseInt(v, 16) : parseFloat(v);
+}
+
+function sweepSetRunning(running) {
+  sweepState.running = running;
+  document.getElementById("sweep-run-btn").disabled = running;
+  document.getElementById("sweep-cancel-btn").disabled = !running;
+}
+
+function sweepFmtHz(f) {
+  return f >= 1000 ? (f / 1000).toFixed(f >= 10000 ? 1 : 2) + " kHz" : f.toFixed(f >= 100 ? 0 : 1) + " Hz";
+}
+
+document.getElementById("sweep-run-btn").addEventListener("click", () => {
+  const sweep = {
+    sweep_type: document.getElementById("sweep-type").value,
+    f_start: sweepField("sweep-f-start"), f_stop: sweepField("sweep-f-stop"),
+    duration_s: sweepField("sweep-duration"), amplitude: sweepField("sweep-amp"),
+    sd_clock_mhz: sweepField("sweep-clk"),
+  };
+  const msg = {
+    action: 'sweep_capture',
+    core: document.getElementById("sweep-core").value,
+    channel: sweepField("sweep-ch"),
+    count_addr: sweepField("sweep-count-addr"), ring_addr: sweepField("sweep-ring-addr"),
+    ring_len: sweepField("sweep-ring-len"), full_scale: sweepField("sweep-full"),
+    delay_ms: sweepField("sweep-delay"), window: sweepField("sweep-window"), sweep,
+  };
+  const bad = Object.entries({ ...msg, ...sweep }).filter(([k, v]) => typeof v === "number" && isNaN(v));
+  if (bad.length) {
+    document.getElementById("sweep-status").textContent = "Invalid value: " + bad.map(([k]) => k).join(", ");
+    return;
+  }
+  sweepState.points = [];
+  sweepState.startMs = Date.now();
+  sweepState.durationS = sweep.duration_s;
+  document.getElementById("sweep-bar-fill").style.width = "0%";
+  document.getElementById("sweep-status").textContent = "starting…";
+  sweepSetRunning(true);
+  sendAction(msg);
+  drawSweep();
+});
+
+document.getElementById("sweep-cancel-btn").addEventListener("click", () => {
+  sendAction({ action: 'sweep_cancel', core: document.getElementById("sweep-core").value });
+  document.getElementById("sweep-status").textContent = "cancelling…";
+});
+
+document.getElementById("sweep-axis-btn").addEventListener("click", (e) => {
+  sweepState.logAxis = !sweepState.logAxis;
+  e.target.textContent = sweepState.logAxis ? "log f" : "lin f";
+  drawSweep();
+});
+
+function sweepHandleProgress(msg) {
+  const pct = Math.min(100, 100 * msg.t_sweep / (sweepState.durationS || 1));
+  document.getElementById("sweep-bar-fill").style.width = pct.toFixed(1) + "%";
+  const secs = ((Date.now() - sweepState.startMs) / 1000).toFixed(0);
+  document.getElementById("sweep-status").textContent =
+    `${msg.captured} samples · ${sweepFmtHz(msg.f_now)} · ${secs} s`;
+}
+
+function sweepHandleResult(msg) {
+  sweepSetRunning(false);
+  sweepState.points = (msg.points || []).slice().sort((a, b) => a[0] - b[0]);
+  sweepState.fsHz = msg.fs_hz || 0;
+  if (msg.stopped === "done") document.getElementById("sweep-bar-fill").style.width = "100%";
+  let text = `${msg.stopped}: ${sweepState.points.length} points from ${msg.captured} samples`;
+  if (msg.fs_hz) text += ` · output ${sweepFmtHz(msg.fs_hz)}`;
+  if (msg.message) text += ` · ${msg.message}`;
+  document.getElementById("sweep-status").textContent = text;
+  drawSweep();
+}
+
+function sweepGeometry(W, H) {
+  const pts = sweepState.points;
+  let fMin = pts.length ? pts[0][0] : sweepField("sweep-f-start") || 20;
+  let fMax = pts.length ? pts[pts.length - 1][0] : sweepField("sweep-f-stop") || 20000;
+  const log = sweepState.logAxis;
+  if (log) {
+    fMin = Math.pow(10, Math.floor(Math.log10(Math.max(fMin, 1))));
+    // End at the next 1/2/5 x 10^n above the data, not the next decade.
+    const dec = Math.pow(10, Math.floor(Math.log10(fMax)));
+    fMax = [1, 2, 5, 10].map(m => m * dec).find(v => v >= fMax * 0.9999);
+  }
+  else { fMin = 0; fMax = Math.ceil(fMax / 2000) * 2000; }
+  let dbMax = 10, dbMin = -60;
+  if (pts.length) {
+    const dbs = pts.map(p => p[1]);
+    dbMax = Math.max(0, Math.ceil(Math.max(...dbs) / 10) * 10);
+    dbMin = Math.max(-120, Math.min(-20, Math.floor(Math.min(...dbs) / 10) * 10));
+  }
+  const L = 46, R = 12, T = 10, B = 22;
+  const x = (f) => log
+    ? L + (W - L - R) * (Math.log10(Math.max(f, fMin)) - Math.log10(fMin)) / (Math.log10(fMax) - Math.log10(fMin))
+    : L + (W - L - R) * (f - fMin) / (fMax - fMin);
+  const y = (db) => T + (H - T - B) * (dbMax - Math.max(db, dbMin)) / (dbMax - dbMin);
+  return { fMin, fMax, dbMin, dbMax, L, R, T, B, x, y, log };
+}
+
+function drawSweep() {
+  const canvas = document.getElementById("sweep-response-canvas");
+  if (!canvas) return;
+  const W = canvas.offsetWidth, H = canvas.offsetHeight;
+  if (W === 0 || H === 0) return;
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#141414";
+  ctx.fillRect(0, 0, W, H);
+  const g = sweepGeometry(W, H);
+  ctx.font = "10px monospace";
+  ctx.lineWidth = 1;
+  // dB grid
+  const dbStep = (g.dbMax - g.dbMin) > 60 ? 20 : 10;
+  for (let db = g.dbMax; db >= g.dbMin; db -= dbStep) {
+    ctx.strokeStyle = db === 0 ? "#3a3a3a" : "#222";
+    ctx.beginPath(); ctx.moveTo(g.L, g.y(db)); ctx.lineTo(W - g.R, g.y(db)); ctx.stroke();
+    ctx.fillStyle = "#888"; ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    ctx.fillText(db + " dB", g.L - 4, g.y(db));
+  }
+  // frequency grid
+  const ticks = [];
+  if (g.log) {
+    for (let f = g.fMin; f <= g.fMax * 1.0001; f *= 10) ticks.push(f);
+    if (ticks[ticks.length - 1] < g.fMax * 0.9999) ticks.push(g.fMax);
+  }
+  else { const step = g.fMax > 20000 ? 5000 : 2000; for (let f = 0; f <= g.fMax; f += step) ticks.push(f); }
+  ctx.textBaseline = "top";
+  ticks.forEach((f, i) => {
+    ctx.textAlign = i === ticks.length - 1 ? "right" : "center";
+    ctx.strokeStyle = "#222";
+    ctx.beginPath(); ctx.moveTo(g.x(f), g.T); ctx.lineTo(g.x(f), H - g.B); ctx.stroke();
+    ctx.fillStyle = "#888";
+    ctx.fillText(f >= 1000 ? f / 1000 + "k" : String(f), g.x(f), H - g.B + 6);
+  });
+  // f_s/2 marker
+  if (sweepState.fsHz > 0 && sweepState.fsHz / 2 > g.fMin && sweepState.fsHz / 2 < g.fMax) {
+    const xn = g.x(sweepState.fsHz / 2);
+    ctx.strokeStyle = "#a8661a"; ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.moveTo(xn, g.T); ctx.lineTo(xn, H - g.B); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#e0a457"; ctx.textAlign = "left"; ctx.textBaseline = "top";
+    ctx.fillText("fs/2", xn + 3, g.T + 2);
+  }
+  // response curve
+  const pts = sweepState.points;
+  if (pts.length) {
+    ctx.strokeStyle = "#4fc3f7"; ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    pts.forEach((p, i) => { const px = g.x(p[0]), py = g.y(p[1]); if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py); });
+    ctx.stroke();
+  } else {
+    ctx.fillStyle = "#666"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(sweepState.running ? "recording…" : "Run a sweep to measure the response", W / 2, H / 2);
+  }
+}
+
+document.getElementById("sweep-response-canvas").addEventListener("mousemove", (e) => {
+  const pts = sweepState.points;
+  const out = document.getElementById("sweep-readout");
+  if (!pts.length) { out.textContent = ""; return; }
+  const canvas = e.target;
+  const g = sweepGeometry(canvas.offsetWidth, canvas.offsetHeight);
+  const mx = e.offsetX;
+  let best = pts[0];
+  pts.forEach(p => { if (Math.abs(g.x(p[0]) - mx) < Math.abs(g.x(best[0]) - mx)) best = p; });
+  out.textContent = `${sweepFmtHz(best[0])}  ${best[1].toFixed(2)} dB`;
+});
+
+window.addEventListener("resize", drawSweep);
+drawSweep();
+
+// Copy the generator's sweep settings of the chosen channel into the form
+// (only while idle and when the user is not editing the form).
+function sweepPrefill(sd) {
+  const form = document.querySelector("#sweep-resp .sweep-form");
+  if (!form || sweepState.running || form.contains(document.activeElement)) return;
+  const mod = (sd.modulators || [])[parseInt(document.getElementById("sweep-ch").value, 10)];
+  if (!mod || mod.signal !== "sweep") return;
+  document.getElementById("sweep-type").value = mod.sweep_type;
+  document.getElementById("sweep-f-start").value = mod.f_start;
+  document.getElementById("sweep-f-stop").value = mod.f_stop;
+  document.getElementById("sweep-duration").value = mod.duration_s;
+  document.getElementById("sweep-amp").value = mod.amplitude;
+  document.getElementById("sweep-clk").value = mod.sd_clock_mhz;
+}
