@@ -344,6 +344,10 @@ function connect() {
   ws.onclose = () => {
     wsStatus.textContent = "Disconnected";
     wsStatus.className = "error";
+    if (sweepState.running) {           // the server stops the capture; its result is lost
+      sweepSetRunning(false);
+      document.getElementById("sweep-status").textContent = "disconnected: sweep stopped";
+    }
     stopRun();
     // Attempt reconnect after 2 s
     setTimeout(connect, 2000);
@@ -3888,6 +3892,7 @@ function sweepHandleResult(msg) {
   let text = `${msg.stopped}: ${sweepState.points.length} points from ${msg.captured} samples`;
   if (msg.fs_hz) text += ` · output ${sweepFmtHz(msg.fs_hz)}`;
   if (msg.message) text += ` · ${msg.message}`;
+  if (msg.resolution) text += ` · note: ${msg.resolution}`;
   document.getElementById("sweep-status").textContent = text;
   drawSweep();
 }

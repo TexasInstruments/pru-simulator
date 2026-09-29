@@ -4,6 +4,7 @@ Exposes a simple API for loading assembly, stepping, inspecting registers,
 reading memory, and querying I/O state.
 """
 
+import copy
 import configparser
 import os
 import re
@@ -93,6 +94,10 @@ class IepRegisterRegion(MemoryRegion):
     def write(self, addr: int, data: bytes) -> None:
         self._check_bounds(addr, length=len(data))
         self._iep.write(addr - self.base_addr, data)
+
+
+# Sweep parameters that define the sweep itself (not its level).
+_SWEEP_SHAPE = ("signal", "f_start", "f_stop", "duration_s", "sweep_type")
 
 
 class Simulator:
@@ -413,6 +418,9 @@ class Simulator:
         for key, val in params.items():
             if hasattr(mod, key):
                 setattr(mod, key, val)
+        # Choosing a sweep, or changing its shape, starts the sweep from the beginning.
+        if mod.signal == "sweep" and any(k in params for k in _SWEEP_SHAPE):
+            mod._sample_index = 0
 
     def sweep_capture(self, core: str, channel: int, recorder, sweep: dict,
                       chunk_steps: int = 50_000, max_steps: int | None = None,
@@ -433,9 +441,19 @@ class Simulator:
         sd = pru.io_port.sd_filter
         if sd is None:
             raise ValueError(f"core {core} has no SD filter: cannot play a sweep")
+        if channel < 0 or channel >= len(sd.modulators):
+            raise ValueError(f"Channel {channel} out of range")
+        if chunk_steps < 1:
+            raise ValueError(f"chunk_steps must be >= 1, got {chunk_steps}")
+        # Validate on a copy first, so rejected parameters leave the channel as it was.
+        probe = copy.copy(sd.modulators[channel])
+        for key, val in dict(sweep, signal="sweep").items():
+            setattr(probe, key, val)
+        probe._check_sweep()
+        if not 0.0 <= probe.amplitude <= 1.0 or probe.sd_clock_mhz <= 0:
+            raise ValueError("amplitude must be 0..1 and sd_clock_mhz > 0")
         self.set_sd_modulator(core, channel, signal="sweep", **sweep)
         mod = sd.modulators[channel]
-        mod._check_sweep()
         mod.reset()
         recorder.start(self.memory_read)
         end_t = mod.duration_s + tail_s
