@@ -1,7 +1,8 @@
 # pru_io/sd_modulator.py
 """2nd-order sigma-delta modulator pattern generator.
 
-Produces a 1-bit PDM bitstream encoding a selectable input signal (DC or Sine).
+Produces a 1-bit PDM bitstream encoding a selectable input signal (DC, Sine,
+or an audio Sweep).
 Used to simulate an external sigma-delta ADC modulator feeding the PRU SD filter.
 """
 
@@ -19,15 +20,24 @@ class SDModulator:
         period: int = 1024,
         phase_deg: float = 0.0,
         sd_clock_mhz: float = 20.0,
+        f_start: float = 20.0,
+        f_stop: float = 20000.0,
+        duration_s: float = 0.5,
+        sweep_type: str = "log",
     ):
-        self.signal = signal            # "dc" or "sine"
+        self.signal = signal            # "dc", "sine" or "sweep"
         self.dc_level = dc_level        # -1.0 to +1.0
         self.amplitude = amplitude      # 0.0 to 1.0
         self.period = period            # samples per sine cycle
         self.phase_deg = phase_deg      # phase offset in degrees
-        # NOTE: sd_clock_mhz is metadata for the consumer (e.g., UI, logging).
-        # It does not control internal rate; internal rate is determined by next_bit() call frequency.
+        # Bit rate: the SD filter calls next_bit() sd_clock_mhz / pru_clock_mhz
+        # times per PRU instruction. The sweep uses it as its time base.
         self.sd_clock_mhz = sd_clock_mhz
+        # Sweep: one sweep f_start -> f_stop over duration_s, then silence.
+        self.f_start = f_start          # Hz (> 0 for a log sweep)
+        self.f_stop = f_stop            # Hz
+        self.duration_s = duration_s    # s
+        self.sweep_type = sweep_type    # "log" or "linear"
 
         # Internal modulator state
         self._integrator1: float = 0.0
@@ -46,8 +56,43 @@ class SDModulator:
             phase_rad = self.phase_deg * math.pi / 180.0
             angle = 2.0 * math.pi * self._sample_index / self.period + phase_rad
             return self.amplitude * math.sin(angle)
+        elif self.signal == "sweep":
+            self._check_sweep()
+            t = self.time_s()
+            if t >= self.duration_s:
+                return 0.0
+            return self.amplitude * math.sin(self.sweep_phase(t))
         else:
-            raise ValueError(f"Unknown signal type: {self.signal!r}. Expected 'dc' or 'sine'")
+            raise ValueError(f"Unknown signal type: {self.signal!r}. Expected 'dc', 'sine' or 'sweep'")
+
+    def time_s(self) -> float:
+        """Modulator time: bits produced so far divided by the bit rate."""
+        return self._sample_index / (self.sd_clock_mhz * 1e6)
+
+    def _check_sweep(self) -> None:
+        if self.sweep_type not in ("log", "linear"):
+            raise ValueError(f"sweep_type must be 'log' or 'linear', got {self.sweep_type!r}")
+        if self.duration_s <= 0:
+            raise ValueError(f"duration_s must be > 0, got {self.duration_s}")
+        if self.f_start < 0 or (self.sweep_type == "log" and self.f_start <= 0):
+            raise ValueError(f"f_start must be > 0 for a log sweep (>= 0 for linear), got {self.f_start}")
+        if self.f_stop <= self.f_start:
+            raise ValueError(f"f_stop must be > f_start, got {self.f_stop} <= {self.f_start}")
+
+    def sweep_phase(self, t: float) -> float:
+        """Sweep phase in radians at time t (closed form, phase-continuous)."""
+        f1, f2, T = self.f_start, self.f_stop, self.duration_s
+        if self.sweep_type == "linear":
+            return 2.0 * math.pi * (f1 * t + (f2 - f1) * t * t / (2.0 * T))
+        k = math.log(f2 / f1) / T
+        return 2.0 * math.pi * f1 * math.expm1(k * t) / k
+
+    def sweep_frequency(self, t: float) -> float:
+        """Instantaneous sweep frequency in Hz at time t."""
+        f1, f2, T = self.f_start, self.f_stop, self.duration_s
+        if self.sweep_type == "linear":
+            return f1 + (f2 - f1) * t / T
+        return f1 * math.exp(math.log(f2 / f1) * t / T)
 
     def next_bit(self) -> int:
         """Advance the modulator by one clock tick and return the output bit (0 or 1)."""
