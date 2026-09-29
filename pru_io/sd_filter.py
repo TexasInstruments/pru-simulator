@@ -170,6 +170,10 @@ class SigmaDeltaFilter:
                     "amplitude": mod.amplitude,
                     "period": mod.period,
                     "phase_deg": mod.phase_deg,
+                    "f_start": mod.f_start,
+                    "f_stop": mod.f_stop,
+                    "duration_s": mod.duration_s,
+                    "sweep_type": mod.sweep_type,
                 }
                 for mod in self.modulators
             ],
