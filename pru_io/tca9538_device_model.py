@@ -36,6 +36,7 @@ class TCA9538Model(DeviceModel):
         self._faults: list[str] = []
         self._prev_scl: int | None = None
         self._prev_sda: int | None = None
+        self._driving_low = False
         self._cycle = 0
 
     # ------------------------------------------------------------------
@@ -58,11 +59,23 @@ class TCA9538Model(DeviceModel):
         #
         # Open-drain makes the distinction exact. The slave is driving iff the
         # resolved level came out low while the master had released the line.
-        bus_sda = self.device.step(bool(scl), bool(sda))
-        slave_drives_low = (not bus_sda) and sda == 1
+        # The underlying model wants sda_MASTER - what the master is driving -
+        # while the bus only tells us the resolved level. On an open-drain net
+        # those differ exactly while this slave is pulling low, and feeding it
+        # the resolved level there makes it read its own ACK as the master
+        # driving low, then see a spurious STOP when it releases.
+        #
+        # A slave only ever drives during its ACK, and the protocol requires the
+        # master to have released the line for that. So while we are driving,
+        # "master released" is the correct reading - and it is an assumption
+        # about the protocol, stated here, not a guess about the waveform.
+        sda_master = 1 if self._driving_low else sda
+
+        bus_sda = self.device.step(bool(scl), bool(sda_master))
+        self._driving_low = (not bus_sda) and sda_master == 1
         self._prev_scl, self._prev_sda = scl, sda
 
-        if slave_drives_low:
+        if self._driving_low:
             return (1 << self.sda_pin), 0    # pulling SDA low
         return 0, 0                          # released, pull-up wins
 

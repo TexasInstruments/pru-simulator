@@ -72,6 +72,19 @@ class DeviceModel(abc.ABC):
     #: this map are inputs to the device only — it observes, never drives them.
     nets: dict[int, str] = {}
 
+    #: Does this device change state on its own, with no pin activity?
+    #:
+    #: False (default) means purely reactive: it is ticked when a driver
+    #: changes the pins, and nothing else. That is right for bus slaves —
+    #: I2C, SPI, 1-Wire — and it matters, because ticking an edge-detecting
+    #: state machine repeatedly between pin changes feeds it its own output as
+    #: fresh input and derails it.
+    #:
+    #: True means the device also advances with time: an encoder rotating, a
+    #: free-running oscillator, a sensor sampling on its own clock. Those get
+    #: an additional tick every core cycle.
+    time_driven: bool = False
+
     @abc.abstractmethod
     def tick(self, cycle: int, bus: int) -> tuple[int, int]:
         """Advance one PRU cycle.
