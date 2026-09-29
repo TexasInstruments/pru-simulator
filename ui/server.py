@@ -17,6 +17,8 @@ from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from simulator import Simulator
+from pru_io.ring_recorder import RingOverrun, RingRecorder
+from pru_io.sweep_analysis import sweep_response
 from core.branch import LoopState
 from perif.gpcfg import MUX_SD
 from xfr.xfr_bus import SPAD_BANK0, SPAD_BANK1, SPAD_BANK2, IPC_SPAD
@@ -101,6 +103,70 @@ def _restore(core: str, snap: dict) -> None:
         c.io_port.perif.restore(snap["perif"])
     if snap.get("i2c") is not None and c.io_port.i2c_device is not None:
         c.io_port.i2c_device.restore(snap["i2c"])
+
+# ---- Sweep capture (SD sweep -> firmware ring -> frequency response) --------
+_SWEEP_KEYS = ("f_start", "f_stop", "duration_s", "sweep_type", "amplitude", "sd_clock_mhz")
+# While a capture runs only these actions are served; everything else would
+# change the simulation under the capture.
+_SWEEP_ALLOWED = {"sweep_cancel", "get_state", "read_memory"}
+
+
+def _sweep_running(websocket) -> bool:
+    task = getattr(websocket, "_sweep_task", None)
+    return task is not None and not task.done()
+
+
+async def _run_sweep(websocket, msg: dict) -> None:
+    """Run one sweep capture, streaming progress; always ends with a sweep_result."""
+    core = msg.get("core", "pru0")
+    channel = int(msg.get("channel", 0))
+    websocket._sweep_cancel = False
+    stopped, message, points, recorder, fs_hz = "error", "", [], None, 0.0
+    try:
+        recorder = RingRecorder(int(msg["count_addr"]), int(msg["ring_addr"]), int(msg["ring_len"]))
+        sweep = {k: v for k, v in (msg.get("sweep") or {}).items() if k in _SWEEP_KEYS}
+        max_steps = msg.get("max_steps")
+        gen = sim.sweep_capture(core, channel, recorder, sweep,
+                                chunk_steps=int(msg.get("chunk_steps", 50_000)),
+                                max_steps=int(max_steps) if max_steps else None,
+                                tail_s=float(msg.get("tail_ms", 5.0)) / 1000.0)
+        while True:
+            try:
+                progress = next(gen)
+            except StopIteration as stop:
+                stopped = stop.value
+                break
+            await websocket.send_json({"type": "sweep_progress", **progress})
+            await asyncio.sleep(0)
+            if websocket._sweep_cancel:
+                stopped = "cancel"
+                break
+    except RingOverrun as e:
+        stopped, message = "overrun", str(e)
+    except (ValueError, KeyError, TypeError) as e:
+        stopped, message = "error", str(e)
+    if recorder is not None and recorder.samples and stopped != "error":
+        mod = sim.cores[core].io_port.sd_filter.modulators[channel]
+        try:
+            times = recorder.sample_times(mod.sd_clock_mhz * 1e6)
+            if len(times) > 1 and times[-1] > times[0]:
+                fs_hz = (len(times) - 1) / (times[-1] - times[0])
+            points = sweep_response(recorder.samples, times, mod,
+                                    full_scale=float(msg.get("full_scale", 2 ** 23)),
+                                    delay_s=float(msg.get("delay_ms", 1.0)) / 1000.0,
+                                    window=int(msg.get("window", 64)))
+        except ValueError as e:
+            message = message or str(e)
+    await websocket.send_json({
+        "type": "sweep_result",
+        "points": [[round(f, 3), round(db, 3)] for f, db in points],
+        "captured": len(recorder.samples) if recorder else 0,
+        "fs_hz": round(fs_hz, 3),
+        "stopped": stopped,
+        "message": message,
+    })
+    await _send_state(websocket, core)
+
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -254,6 +320,11 @@ async def websocket_endpoint(websocket: WebSocket):
             msg = json.loads(data)
             action = msg.get("action")
             core = msg.get("core", "pru0")
+
+            if _sweep_running(websocket) and action not in _SWEEP_ALLOWED:
+                await websocket.send_json({"type": "error", "errors": [
+                    f"A sweep capture is running: '{action}' waits until it ends or is cancelled"]})
+                continue
 
             if action == "load":
                 _history[core].clear()
@@ -511,6 +582,10 @@ async def websocket_endpoint(websocket: WebSocket):
                                   captured=capture)
                 await _send_state(websocket, partner, at_breakpoint=partner_bp,
                                   captured=capture)
+            elif action == "sweep_capture":
+                websocket._sweep_task = asyncio.create_task(_run_sweep(websocket, msg))
+            elif action == "sweep_cancel":
+                websocket._sweep_cancel = True
             elif action == "set_sd_modulator":
                 ch = int(msg.get("channel", 0))
                 params = msg.get("params", {})
@@ -572,6 +647,8 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         import traceback
         traceback.print_exc()
+    finally:
+        websocket._sweep_cancel = True        # a running capture stops after its chunk
 
 
 def _read_mac(core) -> dict:

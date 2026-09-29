@@ -414,6 +414,55 @@ class Simulator:
             if hasattr(mod, key):
                 setattr(mod, key, val)
 
+    def sweep_capture(self, core: str, channel: int, recorder, sweep: dict,
+                      chunk_steps: int = 50_000, max_steps: int | None = None,
+                      tail_s: float = 0.005):
+        """Run *core* while SD *channel* plays one sweep, recording the firmware's ring.
+
+        Generator: programs the sweep (``signal="sweep"`` plus *sweep*), restarts
+        the channel's modulator so the sweep starts now, calls
+        ``recorder.start()``, then steps *core* in chunks of *chunk_steps*
+        instructions, polling *recorder* (time stamp = the modulator's bit index)
+        after each chunk and yielding ``{captured, t_sweep, f_now, steps}``.
+        Returns (StopIteration.value) why it stopped: "done" (sweep plus
+        *tail_s* played), "max_steps", "breakpoint" or "halted". Raises
+        ``RingOverrun`` from the recorder and ``ValueError`` for a core without
+        an SD filter or bad sweep parameters.
+        """
+        pru = self._get_core(core)
+        sd = pru.io_port.sd_filter
+        if sd is None:
+            raise ValueError(f"core {core} has no SD filter: cannot play a sweep")
+        self.set_sd_modulator(core, channel, signal="sweep", **sweep)
+        mod = sd.modulators[channel]
+        mod._check_sweep()
+        mod.reset()
+        recorder.start(self.memory_read)
+        end_t = mod.duration_s + tail_s
+        steps = 0
+        while True:
+            n = chunk_steps if max_steps is None else min(chunk_steps, max_steps - steps)
+            stopped = None
+            for _ in range(n):
+                pru.step()
+                steps += 1
+                if pru.halted or pru.pc >= len(pru.instructions):
+                    stopped = "halted"
+                    break
+                if pru.pc in pru.breakpoints:
+                    stopped = "breakpoint"
+                    break
+            recorder.poll(self.memory_read, mod._sample_index)
+            t = mod.time_s()
+            yield {"captured": len(recorder.samples), "t_sweep": t,
+                   "f_now": mod.sweep_frequency(min(t, mod.duration_s)), "steps": steps}
+            if stopped:
+                return stopped
+            if t >= end_t:
+                return "done"
+            if max_steps is not None and steps >= max_steps:
+                return "max_steps"
+
     def set_iep_clock_mhz(self, mhz: float) -> None:
         """Set the IEP0 clock (ICSSG_IEP_CLK) independently of the PRU clocks.
 
