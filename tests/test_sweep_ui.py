@@ -54,3 +54,15 @@ def test_log_axis_ends_at_a_nice_frequency_above_the_data():
     f_min, f_max, x_last = __import__("json").loads(out)
     assert (f_min, f_max) == (100, 20000)
     assert x_last > 700                                   # the data reaches the right part of the plot
+
+
+def test_disconnect_unlocks_the_sweep_controls():
+    js = (STATIC / "app.js").read_text()
+    onclose = js[js.index("ws.onclose = () => {"):]
+    onclose = onclose[:onclose.index("};")]
+    assert "sweepSetRunning(false)" in onclose
+
+
+def test_result_status_shows_the_resolution_note():
+    js = (STATIC / "app.js").read_text()
+    assert "msg.resolution" in js[js.index("function sweepHandleResult("):]

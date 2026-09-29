@@ -97,3 +97,13 @@ def test_mismatched_lengths_raise():
     mod = sweep()
     with pytest.raises(ValueError):
         sweep_response([1, 2, 3], [0.0, 1.0], mod, full_scale=FULL, delay_s=0.0)
+
+
+def test_resolution_note_warns_when_a_window_spans_much_of_an_octave():
+    from pru_io.sweep_analysis import resolution_note
+    fast = sweep(f_start=100.0, f_stop=16000.0, duration_s=0.05)      # 64 samples at 16 kHz: +-25 %
+    slow = sweep(f_start=100.0, f_stop=16000.0, duration_s=0.5)       # +-2 %
+    assert "smeared" in resolution_note(fast, window=64, fs_hz=16000.0)
+    assert resolution_note(slow, window=64, fs_hz=16000.0) == ""
+    lin = sweep(sweep_type="linear", f_start=0.0, f_stop=20000.0, duration_s=0.05)
+    assert "smeared" in resolution_note(lin, window=64, fs_hz=16000.0)

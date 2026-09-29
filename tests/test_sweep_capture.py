@@ -148,3 +148,59 @@ def test_websocket_overrun_and_busy():
                 break
         ws.send_json({"action": "sweep_cancel", "core": "pru0"})
         _until_result(ws)
+
+
+# ---- final-review fixes ------------------------------------------------------
+
+def test_bad_sweep_parameters_leave_the_channel_unchanged():
+    sim = loaded_sim()
+    mod = sim.cores["pru0"].io_port.sd_filter.modulators[0]
+    before = (mod.signal, mod.f_start, mod.sweep_type)
+    with pytest.raises(ValueError, match="f_start"):
+        drain(sim.sweep_capture("pru0", 0, RingRecorder(0x04, 0x10, 16),
+                                dict(SWEEP, sweep_type="log", f_start=0.0)))
+    assert (mod.signal, mod.f_start, mod.sweep_type) == before
+    sim.step("pru0", 200)                                    # later steps still work
+
+
+def test_choosing_sweep_in_the_generator_starts_the_sweep_from_the_beginning():
+    sim = loaded_sim()
+    mod = sim.cores["pru0"].io_port.sd_filter.modulators[0]
+    sim.step("pru0", 20000)
+    assert mod._sample_index > 0
+    sim.set_sd_modulator("pru0", 0, signal="sweep")
+    assert mod._sample_index == 0
+    sim.step("pru0", 20000)
+    sim.set_sd_modulator("pru0", 0, f_stop=8000.0)           # new sweep shape: start over
+    assert mod._sample_index == 0
+    sim.step("pru0", 20000)
+    sim.set_sd_modulator("pru0", 0, amplitude=0.3)           # level only: keep going
+    assert mod._sample_index > 0
+
+
+def test_websocket_unexpected_error_still_ends_with_a_result():
+    client = _server()
+    from ui import server
+
+    def boom():
+        raise RuntimeError("boom")
+    server.sim.cores["pru0"].step = boom
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json(_capture_msg())
+        _, result = _until_result(ws)
+        assert result["stopped"] == "error" and "RuntimeError: boom" in result["message"]
+
+
+def test_websocket_second_connection_is_refused_during_a_capture():
+    client = _server()
+    with client.websocket_connect("/ws") as a, client.websocket_connect("/ws") as b:
+        a.send_json(_capture_msg(sweep=dict(SWEEP, duration_s=0.05)))
+        a.receive_json()                                    # first progress: capture running
+        for msg in ({"action": "step", "core": "pru0"}, _capture_msg()):
+            b.send_json(msg)
+            m = b.receive_json()
+            assert m["type"] == "error" and "sweep capture is running" in m["errors"][0]
+        r = client.put("/config/clock_speed", json={"mhz": -1})
+        assert r.status_code == 409
+        a.send_json({"action": "sweep_cancel", "core": "pru0"})
+        _until_result(a)

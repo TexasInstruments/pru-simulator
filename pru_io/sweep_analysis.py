@@ -11,6 +11,30 @@ frequency that caused it.
 import math
 
 FLOOR_DB = -140.0
+MAX_SPREAD = 0.05       # warn when one window covers more than +-5 % (log) of its frequency
+
+
+def resolution_note(modulator, window, fs_hz):
+    """Empty string, or a warning when one analysis window spans too much of the sweep.
+
+    A window of `window` output samples covers window / fs_hz seconds of the sweep;
+    a fast sweep then averages the response over a wide band and smears steep slopes.
+    """
+    if fs_hz <= 0:
+        return ""
+    span_s = window / fs_hz
+    f1, f2, T = modulator.f_start, modulator.f_stop, modulator.duration_s
+    if modulator.sweep_type == "log":
+        rel = math.expm1(math.log(f2 / f1) * span_s / T)
+        if rel > 2 * MAX_SPREAD:
+            return (f"each point averages +-{rel * 50:.0f} % of its frequency ({window}-sample window): "
+                    f"steep slopes are smeared - use a longer sweep or a smaller window")
+        return ""
+    df = (f2 - f1) * span_s / T
+    if df > 2 * MAX_SPREAD * (f1 + f2) / 2:
+        return (f"each point averages +-{df / 2:.0f} Hz ({window}-sample window): "
+                f"steep slopes are smeared - use a longer sweep or a smaller window")
+    return ""
 
 
 def sweep_response(samples, times, modulator, full_scale, delay_s, window=64, hop=None):
