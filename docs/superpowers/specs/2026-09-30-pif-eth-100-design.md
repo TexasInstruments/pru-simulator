@@ -539,7 +539,7 @@ output tokens, wall time); totals; results (the `run_100` tables and all
 throughput figures); deviations from this spec; lessons learned.
 
 Data comes from `session_stats.py`, which reads
-`~/.claude/projects/-home-thomas-GitHub-pru-simulator/<session>.jsonl` and
+`~/.claude/projects/<repo path with "/" replaced by "-">/<session>.jsonl` and
 `<session>/subagents/agent-*.jsonl`:
 - **Tokens.** Take assistant records with `message.usage`, **deduplicated
   by `message.id`** (streamed chunks repeat the usage). Sum

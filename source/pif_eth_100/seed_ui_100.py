@@ -41,7 +41,9 @@ def _u32(v: int) -> bytes:
 
 
 def arm_writes() -> list[tuple[int, bytes]]:
-    """TX go first, RX go last (RX arms in a few cycles, TX needs ~2.7k of prep)."""
+    """TX go first, RX go last. Both writes land before either core steps, so the
+    order is harmless (run_100.py arms RX first for the same reason); after a
+    go, RX arms in a few cycles and TX needs ~2.7k cycles of frame prep."""
     return [(r.T_GOFLAG, _u32(1)), (r.C_GO, _u32(1))]
 
 

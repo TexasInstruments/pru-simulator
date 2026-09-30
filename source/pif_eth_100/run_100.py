@@ -48,8 +48,8 @@ RXCFG_PRU1 = 0x26100
 PAYLOAD_LEN = 200
 MAX_PAYLOAD_LEN = 252        # 256 B RX frame buffer - 4 B FCS
 
-# Task 2 spike verdict: 0.0 unless the edge-tie phase forced the 5/6 ns fallback.
-# second latency gate (Task 5): edge-tie phase fails at 0 ns + inexact shift; 5/6 ns keeps every sample >= 0.83 ns from a TX edge
+# Wire latency of the loopback. 5/6 ns (Task 2 spike + Task 5 gate): at 0 ns the
+# edge-tie phase fails with an inexact shift; 5/6 ns keeps every sample >= 0.83 ns from a TX edge.
 LOOPBACK_LATENCY_NS = 5.0 / 6.0
 EDGE_PHASE_SHIFTS_NS = (0.0, 10.0 / 3.0, 20.0 / 3.0)   # visits all 3 sample/edge residues
 SEEDS = (DEFAULT_SEED, 1, 2, 3, 4, 5, 6)
@@ -337,7 +337,7 @@ def run_loopback(seed: int = DEFAULT_SEED, num_frames: int = 3,
     stream = prng_bytes(payload_len * num_frames, seed)
     for i in range(num_frames):
         wu32(sim, C_GO, 1)          # arm RX first ...
-        wu32(sim, T_GOFLAG, 1)      # ... then TX (~2.7k cycles of prep before its first bit)
+        wu32(sim, T_GOFLAG, 1)      # ... then TX; both writes land before either core steps, so the order is harmless
         steps = 0
         while ru32(sim, S_FRAMES) != i + 1:
             if steps >= max_lead_steps:
@@ -392,6 +392,8 @@ def throughput(loop: LoopResult, tx: TxResult) -> dict:
         "e2e_gap_ns": gap(loop.t_go_ns, loop.t_end_ns),
         "rx_post_cycles": post,
         "rx_post_us": post / CORE_MHZ,
+        # Conservative assumption, not measured: up to 3 core cycles per PRU0
+        # instruction while the host polls (16 instr at 1 cycle each = 53 ns).
         "host_poll_bound_ns": HOST_POLL_INSTR * 3 * 1e3 / CORE_MHZ,
     }
 
@@ -430,11 +432,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--latency-ns", type=float, default=LOOPBACK_LATENCY_NS)
     ap.add_argument("--rx", choices=("base", "fast", "both"), default="base")
     args = ap.parse_args(argv)
+    if args.frames < 2:
+        ap.error("--frames must be >= 2")
     seeds = [int(s, 0) for s in args.seeds.split(",")]
     variants = ("base", "fast") if args.rx == "both" else (args.rx,)
     for rx in variants:
         if not (_HERE / RX_FIRMWARE[rx]).exists():
-            ap.error(f"--rx {rx}: firmware {RX_FIRMWARE[rx]} does not exist yet")
+            ap.error(f"--rx {rx}: firmware {RX_FIRMWARE[rx]} not found in {_HERE}")
 
     ok = True
     tx = run_tx_only(seeds[0], num_frames=4)

@@ -427,6 +427,7 @@ def test_fast_rx_raises_end_to_end_goodput(loop_base, loop_fast, tx_only):
 # --- PDF pipeline (Task 13) ---------------------------------------------------
 
 def test_build_pdfs_renders_gfm_tables():
+    pytest.importorskip("markdown_it")
     from pif_eth_100 import build_pdfs
     html = build_pdfs.render_html("# T\n\n| a | b |\n|---|---|\n| 1 | 2 |\n", "T")
     assert "<table>" in html and "<h1>T</h1>" in html and 'charset="utf-8"' in html

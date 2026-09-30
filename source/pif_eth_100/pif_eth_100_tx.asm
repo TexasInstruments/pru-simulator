@@ -106,7 +106,7 @@ crc32_compute:
 ; -------------------------------------------------------------
 ; send_frame: stream one continuous burst of core_len bytes, batched
 ;   4-octet loads + fixed-shift unrolled bit-packing. ret r29
-;   PRECONDITION: core_len % 4 == 0 (true for BERT=132, UDP=68)
+;   PRECONDITION: core_len % 4 == 0 (true for BERT=204 (200+4 FCS))
 ; -------------------------------------------------------------
 send_frame:
     ldi  r17, 0                ; burst pushed byte count

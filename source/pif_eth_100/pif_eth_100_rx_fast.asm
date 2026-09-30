@@ -14,10 +14,11 @@
 ;      RD / frame-buffer-guard semantics -> stats identical to the baseline.
 ; DRAM1 local 0x0C00-0x0CFF = decimation LUT (unused by the baseline).
 ; -------------------------------------------------------------
-; Copy of source/pif_eth/pif_eth_rx_o1_raw.asm. Only change: a zero rxcfg
-; control word defaults to RXCFG = 0x0000801F (div_factor=0 + frac=1 ->
-; divider 1.5 -> 200 MHz sample clock = exactly 2x of 100 Mbaud; budget 12
-; core cycles per captured byte, poll/zrun use 8).
+; Inherited from pif_eth_100_rx.asm (itself a copy of
+; source/pif_eth/pif_eth_rx_o1_raw.asm): a zero rxcfg control word defaults
+; to RXCFG = 0x0000801F (div_factor=0 + frac=1 -> divider 1.5 -> 200 MHz
+; sample clock = exactly 2x of 100 Mbaud; budget 12 core cycles per captured
+; byte, poll/zrun use 8).
 ; Spec: docs/superpowers/specs/2026-09-30-pif-eth-100-design.md
 ;
 ; Channel 0 RX, 2x oversampled.  The realtime loop stores every captured FIFO

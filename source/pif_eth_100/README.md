@@ -120,7 +120,8 @@ for the optimised RX (`OVERALL: PASS`).
 Columns of the sweep table: `frm` frames received, `ovf` `rx_ovf`, `symerr` 8b/10b decode
 errors, `biterr` PRNG bit errors, `crc` `crc_ok`, `eof` `eof_status`, `cap` `cap_bytes`,
 `post_cyc` PRU1 cycles from `eof` to `frame_loop` (traced, single-stepped). `hot` is the RX
-hot-loop cost in PRU1 cycles per captured byte on the poll path: 8 measured, against the
+hot-loop cost in PRU1 cycles per captured byte on the poll path: 8 (7 measured + 1 assumed,
+the `qbbc` fall-through), against the
 12-cycle budget (8 samples at 1.5 core cycles each). `fifo` is the maximum RX FIFO occupancy
 the traced stepper saw during the run (1 in every row).
 
@@ -165,7 +166,8 @@ latency_ns=6.6667 clean=True [FrameStats(frames=1, cap_bytes=526, rx_ovf=0, symb
 ```
 
 The same call with `rx="fast"` at 3.3333 ns fails with identical numbers (71 symbol errors,
-`cap_bytes` 525): the failure is in the captured samples, not in a decoder.
+`cap_bytes` 525): the failure is in the captured samples themselves, not in the decoder (a
+sampling / edge-margin limit, see "Known limit").
 
 With the 5/6 ns base delay all three edge phases decode clean for the default seed (that is the
 test). Re-run on 2026-09-30: `run_loopback(seed, num_frames=2, latency_ns=0.8333 + shift)` for
@@ -183,8 +185,10 @@ phases. The `run_100` loopback harness arms differently, and there the failing p
 at 0 ns does not carry over to the loopback harness; the loopback test is the gate of record.
 The reason the arm phases differ was not itemised.
 
-**Known limit:** RX decode is not robust when a sample edge coincides exactly with a TX edge,
-which is what happens at 0 ns wire delay in one of the three arm phases. The 300 MHz core
+**Known limit:** the RX is a sampling / edge-margin limit, not a decoder bug: when a sample
+edge coincides exactly with a TX edge, the captured samples are wrong (and the decoder, baseline
+or fast, then faithfully decodes wrong data). That is what happens at 0 ns wire delay in one of
+the three arm phases. The 300 MHz core
 period (10/3 ns) is inexact in floating point, so exact ties resolve inconsistently once an
 inexact shift is added. The harness therefore uses a 5/6 ns wire delay, which keeps every
 phase at least 0.83 ns from an edge. Whether a given single-frame run at 0 ns fails depends on
@@ -271,6 +275,11 @@ either core runs passes; the post-frame is at least 2x faster and F3 end-to-end 
 1.5x higher than the baseline's. These tests exercise **clean frames only**: the
 invalid-codeword, running-disparity-violation and frame-buffer-overflow branches of the fast
 decode are not covered by any test.
+
+**Limits of the decimation LUT.** The LUT is built once, on the first frame (`r14 == 0`). The
+realtime capture pointer is unbounded (inherited from the baseline): a capture longer than the
+1024 B region without an EOF would overwrite the LUT at `0x0C00` and break later frames until
+Reset. This cannot happen with payload <= 252 B and a clean loopback.
 
 **Why end-to-end goodput is about 19.5 Mbit/s and not 80 even with the fast RX.** The wire
 still runs at 100 Mbaud and 80 Mbit/s inside each burst; what limits F3 is the frame period.

@@ -21,7 +21,9 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-PROJECTS_DIR = Path.home() / ".claude" / "projects" / "-home-thomas-GitHub-pru-simulator"
+_ROOT = Path(__file__).resolve().parents[2]
+# Claude Code names a project's transcript dir after the repo path, "/" -> "-".
+PROJECTS_DIR = Path.home() / ".claude" / "projects" / str(_ROOT).replace("/", "-")
 SESSION_ID = "8735618c-d49c-4b36-b197-901036049257"
 SESSION_START = "2026-09-30T13:19:49+02:00"
 USAGE_KEYS = ("input_tokens", "cache_creation_input_tokens",

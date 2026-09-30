@@ -228,7 +228,7 @@ output, and `memory.cfg` was restored byte-identical afterwards.
   guide (button labels, dropdown names, where the Loopback card is, the
   **Project** flow) comes from reading `ui/static/index.html`, `app.js` and
   `server.py`, and the `/source` listing (which returned `pif_eth_100` with
-  the three files), not from clicking in a browser.
+  its four files), not from clicking in a browser.
 * **Scripted walkthrough** (`python3 source/pif_eth_100/ui_walkthrough_100.py
   --frames 2 --ws ws://127.0.0.1:8091/ws --http http://127.0.0.1:8091`), exit 0:
   ```
