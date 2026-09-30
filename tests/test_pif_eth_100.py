@@ -93,3 +93,76 @@ def test_rx_reference_recovers_200b_frame_at_any_skew(skew):
     res = rx_reference.decode_capture(raw, oversample=2)
     assert res.invalid_symbols == 0
     assert core in res.frames
+
+
+# --- TX firmware + driver core (Task 4) --------------------------------------
+from perif.perif_channel import PerifChannel             # noqa: E402
+from perif.perif_registers import PerifRegisters         # noqa: E402
+from pif_eth_100 import run_100 as r100                  # noqa: E402
+
+
+def test_register_words_decode_to_the_clock_plan():
+    assert (r100.TXCFG_100, r100.RXCFG_100) == (0x00020010, 0x0000801F)
+    regs = PerifRegisters(base_addr=0x26100)
+    regs.write(0x26100, r100.RXCFG_100.to_bytes(4, "little"))
+    regs.write(0x26104, r100.TXCFG_100.to_bytes(4, "little"))
+    assert regs.get_rx_div_factor() == 0 and regs.get_rx_div_factor_frac() == 1
+    assert regs.get_rx_sample_size() == 7 and regs.get_rx_sb_pol() == 1
+    assert regs.get_rx_clk_sel() == 1
+    assert regs.get_tx_div_factor() == 2 and regs.get_tx_div_factor_frac() == 0
+    assert regs.get_tx_clk_sel() == 1
+    ch = PerifChannel(0, regs, core_clock_mhz=300.0)
+    assert ch.tx_clock_period_ns() == 10.0
+    assert ch.rx_clock_period_ns() == 5.0
+
+
+@pytest.mark.parametrize("n,ok", [(200, True), (252, True), (4, True), (0, False),
+                                  (202, False), (253, False), (256, False)])
+def test_validate_payload_len(n, ok):
+    if ok:
+        r100.validate_payload_len(n)
+    else:
+        with pytest.raises(ValueError):
+            r100.validate_payload_len(n)
+
+
+def test_burst_fifo_bytes():
+    assert r100.burst_fifo_bytes(200) == 263 == r100.BURST_FIFO_BYTES
+    assert r100.burst_fifo_bytes(128) == 173
+
+
+def test_tx_self_configures_n3_at_300mhz():
+    sim = r100.build_sim(load_rx=False)
+    assert sim.cores["pru0"].clock_mhz == 300.0 == sim.cores["pru1"].clock_mhz
+    regs = sim._perif["pru0"].registers
+    assert regs.get_tx_div_factor() == 2 and regs.get_tx_div_factor_frac() == 0
+    assert regs.get_tx_clk_sel() == 1
+    assert sim._perif["pru0"].channels[0].tx_clock_period_ns() == 10.0
+
+
+def test_run_until_label_raises_on_budget():
+    sim = r100.build_sim(load_rx=False)
+    assert not sim.load("pru1", "spin:\n    jmp spin\nnever:\n    jmp never\n")
+    with pytest.raises(RuntimeError, match="never"):
+        r100.run_until_label(sim, "never", max_lead_steps=64)
+
+
+@pytest.fixture(scope="module")
+def tx_only():
+    return r100.run_tx_only(DEFAULT_SEED, num_frames=3)
+
+
+def test_tx_only_frames_decode(tx_only):
+    assert tx_only.frames_ok == [True, True, True]
+    assert tx_only.invalid_symbols == [0, 0, 0]
+    assert tx_only.burst_pushed == [263, 263, 263]
+    assert tx_only.clean
+
+
+def test_tx_bit_period_and_gapless_bursts(tx_only):
+    assert tx_only.tx_period_ns == 10.0
+    assert tx_only.min_spacing_ns == pytest.approx(10.0, abs=1e-6)
+    assert tx_only.spacing_on_grid
+    assert len(tx_only.t_go_ns) == 3 == len(tx_only.t_end_ns)
+    for go, end in zip(tx_only.t_go_ns, tx_only.t_end_ns):
+        assert end - go == pytest.approx(21040.0, abs=1e-6)
