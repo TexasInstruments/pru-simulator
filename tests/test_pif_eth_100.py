@@ -166,3 +166,61 @@ def test_tx_bit_period_and_gapless_bursts(tx_only):
     assert len(tx_only.t_go_ns) == 3 == len(tx_only.t_end_ns)
     for go, end in zip(tx_only.t_go_ns, tx_only.t_end_ns):
         assert end - go == pytest.approx(21040.0, abs=1e-6)
+
+
+# --- RX baseline over the loopback (Task 5) ----------------------------------
+
+def test_rx_self_configures_fractional_divider():
+    sim = r100.build_sim(rx="base")
+    regs = sim._perif["pru1"].registers
+    assert regs.get_rx_div_factor() == 0 and regs.get_rx_div_factor_frac() == 1
+    assert regs.get_rx_sample_size() == 7
+    assert sim._perif["pru1"].channels[0].rx_clock_period_ns() == 5.0
+
+
+def test_rx_defaults_rxcfg_when_control_word_is_zero():
+    sim = r100.build_sim(rx="base", rxcfg=0)
+    assert sim._perif["pru1"].registers.get_shared_config()["rxcfg"] == r100.RXCFG_100
+
+
+def test_build_sim_rejects_bad_payload_len():
+    with pytest.raises(ValueError):
+        r100.build_sim(payload_len=256)
+
+
+@pytest.fixture(scope="module")
+def loop_base():
+    return r100.run_loopback(DEFAULT_SEED, num_frames=3, rx="base")
+
+
+def test_loopback_frames_clean(loop_base):
+    assert loop_base.clean, loop_base.frames
+    assert not loop_base.anchor_risk
+    for i, f in enumerate(loop_base.frames):
+        assert f.frames == i + 1
+        assert f.frame_ok and f.eof_status == 1 and f.tot_bits == 1600
+        assert 520 <= f.cap_bytes <= 532
+    assert len(loop_base.t_go_ns) == 3 == len(loop_base.t_end_ns)
+
+
+def test_rx_hot_loop_is_8_cycles_and_fifo_never_fills(loop_base):
+    # and, mov r31, sbbo(+1 write stall), add, qbeq, jmp  (+1 for the qbbc fall-through)
+    assert loop_base.hot_deltas == {1: {1}, 2: {1}, 3: {2}, 4: {1}, 5: {1}, 6: {1}}
+    assert loop_base.hot_loop_cycles_per_byte == 8
+    assert loop_base.hot_loop_cycles_per_byte <= 12          # budget: 8 samples x 1.5
+    assert loop_base.max_rx_fifo <= 2
+    assert len(loop_base.rx_post_cycles) == 3
+    assert all(c > 0 for c in loop_base.rx_post_cycles)
+
+
+@pytest.mark.parametrize("shift", r100.EDGE_PHASE_SHIFTS_NS)
+def test_all_edge_phases_clean(shift):
+    r = r100.run_loopback(DEFAULT_SEED, num_frames=1,
+                          latency_ns=r100.LOOPBACK_LATENCY_NS + shift)
+    assert r.clean, r.frames
+
+
+@pytest.mark.parametrize("seed", [1, 2])
+def test_other_seeds_clean(seed):
+    r = r100.run_loopback(seed, num_frames=2)
+    assert r.clean, r.frames

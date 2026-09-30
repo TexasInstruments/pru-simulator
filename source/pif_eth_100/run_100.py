@@ -49,7 +49,8 @@ PAYLOAD_LEN = 200
 MAX_PAYLOAD_LEN = 252        # 256 B RX frame buffer - 4 B FCS
 
 # Task 2 spike verdict: 0.0 unless the edge-tie phase forced the 5/6 ns fallback.
-LOOPBACK_LATENCY_NS = 0.0
+# second latency gate (Task 5): edge-tie phase fails at 0 ns + inexact shift; 5/6 ns keeps every sample >= 0.83 ns from a TX edge
+LOOPBACK_LATENCY_NS = 5.0 / 6.0
 EDGE_PHASE_SHIFTS_NS = (0.0, 10.0 / 3.0, 20.0 / 3.0)   # visits all 3 sample/edge residues
 SEEDS = (DEFAULT_SEED, 1, 2, 3, 4, 5, 6)
 HOST_POLL_INSTR = 16         # host re-checks DRAM flags every 16 PRU0 instructions
@@ -250,4 +251,110 @@ def run_tx_only(seed: int = DEFAULT_SEED, num_frames: int = 4,
             done += 1
     res.t_go_ns = [t for t, v in ch.tx_out_en_transitions if v == 1]
     res.t_end_ns = [t for t, v in ch.tx_out_en_transitions if v == 0]
+    return res
+
+
+# --- TX -> RX loopback (spec section 8, F3-E2E regime) -----------------------
+
+@dataclass
+class FrameStats:
+    frames: int
+    cap_bytes: int
+    rx_ovf: int
+    symbol_errors: int
+    crc_ok: int
+    bit_err: int
+    tot_bits: int
+    eof_status: int
+    frame_ok: bool
+
+    def clean(self, payload_len: int) -> bool:
+        return (self.rx_ovf == 0 and self.symbol_errors == 0 and self.crc_ok == 1
+                and self.bit_err == 0 and self.tot_bits == payload_len * 8
+                and self.eof_status == 1 and self.frame_ok)
+
+
+@dataclass
+class LoopResult:
+    seed: int
+    rx: str
+    latency_ns: float
+    payload_len: int
+    num_frames: int
+    frames: list[FrameStats] = field(default_factory=list)
+    t_go_ns: list[float] = field(default_factory=list)
+    t_end_ns: list[float] = field(default_factory=list)
+    rx_post_cycles: list[int] = field(default_factory=list)   # PRU1: eof -> frame_loop
+    max_rx_fifo: int = 0
+    hot_deltas: dict[int, set[int]] = field(default_factory=dict)  # offset from poll -> cycles seen
+
+    @property
+    def hot_loop_cycles_per_byte(self) -> int:
+        """Worst case for one stored byte on the poll path: qbbc fall-through (1) + body."""
+        return 1 + sum(max(v) for v in self.hot_deltas.values())
+
+    @property
+    def clean(self) -> bool:
+        return (len(self.frames) == self.num_frames
+                and all(f.clean(self.payload_len) for f in self.frames))
+
+    @property
+    def anchor_risk(self) -> bool:
+        """A bad CRC with zero symbol errors = symbol grid locked onto a false comma."""
+        return any(f.crc_ok == 0 and f.symbol_errors == 0 for f in self.frames)
+
+
+def run_loopback(seed: int = DEFAULT_SEED, num_frames: int = 3,
+                 payload_len: int = PAYLOAD_LEN, latency_ns: float = LOOPBACK_LATENCY_NS,
+                 rx: str = "base", max_lead_steps: int = 4_000_000) -> LoopResult:
+    """RX-gated regime: frame i+1 is released only after PRU1 published frame i.
+
+    Every PRU1 instruction is traced (step_paced_traced) for: max RX FIFO
+    occupancy, per-instruction cycle cost of the poll hot path, and PRU1
+    cycles from `eof` back to `frame_loop` (post-frame time).
+    """
+    sim = build_sim(seed, num_frames, payload_len, latency_ns, rx=rx)
+    labels = sim.cores["pru1"]._parser.labels
+    poll, eof, frame_loop = labels["poll"], labels["eof"], labels["frame_loop"]
+    rxch = sim._perif["pru1"].channels[0]
+    res = LoopResult(seed=seed, rx=rx, latency_ns=latency_ns,
+                     payload_len=payload_len, num_frames=num_frames)
+    eof_at: list = [None]
+
+    def on_follow(pc, dc, core):
+        depth = len(rxch.rx_fifo)
+        if depth > res.max_rx_fifo:
+            res.max_rx_fifo = depth
+        off = pc - poll
+        if 1 <= off <= 6:
+            res.hot_deltas.setdefault(off, set()).add(dc)
+        if pc == eof:
+            eof_at[0] = core.counters.cycles - dc
+        elif pc == frame_loop and eof_at[0] is not None:
+            res.rx_post_cycles.append(core.counters.cycles - dc - eof_at[0])
+            eof_at[0] = None
+
+    stream = prng_bytes(payload_len * num_frames, seed)
+    for i in range(num_frames):
+        wu32(sim, C_GO, 1)          # arm RX first ...
+        wu32(sim, T_GOFLAG, 1)      # ... then TX (~2.7k cycles of prep before its first bit)
+        steps = 0
+        while ru32(sim, S_FRAMES) != i + 1:
+            if steps >= max_lead_steps:
+                raise RuntimeError(f"seed={seed} rx={rx} frame {i}: no RX result "
+                                   f"within {max_lead_steps} PRU0 steps")
+            step_paced_traced(sim, HOST_POLL_INSTR, on_follow)
+            steps += HOST_POLL_INSTR
+        payload = stream[i * payload_len:(i + 1) * payload_len]
+        res.frames.append(FrameStats(
+            frames=ru32(sim, S_FRAMES), cap_bytes=ru32(sim, S_CAPBYTES),
+            rx_ovf=ru32(sim, S_OVF), symbol_errors=ru32(sim, S_SYMERR),
+            crc_ok=ru32(sim, S_CRCOK), bit_err=ru32(sim, S_BITERR),
+            tot_bits=ru32(sim, S_TOTBITS), eof_status=ru32(sim, S_EOF),
+            frame_ok=sim.memory_read(FRAME_ADDR, payload_len + 4)
+            == payload + fcs_bytes(payload)))
+    step_paced_traced(sim, 64, on_follow)   # let PRU1 reach frame_loop after the last frame
+    tx = sim._perif["pru0"].channels[0]
+    res.t_go_ns = [t for t, v in tx.tx_out_en_transitions if v == 1]
+    res.t_end_ns = [t for t, v in tx.tx_out_en_transitions if v == 0]
     return res
