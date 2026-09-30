@@ -29,7 +29,7 @@ Source: design spec §1 and the §17 addendum (`docs/superpowers/specs/2026-09-3
 | Frame | BERT frame, 200 B xorshift32 payload + 4 B FCS = 204 octets before 8b/10b, bracketed by K28.5 commas. |
 | RX | RX Option 1 (realtime raw capture, decode after the frame) on PRU1, over the existing zero-drift perif loopback channel 0. RX divider 1.5 (div_factor 0, FRAC = 1, RXCFG `0x0000801F`) gives exactly 2x oversampling (5 ns samples). |
 | Core clock | 300 MHz on both cores (`config/memory_pif_eth_100.cfg`); the root `memory.cfg` is never used by the tests and only changed transiently by the UI run. |
-| Loopback latency rule (spec 17.2) | Default 0 ns; all three sample-to-edge residues are tested by shifting the latency by 0, 10/3 and 20/3 ns. A fixed 5/6 ns latency is only the fallback if the 0 ns setting fails on the edge-tie signature (second gate in plan Task 5). |
+| Loopback latency rule (spec 17.2) | Default 0 ns; all three sample-to-edge residues are tested by shifting the latency by 0, 10/3 and 20/3 ns. A fixed 5/6 ns latency is only the fallback if the 0 ns setting fails on the edge-tie signature (second gate in plan Task 5). The user chose "keep the plan: try 0 ns, then fall back". **Outcome:** the second gate in Task 5 triggered. At 0 ns the edge-phase test at the 10/3 ns shift failed (symbol_errors = 71, crc_ok = 0); with 5/6 ns all three phases were clean, so `LOOPBACK_LATENCY_NS` = 5/6 ns. |
 | RX optimisation (spec 17.1) | A separate, post-baseline deliverable, `pif_eth_100_rx_fast.asm` (fast aligned decode with a 2:1 decimation LUT). The baseline `pif_eth_100_rx.asm` stays untouched; if the fast RX cannot pass, the baseline remains the delivered result. |
 | Existing files (spec 17.3) | Only a changelog entry under "Unreleased" in the top-level `readme.md` and a new `docs/handoff/` note; no other existing file changes. |
 | UI validation (spec 17.4) | A scripted walkthrough over the server's HTTP/WS endpoints is the validation of record; a real-browser run is added only if the Chrome extension answers. |
@@ -37,18 +37,24 @@ Source: design spec §1 and the §17 addendum (`docs/superpowers/specs/2026-09-3
 
 ### 3.2 Interaction log
 
-The main session contains three plain user messages. The other user-role records in the transcript are tool results and task notifications; they are not listed. Times are UTC (session start 2026-09-30T13:19:49+02:00 = 11:19:49Z). This log is a summary; system reminders, memory contents and tool output are deliberately not reproduced.
+Times are UTC (session start 2026-09-30T13:19:49+02:00 = 11:19:49Z). This log is a sanitised summary: system reminders, memory contents and tool output are deliberately not reproduced.
+
+**This log is hand-supplemented.** `session_stats.py` deliberately drops `tool_result` records, and the answers to the coordinator's multiple-choice questions arrive in the transcript as tool results, so the tool's own "Interaction log" output would show only the plain-text user messages. The main session has 4 multiple-choice question rounds (with answers) and 5 plain-text user messages (the original prompt, "yes, go ahead", "approve, Sonnet 5.5 subagent-driven", and two "continue with the plan" resumes). The other user-role records with text are relayed subagent messages and task notifications, and are not listed. The rows below combine both sources; question rounds are marked (question).
 
 | Time (UTC) | Who | What |
 |---|---|---|
-| 11:19:44 | User | The original prompt (section 2). |
-| 11:19 - 11:24 | Coordinator (Sonnet 5.5) | Brainstorming in the main session: the request terms were interpreted and settled with the user (spec §1 table). |
-| 11:24:46 | User | "yes, go ahead" (start the design). |
+| 11:19:44 | User | The original prompt (section 2). Classified as an architectural task (new firmware variant plus documentation), so: brainstorming, spec, plan, execution. |
+| 11:20:44 | User (question 1, "Frame size") | Chose "200 B payload + 4 B FCS (Recommended)", that is 204 octets before 8b/10b, with 80 Mbit/s read as the 8b/10b coding rate. Effect: the frame is a 200 B PRNG payload plus FCS; the goodput is measured, not assumed. |
+| 11:23:17 | User (question 2, "RX sampling") | Chose "2x oversample via fractional divider 1.5 (Recommended)"; the alternatives offered were 3x at n_rx = 1 and 1x at n_rx = 3. Effect: the old rule n_rx = n_tx / 2 cannot work at n_tx = 3, and the fractional divider gives exactly 2x. |
+| 11:24:46 | User | "yes, go ahead" (approve the design; start the spec). |
 | 11:25:13 - 11:37:51 | Planning subagent (Opus 5.5) | Wrote the design spec (12.6 min). |
-| 11:37:51 - 12:03:56 | User and coordinator | Spec review. The answers to the four open questions (goodput expectation, loopback latency, existing files, commit policy) are recorded in spec §17; they do not appear as plain-text user messages in the transcript extract. |
+| 12:03:29 | User (question 3, "Spec review", "Goodput", "Extra files", "Commits") | Spec: "Approve as written". Goodput (end-to-end about 9 Mbit/s because RX decodes after the frame): "Also add an RX-optimisation task". Extra files: "Handoff note + readme entry (Recommended)". Commits: "Work on a new branch, commit per task (Recommended)". Effect: the spec addendum (§17) adds a separate optimised RX (`pif_eth_100_rx_fast.asm`), a readme changelog entry and handoff note, and branch `feat/pif-eth-100` with one commit per task. |
 | 12:03:56 - 12:57:37 | Planning subagent (Opus 5.5) | Spec addendum §17 and the implementation plan (53.7 min elapsed, including a ~10 min gap inside the run). |
-| 13:24:58 | User | "approve, Sonnet 5.5 subagent-driven" (approve the plan; implement with one Sonnet 5.5 subagent per task, each followed by a review). |
-| 13:25 onward | Coordinator and Sonnet 5.5 subagents | Implementation tasks 2 to 10, each with an implementer and a spec/quality reviewer (see the per-agent table in section 5). At Task 5 the loopback-latency second gate triggered: 0 ns failed at the 10/3 ns phase, so the 5/6 ns fallback was used. The Chrome extension was not connected, so the UI guide was validated by script only. |
+| 13:22:53 | User (question 4, "Plan / exec", "Latency") | Not an approval at first: the user asked to be sure that the transmission on the wire is 100 Mbit, and said that the throughput table in the plan was not clear. Latency question: "Keep the plan: try 0 ns, then fall back (Recommended)". The coordinator then explained that the wire stays 100 Mbit/s (80 Mbit/s of data inside a burst), and that the table's goodput is 1600 payload bits divided by the whole frame period (burst 21.04 us + TX prep about 9 us + RX post-frame decode about 148 us at baseline), which is why the averages are lower. |
+| 13:24:58 | User | "approve, Sonnet 5.5 subagent-driven": one Sonnet 5.5 subagent per task, each followed by a Sonnet 5.5 task reviewer; Opus 5.5 for the final whole-branch review. |
+| 13:25 onward | Coordinator and Sonnet 5.5 subagents | Implementation tasks 2 to 10, each with an implementer and a reviewer (see the per-agent table in section 5). At Task 5 the loopback-latency second gate triggered (section 3.1); the fallback of 5/6 ns was used. The Chrome extension was not connected (two attempts in Task 8), so the UI guide was validated by script only. The coordinator ran Task 1 (branch and commit) itself. |
+| 13:56:51 | User | "continue with the plan": execution resumed after a transient outage of the harness safety classifier (Bash and Agent calls returned "no verdict"); the coordinator had stopped after two retry rounds and told the user. No work was lost. |
+| 13:59:38 | User | "continue with the plan" (second resume, same cause). |
 
 ## 4. Process and phases
 
@@ -132,7 +138,7 @@ Session start 2026-09-30T13:19:49+02:00 (11:19:49Z). The transcript cut-off for 
 | Plan finished until approval | 12:57:37 | 13:24:58 | about 27 min |
 | Implementation (Tasks 2 - 10) | 13:25:56 | snapshot | see below |
 
-At this snapshot the Sonnet 5.5 subagents used 16.4 min of summed wall-clock in 9 implementer runs (including the one running this task) and 6.5 min in 8 reviewer runs; the per-agent table in section 5 has each run. The overall session wall-clock (first record of the main session to the cut-off) was 155.6 min.
+At this snapshot the Sonnet 5.5 subagents used 16.4 min of summed wall-clock in 9 implementer runs (including the one running this task) and 6.5 min in 8 reviewer runs; the per-agent table in section 5 has each run. The main session's figure in the per-agent table (155.6 min at generation time) runs from the main transcript's first record to its last record; the first records (attachments and session setup, from 11:13:46Z) precede the first prompt (11:19:44Z) and the session-start timestamp, so it slightly overstates the working time.
 
 ## 7. Results
 
