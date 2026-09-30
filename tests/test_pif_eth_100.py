@@ -310,3 +310,47 @@ def test_seed_refuses_wrong_clock(monkeypatch):
     monkeypatch.setattr(ui, "check_clock", lambda http: 250.0)
     with pytest.raises(SystemExit, match="300 MHz"):
         asyncio.run(ui.seed("ws://127.0.0.1:9/ws", "http://127.0.0.1:9", DEFAULT_SEED))
+
+
+# --- development-report data (Task 10) ----------------------------------------
+from pif_eth_100 import session_stats as ss              # noqa: E402
+
+
+def _jsonl(path, records):
+    path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+
+
+def test_session_stats_dedups_usage_and_filters_messages(tmp_path):
+    u = {"input_tokens": 10, "cache_creation_input_tokens": 100,
+         "cache_read_input_tokens": 1000, "output_tokens": 5}
+    main_recs = [
+        {"type": "user", "timestamp": "2026-09-30T11:19:49.000Z",
+         "message": {"role": "user", "content": "build pif_eth_100"}},
+        {"type": "user", "isMeta": True, "timestamp": "2026-09-30T11:19:50.000Z",
+         "message": {"role": "user", "content": "meta"}},
+        {"type": "assistant", "timestamp": "2026-09-30T11:20:00.000Z",
+         "message": {"id": "m1", "model": "claude-sonnet-5-5", "usage": dict(u, output_tokens=2)}},
+        {"type": "assistant", "timestamp": "2026-09-30T11:20:01.000Z",
+         "message": {"id": "m1", "model": "claude-sonnet-5-5", "usage": u}},
+        {"type": "user", "timestamp": "2026-09-30T11:20:02.000Z",
+         "message": {"role": "user", "content": [{"type": "tool_result", "content": "x"}]}},
+        {"type": "user", "timestamp": "2026-09-30T11:30:00.000Z",
+         "message": {"role": "user", "content": "<task-notification>done</task-notification>"}},
+    ]
+    sub_recs = [
+        {"type": "user", "isSidechain": True, "timestamp": "2026-09-30T11:21:00.000Z",
+         "message": {"role": "user", "content": "You are the PLANNING architect"}},
+        {"type": "assistant", "timestamp": "2026-09-30T11:33:36.000Z",
+         "message": {"id": "a1", "model": "claude-opus-5-5", "usage": u}},
+    ]
+    _jsonl(tmp_path / "s1.jsonl", main_recs)
+    (tmp_path / "s1" / "subagents").mkdir(parents=True)
+    _jsonl(tmp_path / "s1" / "subagents" / "agent-abc.jsonl", sub_recs)
+    m, agents, human = ss.collect(tmp_path, "s1")
+    assert m.usage == {"claude-sonnet-5-5": u}             # m1 counted once, max per counter
+    assert [h["text"] for h in human] == ["build pif_eth_100"]
+    assert len(agents) == 1 and agents[0].name == "abc"
+    assert agents[0].usage == {"claude-opus-5-5": u}
+    assert agents[0].wall_s == pytest.approx(12 * 60 + 36)
+    md = ss.render_markdown(m, agents, human)
+    assert "claude-opus-5-5" in md and "build pif_eth_100" in md and "12.6 min" in md
