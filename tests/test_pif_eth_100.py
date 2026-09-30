@@ -2,6 +2,8 @@
 
 Spec: docs/superpowers/specs/2026-09-30-pif-eth-100-design.md
 """
+import asyncio
+import json
 import sys
 import zlib
 from pathlib import Path
@@ -244,3 +246,67 @@ def test_main_smoke(capsys):
     assert r100.main(["--seeds", "1", "--frames", "2"]) == 0
     out = capsys.readouterr().out
     assert "PASS" in out and "F2" in out and "FAIL" not in out
+
+
+# --- UI seeding (Task 7) -----------------------------------------------------
+from pif_eth_100 import seed_ui_100 as ui                # noqa: E402
+
+
+def test_seed_ui_writes_cover_both_cores_and_arm_last():
+    w = ui.build_writes()
+    addrs = [a for a, _ in w]
+    d = dict(w)
+    assert w[0] == (r100.LUT0_ADDR, codec.build_dram0_lut())
+    assert d[r100.LUT1_ADDR] == codec.build_dram1_decode_lut()
+    assert d[r100.C_RXCFG] == r100.RXCFG_100.to_bytes(4, "little")
+    assert d[r100.T_PLEN] == d[r100.C_PLEN] == (200).to_bytes(4, "little")
+    assert d[r100.T_SEED] == d[r100.C_SEED] == DEFAULT_SEED.to_bytes(4, "little")
+    assert d[r100.T_MODE] == d[r100.C_MODE] == bytes(4)
+    for a in (r100.S_FRAMES, r100.S_CAPBYTES, r100.S_OVF, r100.S_SYMERR,
+              r100.S_CRCOK, r100.S_BITERR, r100.S_TOTBITS, r100.S_EOF):
+        assert d[a] == bytes(4)
+    assert addrs[-2:] == [r100.T_GOFLAG, r100.C_GO]
+    assert [v for _, v in w[-2:]] == [(1).to_bytes(4, "little")] * 2
+    assert not any(r100.CAP_ADDR <= a < r100.FRAME_ADDR for a in addrs)
+
+
+def test_seed_ui_verdict_flags_bad_stats():
+    good = dict(frames=1, cap_bytes=526, rx_ovf=0, symbol_errors=0, crc_ok=1,
+                bit_err=0, tot_bits=1600, eof_status=1)
+    raw = b"".join(good[k].to_bytes(4, "little") for k in ui.FIELDS)
+    assert ui.parse_stats(raw) == good
+    assert ui.verdict(good) == []
+    assert set(ui.verdict(dict(good, crc_ok=0, eof_status=0))) == {"crc_ok", "eof_status"}
+    assert ui.verdict(dict(good, frames=0)) == ["frames"]
+
+
+_SRC = _ROOT / "source" / "pif_eth_100"
+
+
+def _ui_flow_one_frame(rx):
+    """Emulate the browser: load both cores, seed with BOTH go flags set before
+    either core has run a single instruction, then a paced multi-core Run.
+    Nothing waits for PRU1's boot, so RX must arm within TX's frame prep."""
+    from simulator import Simulator
+    sim = Simulator(config_path=r100.CONFIG_PATH)
+    for core, name in (("pru0", r100.TX_FIRMWARE), ("pru1", r100.RX_FIRMWARE[rx])):
+        assert not sim.load(core, (_SRC / name).read_text(), include_paths=[str(_SRC)])
+    sim.perif_loopback(0, True, latency_ns=r100.LOOPBACK_LATENCY_NS)
+    for addr, data in ui.build_writes():
+        sim.memory.write(addr, data)
+    steps = 0
+    while r100.ru32(sim, r100.S_FRAMES) < 1:
+        assert steps < 400_000
+        sim.step_paced("pru0", "pru1", 1000)
+        steps += 1000
+    return ui.parse_stats(sim.memory_read(r100.STATS_ADDR, 32))
+
+
+def test_ui_flow_base_rx_clean():
+    assert ui.verdict(_ui_flow_one_frame("base")) == []
+
+
+def test_seed_refuses_wrong_clock(monkeypatch):
+    monkeypatch.setattr(ui, "check_clock", lambda http: 250.0)
+    with pytest.raises(SystemExit, match="300 MHz"):
+        asyncio.run(ui.seed("ws://127.0.0.1:9/ws", "http://127.0.0.1:9", DEFAULT_SEED))
