@@ -146,7 +146,34 @@ _Completed in the final report task._
 
 ## 8. RX optimisation
 
-_Completed in the final report task._
+**Outcome: delivered.** `pif_eth_100_rx_fast.asm` passes every mandatory check (zero BER, `crc_ok = 1`, `rx_ovf = 0`, `symbol_errors = 0`) and gives frame bytes and stats identical to the baseline. The baseline `pif_eth_100_rx.asm` is unchanged and remains the proven reference. It was built only after Tasks 1 to 10 (baseline loopback, tests, UI guide, report skeleton) were committed, as the user decided. Simulator results only, not silicon.
+
+**Why the baseline is slow.** The baseline `post_frame` visits the 8 samples of each captured byte one at a time, about 20 cycles per line bit, and takes about 44.5 k PRU1 cycles (148 us at 300 MHz) per 200 B frame. The realtime capture loop is not the bottleneck (8 cycles per byte, RX FIFO depth 1). Because frame i+1 may only start after PRU1 has finished frame i, end-to-end goodput is 8.97 Mbit/s against 53.18 Mbit/s TX-limited.
+
+**Approach.** A fast aligned decode, after the first comma has anchored the symbol grid:
+1. On the first frame's post-frame only, PRU1 builds a 256 B 2:1 decimation LUT (`nib[b] = b7<<3 | b5<<2 | b3<<1 | b1`, the samples the baseline's XOR toggle keeps) at local `0x0C00`. It is not built at boot: in the UI both go flags are set before either core runs, so RX must arm within TX's frame prep (about 2.7 k cycles), and a boot-time build in the planner's scratch prototype missed the frame start (`cap_bytes` 410, `crc_ok` 0).
+2. The baseline bit-slide scan runs unchanged until the first comma, then at the next byte boundary `pf_fast` loads 4 capture bytes per `lbbo`, maps each byte to 4 line bits with one LUT load, and cuts a 10-bit symbol whenever at least 10 bits are held. Decode, running disparity, commas and the frame-buffer guard follow `pf_symbol`'s aligned branch.
+
+**Why Options 2 and 3 were rejected.** The 2026-07-21 RX spec's Options 2 and 3 move work into the realtime loop and were estimated at 15 to 25 cycles per byte, which does not fit the 12-cycle per-byte budget (8 samples at 1.5 core cycles). The chosen approach leaves the realtime loop untouched: `diff` of the `poll:` to `eof:` region against the baseline prints nothing.
+
+**Prototype evidence (planner, not the implementer).** Before this task the planner ran the plan's code in scratch copies: first on the 250 MHz rig (n_tx = 4) with 4 seeds x payloads 128/200/252 x 3 latencies, identical stats and frame bytes (post-frame 29.2 k to 9.0 k, 44.5 k to 13.5 k, 55.5 k to 16.8 k cycles); then the exact plan code at 300 MHz (13.5 k cycles steady state, F3 end-to-end 19.48 Mbit/s). Those are the hypotheses this task re-measured; the numbers below are this task's own runs.
+
+**Measured before/after at 300 MHz** (`run_100.py --rx both`, seed 464371934, 3 frames, latency 0.8333 ns, traced single-stepped PRU1 cycles eof to frame_loop; all 18 rows PASS with `hot` = 8, `OVERALL: PASS`):
+
+| Quantity | Baseline RX | Fast RX |
+|---|---|---|
+| Post-frame, 3-frame mean (incl. one-off LUT build) | 44 469 cycles = 148.2 us | 14 905 cycles = 49.7 us |
+| Post-frame per frame | 44 484 / 44 444 / 44 480 | 17 652 / 13 513 / 13 549 |
+| Post-frame, steady state (frames 2 and 3) | about 44 460 cycles | about 13 531 cycles = 45.1 us |
+| F3 end-to-end, 3 frames | 8.97 Mbit/s | 19.48 Mbit/s |
+| F3 end-to-end, steady state (frames 2 to 5 of a 5-frame run) | 8.97 Mbit/s | 21.25 Mbit/s |
+| F3 TX-limited | 53.18 Mbit/s | 53.18 Mbit/s |
+
+The post-frame time falls by 66 % over 3 frames and by 70 % in steady state; the one-off LUT build costs the first frame about 4.1 k cycles (17 652 against 13 531). These match the planner's prototype figures to within the reported rounding. End-to-end goodput stays below the TX-limited 53.18 Mbit/s because the remaining gap is 61.09 us (3-frame) against 9.05 us TX-limited.
+
+**Equivalence tests** (`tests/test_pif_eth_100.py`, 14 new, all `rx="fast"`): LUT empty at boot and equal to the expected table after frame 1; UI flow with both go flags set at boot is clean; 3-frame loopback clean and `FrameStats` list equal to the baseline's; equal to the baseline for 2 seeds x 3 edge phases and for payload lengths 128 and 252; realtime loop unchanged (hot deltas, 8 cycles per byte, RX FIFO depth at most 2); post-frame at least 2x faster; F3 end-to-end at least 1.5x the baseline and below the TX-limited figure. The TDD RED run failed with `FileNotFoundError` for the missing `pif_eth_100_rx_fast.asm`; the first run with the brief's code was green.
+
+**Scripted UI check.** `ui_walkthrough_100.py --frames 2 --rx fast` passed on a private port (8091), as did a base re-load and a fast re-load (each with Reset); the fast frames were done after 20 000 and 15 000 lead instructions against 35 000 for the baseline. As in section 9, this is a script over the server's endpoints, not a browser click-through.
 
 ## 9. Deviations from the spec
 

@@ -40,8 +40,9 @@ numbers below are simulator results.
 
 4. **Load both programs from the in-UI source browser.**
    Click **Project** (in the Assembly Editor panel title bar) and choose
-   `pif_eth_100`. Three tabs open: `pif_eth_100_rx.asm`,
-   `pif_eth_100_tx.asm`, `pif_eth_crc32_hw.inc`.
+   `pif_eth_100`. The folder's files open as tabs: `pif_eth_100_rx.asm`,
+   `pif_eth_100_rx_fast.asm` (optional, step 4c), `pif_eth_100_tx.asm`,
+   `pif_eth_crc32_hw.inc`.
    * Select the `pif_eth_100_tx.asm` tab, set the load-target dropdown in the
      editor title bar (it appears once Multi-core is on) to **→ PRU0**, click
      **Load & Assemble**.
@@ -61,6 +62,14 @@ numbers below are simulator results.
    `pif_eth_100_rx.asm` without Reset resumed at the old PC and wrote LUT bytes
    over the stats block (reproduced by the planner; not re-run for this guide).
    Always Reset after loading, then seed.
+
+   4c. **Optional: the optimised receiver.** To run the optimised receiver, load
+   `pif_eth_100_rx_fast.asm` into PRU1 instead of `pif_eth_100_rx.asm` (select
+   its tab in the **Project** list, load target **-> PRU1**, **Load & Assemble**),
+   then **Reset** as in step 4b. Seeding and status are identical (steps 5 to
+   8). To switch between the two receivers, load the other file and Reset again.
+   The optimised receiver finishes decoding sooner, so a frame is done after
+   fewer lead instructions than with the baseline (see the README for figures).
 
 5. **Seed.**
    ```bash
@@ -221,6 +230,19 @@ with `config/memory_pif_eth_100.cfg` as `memory.cfg`.
   [step 6-7] frame 2 after 35000 lead instr: {'frames': 2, 'cap_bytes': 526, 'rx_ovf': 0, 'symbol_errors': 0, 'crc_ok': 1, 'bit_err': 0, 'tot_bits': 1600, 'eof_status': 1} -> PASS
   UI WALKTHROUGH PASS (2 frames, base RX)
   ```
+* **Optimised receiver (step 4c), scripted only.** Same server setup (private
+  port 8091, 300 MHz). `ui_walkthrough_100.py --frames 2 --rx fast`, then
+  `--rx base`, then `--rx fast` again (each run loads both cores and Resets
+  both, so this covers the fast -> base -> fast re-load with Reset), all exit 0.
+  Each fast run: frame 1 `frames 1, cap_bytes 526, rx_ovf 0, symbol_errors 0,
+  crc_ok 1, bit_err 0, tot_bits 1600, eof_status 1` PASS after 20 000 lead
+  instructions, frame 2 the same fields with `frames 2` PASS after a further
+  15 000 (the base runs needed 35 000 each). This was validated by script and
+  by the `_ui_flow_one_frame("fast")` unit test only; the browser flow for the
+  optimised receiver (choosing the fast tab in **Project**, load target,
+  **Reset**) was not clicked through in a browser. The four-tab **Project**
+  listing is inferred from the server's directory listing, not observed in a
+  browser.
 * **Guide flow driven through the CLIs** (load + Reset over the WebSocket, then
   `seed_ui_100.py`, Run in 1000-instruction chunks, `status`, `arm`, Run,
   `status`): `status` before Run FAIL (all zeros); after 10 000 lead

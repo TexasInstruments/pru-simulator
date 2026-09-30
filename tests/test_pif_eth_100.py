@@ -354,3 +354,71 @@ def test_session_stats_dedups_usage_and_filters_messages(tmp_path):
     assert agents[0].wall_s == pytest.approx(12 * 60 + 36)
     md = ss.render_markdown(m, agents, human)
     assert "claude-opus-5-5" in md and "build pif_eth_100" in md and "12.6 min" in md
+
+
+# --- optimised RX (Task 11) ---------------------------------------------------
+
+def test_fast_rx_builds_decimation_lut_on_first_frame():
+    sim = r100.build_sim(rx="fast")
+    assert sim.memory_read(r100.NIB_LUT_ADDR, 256) == bytes(256)   # not at boot
+    r100.wu32(sim, r100.C_GO, 1)
+    r100.wu32(sim, r100.T_GOFLAG, 1)
+    steps = 0
+    while r100.ru32(sim, r100.S_FRAMES) != 1:
+        assert steps < 400_000
+        r100.step_paced_traced(sim, 256)
+        steps += 256
+    expected = bytes(((b >> 4) & 8) | ((b >> 3) & 4) | ((b >> 2) & 2) | ((b >> 1) & 1)
+                     for b in range(256))
+    assert sim.memory_read(r100.NIB_LUT_ADDR, 256) == expected
+
+
+def test_fast_rx_ui_flow_both_go_flags_at_boot():
+    assert ui.verdict(_ui_flow_one_frame("fast")) == []
+
+
+@pytest.fixture(scope="module")
+def loop_fast():
+    return r100.run_loopback(DEFAULT_SEED, num_frames=3, rx="fast")
+
+
+def test_fast_rx_clean_and_identical_to_base(loop_base, loop_fast):
+    assert loop_fast.clean, loop_fast.frames
+    assert loop_fast.frames == loop_base.frames
+
+
+@pytest.mark.parametrize("shift", r100.EDGE_PHASE_SHIFTS_NS)
+@pytest.mark.parametrize("seed", [DEFAULT_SEED, 1])
+def test_fast_equals_base_all_phases(seed, shift):
+    lat = r100.LOOPBACK_LATENCY_NS + shift
+    b = r100.run_loopback(seed, num_frames=2, latency_ns=lat, rx="base")
+    f = r100.run_loopback(seed, num_frames=2, latency_ns=lat, rx="fast")
+    assert f.clean, f.frames
+    assert f.frames == b.frames
+
+
+@pytest.mark.parametrize("plen", [128, 252])
+def test_fast_equals_base_other_payload_lengths(plen):
+    b = r100.run_loopback(DEFAULT_SEED, num_frames=1, payload_len=plen, rx="base")
+    f = r100.run_loopback(DEFAULT_SEED, num_frames=1, payload_len=plen, rx="fast")
+    assert f.clean, f.frames
+    assert f.frames == b.frames
+
+
+def test_fast_rx_keeps_the_realtime_loop(loop_fast):
+    assert loop_fast.hot_deltas == {1: {1}, 2: {1}, 3: {2}, 4: {1}, 5: {1}, 6: {1}}
+    assert loop_fast.hot_loop_cycles_per_byte == 8
+    assert loop_fast.max_rx_fifo <= 2
+
+
+def test_fast_rx_post_frame_at_least_2x_faster(loop_base, loop_fast):
+    base = sum(loop_base.rx_post_cycles) / len(loop_base.rx_post_cycles)
+    fast = sum(loop_fast.rx_post_cycles) / len(loop_fast.rx_post_cycles)
+    assert 2 * fast < base
+
+
+def test_fast_rx_raises_end_to_end_goodput(loop_base, loop_fast, tx_only):
+    tb = r100.throughput(loop_base, tx_only)
+    tf = r100.throughput(loop_fast, tx_only)
+    assert tf["F3_e2e_mbps"] > 1.5 * tb["F3_e2e_mbps"]
+    assert tf["F3_e2e_mbps"] < tf["F3_tx_mbps"]
