@@ -358,3 +358,110 @@ def run_loopback(seed: int = DEFAULT_SEED, num_frames: int = 3,
     res.t_go_ns = [t for t, v in tx.tx_out_en_transitions if v == 1]
     res.t_end_ns = [t for t, v in tx.tx_out_en_transitions if v == 0]
     return res
+
+
+# --- throughput (spec section 8) ---------------------------------------------
+
+def throughput(loop: LoopResult, tx: TxResult) -> dict:
+    """F1 line rate, F2 in-burst coding rate, F2p in-burst payload rate,
+    F3 frame-averaged goodput (start-to-start, all gaps included) for the
+    TX-limited and the end-to-end (RX-gated) regime. Mbit/s = bits/ns x 1000."""
+    if len(tx.t_go_ns) < 2 or len(loop.t_go_ns) < 2:
+        raise ValueError("throughput needs >= 2 bursts in each regime")
+    n = loop.payload_len
+    t_burst = tx.t_end_ns[0] - tx.t_go_ns[0]
+    pushed = tx.burst_pushed[0]
+
+    def f3(t_go):
+        return 8 * n * (len(t_go) - 1) / (t_go[-1] - t_go[0]) * 1e3
+
+    def gap(t_go, t_end):
+        g = [t_go[i + 1] - t_end[i] for i in range(len(t_go) - 1)]
+        return sum(g) / len(g)
+
+    post = sum(loop.rx_post_cycles) / len(loop.rx_post_cycles) if loop.rx_post_cycles else 0.0
+    return {
+        "rx": loop.rx,
+        "F1_mbaud": 1e3 / tx.min_spacing_ns,
+        "F2_mbps": 8 * (pushed * 8 / 10) / t_burst * 1e3,
+        "F2p_mbps": 8 * n / t_burst * 1e3,
+        "F3_tx_mbps": f3(tx.t_go_ns),
+        "F3_e2e_mbps": f3(loop.t_go_ns),
+        "T_burst_ns": t_burst,
+        "tx_gap_ns": gap(tx.t_go_ns, tx.t_end_ns),
+        "e2e_gap_ns": gap(loop.t_go_ns, loop.t_end_ns),
+        "rx_post_cycles": post,
+        "rx_post_us": post / CORE_MHZ,
+        "host_poll_bound_ns": HOST_POLL_INSTR * 3 * 1e3 / CORE_MHZ,
+    }
+
+
+def format_throughput(t: dict) -> str:
+    return "\n".join([
+        f"Throughput [{t['rx']} RX]  (simulator figures, not silicon)",
+        f"  F1  line rate                 {t['F1_mbaud']:7.2f} Mbaud",
+        f"  F2  in-burst data rate        {t['F2_mbps']:7.2f} Mbit/s  (8b/10b coding rate)",
+        f"  F2p in-burst payload rate     {t['F2p_mbps']:7.2f} Mbit/s  (200 B per 21.04 us burst)",
+        f"  F3  goodput, TX-limited       {t['F3_tx_mbps']:7.2f} Mbit/s  (gap {t['tx_gap_ns'] / 1e3:.2f} us)",
+        f"  F3  goodput, end-to-end       {t['F3_e2e_mbps']:7.2f} Mbit/s  (gap {t['e2e_gap_ns'] / 1e3:.2f} us)",
+        f"  T_burst {t['T_burst_ns']:.1f} ns   RX post-frame {t['rx_post_cycles']:.0f} cycles "
+        f"= {t['rx_post_us']:.1f} us   host poll bound <= {t['host_poll_bound_ns']:.0f} ns",
+    ])
+
+
+def _row(r: LoopResult) -> str:
+    f = r.frames
+    worst = (max(x.rx_ovf for x in f), max(x.symbol_errors for x in f),
+             max(x.bit_err for x in f), min(x.crc_ok for x in f),
+             min(x.eof_status for x in f), min(x.cap_bytes for x in f))
+    post = int(sum(r.rx_post_cycles) / len(r.rx_post_cycles)) if r.rx_post_cycles else 0
+    flag = "  <-- ANCHOR RISK" if r.anchor_risk else ""
+    return (f"{r.rx:>4} {r.seed:>10} {r.latency_ns:>7.3f} {len(f):>3} {worst[0]:>4} "
+            f"{worst[1]:>6} {worst[2]:>6} {worst[3]:>3} {worst[4]:>3} {worst[5]:>4} "
+            f"{r.max_rx_fifo:>4} {r.hot_loop_cycles_per_byte:>4} {post:>9}  "
+            f"{'PASS' if r.clean else 'FAIL'}{flag}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="pif_eth_100 TX->RX loopback, seed sweep, throughput")
+    ap.add_argument("--seeds", default=",".join(str(s) for s in SEEDS),
+                    help="comma list, int or 0x-hex (default: 7 seeds)")
+    ap.add_argument("--frames", type=int, default=3)
+    ap.add_argument("--latency-ns", type=float, default=LOOPBACK_LATENCY_NS)
+    ap.add_argument("--rx", choices=("base", "fast", "both"), default="base")
+    args = ap.parse_args(argv)
+    seeds = [int(s, 0) for s in args.seeds.split(",")]
+    variants = ("base", "fast") if args.rx == "both" else (args.rx,)
+    for rx in variants:
+        if not (_HERE / RX_FIRMWARE[rx]).exists():
+            ap.error(f"--rx {rx}: firmware {RX_FIRMWARE[rx]} does not exist yet")
+
+    ok = True
+    tx = run_tx_only(seeds[0], num_frames=4)
+    print(f"TX only (seed {seeds[0]}, 4 back-to-back frames): "
+          f"{'PASS' if tx.clean else 'FAIL'}  period={tx.tx_period_ns:.3f} ns  "
+          f"min transition spacing={tx.min_spacing_ns:.3f} ns  on 10 ns grid={tx.spacing_on_grid}  "
+          f"burst_pushed={tx.burst_pushed}")
+    ok &= tx.clean
+    print(f"\n{'rx':>4} {'seed':>10} {'lat_ns':>7} {'frm':>3} {'ovf':>4} {'symerr':>6} "
+          f"{'biterr':>6} {'crc':>3} {'eof':>3} {'cap':>4} {'fifo':>4} {'hot':>4} "
+          f"{'post_cyc':>9}  result")
+    firsts: dict[str, LoopResult] = {}
+    for rx in variants:
+        for seed in seeds:
+            shifts = EDGE_PHASE_SHIFTS_NS if seed == seeds[0] else (0.0,)
+            for shift in shifts:
+                r = run_loopback(seed, num_frames=args.frames,
+                                 latency_ns=args.latency_ns + shift, rx=rx)
+                print(_row(r), flush=True)
+                ok &= r.clean
+                firsts.setdefault(rx, r)
+    for rx in variants:
+        print()
+        print(format_throughput(throughput(firsts[rx], tx)))
+    print(f"\nOVERALL: {'PASS' if ok else 'FAIL'}")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

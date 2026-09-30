@@ -224,3 +224,23 @@ def test_all_edge_phases_clean(shift):
 def test_other_seeds_clean(seed):
     r = r100.run_loopback(seed, num_frames=2)
     assert r.clean, r.frames
+
+
+# --- throughput + CLI (Task 6) -----------------------------------------------
+
+def test_throughput_figures(loop_base, tx_only):
+    t = r100.throughput(loop_base, tx_only)
+    assert t["F1_mbaud"] == pytest.approx(100.0, abs=1e-6)
+    assert t["F2_mbps"] == pytest.approx(80.0, abs=0.01)
+    assert t["F2p_mbps"] == pytest.approx(76.05, abs=0.01)
+    assert t["T_burst_ns"] == pytest.approx(21040.0, abs=1e-6)
+    assert 0 < t["F3_e2e_mbps"] < t["F3_tx_mbps"] < t["F2p_mbps"]
+    assert t["rx_post_cycles"] > 0 and t["tx_gap_ns"] > 0 and t["e2e_gap_ns"] > t["tx_gap_ns"]
+    text = r100.format_throughput(t)
+    assert "F1" in text and "F3" in text and "Mbit/s" in text
+
+
+def test_main_smoke(capsys):
+    assert r100.main(["--seeds", "1", "--frames", "2"]) == 0
+    out = capsys.readouterr().out
+    assert "PASS" in out and "F2" in out and "FAIL" not in out
