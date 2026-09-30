@@ -31,13 +31,16 @@ code { font-family: "DejaVu Sans Mono", monospace; font-size: 9pt;
 pre { background: #f6f6f6; border: 1px solid #ddd; padding: 6px;
       white-space: pre-wrap; word-break: break-all; font-size: 8pt; }
 pre code { background: none; padding: 0; }
+img { max-width: 100%; height: auto; display: block; margin: 0.6em auto; }
 blockquote { border-left: 3px solid #999; margin-left: 0; padding-left: 10px; color: #444; }
 """
 
 
-def render_html(md_text: str, title: str) -> str:
+def render_html(md_text: str, title: str, base_uri: str | None = None) -> str:
+    """base_uri (a file:// URI ending in /) lets relative image paths resolve."""
     body = MarkdownIt("gfm-like", {"linkify": False}).render(md_text)
-    return (f'<!doctype html><html><head><meta charset="utf-8"><title>{title}</title>'
+    base = f'<base href="{base_uri}">' if base_uri else ""
+    return (f'<!doctype html><html><head><meta charset="utf-8">{base}<title>{title}</title>'
             f"<style>{CSS}</style></head><body>{body}</body></html>")
 
 
@@ -53,7 +56,8 @@ def build(md: Path) -> Path:
     out = md.with_suffix(".pdf")
     with tempfile.TemporaryDirectory() as td:
         html = Path(td) / f"{md.stem}.html"
-        html.write_text(render_html(md.read_text(encoding="utf-8"), md.stem), encoding="utf-8")
+        base = md.parent.as_uri().rstrip("/") + "/"
+        html.write_text(render_html(md.read_text(encoding="utf-8"), md.stem, base), encoding="utf-8")
         subprocess.run([_chrome(), "--headless", "--disable-gpu", "--no-sandbox",
                         f"--print-to-pdf={out}", "--print-to-pdf-no-header",
                         "--no-pdf-header-footer", html.as_uri()],

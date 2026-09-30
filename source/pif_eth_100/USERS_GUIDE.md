@@ -5,9 +5,21 @@ receives them through a loopback wire at 2x oversampling (divider 1.5) and check
 bit errors against the same PRNG. When a frame is done DRAM1 reads `crc_ok 1`, `symbol_errors 0`,
 `bit_err 0`, `tot_bits 1600`. Simulator only, never run on silicon.
 
+![Block diagram of the pif_eth_100 data path: PRU0 fills a 200 byte payload, appends a CRC-32, encodes 8b/10b, and serialises at 100 Mbaud; the loopback wire feeds PRU1, which samples at 2x, captures, decodes, checks CRC and bit errors and writes a stats block.](figures/datapath.svg)
+
+*Figure 1. What the two cores do: PRU0 (steps 1 to 5) sends, PRU1 (steps 6 to 10) receives and writes the DRAM1 stats you read in the steps below. Simulator model, not silicon.*
+
 > **How this guide was checked.** UI wording in this guide was derived from the UI source and
 > validated by scripted walkthrough over the same HTTP/WebSocket endpoints; a real-browser
 > click-through was not performed in the authoring session.
+
+**What goodput to expect.** Inside a burst the wire runs at 100 Mbaud = 80 Mbit/s, but a frame is
+only sent after PRU1 has finished decoding the previous one, so the end-to-end goodput is the
+payload divided by the whole frame period.
+
+![Stacked bars of one frame period for the baseline RX (178.4 us, 8.97 Mbit/s), the fast RX (82.1 us, 19.48 Mbit/s) and TX alone (30.1 us, 53.18 Mbit/s): 21.04 us burst on the wire, RX post-frame decode, then 9.05 us TX preparation.](figures/frame_timeline.svg)
+
+*Figure 2. One frame period for the baseline RX, the fast RX and TX alone (simulator run via `run_100`, not silicon). Regenerate the figures with `python3 source/pif_eth_100/make_figures.py`.*
 
 ## Prerequisites
 

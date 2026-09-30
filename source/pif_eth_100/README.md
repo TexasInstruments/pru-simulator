@@ -14,6 +14,12 @@ All results below are **simulator results, not silicon claims**.
 * Development report: [`DEVELOPMENT_REPORT.md`](DEVELOPMENT_REPORT.md) (prompt, interaction, models, tokens, time, measured results)
 * PDFs of the user's guide and the report: `USERS_GUIDE.pdf`, `DEVELOPMENT_REPORT.pdf` (regenerate with `build_pdfs.py`)
 
+## Data path
+
+![Block diagram of the pif_eth_100 data path: PRU0 fills a 200 byte payload, appends a CRC-32, encodes 8b/10b, and serialises at 100 Mbaud; the loopback wire feeds PRU1, which samples at 2x, captures, decodes, checks CRC and bit errors and writes a stats block.](figures/datapath.svg)
+
+*Figure 1. Data path, PRU0 TX to PRU1 RX through the loopback wire. Steps 1 to 5 run on PRU0, 6 to 10 on PRU1; the dashed note is the optional fast RX. Constants come from the project code. Simulator model, not silicon.*
+
 ## Clock plan
 
 | Quantity | Value | Source |
@@ -57,6 +63,8 @@ step (`n = (div_factor + 1) + 0.5 * frac`), so div_factor = 0 with frac = 1 give
 | `frames.py` | BERT frame builder (200 B payload + 4 B FCS). |
 | `rx_reference.py` | Host-side reference for the RX path (expand, decimate, comma alignment, decode). |
 | `session_stats.py` | Transcript statistics (tokens, models, wall-clock) for the development report. |
+| `make_figures.py` | Generates `figures/datapath.svg` and `figures/frame_timeline.svg` (hand-written SVG; the timeline is plotted from a real `run_100` run). |
+| `figures/` | The two SVG figures embedded in this README and in `USERS_GUIDE.md`. |
 | `build_pdfs.py` | Renders `USERS_GUIDE.md` and `DEVELOPMENT_REPORT.md` to PDF (markdown-it-py + headless Chrome). |
 | `DEVELOPMENT_REPORT.md`, `DEVELOPMENT_REPORT.pdf`, `USERS_GUIDE.pdf` | The development report and the PDFs of report and guide. |
 | `__init__.py` | Package marker. |
@@ -72,6 +80,7 @@ Run from the repo root.
 python3 source/pif_eth_100/run_100.py            # TX-only check, 9-run loopback sweep, throughput figures
 python3 -m pytest tests/test_pif_eth_100.py      # unit and firmware tests
 python3 source/pif_eth_100/spike_frac_rx.py      # fractional-divider spike (clock plan + divider 1.5)
+python3 source/pif_eth_100/make_figures.py       # regenerate the two SVG figures (runs the simulator)
 python3 source/pif_eth_100/build_pdfs.py         # regenerate the two PDFs
 ```
 
@@ -131,6 +140,10 @@ the traced stepper saw during the run (1 in every row).
 | **F2 in-burst data rate** | 80.00 Mbit/s | 100 Mbaud x 8/10, the 8b/10b coding rate. This is the requested "80 Mbit/s net". Inside a burst the line has no gaps (T_burst = 21040 ns = 263 FIFO bytes x 8 x 10 ns). F2p = 76.05 Mbit/s is the payload alone within a burst (200 B per 21.04 us): commas, FCS and pad take the rest. |
 | **F3 goodput, TX-limited** | 53.18 Mbit/s (gap 9.05 us) | Payload bits per frame start-to-start with TX running alone. The 9.05 us between bursts is measured; it is consistent with the design spec's estimate for PRU0 preparation (PRNG fill about 8 us plus CRC about 0.9 us), but the run output does not itemise it. |
 | **F3 goodput, end-to-end** | 8.97 Mbit/s (gap 157.35 us) with the baseline RX; 19.48 Mbit/s with the optimised RX (see Optimised RX) | With RX in the loop, frame i+1 may only start after PRU1 has finished decoding frame i and re-armed. |
+
+![Stacked bars of one frame period for the baseline RX (178.4 us, 8.97 Mbit/s), the fast RX (82.1 us, 19.48 Mbit/s) and TX alone (30.1 us, 53.18 Mbit/s): 21.04 us burst on the wire, RX post-frame decode, then 9.05 us TX preparation.](figures/frame_timeline.svg)
+
+*Figure 2. One frame period, start of burst to start of the next burst, for the baseline RX, the fast RX and TX alone. Plotted from a run of `run_tx_only`, `run_loopback` and `throughput` (seed 464371934, 3 frames): the burst and TX preparation are the measured 21.04 us and 9.05 us; the RX decode is the mean post-frame time of the frames that gate the gaps (148.2 us baseline, 51.9 us fast; the 49.7 us in the Optimised RX table is the 3-frame mean including the last frame). The grey sliver (about 0.1 us) is host/arming time that the run does not itemise. Simulator measurement, not silicon.*
 
 The end-to-end figure is far below 80 Mbit/s because it is bounded by RX Option 1: the
 receiver captures in real time but decodes **after** the frame, and that post-frame work

@@ -431,3 +431,46 @@ def test_build_pdfs_renders_gfm_tables():
     from pif_eth_100 import build_pdfs
     html = build_pdfs.render_html("# T\n\n| a | b |\n|---|---|\n| 1 | 2 |\n", "T")
     assert "<table>" in html and "<h1>T</h1>" in html and 'charset="utf-8"' in html
+
+
+# --- figures (make_figures.py) -------------------------------------------------
+
+def test_figures_are_wellformed_and_carry_measured_numbers(loop_base, loop_fast, tx_only):
+    import xml.etree.ElementTree as ET
+    from pif_eth_100 import make_figures as mf
+    tp = {"base": r100.throughput(loop_base, tx_only), "fast": r100.throughput(loop_fast, tx_only)}
+    loops = {"base": loop_base, "fast": loop_fast}
+    tl = mf.timeline_svg(tp, loops)
+    dp = mf.datapath_svg(tp, tx_only)
+    for svg in (tl, dp):
+        root = ET.fromstring(svg.encode("utf-8"))
+        assert root.tag.endswith("svg")
+        assert root.find("{http://www.w3.org/2000/svg}title") is not None
+        assert root.find("{http://www.w3.org/2000/svg}desc") is not None
+    assert f"{tp['base']['F3_e2e_mbps']:.2f}" in tl and "8.97" in tl
+    assert f"{tp['fast']['F3_e2e_mbps']:.2f}" in tl and "19.48" in tl
+    assert f"{tp['base']['F3_tx_mbps']:.2f}" in tl
+    assert "21.04" in tl and "100 Mbaud" in tl and "80 Mbit/s" in tl
+    assert "TXCFG 0x00020010" in dp and "100 Mbaud" in dp and "RXCFG 0x0000801F" in dp
+    assert "PRU0" in dp and "PRU1" in dp
+    # the plotted segments sum to the measured frame period
+    for rx in ("base", "fast"):
+        period = (tp[rx]["T_burst_ns"] + tp[rx]["e2e_gap_ns"]) / 1e3
+        assert f"{period:.1f} us" in tl
+
+
+def test_docs_reference_existing_figures():
+    import re
+    folder = Path(__file__).resolve().parent.parent / "source" / "pif_eth_100"
+    for doc, expected in (("README.md", {"figures/datapath.svg", "figures/frame_timeline.svg"}),
+                          ("USERS_GUIDE.md", {"figures/datapath.svg", "figures/frame_timeline.svg"})):
+        refs = set(re.findall(r"!\[[^\]]*\]\((figures/[^)]+)\)", (folder / doc).read_text(encoding="utf-8")))
+        assert expected <= refs, (doc, refs)
+        assert all((folder / r).exists() for r in refs), (doc, refs)
+
+
+def test_build_pdfs_adds_base_href_for_images():
+    pytest.importorskip("markdown_it")
+    from pif_eth_100 import build_pdfs
+    html = build_pdfs.render_html("![a](figures/x.svg)\n", "T", "file:///x/")
+    assert '<base href="file:///x/">' in html and 'src="figures/x.svg"' in html
