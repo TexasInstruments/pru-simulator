@@ -11,7 +11,8 @@ All results below are **simulator results, not silicon claims**.
 
 * Design spec: [`docs/superpowers/specs/2026-09-30-pif-eth-100-design.md`](../../docs/superpowers/specs/2026-09-30-pif-eth-100-design.md) (section 17 addendum wins)
 * Browser-UI walkthrough: [`USERS_GUIDE.md`](USERS_GUIDE.md)
-* Development report: `DEVELOPMENT_REPORT.md` (not written yet; it is a later task of the plan)
+* Development report: [`DEVELOPMENT_REPORT.md`](DEVELOPMENT_REPORT.md) (prompt, interaction, models, tokens, time, measured results)
+* PDFs of the user's guide and the report: `USERS_GUIDE.pdf`, `DEVELOPMENT_REPORT.pdf` (regenerate with `build_pdfs.py`)
 
 ## Clock plan
 
@@ -48,13 +49,16 @@ step (`n = (div_factor + 1) + 0.5 * frac`), so div_factor = 0 with frac = 1 give
 | `run_100.py` | Headless driver: traced paced stepper, TX-only and loopback runs, seed sweep, throughput figures F1/F2/F3. |
 | `seed_ui_100.py` | Client for the UI server: seed, arm and status of the shared simulator. |
 | `ui_walkthrough_100.py` | Scripted execution of `USERS_GUIDE.md` over the UI server's HTTP/WebSocket endpoints. |
-| `spike_frac_rx.py` | Task 0 spike: proves the 300 MHz clock plan and the fractional divider 1.5 with the unmodified `pif_eth` firmware. |
+| `spike_frac_rx.py` | Fractional-divider spike: proves the 300 MHz clock plan and the divider 1.5 with the unmodified `pif_eth` firmware. |
 | `codec.py` | 8b/10b golden reference and decode LUT builder. |
 | `decoder.py` | 8b/10b bit-stream decoder (golden). |
 | `crc32.py` | Ethernet CRC-32 golden reference (`zlib.crc32`). |
 | `prng.py` | xorshift32 payload golden reference. |
 | `frames.py` | BERT frame builder (200 B payload + 4 B FCS). |
 | `rx_reference.py` | Host-side reference for the RX path (expand, decimate, comma alignment, decode). |
+| `session_stats.py` | Transcript statistics (tokens, models, wall-clock) for the development report. |
+| `build_pdfs.py` | Renders `USERS_GUIDE.md` and `DEVELOPMENT_REPORT.md` to PDF (markdown-it-py + headless Chrome). |
+| `DEVELOPMENT_REPORT.md`, `DEVELOPMENT_REPORT.pdf`, `USERS_GUIDE.pdf` | The development report and the PDFs of report and guide. |
 | `__init__.py` | Package marker. |
 
 Related files outside the folder: `config/memory_pif_eth_100.cfg` (300 MHz, DRAM timing) and
@@ -67,7 +71,8 @@ Run from the repo root.
 ```bash
 python3 source/pif_eth_100/run_100.py            # TX-only check, 9-run loopback sweep, throughput figures
 python3 -m pytest tests/test_pif_eth_100.py      # unit and firmware tests
-python3 source/pif_eth_100/spike_frac_rx.py      # Task 0 spike (clock plan + fractional divider)
+python3 source/pif_eth_100/spike_frac_rx.py      # fractional-divider spike (clock plan + divider 1.5)
+python3 source/pif_eth_100/build_pdfs.py         # regenerate the two PDFs
 ```
 
 To run the demo in the browser UI, follow [`USERS_GUIDE.md`](USERS_GUIDE.md). Its steps were
@@ -104,14 +109,26 @@ Throughput [base RX]  (simulator figures, not silicon)
 OVERALL: PASS
 ```
 
-The Task 0 spike (`python3 source/pif_eth_100/spike_frac_rx.py`, same date and commit) ends
-with `SPIKE PASS: 23/23 checks, base latency 0.0 ns`.
+The fractional-divider spike (`python3 source/pif_eth_100/spike_frac_rx.py`, same date, re-run
+at `6f4b458`) ends with `SPIKE PASS: 23/23 checks, base latency 0.0 ns`. That is not in
+conflict with the 0 ns failure described in the Latency note below; see there.
+
+Re-running `python3 source/pif_eth_100/run_100.py --rx both` at `6f4b458` (2026-09-30) gave the
+same baseline rows (post-frame cycles identical) and the same throughput block, plus 9 PASS rows
+for the optimised RX (`OVERALL: PASS`).
+
+Columns of the sweep table: `frm` frames received, `ovf` `rx_ovf`, `symerr` 8b/10b decode
+errors, `biterr` PRNG bit errors, `crc` `crc_ok`, `eof` `eof_status`, `cap` `cap_bytes`,
+`post_cyc` PRU1 cycles from `eof` to `frame_loop` (traced, single-stepped). `hot` is the RX
+hot-loop cost in PRU1 cycles per captured byte on the poll path: 8 measured, against the
+12-cycle budget (8 samples at 1.5 core cycles each). `fifo` is the maximum RX FIFO occupancy
+the traced stepper saw during the run (1 in every row).
 
 | Figure | Value | What it means |
 |---|---|---|
 | **F1 line rate** | 100.00 Mbaud | Smallest transition spacing on PRU0 ch0 is 10.000 ns, all on the 10 ns grid. |
 | **F2 in-burst data rate** | 80.00 Mbit/s | 100 Mbaud x 8/10, the 8b/10b coding rate. This is the requested "80 Mbit/s net". Inside a burst the line has no gaps (T_burst = 21040 ns = 263 FIFO bytes x 8 x 10 ns). F2p = 76.05 Mbit/s is the payload alone within a burst (200 B per 21.04 us): commas, FCS and pad take the rest. |
-| **F3 goodput, TX-limited** | 53.18 Mbit/s (gap 9.05 us) | Payload bits per frame start-to-start with TX running alone. The 9.05 us between bursts is PRU0 preparation (PRNG fill, CRC). |
+| **F3 goodput, TX-limited** | 53.18 Mbit/s (gap 9.05 us) | Payload bits per frame start-to-start with TX running alone. The 9.05 us between bursts is measured; it is consistent with the design spec's estimate for PRU0 preparation (PRNG fill about 8 us plus CRC about 0.9 us), but the run output does not itemise it. |
 | **F3 goodput, end-to-end** | 8.97 Mbit/s (gap 157.35 us) with the baseline RX; 19.48 Mbit/s with the optimised RX (see Optimised RX) | With RX in the loop, frame i+1 may only start after PRU1 has finished decoding frame i and re-armed. |
 
 The end-to-end figure is far below 80 Mbit/s because it is bounded by RX Option 1: the
@@ -123,21 +140,56 @@ F2 describes only the time the burst is on the wire.
 ## Latency note
 
 The loopback wire delay used by the harness (`run_100.LOOPBACK_LATENCY_NS`) is
-**5/6 ns = 0.8333 ns**, not 0 ns. This was decided at the Task 5 second latency gate.
+**5/6 ns = 0.8333 ns**, not 0 ns. The design preferred 0 ns and allowed 5/6 ns as a fallback.
+The edge-phase loopback test (`test_all_edge_phases_clean` in `tests/test_pif_eth_100.py`; it
+shifts the latency by 0, 10/3 and 20/3 ns to visit all three sample-to-edge residues) is the
+gate of record, and 0 ns failed it.
 
-At 0 ns delay the edge-phase test failed at the +10/3 ns shift: `symbol_errors=71`,
-`crc_ok=0`, `bit_err=547`, `cap_bytes=525` (one test failed, 34 passed). With a 5/6 ns base
-delay all three edge phases (shifts 0, 10/3, 20/3 ns) decode clean, and so did seeds 1, 2, 3
-across the three shifts and 2 frames each (9 of 9). Evidence:
-`.superpowers/sdd/2026-09-30-pif-eth-100/task-5-report.md`.
+Reproduce the failure (run from the repo root; output observed 2026-09-30 at commit `6f4b458`):
 
-**Known limit:** RX decode is not robust when a sample edge coincides exactly with a TX
-edge, which is what happens at 0 ns wire delay in one of the three arm phases. The cause is
-that the 300 MHz core period (10/3 ns) is inexact in floating point, so exact ties resolve
-inconsistently once an inexact shift is added. The harness therefore uses a 5/6 ns wire
-delay, which keeps every phase at least 0.83 ns from an edge. Whether a given single-frame
-run at 0 ns fails depends on the arm phase: the UI's paced flow passed one frame at 0.0 ns
-(session scratchpad `pif100_latency_probe.txt`, not committed), so that run is not evidence that 0 ns is safe.
+```bash
+python3 - <<'PY'
+import sys
+sys.path.insert(0, "source")
+from pif_eth_100 import run_100 as r
+for shift in r.EDGE_PHASE_SHIFTS_NS:
+    x = r.run_loopback(r.DEFAULT_SEED, num_frames=1, latency_ns=0.0 + shift)
+    print(f"latency_ns={0.0 + shift:.4f} clean={x.clean}", x.frames)
+PY
+```
+
+```text
+latency_ns=0.0000 clean=True [FrameStats(frames=1, cap_bytes=526, rx_ovf=0, symbol_errors=0, crc_ok=1, bit_err=0, tot_bits=1600, eof_status=1, frame_ok=True)]
+latency_ns=3.3333 clean=False [FrameStats(frames=1, cap_bytes=525, rx_ovf=0, symbol_errors=71, crc_ok=0, bit_err=547, tot_bits=1600, eof_status=1, frame_ok=False)]
+latency_ns=6.6667 clean=True [FrameStats(frames=1, cap_bytes=526, rx_ovf=0, symbol_errors=0, crc_ok=1, bit_err=0, tot_bits=1600, eof_status=1, frame_ok=True)]
+```
+
+The same call with `rx="fast"` at 3.3333 ns fails with identical numbers (71 symbol errors,
+`cap_bytes` 525): the failure is in the captured samples, not in a decoder.
+
+With the 5/6 ns base delay all three edge phases decode clean for the default seed (that is the
+test). Re-run on 2026-09-30: `run_loopback(seed, num_frames=2, latency_ns=0.8333 + shift)` for
+seeds 1, 2, 3 and the three shifts (latencies 0.8333, 4.1667, 7.5000 ns) gave 9 of 9 clean.
+This is a different harness from the sweep table above: the `run_100.py` CLI runs 3 frames per
+row (`frm 3`) and covers the three latencies only for the default seed, whereas the 9 of 9 is
+2 frames per (seed, shift) pair.
+
+**Why the fractional-divider spike still says PASS at 0 ns.** `spike_frac_rx.py` (base latency
+0.0 ns, 23 of 23 checks) drives the unmodified `pif_eth` firmware with its own arming and
+stepping. In its python-armed analysis the exact edge ties occur at shift 0 (1266 ties for the
+default seed at 0.0000 ns, none at the other two shifts), and decode is clean at all three
+phases. The `run_100` loopback harness arms differently, and there the failing phase is the
+10/3 ns shift. So the two harnesses place the tie phase at different shifts, and a clean spike
+at 0 ns does not carry over to the loopback harness; the loopback test is the gate of record.
+The reason the arm phases differ was not itemised.
+
+**Known limit:** RX decode is not robust when a sample edge coincides exactly with a TX edge,
+which is what happens at 0 ns wire delay in one of the three arm phases. The 300 MHz core
+period (10/3 ns) is inexact in floating point, so exact ties resolve inconsistently once an
+inexact shift is added. The harness therefore uses a 5/6 ns wire delay, which keeps every
+phase at least 0.83 ns from an edge. Whether a given single-frame run at 0 ns fails depends on
+the arm phase: the UI's paced flow passed one frame each at 0.0, 0.5 and 1.0 ns (see
+"Validated" in [`USERS_GUIDE.md`](USERS_GUIDE.md)), and that is not evidence that 0 ns is safe.
 
 ## Memory maps
 
@@ -216,7 +268,22 @@ are equal to the baseline's (`FrameStats` compared field by field) for the defau
 8 cycles per byte and a maximum RX FIFO depth of at most 2; the LUT is empty at boot and
 equals the expected table after the first frame; the UI flow with both go flags set before
 either core runs passes; the post-frame is at least 2x faster and F3 end-to-end at least
-1.5x higher than the baseline's.
+1.5x higher than the baseline's. These tests exercise **clean frames only**: the
+invalid-codeword, running-disparity-violation and frame-buffer-overflow branches of the fast
+decode are not covered by any test.
+
+**Why end-to-end goodput is about 19.5 Mbit/s and not 80 even with the fast RX.** The wire
+still runs at 100 Mbaud and 80 Mbit/s inside each burst; what limits F3 is the frame period.
+Frame i+1 starts only after PRU1 has finished frame i, so each frame period is the 21.04 us
+burst + the fast post-frame decode (which includes the CRC check and the PRNG bit-error check;
+the run does not itemise them, and the design spec estimated the BER step alone at about
+3.4 k cycles) + the TX preparation of about 9 us (9.05 us measured with TX alone). Checked
+against the run: the 61.09 us end-to-end gap is the mean of the two gaps of a 3-frame run,
+gated by the post-frames of frames 1 and 2 (17 652 and 13 513 cycles = 58.8 and 45.0 us, mean
+51.9 us): 51.9 + 9.05 = 60.95 us against 61.09 us measured (0.14 us not itemised). In steady
+state 21.04 + 45.0 + 9.05 = 75.1 us, against 75.2 to 75.4 us start-to-start in the 5-frame run,
+which is 21.25 Mbit/s. So the post-frame decode (45 us in steady state) is still five times
+the TX preparation and is what separates 19.5 to 21.3 from the TX-limited 53.18 Mbit/s.
 
 The baseline `pif_eth_100_rx.asm` remains the proven reference and is unchanged. Everything
 above is a simulator result, not measured on silicon.

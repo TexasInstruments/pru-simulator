@@ -1,13 +1,13 @@
 # pif_eth_100 — User's Guide: run the 100 Mbaud TX and RX in the browser UI
 
-What you will see: PRU0 sends 200-byte BERT frames, 8b/10b-coded, at 100 Mbaud
-(300 MHz core clock, TX divider 3). PRU1 receives them through a loopback wire
-at 2x oversampling (200 MHz sample clock, divider 1.5), and checks CRC-32 and
-the bit-error count against the same PRNG. When a frame is done you read
-`crc_ok 1`, `symbol_errors 0`, `bit_err 0`, `tot_bits 1600` from DRAM1.
+PRU0 sends 200-byte 8b/10b BERT frames at 100 Mbaud (300 MHz core, TX divider 3); PRU1
+receives them through a loopback wire at 2x oversampling (divider 1.5) and checks CRC-32 and
+bit errors against the same PRNG. When a frame is done DRAM1 reads `crc_ok 1`, `symbol_errors 0`,
+`bit_err 0`, `tot_bits 1600`. Simulator only, never run on silicon.
 
-Everything here runs in the simulator. None of it has been run on silicon; the
-numbers below are simulator results.
+> **How this guide was checked.** UI wording in this guide was derived from the UI source and
+> validated by scripted walkthrough over the same HTTP/WebSocket endpoints; a real-browser
+> click-through was not performed in the authoring session.
 
 ## Prerequisites
 
@@ -22,8 +22,10 @@ numbers below are simulator results.
    cp memory.cfg memory.cfg.bak && cp config/memory_pif_eth_100.cfg memory.cfg
    python3 ui/server.py
    ```
-   You should see the server start on port 8080. (`memory.cfg` is a tracked
-   file; step 9 restores it.)
+   8080 is the server's default port, and the rest of this guide uses it. (The scripted
+   walkthrough that validated the guide used a private port, 8091, via
+   `python3 ui/server.py --port 8091`.) `memory.cfg` is a tracked file; step 9
+   restores it.
 
    *Alternative for a server that is already running:* pick **300 MHz** in the
    PRU speed dropdown in the controls bar **before doing anything else**. The
@@ -102,8 +104,9 @@ numbers below are simulator results.
 
 6. **Click Run** (PRU0 as the current core). Multi-core Run steps 1000 PRU0
    instructions every 10 ms and paces PRU1; it does not stop by itself. One
-   frame needs about 35 000 PRU0 instructions (the scripted walkthrough saw
-   `frames` become 1 within the 35 000-instruction check), so click **Stop**
+   frame needs at most 35 000 PRU0 instructions (the scripted walkthrough
+   checks after every 5000 lead instructions and saw `frames` become 1 by the
+   35 000-instruction check), so click **Stop**
    after a few seconds, once `status` (step 7) shows `frames 1`. Optionally,
    in the Peripheral panel or a Memory read, check the perif config registers:
    PRU0 TXCFG (`0x260E4`) = `0x00020010`, PRU1 RXCFG (`0x26100`) =
@@ -126,12 +129,16 @@ numbers below are simulator results.
    PASS
    ```
    Or use a Memory panel at `0x2F00` length 64 for the stats and `0x2E00`
-   length 204 for the reconstructed frame (200 B payload + 4 B FCS; the first
-   eight bytes observed were `b0a1abf161f49863`).
+   length 204 for the reconstructed frame (200 B payload + 4 B FCS). The payload
+   is the xorshift32 stream of the seed, continuing across frames: frame 1
+   starts `a521c86ebe053c0c` (golden model `prng_bytes(8, 0x1BADC0DE)`), frame 2
+   starts `b0a1abf161f49863`. The second was read back with `read_memory` at
+   `0x2E00` after the 2-frame scripted walkthrough on 2026-09-30 (FCS bytes
+   `ed97f06d`); the first is the model's value, not read from the UI.
 
    `status` exits 1 and prints `FAIL (...)` until `frames` reaches 1. While
-   RX is still decoding (`post_frame`), you can see an intermediate state such
-   as `cap_bytes 526`, `eof_status 1`, `frames 0`, `crc_ok 0` reported as FAIL.
+   RX is still decoding (`post_frame`), an intermediate state (for example
+   `frames 0` and `crc_ok 0` with a non-zero `cap_bytes`) is reported as FAIL.
    That is not an error; Run a little longer and query again.
 
 8. **Next frame.** `python3 source/pif_eth_100/seed_ui_100.py arm`, then click
@@ -190,24 +197,29 @@ Notes:
 
 * The Signal Graph only traces the lead core (PRU0) during a multi-core Run.
   To watch RX state live, switch the current-core selector to PRU1 (or leave
-  multi-core) and read the PRU1 Peripheral Interface channel card.
+  multi-core) and read the PRU1 Peripheral Interface channel card (from the UI
+  source, not clicked; see the notice at the top).
 * **Loopback latency and the known RX limit.** RX decode is not robust when a
   sample lands exactly on a TX edge (0 ns wire delay at one of the three
-  sample-to-edge phases); a study of the RX model saw 71 symbol errors at one
-  phase. This project's loopback therefore uses 5/6 ns = 0.8333 ns
+  sample-to-edge phases): `test_all_edge_phases_clean` at the 10/3 ns shift
+  failed with 71 symbol errors at 0 ns wire delay (reproduction command in the
+  README "Latency note"). This project's loopback therefore uses 5/6 ns = 0.8333 ns
   (`run_100.LOOPBACK_LATENCY_NS`), which keeps every sample at least 0.83 ns
   from a TX edge. `seed_ui_100.py` sets that value for you. In the UI
   walkthrough the arm phase is fixed by the host's paced stepping, so a
   single-phase UI run does not exercise every phase: with latency set to
   0.0, 0.5, 0.8333, 5/6 and 1.0 ns, one frame each passed clean in this UI flow
-  (see Validated). That does not make 0 ns safe in general; keep 0.8333 ns.
+  (see Validated). One frame passing in the UI arm phase is not evidence that
+  0 ns is robust; keep 0.8333 ns.
   The `lat ns` field has a 0.5 ns spinner step, so the value is not reachable
   by clicking the arrows; leave what `seed` set, or type `0.8333`.
 
 ## Validated
 
 Date: 2026-09-30. Simulator only (not silicon). Server on a private port (8091)
-with `config/memory_pif_eth_100.cfg` as `memory.cfg`.
+with `config/memory_pif_eth_100.cfg` as `memory.cfg`. All four scripted runs below
+(base, fast, base, fast) were repeated at 14:16 UTC at commit `6f4b458` with identical
+output, and `memory.cfg` was restored byte-identical afterwards.
 
 * **Browser walkthrough not possible in this session** (the Chrome extension
   was not connected: `tabs_context_mcp` reported "Browser extension is not
@@ -243,13 +255,10 @@ with `config/memory_pif_eth_100.cfg` as `memory.cfg`.
   **Reset**) was not clicked through in a browser. The four-tab **Project**
   listing is inferred from the server's directory listing, not observed in a
   browser.
-* **Guide flow driven through the CLIs** (load + Reset over the WebSocket, then
-  `seed_ui_100.py`, Run in 1000-instruction chunks, `status`, `arm`, Run,
-  `status`): `status` before Run FAIL (all zeros); after 10 000 lead
-  instructions, mid-decode, `frames 0`, `cap_bytes 526`, `eof_status 1`: FAIL;
-  after 40 000: `frames 1`, `crc_ok 1`, `symbol_errors 0`, `bit_err 0`,
-  `tot_bits 1600`, `eof_status 1`: PASS; after `arm` and 40 000 more:
-  `frames 2`, same fields: PASS.
+* **Seed/status CLI flow (steps 5, 7, 8).** The scripted walkthrough calls the same
+  functions as `seed_ui_100.py` (seed, arm, status). A hand-typed CLI session was also
+  tried during authoring, but its instruction counts were not saved and are not quoted
+  here.
 * **Loopback latency probe** (fresh load, Reset and seed each time, latency
   then overridden, 60 000 lead instructions, one frame each): 0.0, 0.5,
   0.8333, 0.8333333333333334 and 1.0 ns all gave `frames 1`, `crc_ok 1`,
