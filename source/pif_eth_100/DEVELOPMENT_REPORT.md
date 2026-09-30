@@ -1,16 +1,16 @@
 # pif_eth_100 — Development Report
 
-Date: 2026-09-30. Generated at 2026-09-30T14:24Z from the session transcripts, with a transcript cut-off of 2026-09-30T14:24:52.015Z. **The session was still running when this report was generated**: final verification (Task 14), the final whole-branch review and the finishing of the branch come after this snapshot, so their tokens and time are not in any total below.
+Date: 2026-09-30. **Snapshot** generated at 2026-09-30T17:32Z from the session transcripts, with a transcript cut-off of 2026-09-30T17:32:24.240Z. It covers planning, Tasks 1 to 14, the final whole-branch review and the final fix pass that followed it. The agent that ran the final fix pass (and produced this refresh) was still running when the tables were generated, so its own tokens and time are only partly counted, and the coordinator's work after the cut-off is not in any total below.
 
 All figures are simulator measurements, not silicon claims.
 
 ## 1. Summary
 
 - **Delivered:** a self-contained `source/pif_eth_100/` variant of `pif_eth`: PRU0 sends 200 B BERT frames (xorshift32 payload plus CRC-32 FCS on the hardware CRC widget, 8b/10b coded) at TXCFG n = 3 on a 300 MHz core, and PRU1 receives them over the perif loopback at exactly 2x oversampling (fractional RX divider 1.5). Plus golden-model tests, a scripted UI walkthrough, a user's guide, a README, this report and PDFs of the guide and the report.
-- **Throughput (simulator):** F1 line rate 100.00 Mbaud; F2 in-burst data rate 80.00 Mbit/s (the 8b/10b coding rate; the payload alone in a burst, F2p, is 76.05 Mbit/s); F3 frame-averaged goodput 53.18 Mbit/s TX-limited and 8.97 Mbit/s end-to-end with the baseline RX. Zero BER, `crc_ok = 1`, `rx_ovf = 0` and 0 symbol errors on all 18 sweep runs (7 seeds; all three sample-to-edge phases for the default seed).
+- **Throughput (simulator):** F1 line rate 100.00 Mbaud; F2 in-burst data rate 80.00 Mbit/s (the 8b/10b coding rate; the payload alone in a burst, F2p, is 76.05 Mbit/s); F3 frame-averaged goodput 53.18 Mbit/s TX-limited and 8.97 Mbit/s end-to-end with the baseline RX. Zero BER, `crc_ok = 1`, `rx_ovf = 0` and 0 symbol errors on all 18 sweep runs (7 seeds; all three sample-to-edge phases for the default seed, the other seeds at the default phase, at the 5/6 ns wire latency).
 - **Fast RX (an extra deliverable):** `pif_eth_100_rx_fast.asm` cuts the RX post-frame work from 44 469 to 14 905 PRU1 cycles (3-frame mean, 148.2 us to 49.7 us) with results bit-identical to the baseline, and raises end-to-end goodput from 8.97 to 19.48 Mbit/s (21.25 Mbit/s in steady state).
-- **Caveats:** the 0 ns loopback latency failed one edge phase, so the harness uses a 5/6 ns modelled wire latency (section 9); the UI guide was validated by script, not in a real browser (section 11).
-- **Effort (snapshot):** planning on Opus 5.5, implementation and task reviews on Sonnet 5.5. Coordinator-reported subagent tokens: 1,895,582 (section 5, measure A). Transcript-derived total: 68,490,234 tokens, of which 65,592,397 are cache reads and 2,897,837 are not (measure B). Elapsed time from the first prompt to the cut-off: 3 h 05 min (section 6).
+- **Caveats:** the 0 ns loopback latency failed one edge phase, so the harness uses a 5/6 ns modelled wire latency (section 9); the UI guide was validated by script, not in a real browser (section 11; the controller retried the Chrome browser once more at the end and the extension was still "not connected").
+- **Effort (snapshot):** planning and the final whole-branch review on Opus 5.5, implementation and task reviews on Sonnet 5.5. Coordinator-reported subagent tokens: 2,422,820 (section 5, measure A). Transcript-derived total: 81,876,596 tokens, of which 77,970,935 are cache reads and 3,905,661 are not (measure B). The recorded `output_tokens` look like lower bounds for agents that wrote files (a few hundred for agents that wrote whole files), so the output figures should be read as minimums. Elapsed time from the first prompt to the cut-off: 6 h 12 min (section 6), which includes an idle gap of about 3 h in the main transcript between the Task 13 review (14:28Z) and the final whole-branch review (17:21Z).
 
 ## 2. The request
 
@@ -41,7 +41,7 @@ Source: design spec §1 and the §17 addendum (`docs/superpowers/specs/2026-09-3
 
 ### 3.2 Interaction log
 
-Times are UTC (session start 2026-09-30T13:19:49+02:00 = 11:19:49Z). This log is a sanitised summary: system reminders, memory contents and tool output are deliberately not reproduced.
+Times are UTC. The first prompt was at 11:19:44Z and the main transcript's first record at 11:13:46Z; the session start stamp that `session_stats.py` prints (13:19:49+02:00 = 11:19:49Z) is a few seconds after the first prompt. This log is a sanitised summary: system reminders, memory contents and tool output are deliberately not reproduced.
 
 **This log is hand-supplemented.** `session_stats.py` deliberately drops `tool_result` records, and the answers to the coordinator's multiple-choice questions arrive in the transcript as tool results, so the tool's own "Interaction log" output would show only the plain-text user messages. The main session has 4 multiple-choice question rounds (with answers) and 5 plain-text user messages (the original prompt, "yes, go ahead", "approve, Sonnet 5.5 subagent-driven", and two "continue with the plan" resumes). The other user-role records with text are relayed subagent messages and task notifications, and are not listed. The rows below combine both sources; question rounds are marked (question).
 
@@ -56,15 +56,18 @@ Times are UTC (session start 2026-09-30T13:19:49+02:00 = 11:19:49Z). This log is
 | 12:03:56 - 12:57:37 | Planning subagent (Opus 5.5) | Spec addendum §17 and the implementation plan (53.7 min elapsed, including a ~10 min gap inside the run). |
 | 13:22:53 | User (question 4, "Plan / exec", "Latency") | Not an approval at first: the user asked to be sure that the transmission on the wire is 100 Mbit, and said that the throughput table in the plan was not clear. Latency question: "Keep the plan: try 0 ns, then fall back (Recommended)". The coordinator then explained that the wire stays 100 Mbit/s (80 Mbit/s of data inside a burst), and that the table's goodput is 1600 payload bits divided by the whole frame period (burst 21.04 us + TX prep about 9 us + RX post-frame decode about 148 us at baseline), which is why the averages are lower. |
 | 13:24:58 | User | "approve, Sonnet 5.5 subagent-driven": one Sonnet 5.5 subagent per task, each followed by a Sonnet 5.5 task reviewer; Opus 5.5 for the final whole-branch review. |
-| 13:25 onward | Coordinator and Sonnet 5.5 subagents | Implementation tasks 2 to 10, each with an implementer and a reviewer (see the per-agent table in section 5). At Task 5 the loopback-latency second gate triggered (section 3.1); the fallback of 5/6 ns was used. The Chrome extension was not connected (two attempts in Task 8), so the UI guide was validated by script only. The coordinator ran Task 1 (branch and commit) itself. |
+| 13:25 onward | Coordinator and Sonnet 5.5 subagents | Implementation tasks 2 to 10 only, each with an implementer and a reviewer (see the per-agent table in section 5; Tasks 11 to 13 and the final phases are in the later rows). At Task 5 the loopback-latency second gate triggered (section 3.1); the fallback of 5/6 ns was used. The Chrome extension was not connected (two attempts in Task 8; the controller retried the Chrome browser once more at the end and the extension was still "not connected"), so the UI guide was validated by script only. The coordinator ran Task 1 (branch and commit) itself. |
 | 13:54:09 - 13:59:41 | Coordinator (tooling pause) | The harness's auto-mode safety classifier returned "no verdict (error)" for every Bash and Agent call (nine in a row: six before the user's first "continue", three after it). The coordinator stopped after two retry rounds and told the user; the user's two "continue with the plan" messages below followed. The shell worked again at 13:59:41 and the Task 10 reviewer was launched at 13:59:57. No work was lost or redone; the pause is inside Task 10's wall-clock in section 6. |
 | 13:56:51 | User | "continue with the plan": execution resumed after a transient outage of the harness safety classifier (Bash and Agent calls returned "no verdict"); the coordinator had stopped after two retry rounds and told the user. No work was lost. |
 | 13:59:38 | User | "continue with the plan" (second resume, same cause). |
 | 13:59:57 - 14:03:11 | Sonnet 5.5 reviewer and the original Task 10 implementer | The Task 10 review found that this section had omitted all four question rounds, had called the plain-text messages "three" (there are five) and had placed the latency question in the wrong round. One fix round (the same implementer resumed), then a clean re-review. |
 | 14:03:29 - 14:10:05 | Coordinator and Sonnet 5.5 subagents | Task 11 (optimised RX, section 8): implementer and reviewer; the coordinator independently re-ran `run_100.py --rx both` (18 of 18 PASS) and got the same numbers. |
 | 14:10:21 - 14:12:57 | Coordinator and Sonnet 5.5 subagents | Task 12 (changelog entry in `readme.md`, handoff note): implementer and reviewer, clean. |
-| 14:13:41 onward | Coordinator and the Task 13 subagent (Sonnet 5.5) | Final report, `build_pdfs.py`, PDFs, and one consolidated documentation pass over README, user's guide, changelog wording and handoff note, which folded in the documentation findings that reviewers had recorded on Tasks 2 to 12 (section 9). No user message arrived after 13:59:38. |
-| after the cut-off | (pending) | Task 14 final verification, the final whole-branch review (Opus 5.5, planned, not yet run at generation time) and the finishing of the branch. |
+| 14:13:41 - 14:25:48 | Coordinator and the Task 13 subagent (Sonnet 5.5) | Task 13: final report, `build_pdfs.py`, PDFs, and one consolidated documentation pass over README, user's guide, changelog wording and handoff note, which folded in the documentation findings that reviewers had recorded on Tasks 2 to 12 (section 9). No user message arrived in the main transcript after 13:59:38. |
+| 14:26:09 - 14:28:13 | Sonnet 5.5 reviewer | Review of Task 13 (report, `build_pdfs.py`, PDFs, documentation pass); 2.1 min. |
+| not itemised | Controller | Task 14 final verification: 132 pif_eth tests pass, whole-repo suite 1531 passed and 2 xfailed, spike 23 of 23, `run_100.py --rx both` OVERALL PASS, `memory.cfg` clean, nothing pushed. The controller also retried the Chrome browser once more here; the extension was still "not connected". |
+| 17:21:01 - 17:27:27 | Final whole-branch reviewer (Opus 5.5) | Whole-branch review of the 15 commits; verdict "Ready after fixes". Per the coordinator's summary: about 190k subagent tokens, 46 tool uses, 6.4 min. |
+| 17:28:03 onward | Final fix implementer (Sonnet 5.5) | One fix pass for the review's findings: paths removed from committed text, the PDF test skipped when `markdown_it` is missing, stale comments and messages corrected, `--frames >= 2` validated, wording fixes in README, guide and changelog, then this refreshed report and the rebuilt PDFs (section 9). No user message arrived. |
 
 ## 4. Process and phases
 
@@ -73,9 +76,11 @@ Times are UTC (session start 2026-09-30T13:19:49+02:00 = 11:19:49Z). This log is
 3. User review of the spec, with the decisions recorded as the §17 addendum.
 4. Spec addendum and implementation plan (Opus 5.5, the same planning agent): 53.7 min; the coordinator reported 461,515 subagent tokens and 69 tool uses for the second run, which the coordinator treated as cumulative across both planning runs.
 5. Implementation: one Sonnet 5.5 subagent per plan task, each followed by a spec and code-quality review subagent (Sonnet 5.5). Task 1 (branch and commit) was run by the coordinator.
-6. Final verification (Task 14), final whole-branch review (Opus 5.5) and finishing the branch: pending at this snapshot.
+6. Final verification (Task 14, run by the controller), the final whole-branch review (Opus 5.5, verdict "Ready after fixes") and one final fix pass (Sonnet 5.5). Finishing the branch (merge or PR) is the user's decision and is not part of this report.
 
-Plan tasks and their commits (`git log --oneline feat/sd-sweep..HEAD` at generation time, plus this report's own commit):
+The controller retried the Chrome browser once more at the end of the session and the extension was still "not connected", so the UI guide remains script-validated only.
+
+Plan tasks and their commits (`git log --oneline feat/sd-sweep..HEAD`; the fix pass's commits are listed in the last rows):
 
 | Task | Content | Commit |
 |---|---|---|
@@ -91,14 +96,16 @@ Plan tasks and their commits (`git log --oneline feat/sd-sweep..HEAD` at generat
 | 10 (T8) | `session_stats.py` and the report skeleton | `2753584`, fix round `c431c94` |
 | 11 | Optimised RX (`pif_eth_100_rx_fast.asm`), equivalence tests | `7aef7c6` |
 | 12 | Changelog entry in `readme.md`, handoff note | `6f4b458` |
-| 13 | This report, `build_pdfs.py`, the two PDFs, consolidated documentation pass | the commit that contains this file |
-| 14 | Final verification | pending |
+| 13 | Report, `build_pdfs.py`, the two PDFs, consolidated documentation pass | `6f4e163` |
+| 14 | Final verification (controller) | no commit |
+| Final review | Whole-branch review by Opus 5.5 | no commit |
+| Final fix pass | Fixes for the review plus this refresh of report and PDFs | `df46ec7` (code, tests, comments, docs) and the report-and-PDF commit that follows it |
 
 ## 5. Models and tokens
 
-Generated 2026-09-30T14:24Z; transcript cut-off 2026-09-30T14:24:52.015Z (UTC); session start 2026-09-30T13:19:49+02:00 (first prompt 11:19:44Z). The Task 13 agent (the one producing this report) and the coordinator were still running, so both appear with partial figures, and Task 14 and the final review are not included.
+Generated 2026-09-30T17:32Z; transcript cut-off 2026-09-30T17:32:24.240Z (UTC); session start 2026-09-30T13:19:49+02:00 (first prompt 11:19:44Z, main transcript's first record 11:13:46Z). The final fix agent (the one producing this refresh) and the coordinator were still running, so both appear with partial figures; later work is not included.
 
-**Models.** Planning: `claude-opus-5-5` (Opus 5.5; the model id is the `model` field of the transcript records and the `resolvedModel` of the launch record). Implementation and task reviews: `claude-sonnet-5-5` (the `sonnet` alias resolved to this id in every launch record). The coordinator session itself is `claude-sonnet-5-5`. Final whole-branch review: Opus 5.5, planned; not run at generation time.
+**Models.** Planning: `claude-opus-5-5` (Opus 5.5; the model id is the `model` field of the transcript records and the `resolvedModel` of the launch record). Implementation and task reviews: `claude-sonnet-5-5` (the `sonnet` alias resolved to this id in every launch record). The coordinator session itself is `claude-sonnet-5-5`. Final whole-branch review: Opus 5.5 (`claude-opus-5-5` in its transcript).
 
 Two different token measures appear in this report. **They are not comparable and must not be added.**
 
@@ -132,31 +139,35 @@ The completion summary that the subagent tool hands to the coordinator (`subagen
 | `ad40770356525c249` | Review Task 11 (spec + quality) | reviewer | claude-sonnet-5-5 | 79,553 | 8 | 1.2 |
 | `a34706eb92e791b4e` | Implement Task 12: readme + handoff | implementer | claude-sonnet-5-5 | 62,213 | 14 | 1.4 |
 | `a523ebc70484c3ec4` | Review Task 12 (spec + quality) | reviewer | claude-sonnet-5-5 | 58,578 | 10 | 1.0 |
-| `a58a4f5ea9de40de5` | Implement Task 13: report, PDFs, doc pass | implementer | claude-sonnet-5-5 | not yet reported | not yet reported | not yet reported |
+| `a58a4f5ea9de40de5` | Implement Task 13: report, PDFs, doc pass | implementer | claude-sonnet-5-5 | 221,114 | 76 | 12.1 |
+| `ab44ac03a736c5a71` | Review Task 13 (report, PDFs, doc pass) | reviewer | claude-sonnet-5-5 | 115,780 | 14 | 2.1 |
+| `aa073751c3af9fb33` | Final whole-branch review | final reviewer | claude-opus-5-5 | 190,344 | 46 | 6.4 |
+| `af23e9a93798adc1f` | Final fix pass | final-fix implementer | claude-sonnet-5-5 | not reported at the snapshot | not reported | not reported |
 
 | Sum of last reported figure | Tokens |
 |---|---:|
 | Planner (Opus 5.5) | 461,515 |
-| 11 implementer agents, Tasks 2 to 12 (Sonnet 5.5; Task 13's is not yet reported) | 730,937 |
-| 12 reviewer agents (Sonnet 5.5) | 703,130 |
-| All reported | 1,895,582 |
+| 12 implementer agents, Tasks 2 to 13 (Sonnet 5.5) | 952,051 |
+| 13 reviewer agents (Sonnet 5.5) | 818,910 |
+| Final whole-branch reviewer (Opus 5.5) | 190,344 |
+| All reported (the final fix pass is not yet reported) | 2,422,820 |
 
-Active minutes: planner 66.3, implementers 24.4, reviewers 10.2; 384 tool uses in all reported runs.
+Active minutes: planner 66.3, implementers 36.5, reviewers 12.3, final reviewer 6.4; 520 tool uses in all reported runs.
 
 ### Measure B: transcript-derived, de-duplicated
 
 Method: every assistant record with `message.usage` is de-duplicated by `message.id` (a streamed reply is written as several records that repeat the usage; per id the maximum of each counter is kept), then input, cache-write, cache-read and output tokens are summed. **Cache reads are shown separately because they inflate the totals**: every API call re-reads the whole conversation prefix from the cache, so the "Total" column grows with the number of calls times the context size, not with the amount of new work. The last column removes them.
 
-Caveat: the `output_tokens` recorded for many agents look very small (for example a few hundred for agents that wrote whole files), so the output counts are probably lower bounds; this was not investigated.
+Caveat: the `output_tokens` recorded for many agents look very small (for example a few hundred for agents that wrote whole files), so the recorded output counts look like lower bounds for file-writing agents; this was not investigated.
 
 | Model | Input | Cache write | Cache read | Output | Total | Total without cache reads |
 |---|---:|---:|---:|---:|---:|---:|
-| claude-opus-5-5 | 190 | 1,147,557 | 24,893,289 | 30,731 | 26,071,767 | 1,178,478 |
-| claude-sonnet-5-5 | 858 | 1,597,458 | 40,699,108 | 121,043 | 42,418,467 | 1,719,359 |
+| claude-opus-5-5 | 276 | 1,334,102 | 30,214,305 | 37,498 | 31,586,181 | 1,371,876 |
+| claude-sonnet-5-5 | 974 | 2,392,288 | 47,756,630 | 140,523 | 50,290,415 | 2,533,785 |
 
 | Agent | Role | Model | Start (UTC) | Wall-clock (min) | Total | of which cache read | Total without cache reads |
 |---|---|---|---|---:|---:|---:|---:|
-| `main` (coordinator) | coordinator | claude-sonnet-5-5 | 11:13:46 | 180.0 | 21,720,078 | 21,380,235 | 339,843 |
+| `main` (coordinator) | coordinator | claude-sonnet-5-5 | 11:13:46 | 374.3 | 26,494,832 | 25,559,659 | 935,173 |
 | `afef5f3cea2c8b370` | planner | claude-opus-5-5 | 11:25:13 | 92.4 | 26,071,767 | 24,893,289 | 1,178,478 |
 | `a9eff8cf3c249a707` | implementer | claude-sonnet-5-5 | 13:25:56 | 1.1 | 374,680 | 315,102 | 59,578 |
 | `ab26866df04b4299e` | reviewer | claude-sonnet-5-5 | 13:27:19 | 0.6 | 154,375 | 108,276 | 46,099 |
@@ -181,15 +192,18 @@ Caveat: the `output_tokens` recorded for many agents look very small (for exampl
 | `ad40770356525c249` | reviewer | claude-sonnet-5-5 | 14:08:55 | 1.2 | 364,186 | 299,502 | 64,684 |
 | `a34706eb92e791b4e` | implementer | claude-sonnet-5-5 | 14:10:21 | 1.4 | 494,872 | 445,004 | 49,868 |
 | `a523ebc70484c3ec4` | reviewer | claude-sonnet-5-5 | 14:11:59 | 1.0 | 277,791 | 240,698 | 37,093 |
-| `a58a4f5ea9de40de5` | implementer | claude-sonnet-5-5 | 14:13:41 | 11.2 | 8,675,954 | 8,477,893 | 198,061 |
+| `a58a4f5ea9de40de5` | implementer | claude-sonnet-5-5 | 14:13:41 | 12.1 | 9,329,704 | 9,123,651 | 206,053 |
+| `ab44ac03a736c5a71` | reviewer | claude-sonnet-5-5 | 14:26:09 | 2.1 | 706,023 | 613,772 | 92,251 |
+| `aa073751c3af9fb33` | final reviewer | claude-opus-5-5 | 17:21:01 | 6.4 | 5,514,414 | 5,321,016 | 193,398 |
+| `af23e9a93798adc1f` | final-fix implementer (partial) | claude-sonnet-5-5 | 17:28:03 | 4.3 | 1,737,421 | 1,618,568 | 118,853 |
 
-The main (coordinator) row's wall-clock, 180.0 min, runs from the main transcript's first record to its last; the first records (session setup from 11:13:46Z) precede the first prompt (11:19:44Z), so it overstates the working time slightly.
+The main (coordinator) row's wall-clock, 374.3 min, runs from the main transcript's first record to its last; the first records (session setup from 11:13:46Z) precede the first prompt (11:19:44Z), and the main transcript has an idle gap of about 3 h between 14:28Z and 17:21Z, so this figure is not working time. The final fix agent's row is partial (it was still running when the snapshot was taken).
 
 **Why A and B differ.** For the planner, measure A says 209,015 (spec run) and 461,515 (after the plan); measure B says 26,071,767 in total, of which 24,893,289 are cache reads. A is the harness's own summary figure; B is a sum over every API call of the counters in the transcript, where the same cached context is counted again on every call. Neither is a bill and neither is more "true"; A is the one to quote as "subagent tokens", B shows how much context was processed and how much of it was cache reads.
 
 ## 6. Time spent
 
-Session start 2026-09-30T13:19:49+02:00 (11:19:49Z); first prompt 11:19:44Z; transcript cut-off 2026-09-30T14:24:52.015Z; elapsed at the cut-off: 3 h 05 min (a snapshot; the session was still running). Times are UTC.
+First prompt 11:19:44Z (session start stamp 11:19:49Z; the main transcript's first record is 11:13:46Z); transcript cut-off 2026-09-30T17:32:24.240Z; elapsed at the cut-off: 6 h 12 min (a snapshot, including the idle gap noted in section 5). Times are UTC.
 
 | Phase | Start | End | Wall-clock |
 |---|---|---|---:|
@@ -198,7 +212,10 @@ Session start 2026-09-30T13:19:49+02:00 (11:19:49Z); first prompt 11:19:44Z; tra
 | Spec review with the user | 11:37:51 | 12:03:56 | about 26 min |
 | Spec addendum and plan (Opus 5.5) | 12:03:56 | 12:57:37 | 53.7 min |
 | Plan finished until approval | 12:57:37 | 13:24:58 | about 27 min |
-| Implementation, Tasks 2 to 13 | 13:25:56 | 14:24:52 (snapshot) | see the table below |
+| Implementation, Tasks 2 to 13 (to the end of the Task 13 review) | 13:25:56 | 14:28:13 | 62.3 min (see the table below) |
+| Idle gap in the main transcript | 14:28:13 | 17:21:01 | about 173 min; the controller's Task 14 verification is not time-stamped in this report |
+| Final whole-branch review (Opus 5.5) | 17:21:01 | 17:27:27 | 6.4 min |
+| Final fix pass (Sonnet 5.5) | 17:28:03 | 17:32:24 (snapshot) | partial |
 
 Implementation per task (implementer start to the last reviewer end; the coordinator's work between agents is included):
 
@@ -215,15 +232,15 @@ Implementation per task (implementer start to the last reviewer end; the coordin
 | Task 10 (T8 stats + report skeleton), incl. tooling pause and fix round | 13:49:23 | 14:03:11 | 13.8 min |
 | Task 11 (RX-fast) | 14:03:29 | 14:10:05 | 6.6 min |
 | Task 12 (readme + handoff) | 14:10:21 | 14:12:57 | 2.6 min |
-| Task 13 (this task: final report, PDFs, doc pass), still running at the cut-off | 14:13:41 | 14:24:52 (snapshot) | 11.2 min so far |
+| Task 13 (final report, PDFs, doc pass) | 14:13:41 | 14:28:13 | 14.5 min |
 
-The 11 implementer agents of Tasks 2 to 12 were active for 24.4 min in total and the 12 reviewer agents for 10.2 min (sums of the reported `duration_ms`; the Task 13 agent has no reported figure yet, so it is in neither sum). Task 10's window includes the tooling pause (section 3.2) and the fix round; the per-agent wall-clock of a resumed agent (first to last record) also contains the waiting between its runs, which is why the Task 10 implementer's transcript wall-clock in section 5 is longer than its reported active time. Final verification, the final whole-branch review and finishing are not in these figures.
+The 12 implementer agents of Tasks 2 to 13 were active for 36.5 min in total and the 13 reviewer agents for 12.3 min (sums of the reported `duration_ms`). Task 10's window includes the tooling pause (section 3.2) and the fix round; the per-agent wall-clock of a resumed agent (first to last record) also contains the waiting between its runs, which is why the Task 10 implementer's transcript wall-clock in section 5 is longer than its reported active time. The final whole-branch review ran 6.4 min; the final fix pass is only partly counted.
 
 ## 7. Results
 
-All results are from simulator runs on 2026-09-30 (commit `6f4b458` plus the uncommitted Task 13 documentation edits, which do not touch any firmware or test-visible code); a run made in Task 13 (the task that produced this report) is marked "(this task)". Nothing here is a silicon measurement. Reproduce with the commands given.
+All results are from simulator runs on 2026-09-30. The sections 7.1 to 7.4 figures were produced in Task 13 at commit `6f4b458`; the controller's Task 14 verification and the final fix pass re-ran the suites and `run_100.py --rx both` and got identical figures (the fix pass changed only comments, one argument check in `run_100.py`, and documentation). Nothing here is a silicon measurement. Reproduce with the commands given.
 
-### 7.1 Fractional-divider spike (this task)
+### 7.1 Fractional-divider spike
 
 `python3 source/pif_eth_100/spike_frac_rx.py` runs the unmodified `pif_eth` firmware at 300 MHz (TXCFG overridden to `0x00020010`, RX control word `0x0000801F`):
 
@@ -239,7 +256,7 @@ SPIKE PASS: 23/23 checks, base latency 0.0 ns
 
 (Six of the 23 lines are shown; the other 17 are the same checks for the other seeds and shifts, all PASS.) The spike passed at a base latency of 0.0 ns, and the loopback harness later failed at the same base latency at one shift: the two harnesses arm differently and place the edge-tie phase at different shifts (README "Latency note"); the loopback test is the gate of record.
 
-### 7.2 Loopback sweep and throughput (this task)
+### 7.2 Loopback sweep and throughput
 
 `python3 source/pif_eth_100/run_100.py --rx both` (seed 464371934 plus seeds 1 to 6, 3 frames each; the default seed at three latencies for the three edge phases), verbatim:
 
@@ -294,13 +311,13 @@ OVERALL: PASS
 | F3 goodput, end-to-end, 3 frames | 8.97 Mbit/s (gap 157.35 us) | 19.48 Mbit/s (gap 61.09 us) |
 | RX post-frame, 3-frame mean | 44469 cycles = 148.2 us | 14905 cycles = 49.7 us |
 
-T_burst = 21040.0 ns (263 FIFO bytes x 8 x 10 ns); host poll bound at most 160 ns. All 18 rows PASS with `hot` = 8 (the realtime capture loop costs 8 PRU1 cycles per byte against a budget of 12), `fifo` 1, `cap` 526.
+T_burst = 21040.0 ns (263 FIFO bytes x 8 x 10 ns); host poll bound at most 160 ns. All 18 rows PASS with `hot` = 8 (the realtime capture loop costs 8 PRU1 cycles per byte, 7 measured plus 1 assumed for the `qbbc` fall-through, against a budget of 12), `fifo` 1, `cap` 526.
 
-### 7.3 Loopback latency gate (this task)
+### 7.3 Loopback latency gate
 
 The 0 ns evidence, with the command to reproduce it (README "Latency note"): the default seed at latency `0.0 + shift` for the three edge-phase shifts gave clean, **not clean** (`symbol_errors=71`, `crc_ok=0`, `bit_err=547`, `cap_bytes=525`) and clean, respectively, at 0.0000, 3.3333 and 6.6667 ns; the fast RX fails identically at 3.3333 ns. At the harness's 5/6 ns base latency, seeds 1, 2 and 3 at all three shifts (2 frames each) gave 9 of 9 clean.
 
-### 7.4 Scripted UI walkthrough (this task)
+### 7.4 Scripted UI walkthrough
 
 `python3 source/pif_eth_100/ui_walkthrough_100.py --frames 2` against `python3 ui/server.py --port 8091` with `config/memory_pif_eth_100.cfg` copied to `memory.cfg` (private port; 8080 was not touched; `memory.cfg` restored with `git checkout -- memory.cfg` and compared byte-identical afterwards). Run at 14:16 UTC in the order base, fast, base, fast, all exit 0:
 
@@ -311,7 +328,7 @@ The 0 ns evidence, with the command to reproduce it (README "Latency note"): the
 
 (The instruction counts are the multiples of 5000 at which the script checked, so they are upper bounds.) After the 2-frame baseline run, `read_memory` at `0x2E00` returned a 204-byte frame whose first eight bytes are `b0a1abf161f49863` (the start of frame 2's xorshift32 payload) and whose FCS is `ed97f06d`. This is a script over the server's HTTP/WebSocket endpoints, **not a real-browser click-through** (section 11).
 
-### 7.5 Tests (this task)
+### 7.5 Tests
 
 ```text
 python3 -m pytest tests/test_pif_eth_100.py   57 passed
@@ -319,7 +336,11 @@ python3 -m pytest tests/test_pif_eth.py       60 passed
 python3 -m pytest tests/test_pif_eth_rx.py    15 passed
 ```
 
-(132 passed in a single combined run.) The new test in this task, `test_build_pdfs_renders_gfm_tables`, failed first with `ImportError: cannot import name 'build_pdfs'` and passed once `build_pdfs.py` existed.
+(132 passed in a single combined run.) The Task 13 test `test_build_pdfs_renders_gfm_tables` (skipped when `markdown_it` is not installed, see section 9), failed first with `ImportError: cannot import name 'build_pdfs'` and passed once `build_pdfs.py` existed.
+
+### 7.6 Final verification (Task 14, run by the controller) and the fix pass
+
+Reported by the controller: 132 pif_eth tests pass, the whole-repo suite gives 1531 passed and 2 xfailed, the spike gives 23 of 23, `run_100.py --rx both` gives OVERALL PASS, `memory.cfg` is clean and nothing was pushed. After the fix pass, the final fix agent re-ran `python3 -m pytest tests/test_pif_eth_100.py tests/test_pif_eth.py tests/test_pif_eth_rx.py` (132 passed) and `python3 source/pif_eth_100/run_100.py --rx both` (OVERALL: PASS; post-frame 44469 and 14905 cycles, F3 end-to-end 8.97 and 19.48 Mbit/s, unchanged).
 
 ## 8. RX optimisation
 
@@ -333,7 +354,7 @@ python3 -m pytest tests/test_pif_eth_rx.py    15 passed
 
 **Why Options 2 and 3 were rejected.** The 2026-07-21 RX spec's Options 2 and 3 move work into the realtime loop and were estimated at 15 to 25 cycles per byte, which does not fit the 12-cycle per-byte budget (8 samples at 1.5 core cycles). The chosen approach leaves the realtime loop untouched: `diff` of the `poll:` to `eof:` region against the baseline prints nothing.
 
-**Prototype evidence (planner, not the implementer).** Before this task the planner ran the plan's code in scratch copies: first on the 250 MHz rig (n_tx = 4) with 4 seeds x payloads 128/200/252 x 3 latencies, identical stats and frame bytes (post-frame 29.2 k to 9.0 k, 44.5 k to 13.5 k, 55.5 k to 16.8 k cycles); then the exact plan code at 300 MHz (13.5 k cycles steady state, F3 end-to-end 19.48 Mbit/s). Those are the hypotheses Task 11 re-measured; the numbers below are Task 11's own runs, and Task 13 re-ran `run_100.py --rx both` and got identical figures (section 7.2).
+**Prototype evidence (planner, not the implementer).** Before Task 11 the planner ran the plan's code in scratch copies: first on the 250 MHz rig (n_tx = 4) with 4 seeds x payloads 128/200/252 x 3 latencies, identical stats and frame bytes (post-frame 29.2 k to 9.0 k, 44.5 k to 13.5 k, 55.5 k to 16.8 k cycles); then the exact plan code at 300 MHz (13.5 k cycles steady state, F3 end-to-end 19.48 Mbit/s). Those are the hypotheses Task 11 re-measured; the numbers below are Task 11's own runs, and Task 13 re-ran `run_100.py --rx both` and got identical figures (section 7.2).
 
 **Measured before/after at 300 MHz** (`run_100.py --rx both`, seed 464371934, 3 frames, latency 0.8333 ns, traced single-stepped PRU1 cycles eof to frame_loop; all 18 rows PASS with `hot` = 8, `OVERALL: PASS`):
 
@@ -354,23 +375,24 @@ The post-frame time falls by 66 % over 3 frames and by 70 % in steady state; the
 
 ## 9. Deviations from the spec and plan
 
-- **Loopback latency fallback (taken).** Spec 17.2 anticipated it, and the user had chosen "try 0 ns, then fall back". The first gate (the spike, Task 2) passed at 0.0 ns with 23 of 23 checks, so `LOOPBACK_LATENCY_NS` was provisionally 0.0. The second gate (Task 5, the edge-phase loopback test at the 10/3 ns shift) failed at 0 ns (`symbol_errors` 71, `crc_ok` 0); the fallback of 5/6 ns was used, documented as a modelled wire propagation delay, not drift. With it all three edge phases and seeds 1 to 3 decode clean; the decoder is still not robust at an exact sample/edge tie (section 10, section 11).
+- **Loopback latency fallback (taken).** Spec 17.2 anticipated it, and the user had chosen "try 0 ns, then fall back". The first gate (the spike, Task 2) passed at 0.0 ns with 23 of 23 checks, so `LOOPBACK_LATENCY_NS` was provisionally 0.0. The second gate (Task 5, the edge-phase loopback test at the 10/3 ns shift) failed at 0 ns (`symbol_errors` 71, `crc_ok` 0); the fallback of 5/6 ns was used, documented as a modelled wire propagation delay, not drift. With it all three edge phases and seeds 1 to 3 decode clean; the RX is still limited at an exact sample/edge tie (a sampling / edge-margin limit, not a decoder bug; section 10, section 11).
 - **The coordinator ran Task 1 itself.** The branch and the first commit are exact git commands with no judgement, so the coordinator did them instead of dispatching a subagent.
-- **Plan `/tmp` paths replaced by the session scratchpad.** The environment's rule for temporary files replaced every `/tmp/...` path of the plan (commit `83a4753`); content unchanged.
+- **Plan `/tmp` paths replaced by the session scratchpad, later by placeholders.** The environment's rule for temporary files replaced every `/tmp/...` path of the plan (commit `83a4753`); in the final fix pass the scratchpad and repository paths in the plan and spec became `$SCRATCH` and `<repo>` so that no home directory or session path is committed.
 - **`--rx` guard in `run_100.py` (Task 6).** `main()` calls `ap.error` when the firmware file for the chosen `--rx` mode is missing; approved as harmless.
 - **The fast-RX guide step is 4c** (step 4b already existed), and one assembler comment in the fast RX was changed from "built at boot" to "built on the first frame" (Task 11).
 - **UI validation by script only.** The Chrome extension was not connected (two attempts in Task 8), so the user's guide was validated through the scripted walkthrough over the server's HTTP/WS endpoints (spec 17.4 fallback), not in a real browser. Two implementers (Tasks 8 and 10) reported DONE_WITH_CONCERNS.
 - **What reviewers changed.** Every task review from Task 2 to Task 12 came back clean except Task 10, which needed one fix round (the interaction log, section 3.2). The other findings were minor and were carried forward as a list of documentation fixes and applied in Task 13 in one pass: README (evidence cited from committed files and a reproducible command instead of gitignored notes; the 9.05 us TX gap worded as consistent with the spec's estimate rather than measured; the `fifo` and `hot` columns explained; the spike-at-0-ns versus loopback-at-0-ns difference reconciled; plan jargon removed; why goodput is 19.5 and not 80 Mbit/s even with the fast RX; fast-RX equivalence tests cover clean frames only); user's guide (a "derived from the UI source, not clicked" notice; a shorter intro; 8080 as the default port; two numbers with no saved evidence checked or removed, see the next item; the 71-symbol-error claim cited to its test); top-level `readme.md` changelog (the 5/6 ns caveat added to the zero-BER claim; the one pre-existing repository file that the branch changes, apart from the transient `memory.cfg`); the handoff note ("Implementation complete" instead of "Complete").
 - **A wrong number in the guide found and fixed in Task 13.** The guide said the first eight bytes of the reconstructed frame observed were `b0a1abf161f49863` without saying which frame. Re-reading the frame after a 2-frame walkthrough reproduced it, and the bytes belong to frame 2 (the PRNG stream continues across frames; frame 1 starts `a521c86ebe053c0c` per the golden model). The guide now says so. The "10 000 / 40 000 lead instructions" claim had no saved evidence and was removed.
 - **A tooling outage** (section 3.2) paused execution for about 5.5 minutes; not a deviation from the plan, but it is inside Task 10's wall-clock.
-- **Review findings not addressed** (minor, listed in section 11), because the files they concern were outside what this task could change.
+- **Seed sweep in pytest.** Spec section 11 asked for the full 7-seed sweep in pytest. The tests cover the default seed plus seeds 1 and 2; the full 7-seed sweep (seeds 464371934 and 1 to 6) runs only in the `run_100.py` CLI.
+- **The final review and the fix pass.** The final whole-branch review by Opus 5.5 returned "Ready after fixes". The fix pass changed: home and session paths removed from the plan, spec and `session_stats.py` (the default projects directory is now derived from the repository root); `test_build_pdfs_renders_gfm_tables` skips when `markdown_it` is not installed (it is not in `requirements.txt`); a stale comment in the TX firmware and a contradictory header line in the fast RX (comments only; a comment-stripped diff showed the instructions unchanged and the realtime loop `go_wait` to `eof` identical to the baseline's); `run_100.py` (a generic missing-firmware message, `--frames >= 2` validated, two comments); a comment disagreement between `seed_ui_100.py` and `run_100.py` about the go-flag order; wording fixes in README (7 measured plus 1 assumed cycle for the hot loop, the edge-tie limit, a note on the decimation LUT), the user's guide (four files in the `/source` listing) and the changelog; this report and both PDFs were then refreshed.
 
 ## 10. Lessons learned
 
 - **Edge ties and floating point.** At 300 MHz the sample-to-edge offset takes one of three values, {0, 1.667, 3.333} ns, so at 0 ns wire delay samples land exactly on TX edges in one of the three arm phases. The 300 MHz core period (10/3 ns) is inexact in floating point, so exact ties resolve inconsistently once an inexact shift is added; the loopback test at the 10/3 ns shift showed 71 symbol errors. A 5/6 ns modelled wire delay keeps every phase at least 0.83 ns from an edge. One frame passing in the UI at 0 ns is no evidence that 0 ns is safe.
 - **A spike harness can pass a check that the production harness fails.** The 0 ns latency passed in the spike and failed in `run_100`, because arming differs and the tie phase lands at a different shift. Cover every residue by construction, not by the single base case, and treat the production-harness test as the gate of record.
 - **Never poll `pc == label` between multi-instruction steps.** A 2-instruction wait loop can alias with the polling step and never match. The fix was the traced stepper (`run_100.step_paced_traced`), which mirrors the simulator's paced stepping but reports every PRU1 instruction; it also must not step PRU1 alone, since that would run it ahead of PRU0's time.
-- **Measure, do not hand-tally.** Cycle counts near a hard limit (the 12-cycle per-byte budget of the realtime RX loop, 8 measured) were confirmed by single-stepping the simulator, and the same goes for the post-frame cycles. The planner's prototype figures for the fast RX matched the implementer's re-measurement to within rounding, and this task's re-run of `run_100.py --rx both` matched again.
+- **Measure, do not hand-tally.** Cycle counts near a hard limit (the 12-cycle per-byte budget of the realtime RX loop; 8 cycles, of which 7 are measured and 1 is assumed, the `qbbc` fall-through) were confirmed by single-stepping the simulator, and the same goes for the post-frame cycles. The planner's prototype figures for the fast RX matched the implementer's re-measurement to within rounding, and Task 13's re-run of `run_100.py --rx both` matched again.
 - **Do not build the fast RX's LUT at boot.** In the UI both go flags are set before either core runs, so RX must arm within TX's frame preparation (about 2.7 k cycles); a boot-time LUT build missed the frame start (`cap_bytes` 410, `crc_ok` 0). The first frame's post-frame builds it instead.
 - **Loading a program keeps the core's old PC and registers**, so a Reset is needed after loading (spec 17.4); skipping it produced stats full of garbage.
 - **Token totals need care.** Transcript totals need de-duplication by message id and a clear separation of cache reads; otherwise they are inflated several times over and are not comparable with a coordinator's reported subagent tokens (section 5). Streaming also seems to leave `output_tokens` small in the transcripts.
@@ -384,10 +406,11 @@ The post-frame time falls by 66 % over 3 frames and by 70 % in steady state; the
 - **Simulator only.** No figure here has been measured on silicon.
 - **Fractional divider on silicon.** The RX divider 1.5 is exact in the simulator (an even 5.000 ns sample spacing). On silicon the sample edges may be spaced unevenly (1 and 2 core clocks alternating); that would still give 2 samples per bit at zero drift but less edge margin. This is not verified against the TRM (spec risk R6).
 - **DRAM timing** in the simulator assumes `write_latency = 1` and `jitter = 0`.
-- **The 0 ns edge-tie limit remains.** RX decode is not robust when a sample edge coincides exactly with a TX edge; nothing was done to make it robust at 0 ns, and the harness sidesteps it with 5/6 ns.
+- **The 0 ns edge-tie limit remains.** This is a sampling / edge-margin limit of the RX: when a sample edge coincides exactly with a TX edge the captured samples are wrong, and the decoder then decodes wrong data (it is not a decoder bug). Nothing was done to remove the limit at 0 ns, and the harness sidesteps it with 5/6 ns.
 - **No real-browser click-through was performed.** The user's guide was validated by a scripted walkthrough over the server's endpoints; the button labels, dropdown names and the Project flow come from reading the UI source. The Chrome extension was not connected.
+- **Decimation LUT and the unbounded capture pointer.** The fast RX builds its LUT once, on the first frame. The realtime capture pointer is unbounded (inherited from the baseline), so a capture longer than the 1024 B region without an EOF would overwrite the LUT at `0x0C00` and break later frames until Reset; it cannot happen with payload <= 252 B and a clean loopback.
 - **The fast RX equivalence tests exercise clean frames only.** The invalid-codeword, running-disparity-violation and frame-buffer-overflow branches of the fast decode have no test.
 - **F3 is still bounded** by the RX post-frame work and the TX preparation; the end-to-end figures are 8.97 Mbit/s (baseline RX) and 19.48 Mbit/s (fast RX), against the 80.00 Mbit/s that holds only while a burst is on the wire.
-- **Token, model and time tables are a snapshot** of a session that was still running (Task 14, the final whole-branch review and the finishing of the branch come after it). Token totals include cache reads (section 5); per-agent wall-clock is first to last record; the recorded output-token counts look low.
+- **Token, model and time tables are a snapshot** taken at 2026-09-30T17:32Z (transcript cut-off 2026-09-30T17:32:24.240Z). The final fix agent's own tokens and time are only partly counted, and the coordinator's later work is not included. Token totals include cache reads (section 5); per-agent wall-clock is first to last record; the recorded output-token counts look like lower bounds for file-writing agents.
 - **The interaction log is a sanitised, hand-supplemented summary**, not a transcript.
-- **Minor review findings left open** (all outside the files this task could change, none affecting the results): the spike's hot-loop metric passes on an empty measurement, and its edge-tie counts are printed, not asserted; F2 is close to a tautology and the F3 values are pinned only by ordering in the tests; reviewers noted that `run_100.py --frames 1` and an empty `--seeds` list fail with a traceback or crash instead of a message (not re-checked); the edge-phase test covers only the default seed with one frame per shift; the fast RX asm carries a second header block; the "realtime loop is byte-identical" check (`diff`) is not a committed test.
+- **Minor review findings left open** (none affecting the results): the spike's hot-loop metric passes on an empty measurement, and its edge-tie counts are printed, not asserted; F2 is close to a tautology and the F3 values are pinned only by ordering in the tests; an empty `--seeds` list still fails with a traceback (a `--frames` value below 2 is now rejected with a message); the edge-phase test covers only the default seed with one frame per shift; the fast RX header still has a second block (its contradictory line was reworded); the "realtime loop is byte-identical" check (`diff`) is not a committed test; the host poll bound of 160 ns in the `run_100.py` output rests on an assumed 3 cycles per PRU0 instruction, not a measurement.
