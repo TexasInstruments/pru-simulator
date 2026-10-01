@@ -103,6 +103,23 @@ def test_reader_final_fall_then_high_idle_is_a_valid_completed_word():
     assert complete_events(model)[0]["cycle"] == last_fall - 10
 
 
+def test_lsb_is_sampled_high_then_data_stays_low_until_tm_expires():
+    model = SSIEncoderModel(resolution=1, position=1, idle_value=1,
+                            core_clock_hz=100_000_000, f_max_hz=10_000_000,
+                            monoflop_us=1)
+    tick(model, 0, 1)
+    tick(model, 1, 0)  # latch the word
+
+    assert tick(model, 11, 1) == 1  # LSB remains available in the high phase
+    assert tick(model, 12, 0) == 0  # final falling edge starts Tm and clears data
+    assert tick(model, 13, 1) == 0  # return to high clock idle does not raise data
+    assert tick(model, 111, 1) == 0
+    assert tick(model, 112, 1) == 1  # idle level returns exactly at Tm
+
+    assert model.faults() == []
+    assert complete_events(model)[0]["raw_value"] == 1
+
+
 def test_additional_full_pulse_after_reader_idle_return_faults():
     model = SSIEncoderModel(resolution=2, position=0b10,
                             core_clock_hz=100_000_000, f_max_hz=10_000_000,

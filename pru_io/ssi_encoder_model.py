@@ -109,6 +109,7 @@ class SSIEncoderModel(DeviceModel):
                 if not self._post_word_fall_seen:
                     self._post_word_fall_seen = True
                     self._last_falling_cycle = cycle
+                    self._output_value = 0
                 else:
                     self._last_falling_cycle = cycle
                     self._fault(cycle, "clocked past the end of the SSI word")

@@ -19,6 +19,9 @@ The Nth rising edge completes a word. Tm can then expire with the clock held
 high, or the reader may produce its closing falling edge followed by the
 return to high idle. That one closing pair does not request another data bit;
 another falling edge before Tm expires is reported as an extra clock pulse.
+The LSB remains on data through the high-phase sample. The closing falling
+edge then drives data low for the rest of Tm, after which the model returns it
+to its configured idle value.
 An incomplete word and an SSI clock above `f_max_hz` also produce fault
 events. Completed-frame events retain both the transmitted `raw_value` and
 the decoded binary `position` for binary or Gray encoding.
