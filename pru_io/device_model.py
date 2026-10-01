@@ -133,99 +133,484 @@ class DeviceModel(abc.ABC):
 class DeviceBus:
     """Resolves the PRU's outputs against every attached device's drive.
 
-    Attach to an IOPort and call `settle(cycle, gpo)` once per PRU cycle; the
-    returned word is what R31 should sample.
+    Attach to one or more IOPorts. Pin changes call `settle()` immediately;
+    time-driven models advance through `advance_cycles()` for elapsed core
+    cycles. Cross-core GPIO connections share this resolver.
     """
 
     def __init__(self) -> None:
         self.devices: list[DeviceModel] = []
         self.contentions: list[str] = []
-        self._last_drives: list = []
+        self._last_drives: dict[int, tuple[int, int]] = {}
+        self._device_ports: dict[int, str | None] = {}
+        self._last_inputs: dict[int, int] = {}
         self._bus = _MASK_20          # idle: pull-ups high
         self._pru_drive_mask = _MASK_20
+        self._last_gpo = 0
+        self._ports: dict[str, object] = {}
+        self._port_devices: dict[str, list[DeviceModel]] = {}
+        self._port_net_masks: dict[str, int] = {}
+        self._port_net_modes: dict[str, dict[int, set[str]]] = {}
+        self._port_gpo: dict[str, int] = {}
+        self._core_drive_masks: dict[str, int] = {}
+        self._port_buses: dict[str, int] = {}
+        self._managed_masks: dict[str, int] = {}
+        self._wires: set[tuple[tuple[str, int], tuple[str, int]]] = set()
+        self._last_endpoint: str | None = None
+        self._component_finder = None
 
-    def attach(self, device: DeviceModel) -> DeviceModel:
-        """Attach a device. Never enabled by default anywhere else — the caller
-        decides, per the same rule as IOPort.attach_i2c_device."""
+    @property
+    def active(self) -> bool:
+        """Whether this bus has work to do on a pin or cycle."""
+        return bool(self.devices or self._wires)
+
+    def register_port(self, name: str, port) -> None:
+        """Register one PRU GPIO endpoint on this shared bus."""
+        self._ports[name] = port
+        self._port_devices[name] = []
+        self._port_net_masks[name] = 0
+        self._port_net_modes[name] = {}
+        self._port_gpo[name] = port.gpo & _MASK_20
+        self._core_drive_masks[name] = port.gpo_drive_mask & _MASK_20
+        self._port_buses[name] = _MASK_20
+        self._managed_masks[name] = 0
+
+    def attach(self, device: DeviceModel, port: str | None = None,
+               cycle: int = 0) -> DeviceModel:
+        """Attach a device at one GPIO endpoint (or the stand-alone bus)."""
+        if port is not None and port not in self._ports:
+            raise KeyError(f"Unknown GPIO endpoint {port!r}")
+        key = id(device)
         self.devices.append(device)
+        self._device_ports[key] = port
+        self._last_drives[key] = (0, 0)
+        if port is not None:
+            self._index_device(device, port, add=True)
+            self._refresh_shared(cycle, process_reactive=True,
+                                 affected={port})
         return device
 
-    def detach_all(self) -> None:
-        self.devices.clear()
+    def detach(self, device: DeviceModel) -> None:
+        """Detach one model and immediately remove its previous pin drives."""
+        key = id(device)
+        if device not in self.devices:
+            return
+        self.devices.remove(device)
+        port = self._device_ports.pop(key, None)
+        self._last_drives.pop(key, None)
+        self._last_inputs.pop(key, None)
+        if port is not None:
+            self._index_device(device, port, add=False)
+        if self._ports:
+            affected = {port} if port is not None else set(self._ports)
+            self._refresh_shared(self._current_cycle(), process_reactive=True,
+                                 affected=affected)
+        elif port is None:
+            self._bus = self._resolve_standalone(0, self._last_gpo,
+                                                 record_contention=False)
+
+    def detach_all(self, port: str | None = None) -> None:
+        """Detach models; removed outputs are released before returning."""
+        if port is None:
+            removed = list(self.devices)
+        else:
+            removed = [d for d in self.devices if self._device_ports.get(id(d)) == port]
+        for device in removed:
+            self.detach(device)
 
     def set_pru_drive_mask(self, mask: int) -> None:
-        """Which pins the PRU is actually driving (the rest are inputs).
-
-        Defaults to all 20, matching IOPort's current behaviour where `gpo` is
-        taken as the driven state. A block that configures pins as inputs should
-        narrow this, otherwise the PRU fights every device on those pins.
-        """
+        """Set the stand-alone PRU output-enable mask (inputs are released)."""
         self._pru_drive_mask = mask & _MASK_20
 
-    def settle(self, cycle: int, gpo: int) -> int:
-        """One cycle of bus resolution. Returns the level every input samples.
+    def set_core_drive_mask(self, core: str, mask: int, cycle: int = 0) -> None:
+        """Set which output pins a registered core is actively driving."""
+        if core not in self._ports:
+            raise KeyError(f"Unknown GPIO endpoint {core!r}")
+        mask &= _MASK_20
+        self._core_drive_masks[core] = mask
+        self._ports[core].gpo_drive_mask = mask
+        self._refresh_shared(cycle, process_reactive=True, affected={core})
 
-        Two-phase, because the ordering matters and the obvious single phase is
-        wrong in one direction or the other:
+    def add_gpio_wire(self, core_a: str, pin_a: int,
+                      core_b: str, pin_b: int, cycle: int | None = None) -> bool:
+        """Connect two core pins to one electrical net without changing GPIO direction."""
+        a = self._gpio_node(core_a, pin_a)
+        b = self._gpio_node(core_b, pin_b)
+        if a == b:
+            return False
+        wire = tuple(sorted((a, b)))
+        if wire in self._wires:
+            return False
+        self._wires.add(wire)
+        self._component_finder = None
+        self._refresh_shared(self._current_cycle() if cycle is None else cycle,
+                             process_reactive=True,
+                             affected={core_a, core_b})
+        return True
 
-          1. Resolve the PRU's CURRENT output against every device's PREVIOUS
-             drive, and show that to the devices. A device must see what the
-             PRU is doing this cycle - an I2C slave that noticed SDA a cycle
-             late would miss a START.
-          2. Re-resolve with the drives the devices just produced, and return
-             that as what R31 samples.
+    def remove_gpio_wire(self, core_a: str, pin_a: int,
+                         core_b: str, pin_b: int, cycle: int | None = None) -> bool:
+        """Remove a direct pin connection and release its stale bus drive."""
+        a = self._gpio_node(core_a, pin_a)
+        b = self._gpio_node(core_b, pin_b)
+        wire = tuple(sorted((a, b)))
+        if wire not in self._wires:
+            return False
+        self._wires.remove(wire)
+        self._component_finder = None
+        self._refresh_shared(self._current_cycle() if cycle is None else cycle,
+                             process_reactive=True,
+                             affected={core_a, core_b})
+        return True
 
-        So a device sees the PRU immediately but never the result of its own
-        drive within the same cycle, which is the part real silicon cannot do
-        either.
+    def list_gpio_wires(self) -> list[dict]:
+        return [{"core_a": a[0], "pin_a": a[1], "core_b": b[0], "pin_b": b[1]}
+                for a, b in sorted(self._wires)]
+
+    def _gpio_node(self, core: str, pin: int) -> tuple[str, int]:
+        if core not in self._ports:
+            raise KeyError(f"Unknown GPIO endpoint {core!r}")
+        if pin < 0 or pin >= 20:
+            raise ValueError(f"GPIO pin index {pin} out of range 0-19")
+        return core, pin
+
+    def _current_cycle(self) -> int:
+        return max((port._device_cycle for port in self._ports.values()), default=0)
+
+    def _index_device(self, device: DeviceModel, port: str, add: bool) -> None:
+        devices = self._port_devices[port]
+        if add:
+            devices.append(device)
+        else:
+            devices.remove(device)
+        masks = 0
+        modes: dict[int, set[str]] = {}
+        for attached in devices:
+            for pin, mode in attached.nets.items():
+                masks |= 1 << pin
+                modes.setdefault(pin, set()).add(mode)
+        self._port_net_masks[port] = masks
+        self._port_net_modes[port] = modes
+
+    def settle(self, cycle: int, gpo: int, port: str | None = None) -> int:
+        """Settle one pin change and return the resolved 20-bit input word.
+
+        Stand-alone callers explicitly stepping a DeviceBus retain the original
+        one-settle/one-device-tick contract. IOPort calls this only when its
+        resolved pin state changes, so reactive models do no work on idle cores.
         """
-        provisional = self._resolve(cycle, gpo, self._last_drives,
-                                    record_contention=False)
-        drives = [(d, d.tick(cycle, provisional)) for d in self.devices]
-        self._last_drives = drives
+        if port is None and not self._ports:
+            self._last_gpo = gpo & _MASK_20
+            provisional = self._resolve_standalone(cycle, self._last_gpo,
+                                                   record_contention=False)
+            drives = []
+            for device in self.devices:
+                mask, values = device.tick(cycle, provisional)
+                drives.append((device, (mask & _MASK_20, values & _MASK_20)))
+            self._last_drives = {id(d): drive for d, drive in drives}
+            bus = self._resolve_standalone(cycle, self._last_gpo,
+                                           record_contention=True)
+            self._bus = bus
+            return bus
 
-        bus = self._resolve(cycle, gpo, drives, record_contention=True)
-        self._bus = bus
-        return bus
+        if port not in self._ports:
+            raise KeyError(f"Unknown GPIO endpoint {port!r}")
+        self._port_gpo[port] = gpo & _MASK_20
+        self._last_endpoint = port
+        self._refresh_shared(cycle, process_reactive=True,
+                             affected={port} if port is not None else set(self._ports))
+        return self._port_buses[port]
 
-    def _resolve(self, cycle, gpo, drives, record_contention):
-        bus = _MASK_20
+    def advance_cycles(self, port: str | None, cycles: int,
+                       first_cycle: int = 1) -> None:
+        """Advance time-driven models once per elapsed core cycle."""
+        if cycles <= 0 or not self.has_time_driven(port):
+            return
+        for offset in range(cycles):
+            cycle = first_cycle + offset
+            if self._ports:
+                self._tick_time_driven_shared(port, cycle)
+            else:
+                provisional = self._resolve_standalone(
+                    cycle, self._last_gpo, record_contention=False)
+                for device in self.devices:
+                    if device.time_driven:
+                        mask, values = device.tick(cycle, provisional)
+                        self._last_drives[id(device)] = (
+                            mask & _MASK_20, values & _MASK_20)
+                        self._last_inputs[id(device)] = provisional
+                self._bus = self._resolve_standalone(
+                    cycle, self._last_gpo, record_contention=True)
+
+    def has_time_driven(self, port: str | None = None) -> bool:
+        return any(device.time_driven and self._device_ports.get(id(device)) == port
+                   for device in self.devices)
+
+    def _tick_time_driven_shared(self, port: str, cycle: int) -> None:
+        self._refresh_shared(cycle, process_reactive=False, time_port=port)
+
+    def _resolve_standalone(self, cycle: int, gpo: int,
+                            record_contention: bool) -> int:
+        levels = _MASK_20
+        device_types = {pin: {d.nets[pin] for d in self.devices if pin in d.nets}
+                        for pin in range(20)}
         for pin in range(20):
             bit = 1 << pin
-            net = self._net_type(pin)
             drivers = []
+            modes = device_types[pin]
             if self._pru_drive_mask & bit:
-                drivers.append(("PRU", (gpo >> pin) & 1))
-            for dev, (mask, values) in drives:
+                mode = OPEN_DRAIN if OPEN_DRAIN in modes and PUSH_PULL not in modes else PUSH_PULL
+                drivers.append(("PRU", (gpo >> pin) & 1, mode))
+            for device in self.devices:
+                mask, values = self._last_drives.get(id(device), (0, 0))
                 if mask & bit:
-                    drivers.append((dev.name, (values >> pin) & 1))
-
-            if not drivers:
-                level = 1                      # pull-up
-            elif net == OPEN_DRAIN:
-                level = 0 if any(v == 0 for _, v in drivers) else 1
-            else:
-                level = drivers[0][1]
-                if record_contention and len({v for _, v in drivers}) > 1:
-                    who = ", ".join(f"{n}={v}" for n, v in drivers)
-                    self.contentions.append(
-                        f"cycle {cycle}: push-pull contention on pin {pin} ({who})")
-
+                    drivers.append((device.name, (values >> pin) & 1,
+                                    device.nets.get(pin, PUSH_PULL)))
+            level = self._resolve_pin(cycle, pin, drivers, record_contention)
             if level:
-                bus |= bit
+                levels |= bit
             else:
-                bus &= ~bit
+                levels &= ~bit
+        return levels
 
-        return bus
+    def _resolve_pin(self, cycle: int, pin: int, drivers: list[tuple],
+                     record_contention: bool) -> int:
+        if not drivers:
+            return 1
+        pp = [(name, value) for name, value, mode in drivers if mode == PUSH_PULL]
+        od = [(name, value) for name, value, mode in drivers if mode == OPEN_DRAIN]
+        pp_values = {value for _, value in pp}
+        if record_contention and len(pp_values) > 1:
+            who = ", ".join(f"{name}={value}" for name, value in pp)
+            self.contentions.append(
+                f"cycle {cycle}: push-pull contention on pin {pin} ({who})")
+        od_low = any(value == 0 for _, value in od)
+        pp_high = any(value == 1 for _, value in pp)
+        if record_contention and od_low and pp_high:
+            who = ", ".join(f"{name}={value}" for name, value, _ in drivers)
+            self.contentions.append(
+                f"cycle {cycle}: mixed open-drain/push-pull contention on pin {pin} ({who})")
+        if od_low:
+            return 0
+        if pp:
+            return pp[0][1]
+        return 1
 
-    def _net_type(self, pin: int) -> str:
-        """A pin is open-drain if ANY attached device declares it so — one
-        open-drain device makes the whole net open-drain, which is how a real
-        bus behaves."""
-        for dev in self.devices:
-            if dev.nets.get(pin) == OPEN_DRAIN:
-                return OPEN_DRAIN
-        return PUSH_PULL
+    def _shared_components(self):
+        if self._component_finder is not None:
+            return self._component_finder
+        parent: dict[tuple[str, int], tuple[str, int]] = {}
+
+        def find(node):
+            parent.setdefault(node, node)
+            if parent[node] != node:
+                parent[node] = find(parent[node])
+            return parent[node]
+
+        for a, b in self._wires:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[rb] = ra
+        self._component_finder = find
+        return find
+
+    def _shared_drivers(self, cycle: int):
+        find = self._shared_components()
+        drivers: dict[tuple[str, int], list[tuple[str, int, str]]] = {}
+        declared: dict[tuple[str, int], set[str]] = {}
+        for device in self.devices:
+            port = self._device_ports.get(id(device))
+            for pin, mode in device.nets.items():
+                declared.setdefault(find((port, pin)), set()).add(mode)
+        for core, port in self._ports.items():
+            gpo = port.gpo & _MASK_20
+            self._port_gpo[core] = gpo
+            mask = self._core_drive_masks[core]
+            for pin in range(20):
+                bit = 1 << pin
+                if not mask & bit:
+                    continue
+                node = find((core, pin))
+                modes = declared.get(node, set())
+                mode = OPEN_DRAIN if OPEN_DRAIN in modes and PUSH_PULL not in modes else PUSH_PULL
+                drivers.setdefault(node, []).append((core, (gpo >> pin) & 1, mode))
+        for device in self.devices:
+            port = self._device_ports.get(id(device))
+            mask, values = self._last_drives.get(id(device), (0, 0))
+            for pin in range(20):
+                bit = 1 << pin
+                if mask & bit:
+                    node = find((port, pin))
+                    drivers.setdefault(node, []).append(
+                        (device.name, (values >> pin) & 1,
+                         device.nets.get(pin, PUSH_PULL)))
+        return find, drivers
+
+    def _resolve_shared_levels(self, cycle: int, find, drivers,
+                               record_contention: bool):
+        roots = {find((core, pin)) for core in self._ports for pin in range(20)}
+        roots.update(find((self._device_ports.get(id(device)), pin))
+                     for device in self.devices for pin in device.nets)
+        levels = {}
+        for root in roots:
+            pin = root[1]
+            levels[root] = self._resolve_pin(
+                cycle, pin, drivers.get(root, []), record_contention)
+        return find, levels
+
+    def _shared_levels(self, cycle: int, record_contention: bool):
+        find, drivers = self._shared_drivers(cycle)
+        return self._resolve_shared_levels(cycle, find, drivers,
+                                           record_contention), drivers
+
+    def _resolve_unwired_port(self, port: str, cycle: int,
+                              record_contention: bool = False) -> int:
+        """Resolve one endpoint with bitmasks when no shared net is present."""
+        endpoint = self._ports[port]
+        gpo = endpoint.gpo & _MASK_20
+        self._port_gpo[port] = gpo
+        core_mask = endpoint.gpo_drive_mask & _MASK_20
+        self._core_drive_masks[port] = core_mask
+        device_masks = {id(device): self._last_drives.get(id(device), (0, 0))
+                        for device in self._port_devices[port]}
+        word = 0
+        for pin in range(20):
+            bit = 1 << pin
+            modes = self._port_net_modes[port].get(pin, set())
+            drivers = []
+            if core_mask & bit:
+                mode = OPEN_DRAIN if OPEN_DRAIN in modes and PUSH_PULL not in modes else PUSH_PULL
+                drivers.append((port, (gpo >> pin) & 1, mode))
+            for device in self._port_devices[port]:
+                mask, values = device_masks[id(device)]
+                if mask & bit:
+                    drivers.append((device.name, (values >> pin) & 1,
+                                    device.nets.get(pin, PUSH_PULL)))
+            if self._resolve_pin(cycle, pin, drivers, record_contention):
+                word |= bit
+        return word
+
+    def _refresh_unwired_port(self, port: str, cycle: int,
+                              process_reactive: bool,
+                              time_port: str | None) -> None:
+        devices = self._port_devices[port]
+        bus = self._resolve_unwired_port(port, cycle)
+        if process_reactive:
+            self._tick_reactive_port(port, devices, cycle, bus)
+            bus = self._resolve_unwired_port(port, cycle)
+        if time_port is not None:
+            for device in devices:
+                if not device.time_driven:
+                    continue
+                mask, values = device.tick(cycle, bus)
+                self._last_drives[id(device)] = (mask & _MASK_20,
+                                                 values & _MASK_20)
+                self._last_inputs[id(device)] = bus
+            bus = self._resolve_unwired_port(port, cycle)
+            if any(not device.time_driven for device in devices):
+                self._tick_reactive_port(port, devices, cycle, bus)
+                bus = self._resolve_unwired_port(port, cycle)
+        bus = self._resolve_unwired_port(port, cycle, record_contention=True)
+        self._port_buses[port] = bus
+        self._bus = bus
+        managed = self._port_net_masks[port]
+        changed = self._managed_masks[port] | managed
+        endpoint = self._ports[port]
+        endpoint.gpi = ((endpoint.gpi & ~changed) | (bus & changed)) & _MASK_20
+        self._managed_masks[port] = managed
+
+    def _tick_reactive_port(self, port: str, devices: list[DeviceModel],
+                            cycle: int, bus: int) -> None:
+        for device in devices:
+            if device.time_driven:
+                continue
+            key = id(device)
+            if self._last_inputs.get(key) == bus:
+                continue
+            mask, values = device.tick(cycle, bus)
+            self._last_drives[key] = (mask & _MASK_20, values & _MASK_20)
+            self._last_inputs[key] = bus
+
+    def _bus_word(self, core: str, find, levels) -> int:
+        word = 0
+        for pin in range(20):
+            if levels[find((core, pin))]:
+                word |= 1 << pin
+        return word
+
+    def _refresh_shared(self, cycle: int, process_reactive: bool,
+                        time_port: str | None = None,
+                        affected: set[str] | None = None) -> None:
+        if self._ports and not self._wires:
+            endpoints = ({time_port} if time_port is not None else
+                         (affected if affected is not None else set(self._ports)))
+            for port in endpoints:
+                self._refresh_unwired_port(port, cycle, process_reactive,
+                                           time_port)
+            return
+        (find, provisional), drivers = self._shared_levels(
+            cycle, record_contention=False)
+        reactive = any(not device.time_driven for device in self.devices)
+        if process_reactive:
+            if self._tick_reactive(cycle, find, provisional):
+                find, drivers = self._shared_drivers(cycle)
+                find, provisional = self._resolve_shared_levels(
+                    cycle, find, drivers, record_contention=False)
+        if time_port is not None:
+            for device in self.devices:
+                if not device.time_driven or self._device_ports.get(id(device)) != time_port:
+                    continue
+                key = id(device)
+                bus = self._bus_word(time_port, find, provisional)
+                mask, values = device.tick(cycle, bus)
+                self._last_drives[key] = (mask & _MASK_20, values & _MASK_20)
+                self._last_inputs[key] = bus
+            find, drivers = self._shared_drivers(cycle)
+            find, provisional = self._resolve_shared_levels(
+                cycle, find, drivers, record_contention=False)
+            # A timed model may have changed a pin. Reactive models on that
+            # net must observe the edge in this same elapsed core cycle.
+            if reactive and self._tick_reactive(cycle, find, provisional):
+                find, drivers = self._shared_drivers(cycle)
+                find, provisional = self._resolve_shared_levels(
+                    cycle, find, drivers, record_contention=False)
+        find, levels = self._resolve_shared_levels(
+            cycle, find, drivers, record_contention=True)
+        for core, port in self._ports.items():
+            word = self._bus_word(core, find, levels)
+            self._port_buses[core] = word
+            driven = 0
+            for device in self.devices:
+                if self._device_ports.get(id(device)) == core:
+                    for pin in device.nets:
+                        driven |= 1 << pin
+            for a, b in self._wires:
+                if a[0] == core:
+                    driven |= 1 << a[1]
+                if b[0] == core:
+                    driven |= 1 << b[1]
+            changed = self._managed_masks[core] | driven
+            port.gpi = ((port.gpi & ~changed) | (word & changed)) & _MASK_20
+            self._managed_masks[core] = driven
+        endpoint = time_port if time_port is not None else self._last_endpoint
+        self._bus = self._port_buses.get(endpoint, _MASK_20)
+
+    def _tick_reactive(self, cycle: int, find, levels) -> bool:
+        drives_changed = False
+        for device in self.devices:
+            if device.time_driven:
+                continue
+            key = id(device)
+            port = self._device_ports.get(key)
+            bus = self._bus_word(port, find, levels) if port is not None else _MASK_20
+            if self._last_inputs.get(key) == bus:
+                continue
+            mask, values = device.tick(cycle, bus)
+            drive = (mask & _MASK_20, values & _MASK_20)
+            drives_changed |= self._last_drives.get(key, (0, 0)) != drive
+            self._last_drives[key] = drive
+            self._last_inputs[key] = bus
+        return drives_changed
 
     # -- aggregate views -----------------------------------------------------
 
@@ -244,22 +629,117 @@ class DeviceBus:
 
     def reset(self) -> None:
         self.contentions.clear()
-        self._last_drives = []
+        self._last_inputs.clear()
+        for device in self.devices:
+            self._last_drives[id(device)] = (0, 0)
         self._bus = _MASK_20
         for dev in self.devices:
             dev.reset()
+        if self._ports:
+            self._refresh_shared(0, process_reactive=False)
+        else:
+            self._bus = self._resolve_standalone(0, self._last_gpo,
+                                                 record_contention=False)
+
+    def reset_port(self, port: str | None, gpo: int | None = None) -> None:
+        """Reset only devices on one core endpoint of a shared bus."""
+        if port is None or not self._ports:
+            if gpo is not None:
+                self._last_gpo = gpo & _MASK_20
+            self.reset()
+            return
+        self.contentions.clear()
+        self._port_gpo[port] = self._ports[port].gpo & _MASK_20
+        self._core_drive_masks[port] = self._ports[port].gpo_drive_mask & _MASK_20
+        for device in self.devices:
+            if self._device_ports.get(id(device)) == port:
+                device.reset()
+                self._last_drives[id(device)] = (0, 0)
+                self._last_inputs.pop(id(device), None)
+        self._refresh_shared(0, process_reactive=False, affected={port})
 
     def snapshot(self) -> dict:
-        return {"bus": self._bus, "contentions": list(self.contentions),
-                "devices": [d.snapshot() for d in self.devices]}
+        return {
+            "bus": self._bus,
+            "contentions": list(self.contentions),
+            "device_refs": list(self.devices),
+            "device_ports": [self._device_ports.get(id(d)) for d in self.devices],
+            "devices": [d.snapshot() for d in self.devices],
+            "drives": [self._last_drives.get(id(d), (0, 0)) for d in self.devices],
+            "inputs": [self._last_inputs.get(id(d)) for d in self.devices],
+            "pru_drive_mask": self._pru_drive_mask,
+            "core_drive_masks": dict(self._core_drive_masks),
+            "port_gpo": {core: port.gpo & _MASK_20
+                         for core, port in self._ports.items()},
+            "port_buses": dict(self._port_buses),
+            "managed_masks": dict(self._managed_masks),
+            "last_endpoint": self._last_endpoint,
+            "port_state": {
+                core: {"gpo": port.gpo, "gpi": port.gpi,
+                       "gpo_drive_mask": port.gpo_drive_mask,
+                       "device_cycle": port._device_cycle}
+                for core, port in self._ports.items()
+            },
+            "wires": self.list_gpio_wires(),
+        }
 
     def restore(self, snap: dict) -> None:
         self._bus = snap["bus"]
         self.contentions = list(snap["contentions"])
+        if "device_refs" in snap:
+            self.devices = list(snap["device_refs"])
+            self._device_ports = {
+                id(device): port
+                for device, port in zip(self.devices, snap["device_ports"])
+            }
+            self._last_drives.clear()
+            self._last_inputs.clear()
+            for core in self._ports:
+                self._port_devices[core] = []
+                self._port_net_masks[core] = 0
+                self._port_net_modes[core] = {}
+            for device in self.devices:
+                port = self._device_ports.get(id(device))
+                self._last_drives[id(device)] = (0, 0)
+                if port is not None:
+                    self._index_device(device, port, add=True)
         for dev, ds in zip(self.devices, snap["devices"]):
             dev.restore(ds)
+        for dev, drive in zip(self.devices, snap.get("drives", [])):
+            self._last_drives[id(dev)] = tuple(drive)
+        for dev, bus in zip(self.devices, snap.get("inputs", [])):
+            if bus is None:
+                self._last_inputs.pop(id(dev), None)
+            else:
+                self._last_inputs[id(dev)] = bus
+        self._pru_drive_mask = snap.get("pru_drive_mask", self._pru_drive_mask)
+        self._core_drive_masks.update(snap.get("core_drive_masks", {}))
+        self._port_gpo.update(snap.get("port_gpo", {}))
+        self._port_buses.update(snap.get("port_buses", {}))
+        self._managed_masks.update(snap.get("managed_masks", {}))
+        self._last_endpoint = snap.get("last_endpoint", self._last_endpoint)
+        if "wires" in snap:
+            self._wires = {
+                tuple(sorted(((wire["core_a"], wire["pin_a"]),
+                              (wire["core_b"], wire["pin_b"]))))
+                for wire in snap["wires"]
+            }
+            self._component_finder = None
+        for core, port in self._ports.items():
+            state = snap.get("port_state", {}).get(core, {})
+            port.gpo = state.get("gpo", self._port_gpo.get(core, port.gpo))
+            port.gpo_drive_mask = state.get(
+                "gpo_drive_mask",
+                self._core_drive_masks.get(core, port.gpo_drive_mask))
+            port.gpi = state.get("gpi", port.gpi) & _MASK_20
+            port._device_cycle = state.get("device_cycle", port._device_cycle)
 
     def get_state(self) -> dict:
         return {"bus": self._bus,
+                "buses": dict(self._port_buses),
+                "drive_masks": dict(self._core_drive_masks),
+                "wires": self.list_gpio_wires(),
                 "contentions": len(self.contentions),
+                "faults": self.faults(),
+                "events": self.events(),
                 "devices": [d.get_state() for d in self.devices]}

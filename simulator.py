@@ -14,6 +14,7 @@ from mem.regions import MemoryRegion
 from perif.iep import IepTimer, IEP_SIZE
 from mem.constant_table import ConstantTable
 from xfr.xfr_bus import XFRBus
+from pru_io.device_model import DeviceBus, DeviceModel
 from pru_io.io_port import IOPort
 from pru_io.sd_filter import SigmaDeltaFilter
 from pru_io.sd_registers import SDRegisters
@@ -140,6 +141,12 @@ class Simulator:
             "rtu1": PRUCore("RTU1", self.memory, self.xfr, io_rtu1, self.constant_table,
                             dram_swap=True),
         }
+
+        # One resolver owns generic external devices and cross-core GPIO nets.
+        # It is inert until a device or wire is attached.
+        self.device_bus = DeviceBus()
+        for name, core in self.cores.items():
+            core.io_port.bind_device_bus(self.device_bus, name)
 
         # Wire SD filters to each core's IOPort (slice 1 runs on its own clock)
         pru_clock_mhz = float(pru_clock)
@@ -395,11 +402,42 @@ class Simulator:
         return {
             "gpo_pins": pru.io_port.get_gpo_pins(),
             "gpi_pins": pru.io_port.get_gpi_pins(),
+            "gpo_drive_mask": pru.io_port.gpo_drive_mask,
         }
 
     def set_input(self, core: str, pin: int, value: bool) -> None:
         """Set a single GPI pin on *core*'s I/O port."""
         self._get_core(core).io_port.set_gpi_pin(pin, value)
+
+    def set_gpio_drive_mask(self, core: str, mask: int) -> None:
+        """Set the GPIO output-enable bits for one core without changing R30."""
+        self._get_core(core).io_port.set_gpo_drive_mask(mask)
+
+    def add_gpio_wire(self, core_a: str, pin_a: int,
+                      core_b: str, pin_b: int) -> bool:
+        """Connect two GPIO pins through the shared DeviceBus resolver."""
+        return self.device_bus.add_gpio_wire(core_a, pin_a, core_b, pin_b)
+
+    def remove_gpio_wire(self, core_a: str, pin_a: int,
+                         core_b: str, pin_b: int) -> bool:
+        """Remove a direct GPIO connection."""
+        return self.device_bus.remove_gpio_wire(core_a, pin_a, core_b, pin_b)
+
+    def list_gpio_wires(self) -> list[dict]:
+        """Return configured cross-core GPIO connections."""
+        return self.device_bus.list_gpio_wires()
+
+    def attach_device(self, core: str, device: DeviceModel) -> DeviceModel:
+        """Attach a generic pin device at one core's GPIO endpoint."""
+        return self._get_core(core).io_port.attach_device(device)
+
+    def detach_device(self, device: DeviceModel) -> None:
+        """Detach a generic device and release all pins it previously drove."""
+        self.device_bus.detach(device)
+
+    def device_state(self) -> dict:
+        """Return generic device, net, drive-mask, and contention state."""
+        return self.device_bus.get_state()
 
     def set_loopback(self, core: str, group: int, enabled: bool) -> None:
         """Enable/disable GPO→GPI loopback for a 4-bit *group* (0–4) on *core*."""

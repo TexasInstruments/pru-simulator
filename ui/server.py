@@ -70,6 +70,7 @@ def _snapshot(core: str) -> dict:
         "carry": c.registers.carry,
         "gpo": c.io_port.gpo,
         "gpi": c.io_port.gpi,
+        "gpo_drive_mask": c.io_port.gpo_drive_mask,
         "cycles": c.counters.cycles,
         "stall_cycles": c.counters.stall_cycles,
         "instruction_count": c.counters.instruction_count,
@@ -78,6 +79,7 @@ def _snapshot(core: str) -> dict:
         "sd": sd.snapshot() if sd is not None else None,
         "perif": perif.snapshot() if perif is not None else None,
         "i2c": i2c.snapshot() if i2c is not None else None,
+        "device_bus": sim.device_bus.snapshot(),
     }
 
 
@@ -92,6 +94,7 @@ def _restore(core: str, snap: dict) -> None:
     c.registers.carry = snap["carry"]
     c.io_port.gpo = snap["gpo"]
     c.io_port.gpi = snap["gpi"]
+    c.io_port.gpo_drive_mask = snap.get("gpo_drive_mask", c.io_port.gpo_drive_mask)
     c.counters.cycles = snap["cycles"]
     c.counters.stall_cycles = snap["stall_cycles"]
     c.counters.instruction_count = snap["instruction_count"]
@@ -106,6 +109,8 @@ def _restore(core: str, snap: dict) -> None:
         c.io_port.perif.restore(snap["perif"])
     if snap.get("i2c") is not None and c.io_port.i2c_device is not None:
         c.io_port.i2c_device.restore(snap["i2c"])
+    if snap.get("device_bus") is not None:
+        sim.device_bus.restore(snap["device_bus"])
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -708,7 +713,10 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False):
         "mux_sel": mux_sel,
         "gpo_pins": gpo_pins,
         "gpi_pins": c.io_port.get_gpi_pins(),
+        "gpo_drive_mask": c.io_port.gpo_drive_mask,
     }
+    if sim.device_bus.active:
+        io_section["device_bus"] = sim.device_state()
     if sd_data is not None:
         io_section["sd"] = sd_data
     if perif_data is not None:
