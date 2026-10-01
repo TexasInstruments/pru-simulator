@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from pru_io.sd_filter import SigmaDeltaFilter
     from pru_io.tca9538 import TCA9538Device
+    from pru_io.ssi_encoder_generator import SSIEncoderGenerator
 
 _MASK_20 = 0x000FFFFF
 _I2C_SCL_BIT = 0
@@ -28,6 +29,8 @@ class IOPort:
         self.loopback_mask: int = 0   # which GPO bits feed back to GPI (5 groups × 4 bits)
         self.uart_generator = None  # type: UARTFrameGenerator | None
         self.i2c_device = None        # type: TCA9538Device | None
+        self.ssi_generator = None     # type: SSIEncoderGenerator | None
+        self._wire_callbacks: list = []  # callbacks fired on every write_r30 for GPIO wires
 
     # ------------------------------------------------------------------
     # R30 / GPO
@@ -58,6 +61,8 @@ class IOPort:
                 self.gpi |= (1 << _I2C_SDA_BIT)
             else:
                 self.gpi &= ~(1 << _I2C_SDA_BIT)
+        for cb in self._wire_callbacks:
+            cb(self.gpo)
 
     def attach_i2c_device(self, device: "TCA9538Device | None") -> None:
         """Attach (or detach with None) an I2C slave model on SCL=bit0/SDA=bit1.
@@ -66,6 +71,14 @@ class IOPort:
         attached device must never be on by default.
         """
         self.i2c_device = device
+
+    def add_wire_callback(self, cb) -> None:
+        """Register a callback fired with the new GPO value on every write_r30."""
+        self._wire_callbacks.append(cb)
+
+    def remove_wire_callback(self, cb) -> None:
+        """Unregister a previously added GPIO wire callback."""
+        self._wire_callbacks.remove(cb)
 
     def set_loopback_group(self, group: int, enabled: bool) -> None:
         """Enable/disable GPO→GPI loopback for a 4-bit group (0–4).

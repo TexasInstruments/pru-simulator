@@ -81,7 +81,7 @@ Add immediately after the closing `}`:
 
 ```bash
 # server must already be running; if not:
-cd C:/ti/industrial-automation-lab/Projects/pru_simulator
+cd /path/to/pru_simulator
 python -m uvicorn ui.server:app --reload --port 8000
 ```
 
@@ -400,14 +400,13 @@ Expected: hint says "Use Signal Graph ● REC to capture GPO0 first".
 - [ ] **Step 1: Stage and commit**
 
 ```bash
-cd C:/ti/industrial-automation-lab/Projects/pru_simulator
+cd /path/to/pru_simulator
 git add ui/static/index.html ui/static/app.js
 git commit -m "feat: add UART decoder section to IO panel
 
 Post-processes Signal Graph GPO0 capture, auto-detects bit width
 from minimum run-length, decodes 8N1 frames, shows ASCII output.
 
-Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
 ```
 
 Expected: commit succeeds, 2 files changed.

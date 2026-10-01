@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import re
 import struct
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +93,8 @@ class PRUCore:
 
     def __init__(self, name: str, memory: MemoryBus, xfr: XFRBus, io_port: IOPort,
                  constant_table: ConstantTable | None = None,
-                 dram_swap: bool = False):
+                 dram_swap: bool = False,
+                 cycle_observer: Callable[[int], None] | None = None):
         self.name = name
         self.registers = RegisterFile()
         self.counters = CycleCounters()
@@ -104,8 +106,12 @@ class PRUCore:
         # PRU1 sees its own DRAM (DRAM1) at core-local 0x0000 and DRAM0 at
         # 0x2000 -- the reverse of PRU0. See _map_data_addr.
         self.dram_swap = dram_swap
+        self._cycle_observer = cycle_observer
         self.pc: int = 0
         self.halted: bool = False
+        self.fault: dict | None = None
+        self._foc_timer_wait_pc: int | None = None
+        self._foc_timer_wait_callback: Callable[[], bool] | None = None
         self.instructions: list[Instruction] = []
         self.loop_state: LoopState | None = None
         self.breakpoints: set[int] = set()
@@ -159,6 +165,15 @@ class PRUCore:
             errors.append(str(exc))
         return errors
 
+    def _record_fault(self, opcode: str, address: int, error: Exception) -> None:
+        self.fault = {
+            "type": "memory",
+            "opcode": opcode,
+            "address": int(address) & 0xFFFF_FFFF,
+            "pc": self.pc,
+            "error": str(error),
+        }
+
     def reset(self) -> None:
         """Reset all state to initial conditions."""
         self.registers.regs[:] = [0] * 32
@@ -166,20 +181,47 @@ class PRUCore:
         self.counters.reset()
         self.pc = 0
         self.halted = False
+        self.fault = None
+        self.clear_foc_timer_wait()
         self.loop_state = None
         for acc in self.accelerators.values():
             acc.reset()
         self.io_port.reset()
         self.unsupported_xfr.clear()
 
+    def configure_foc_timer_wait(
+        self, wait_pc: int, callback: Callable[[], bool]
+    ) -> None:
+        """Install the opt-in callback for the verified FOC wait loop."""
+        self._foc_timer_wait_pc = int(wait_pc)
+        self._foc_timer_wait_callback = callback
+
+    def clear_foc_timer_wait(self) -> None:
+        """Disable the FOC timer-wait fast path."""
+        self._foc_timer_wait_pc = None
+        self._foc_timer_wait_callback = None
+
     def step(self) -> None:
         """Execute one instruction."""
         if self.halted or self.pc >= len(self.instructions):
             return
 
+        if (
+            self._foc_timer_wait_pc is not None
+            and self.pc == self._foc_timer_wait_pc
+            and self._foc_timer_wait_callback is not None
+            and self._foc_timer_wait_callback()
+        ):
+            return
+
         # Pre-tick: advance UART frame generator before instruction reads R31
         if self.io_port.uart_generator is not None:
             self.io_port.uart_generator.tick(self.counters.cycles)
+
+        # Pre-tick: advance SSI encoder generator (edge-driven off the clock GPO)
+        # before instruction reads R31, so a same-instruction data sample is fresh
+        if self.io_port.ssi_generator is not None:
+            self.io_port.ssi_generator.tick(self.counters.cycles)
 
         instr = self.instructions[self.pc]
         branch_taken = False
@@ -399,6 +441,7 @@ class PRUCore:
             except ValueError as e:
                 logger.error(f"LBBO fault at 0x{addr:08X}: {e}"
                              f"{_stack_pointer_hint(self, base_op, addr)}")
+                self._record_fault("LBBO", addr, e)
                 self.halted = True
 
         elif op == "LBCO":
@@ -416,6 +459,7 @@ class PRUCore:
                 self.counters.stall(stalls)
             except ValueError as e:
                 logger.error(f"LBCO fault at 0x{addr:08X}: {e}")
+                self._record_fault("LBCO", addr, e)
                 self.halted = True
 
         elif op == "SBCO":
@@ -433,6 +477,7 @@ class PRUCore:
                 self.counters.stall(stalls)
             except ValueError as e:
                 logger.error(f"SBCO fault at 0x{addr:08X}: {e}")
+                self._record_fault("SBCO", addr, e)
                 self.halted = True
 
         elif op == "SBBO":
@@ -451,6 +496,7 @@ class PRUCore:
             except ValueError as e:
                 logger.error(f"SBBO fault at 0x{addr:08X}: {e}"
                              f"{_stack_pointer_hint(self, base_op, addr)}")
+                self._record_fault("SBBO", addr, e)
                 self.halted = True
 
         # ---- XFR ---------------------------------------------------------
@@ -598,6 +644,8 @@ class PRUCore:
 
         # ---- Count instruction cycle ------------------------------------
         self.counters.tick()
+        if self._cycle_observer is not None:
+            self._cycle_observer(self.counters.cycles)
 
     def run(self, max_steps: int = 100_000) -> int:
         """Run until halted or max_steps reached. Returns steps executed."""

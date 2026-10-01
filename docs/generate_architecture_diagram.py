@@ -3,6 +3,10 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
 import numpy as np
+from pathlib import Path
+
+
+DOCS_DIR = Path(__file__).resolve().parent
 
 
 def draw_architecture_diagram():
@@ -122,12 +126,12 @@ def draw_architecture_diagram():
         ax.text(x + 0.35, 1.7, label, ha='center', va='center', fontsize=7.5, color='white', fontweight='bold')
 
     plt.tight_layout()
-    plt.savefig('C:/Users/a0746725/ai_code/pru_simulator/docs/architecture.png', dpi=150, bbox_inches='tight')
+    plt.savefig(DOCS_DIR / 'architecture.png', dpi=150, bbox_inches='tight')
     plt.close()
 
 
 def draw_development_flows():
-    """Draw all development flows: human, AI, VS Code, and test validation."""
+    """Draw development flows for people, external tools, and test validation."""
     fig, ax = plt.subplots(1, 1, figsize=(18, 14))
     ax.set_xlim(0, 18)
     ax.set_ylim(0, 14)
@@ -136,7 +140,7 @@ def draw_development_flows():
 
     # Colors
     human_color = '#3498DB'
-    ai_color = '#9B59B6'
+    mcp_color = '#9B59B6'
     vscode_color = '#27AE60'
     test_color = '#E74C3C'
     sim_color = '#F39C12'
@@ -167,28 +171,28 @@ def draw_development_flows():
                 arrowprops=dict(arrowstyle='->', color=human_color, lw=1.5, linestyle='dashed',
                                connectionstyle='arc3,rad=-0.3'))
 
-    # === Flow 2: AI Code Generation (center-left) ===
-    ax.text(6.5, 13.5, 'Flow 2: AI Agent (MCP)', ha='center', fontsize=11, fontweight='bold', color=ai_color)
+    # === Flow 2: External Tooling (MCP) (center-left) ===
+    ax.text(6.5, 13.5, 'Flow 2: External Tooling (MCP)', ha='center', fontsize=11, fontweight='bold', color=mcp_color)
 
-    ai_steps = [
-        (6.5, 12.5, 'Claude generates\nPRU assembly'),
+    mcp_steps = [
+        (6.5, 12.5, 'Send assembly\nvia MCP client'),
         (6.5, 11.0, 'pru_load(asm)\nvia MCP tool'),
         (6.5, 9.5, 'pru_step(N)\nexecute'),
         (6.5, 8.0, 'pru_registers()\npru_io()'),
         (6.5, 6.5, 'Verify output\nvs expected'),
         (6.5, 5.0, 'Pass → done\nFail → regenerate'),
     ]
-    for x, y, text in ai_steps:
+    for x, y, text in mcp_steps:
         box = FancyBboxPatch((x - 1.2, y - 0.5), 2.4, 1.0, boxstyle="round,pad=0.03",
-                             facecolor=ai_color, edgecolor='#333', linewidth=1, alpha=0.7)
+                             facecolor=mcp_color, edgecolor='#333', linewidth=1, alpha=0.7)
         ax.add_patch(box)
         ax.text(x, y, text, ha='center', va='center', fontsize=8, color='white', fontweight='bold')
 
-    for i in range(len(ai_steps) - 1):
-        ax.annotate('', xy=(6.5, ai_steps[i+1][1] + 0.5), xytext=(6.5, ai_steps[i][1] - 0.5),
-                    arrowprops=dict(arrowstyle='->', color=ai_color, lw=2))
+    for i in range(len(mcp_steps) - 1):
+        ax.annotate('', xy=(6.5, mcp_steps[i+1][1] + 0.5), xytext=(6.5, mcp_steps[i][1] - 0.5),
+                    arrowprops=dict(arrowstyle='->', color=mcp_color, lw=2))
     ax.annotate('', xy=(5.0, 12.5), xytext=(5.0, 5.0),
-                arrowprops=dict(arrowstyle='->', color=ai_color, lw=1.5, linestyle='dashed',
+                arrowprops=dict(arrowstyle='->', color=mcp_color, lw=1.5, linestyle='dashed',
                                connectionstyle='arc3,rad=-0.3'))
 
     # === Flow 3: VS Code Extension (center-right) ===
@@ -242,14 +246,14 @@ def draw_development_flows():
             ha='center', fontsize=9, color='white')
 
     # Arrows from flows to simulator
-    for x, color in [(2.5, human_color), (6.5, ai_color), (10.5, vscode_color), (14.5, test_color)]:
+    for x, color in [(2.5, human_color), (6.5, mcp_color), (10.5, vscode_color), (14.5, test_color)]:
         ax.annotate('', xy=(max(5.5, min(12.5, x)), 4.3), xytext=(x, 4.7),
                     arrowprops=dict(arrowstyle='->', color=color, lw=2))
 
     # Legend
     legend_items = [
         (human_color, 'Human Developer (HTML Dashboard)'),
-        (ai_color, 'AI Agent (MCP Server)'),
+        (mcp_color, 'External Tooling (MCP adapter)'),
         (vscode_color, 'VS Code Extension (DAP/LSP) [Future]'),
         (test_color, 'Hardware Validation (Self-test Suite)'),
     ]
@@ -259,7 +263,7 @@ def draw_development_flows():
         ax.text(6.0, 1.92 - i * 0.4, label, va='center', fontsize=8)
 
     plt.tight_layout()
-    plt.savefig('C:/Users/a0746725/ai_code/pru_simulator/docs/development_flows.png', dpi=150, bbox_inches='tight')
+    plt.savefig(DOCS_DIR / 'development_flows.png', dpi=150, bbox_inches='tight')
     plt.close()
 
 

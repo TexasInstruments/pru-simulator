@@ -79,7 +79,7 @@ def test_put_config_writes_to_disk(tmp_path, monkeypatch):
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-cd C:/Users/a0746725/ai_code/pru_simulator
+cd /path/to/pru_simulator
 python -m pytest tests/test_server.py -v
 ```
 
@@ -332,7 +332,7 @@ Example:
 - [ ] **Step 4: Start the server and verify layout in browser**
 
 ```bash
-cd C:/Users/a0746725/ai_code/pru_simulator
+cd /path/to/pru_simulator
 python ui/server.py
 ```
 

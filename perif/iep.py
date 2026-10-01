@@ -112,6 +112,10 @@ class IepTimer:
         self.cap_status = 0                  # valid bits, write-1-to-clear
         self.capture = [0] * NUM_CAPTURE     # each 64-bit
 
+    def hardware_reset(self) -> None:
+        """Reset the timer through the simulator's full-reset interface."""
+        self.reset()
+
     # -- configuration views --------------------------------------------
     @property
     def count_enabled(self) -> bool:

@@ -88,7 +88,7 @@ class Accelerator(ABC):
 - [ ] **Step 2: Commit**
 
 ```bash
-cd C:/Users/a0746725/ai_code/pru_simulator
+cd /path/to/pru_simulator
 git add xfr/accelerator.py
 git commit -m "feat: add Accelerator ABC for broadside accelerator registry"
 ```
@@ -369,7 +369,7 @@ class TestReset:
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-cd C:/Users/a0746725/ai_code/pru_simulator
+cd /path/to/pru_simulator
 python -m pytest tests/test_mac_accelerator.py -v 2>&1 | head -30
 ```
 
@@ -884,7 +884,7 @@ Add immediately after that block:
 
 Start the server:
 ```bash
-cd C:/Users/a0746725/ai_code/pru_simulator
+cd /path/to/pru_simulator
 python ui/server.py
 ```
 

@@ -2,7 +2,7 @@
 
 ## Overview
 
-A multi-core PRU assembly simulator that provides exact simulation of PRU instructions on registers and IOs. Written in Python with an API-first architecture supporting AI-driven code generation (MCP), human visualization (HTML dashboard), and future VS Code integration (DAP/LSP).
+A multi-core PRU assembly simulator that provides exact simulation of PRU instructions on registers and IOs. Written in Python with an API-first architecture supporting external tooling through MCP, human visualization (HTML dashboard), and future VS Code integration (DAP/LSP).
 
 **Target devices:**
 - V3: AM261x, AM263x, AM263Px
@@ -446,7 +446,7 @@ class IOPort:
 
 **File:** `mcp_server/server.py`
 
-stdio-based MCP server for Claude Code integration.
+stdio-based MCP server for external-tool integration.
 
 #### Tools
 
@@ -463,10 +463,10 @@ stdio-based MCP server for Claude Code integration.
 | `pru_breakpoint` | `core: str, address: int` | `{id}` |
 | `pru_status` | — | `{cores: [{name, pc, cycles, stall_cycles, ipc, halted}]}` |
 
-#### AI Workflow
+#### External-tool workflow
 
 ```
-Claude generates PRU assembly
+External tool provides PRU assembly
   → pru_load(source, "pru0")
   → pru_step("pru0", 100)
   → pru_registers("pru0") + pru_io("pru0")
@@ -593,7 +593,7 @@ pru_simulator/
 │   └── spruij2.pdf
 ├── simulator.py            # top-level Simulator orchestrator
 ├── memory.cfg              # default memory configuration
-└── requirements.txt        # fastapi, uvicorn, websockets, mcp
+└── requirements.txt        # runtime, test, and MCP dependencies
 ```
 
 ---
@@ -618,8 +618,9 @@ python >= 3.11
 fastapi
 uvicorn
 websockets
-mcp              # Model Context Protocol SDK
 pytest           # testing
+
+mcp              # Model Context Protocol SDK
 ```
 
 ---
@@ -629,6 +630,6 @@ pytest           # testing
 Four primary flows (see `docs/development_flows.png`):
 
 1. **Human Developer** — write .asm → load in HTML dashboard → single-step → observe IO/registers → debug
-2. **AI Agent (MCP)** — Claude generates PRU code → pru_load → pru_step → pru_registers/pru_io → verify → iterate
+2. **External Tool (MCP)** — provide PRU code → pru_load → pru_step → pru_registers/pru_io → verify → iterate
 3. **VS Code (Future)** — edit .asm → LSP syntax check → DAP debug session → step/breakpoint → IO panel
 4. **Validation** — self-test .asm suite → run on simulator → run on real silicon → compare → fix mismatches
