@@ -44,6 +44,7 @@ def test_firmware_configures_expander_through_the_generic_bus(nominal_config):
     assert model.device.config_reg == 0x00, (
         "firmware's init transaction did not reach the device through "
         "DeviceBus")
+    assert model.device.last_transaction["ack"] is True
 
 
 def test_generic_bus_matches_the_hardcoded_attach_path(nominal_config):

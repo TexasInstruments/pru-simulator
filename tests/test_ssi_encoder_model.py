@@ -29,6 +29,22 @@ def send_word(model: SSIEncoderModel, start: int, period: int) -> tuple[list[int
     return sampled, cycle
 
 
+def send_word_without_final_fall(model: SSIEncoderModel, start: int,
+                                 period: int) -> tuple[list[int], int, int]:
+    """Send one word and leave CLK high after sampling its final bit."""
+    tick(model, start, 1)
+    cycle = start + period // 2
+    tick(model, cycle, 0)
+    sampled = []
+    for index in range(model.resolution):
+        cycle += period // 2
+        sampled.append(tick(model, cycle, 1))
+        if index + 1 < model.resolution:
+            cycle += period // 2
+            tick(model, cycle, 0)
+    return sampled, cycle - period // 2, cycle
+
+
 def complete_events(model: SSIEncoderModel) -> list[dict]:
     return [event for event in model.events() if event["kind"] == "frame"]
 
@@ -53,6 +69,52 @@ def test_ssi_latches_on_first_falling_and_presents_msb_on_rising_edges():
         "encoding": "binary",
     }]
     assert model.get_state()["state"] == "idle"
+
+
+def test_nth_rising_edge_completes_word_without_a_final_falling_edge():
+    model = SSIEncoderModel(resolution=8, position=0xA5,
+                            core_clock_hz=100_000_000, f_max_hz=10_000_000,
+                            monoflop_us=1)
+
+    sampled, last_fall, final_rise = send_word_without_final_fall(
+        model, start=0, period=20)
+    assert sampled == [int(bit) for bit in f"{0xA5:08b}"]
+    assert final_rise - last_fall == 10
+    assert model.get_state()["state"] == "guard"
+
+    tick(model, last_fall + model.monoflop_cycles, 1)
+
+    assert model.faults() == []
+    assert complete_events(model)[0]["cycle"] == final_rise
+    assert model.get_state()["state"] == "idle"
+
+
+def test_reader_final_fall_then_high_idle_is_a_valid_completed_word():
+    model = SSIEncoderModel(resolution=8, position=0xA5,
+                            core_clock_hz=100_000_000, f_max_hz=10_000_000,
+                            monoflop_us=1)
+
+    sampled, last_fall = send_word(model, start=0, period=20)
+    tick(model, last_fall + 1, 1)  # reader returns CLK high after the final fall
+    tick(model, last_fall + model.monoflop_cycles, 1)
+
+    assert sampled == [int(bit) for bit in f"{0xA5:08b}"]
+    assert model.faults() == []
+    assert complete_events(model)[0]["cycle"] == last_fall - 10
+
+
+def test_additional_full_pulse_after_reader_idle_return_faults():
+    model = SSIEncoderModel(resolution=2, position=0b10,
+                            core_clock_hz=100_000_000, f_max_hz=10_000_000,
+                            monoflop_us=1)
+    _, last_fall = send_word(model, start=0, period=20)
+
+    tick(model, last_fall + 1, 1)  # accepted return to idle high
+    tick(model, last_fall + 11, 0)
+    tick(model, last_fall + 21, 1)  # genuine extra clock pulse
+
+    assert any("past the end" in fault for fault in model.faults())
+    assert complete_events(model) == []
 
 
 def test_gray_encoding_presents_encoded_bits_but_reports_binary_position():
@@ -130,6 +192,8 @@ def test_clocking_past_resolution_faults_and_does_not_publish_a_frame():
     tick(model, 31, 1)
     tick(model, 41, 0)
     tick(model, 51, 1)
+    tick(model, 61, 0)
+    tick(model, 71, 1)
 
     assert any("past the end" in fault for fault in model.faults())
     assert complete_events(model) == []
@@ -148,6 +212,12 @@ def test_clocking_past_resolution_faults_and_does_not_publish_a_frame():
 def test_invalid_model_configuration_is_rejected(kwargs):
     with pytest.raises(ValueError):
         SSIEncoderModel(**kwargs)
+
+
+@pytest.mark.parametrize("idle_value", [0.0, 1.0, False, True])
+def test_idle_value_requires_an_integer_zero_or_one(idle_value):
+    with pytest.raises(ValueError, match="idle_value"):
+        SSIEncoderModel(idle_value=idle_value)
 
 
 def test_snapshot_restores_frame_progress_and_reports():

@@ -18,8 +18,6 @@ from math import ceil
 
 from pru_io.device_model import PUSH_PULL, DeviceModel
 
-_MASK_20 = (1 << 20) - 1
-
 
 def _positive_fraction(value, name: str) -> Fraction:
     try:
@@ -63,7 +61,8 @@ class SSIEncoderModel(DeviceModel):
         self.f_max_hz = _positive_fraction(f_max_hz, "f_max_hz")
         self.monoflop_us = _positive_fraction(monoflop_us, "monoflop_us")
         self.core_clock_hz = _positive_fraction(core_clock_hz, "core_clock_hz")
-        if isinstance(idle_value, bool) or idle_value not in (0, 1):
+        if (isinstance(idle_value, bool) or not isinstance(idle_value, int)
+                or idle_value not in (0, 1)):
             raise ValueError("idle_value must be 0 or 1")
         self.idle_value = idle_value
         self.name = name
@@ -103,16 +102,19 @@ class SSIEncoderModel(DeviceModel):
                 self._start_frame(cycle, valid=True)
             elif self._state == "active":
                 self._last_falling_cycle = cycle
-                if self._bits_clocked == self.resolution:
-                    self._state = "guard"
-            else:  # another request arrived before Tm expired
-                self._fault(cycle, "premature frame restart before monoflop Tm")
-                self._start_frame(cycle, valid=False)
+            else:
+                # The first fall after the Nth rising edge is the optional
+                # closing edge used by the reader firmware. Its following
+                # rise returns CLK to idle high; neither edge adds a data bit.
+                if not self._post_word_fall_seen:
+                    self._post_word_fall_seen = True
+                    self._last_falling_cycle = cycle
+                else:
+                    self._last_falling_cycle = cycle
+                    self._fault(cycle, "clocked past the end of the SSI word")
         elif rising:
             if self._state == "active":
                 self._clock_bit(cycle)
-            elif self._state == "guard":
-                self._fault(cycle, "clocked past the end of the SSI word before Tm")
 
         mask = 1 << self.data_pin
         values = self._output_value << self.data_pin
@@ -132,6 +134,7 @@ class SSIEncoderModel(DeviceModel):
         self._last_rising_cycle = None
         self._frame_started_cycle = cycle
         self._frame_completed_cycle = None
+        self._post_word_fall_seen = False
         self._output_value = self.idle_value
 
     def _clock_bit(self, cycle: int) -> None:
@@ -157,6 +160,7 @@ class SSIEncoderModel(DeviceModel):
         self._last_rising_cycle = cycle
         if self._bits_clocked == self.resolution:
             self._frame_completed_cycle = cycle
+            self._state = "guard"
 
     def _expire(self, cycle: int) -> None:
         if self._state == "idle" or self._last_falling_cycle is None:
@@ -176,11 +180,8 @@ class SSIEncoderModel(DeviceModel):
                 })
                 self.frames_captured += 1
         else:
-            if self._bits_clocked == self.resolution:
-                detail = "clock stalled after final rising edge before final falling edge"
-            else:
-                detail = (f"monoflop timeout after {self._bits_clocked} of "
-                          f"{self.resolution} SSI bits")
+            detail = (f"monoflop timeout after {self._bits_clocked} of "
+                      f"{self.resolution} SSI bits")
             self._fault(cycle, detail)
         self._state = "idle"
         self._last_falling_cycle = None
@@ -221,6 +222,7 @@ class SSIEncoderModel(DeviceModel):
         self._received_raw = 0
         self._bits_clocked = 0
         self._frame_valid = True
+        self._post_word_fall_seen = False
         self._events: list[dict] = []
         self._faults: list[str] = []
         self.frames_captured = 0
@@ -239,6 +241,7 @@ class SSIEncoderModel(DeviceModel):
             "received_raw": self._received_raw,
             "bits_clocked": self._bits_clocked,
             "frame_valid": self._frame_valid,
+            "post_word_fall_seen": self._post_word_fall_seen,
             "position": self.position,
             "events": [dict(event) for event in self._events],
             "faults": list(self._faults),
@@ -258,6 +261,7 @@ class SSIEncoderModel(DeviceModel):
         self._received_raw = snap["received_raw"]
         self._bits_clocked = snap["bits_clocked"]
         self._frame_valid = snap["frame_valid"]
+        self._post_word_fall_seen = snap.get("post_word_fall_seen", False)
         self.position = snap["position"]
         self._events = [dict(event) for event in snap["events"]]
         self._faults = list(snap["faults"])
