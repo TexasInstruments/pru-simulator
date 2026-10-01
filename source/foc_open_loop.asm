@@ -171,31 +171,30 @@ sort_done:
     QBA   wait_period
 first_period:
     LDI   r29, 0
-    ; First period starts now; subsequent periods begin at a fixed IEP target.
+    ; Keep the period start; elapsed-time comparisons remain valid across wrap.
     LBBO  &r19, r27, 0, 4
-    ADD   r9, r19, r2
     LDI   r16, PWM_MASK
     MOV   r30, r16
 
 pwm_edges:
-    ADD   r23, r19, r10
 edge_a_wait:
     LBBO  &r24, r27, 0, 4
-    QBLE  edge_a, r24, r23
+    SUB   r24, r24, r19
+    QBLE  edge_a, r24, r10
     QBA   edge_a_wait
 edge_a:
     CLR   r30, r30, r13
-    ADD   r23, r19, r11
 edge_b_wait:
     LBBO  &r24, r27, 0, 4
-    QBLE  edge_b, r24, r23
+    SUB   r24, r24, r19
+    QBLE  edge_b, r24, r11
     QBA   edge_b_wait
 edge_b:
     CLR   r30, r30, r14
-    ADD   r23, r19, r12
 edge_c_wait:
     LBBO  &r24, r27, 0, 4
-    QBLE  edge_c, r24, r23
+    SUB   r24, r24, r19
+    QBLE  edge_c, r24, r12
     QBA   edge_c_wait
 edge_c:
     CLR   r30, r30, r15
@@ -205,11 +204,11 @@ edge_c:
     QBA   control_update
 wait_period:
     LBBO  &r24, r27, 0, 4
-    QBLE  next_period, r24, r9
+    SUB   r24, r24, r19
+    QBLE  next_period, r24, r2
     QBA   wait_period
 next_period:
-    MOV   r19, r9
-    ADD   r9, r9, r1
+    ADD   r19, r19, r2
     LDI   r16, PWM_MASK
     MOV   r30, r16
     QBA   pwm_edges
