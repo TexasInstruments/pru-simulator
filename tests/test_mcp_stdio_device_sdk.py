@@ -12,7 +12,10 @@ ROOT = Path(__file__).parents[1]
 
 
 def _payload(result):
-    assert not result.isError
+    is_error = getattr(result, "is_error", None)
+    if is_error is None:
+        is_error = result.isError
+    assert not is_error
     return json.loads(result.content[0].text)
 
 
@@ -33,7 +36,11 @@ async def _exercise_stdio_tools():
                 "pru_load", "pru_step", "pru_run_until", "pru_status",
             }
             assert required <= by_name.keys()
-            assert by_name["pru_device_attach"].inputSchema[
+            attach_tool = by_name["pru_device_attach"]
+            attach_schema = getattr(attach_tool, "input_schema", None)
+            if attach_schema is None:
+                attach_schema = attach_tool.inputSchema
+            assert attach_schema[
                 "properties"]["config"]["type"] == "object"
 
             discovered = _payload(await session.call_tool(

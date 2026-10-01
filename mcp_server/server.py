@@ -581,7 +581,6 @@ def run_stdio_server():
         import asyncio
         import json
 
-        server = Server("pru-simulator")
         mcp_wrapper = PRUSimulatorMCP()
 
         # Build tool list from PRUSimulatorMCP public methods
@@ -595,17 +594,38 @@ def run_stdio_server():
                 inputSchema=_build_tool_input_schema(method),
             ))
 
-        @server.list_tools()
-        async def list_tools():
-            return _TOOLS
-
-        @server.call_tool()
-        async def call_tool(name, arguments):
+        def call_tool_content(name, arguments):
             method = getattr(mcp_wrapper, name, None)
             if method is None:
                 raise ValueError(f"Unknown tool: {name}")
             result = method(**arguments)
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            return TextContent(type="text", text=json.dumps(result, indent=2))
+
+        if "on_list_tools" in inspect.signature(Server).parameters:
+            from mcp.types import CallToolResult, ListToolsResult
+
+            async def list_tools(ctx, params):
+                return ListToolsResult(tools=_TOOLS)
+
+            async def call_tool(ctx, params):
+                return CallToolResult(content=[call_tool_content(
+                    params.name, params.arguments or {})])
+
+            server = Server(
+                "pru-simulator",
+                on_list_tools=list_tools,
+                on_call_tool=call_tool,
+            )
+        else:
+            server = Server("pru-simulator")
+
+            @server.list_tools()
+            async def list_tools():
+                return _TOOLS
+
+            @server.call_tool()
+            async def call_tool(name, arguments):
+                return [call_tool_content(name, arguments)]
 
         async def main():
             async with stdio_server() as (read_stream, write_stream):
