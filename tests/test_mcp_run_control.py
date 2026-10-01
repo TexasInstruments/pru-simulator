@@ -24,17 +24,34 @@ def test_multicore_default_advances_both_short_programs():
     assert result["success"] is True
 
 
+def test_multicore_uses_elapsed_time_when_core_clocks_differ(tmp_path):
+    config = tmp_path / "memory.cfg"
+    config.write_text(
+        "[device]\npru_clock_mhz = 250\npru1_clock_mhz = 200\niep_clock_mhz = 200\n",
+        encoding="utf-8",
+    )
+    mcp = PRUSimulatorMCP(config_path=str(config))
+    source = "nop\njmp 0"
+    assert mcp.pru_load(source, core="pru0")["success"]
+    assert mcp.pru_load(source, core="pru1")["success"]
+
+    result = mcp.pru_step_multicore(count=10)
+
+    assert result["success"] is True
+    assert result["lead"]["cycles"] == 10
+    assert result["follow"]["cycles"] == 8
+
+
 def test_multicore_rejects_same_lead_and_follow():
     with pytest.raises(ValueError, match="different cores"):
         fresh_mcp().pru_step_multicore(lead="pru0", follow="pru0")
 
 
-def test_multicore_reports_when_follower_cannot_catch_up(monkeypatch):
+def test_multicore_reports_when_follower_cannot_catch_up():
     mcp = fresh_mcp()
     assert mcp.pru_load("ldi r0, 1\nhalt", core="pru0")["success"]
     assert mcp.pru_load("ldi r0, 1\nhalt", core="pru1")["success"]
-    mcp.sim._perif["pru0"]._now_ns = 100.0
-    monkeypatch.setattr(mcp.sim, "step_paced", lambda *args, **kwargs: None)
+    mcp.sim.cores["pru1"].halted = True
 
     result = mcp.pru_step_multicore(count=1)
 

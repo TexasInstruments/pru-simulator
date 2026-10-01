@@ -50,7 +50,7 @@ _config_lock = asyncio.Lock()
 
 # ---- Step history (for step-back) ----------------------------------------
 _MAX_HISTORY = 500
-_history: dict[str, list] = {"pru0": [], "rtu0": [], "pru1": []}
+_history: dict[str, list] = {"pru0": [], "rtu0": [], "pru1": [], "rtu1": []}
 
 
 def _snapshot(core: str) -> dict:
@@ -74,6 +74,7 @@ def _snapshot(core: str) -> dict:
         "stall_cycles": c.counters.stall_cycles,
         "instruction_count": c.counters.instruction_count,
         "mem": [bytes(r._data) for r in sim.memory.regions],
+        "iep": sim.iep.snapshot(),
         "sd": sd.snapshot() if sd is not None else None,
         "perif": perif.snapshot() if perif is not None else None,
         "i2c": i2c.snapshot() if i2c is not None else None,
@@ -97,6 +98,8 @@ def _restore(core: str, snap: dict) -> None:
     for i, region_data in enumerate(snap["mem"]):
         if i < len(sim.memory.regions):
             sim.memory.regions[i]._data[:] = region_data
+    if snap.get("iep") is not None:
+        sim.iep.restore(snap["iep"])
     if snap.get("sd") is not None and c.io_port.sd_filter is not None:
         c.io_port.sd_filter.restore(snap["sd"])
     if snap.get("perif") is not None and c.io_port.perif is not None:
