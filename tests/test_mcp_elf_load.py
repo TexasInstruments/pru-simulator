@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from mcp_server.server import PRUSimulatorMCP
+from pru_io.tca9538_device_model import TCA9538Model
 
 
 ELF_FIXTURE = Path(__file__).parents[1] / "references" / "pru_encoding_test.out"
@@ -31,6 +32,31 @@ def test_elf_load_reports_metadata_honors_entry_and_resets_all_state():
         result["entry"] // 4, 0, False)
     assert mcp.sim.memory_read(0, 5) == bytes(5)
     assert state.breakpoints == set()
+
+
+def test_successful_elf_replacement_clears_discarded_device_registry():
+    mcp = fresh_mcp()
+    previous = mcp.sim
+    previous.attach_device("pru0", TCA9538Model())
+
+    result = mcp.pru_elf_load(path=str(ELF_FIXTURE))
+
+    assert result["success"] is True
+    assert mcp.sim is not previous
+    assert mcp.sim.device_bus.devices == []
+    assert previous.device_bus.devices == []
+
+
+def test_failed_elf_replacement_preserves_current_device_registry():
+    mcp = fresh_mcp()
+    previous = mcp.sim
+    device = previous.attach_device("pru0", TCA9538Model())
+
+    result = mcp.pru_elf_load(b64="not-base64!")
+
+    assert result["success"] is False
+    assert mcp.sim is previous
+    assert mcp.sim.device_bus.devices == [device]
 
 
 @pytest.mark.parametrize(

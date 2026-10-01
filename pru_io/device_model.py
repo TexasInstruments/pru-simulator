@@ -667,6 +667,7 @@ class DeviceBus:
             "devices": [d.snapshot() for d in self.devices],
             "drives": [self._last_drives.get(id(d), (0, 0)) for d in self.devices],
             "inputs": [self._last_inputs.get(id(d)) for d in self.devices],
+            "last_gpo": self._last_gpo,
             "pru_drive_mask": self._pru_drive_mask,
             "core_drive_masks": dict(self._core_drive_masks),
             "port_gpo": {core: port.gpo & _MASK_20
@@ -685,6 +686,7 @@ class DeviceBus:
 
     def restore(self, snap: dict) -> None:
         self._bus = snap["bus"]
+        self._last_gpo = snap.get("last_gpo", self._last_gpo)
         self.contentions = list(snap["contentions"])
         if "device_refs" in snap:
             self.devices = list(snap["device_refs"])

@@ -187,6 +187,7 @@ class PRUSimulatorMCP:
             errors = candidate.load_elf(core, elf_data)
             if not errors:
                 candidate.cores[core].pc = entry_pc
+                self.sim.device_bus.detach_all()
                 self.sim = candidate
         except (OSError, ValueError, binascii.Error) as exc:
             errors = [f"ELF load failed: {exc}"]

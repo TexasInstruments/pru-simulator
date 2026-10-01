@@ -70,6 +70,39 @@ def test_elapsed_cycles_count_even_without_timed_devices_and_late_attach_uses_ti
     assert [cycle for cycle, _ in sampled] == list(range(1, 8))
 
 
+def test_core_observer_advances_timed_device_for_instruction_and_stall_cycles():
+    sim = Simulator()
+    port = sim.cores["pru0"].io_port
+    port.set_gpo_drive_mask(_MASK_20 ^ (1 << 4))
+    device = sim.attach_device(
+        "pru0", _PinDevice(4, name="clock", time_driven=True))
+    assert sim.load(
+        "pru0",
+        "ldi r0, 0\n"
+        "lbbo &r1, r0, 0, 4\n"
+        "wbs 1\n"
+        "halt\n",
+    ) == []
+    sim.set_input("pru0", 1, False)
+
+    sim.step("pru0", 3)
+
+    assert sim.cores["pru0"].counters.stall_cycles == 3
+    assert [cycle for cycle, _ in device.calls] == [1, 2, 3, 4, 5]
+    assert port._device_cycle == 5
+
+    sim.set_input("pru0", 1, True)
+    sim.step("pru0")
+
+    sim.step("pru0")  # HALT is an executed core cycle
+    assert [cycle for cycle, _ in device.calls] == [1, 2, 3, 4, 5, 6, 7]
+    assert port._device_cycle == 7
+
+    sim.step("pru0")  # halted no-op must not advance external time
+    assert [cycle for cycle, _ in device.calls] == [1, 2, 3, 4, 5, 6, 7]
+    assert port._device_cycle == 7
+
+
 def test_time_driven_device_ticks_each_elapsed_cycle_and_pin_edges_reach_reactive_models():
     sim = Simulator()
     port = sim.cores["pru0"].io_port

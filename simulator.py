@@ -217,6 +217,7 @@ class Simulator:
             core.iep = self.iep
 
             def observe_cycles(elapsed_cycles: int, *, _name=name, _core=core) -> None:
+                _core.io_port.advance_devices(elapsed_cycles)
                 self.iep.observe_core_cycles(_name, _core.counters.cycles)
 
             core.cycle_observer = observe_cycles

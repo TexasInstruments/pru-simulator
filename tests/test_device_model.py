@@ -127,6 +127,37 @@ def test_snapshot_restore_round_trips():
     assert bus.snapshot()["bus"] == snap["bus"]
 
 
+def test_standalone_snapshot_restore_restores_pru_output_seen_by_timed_devices():
+    class TimedProbe(DeviceModel):
+        time_driven = True
+        nets = {}
+
+        def __init__(self):
+            self.buses = []
+
+        def tick(self, cycle, bus):
+            self.buses.append((cycle, bus))
+            return 0, 0
+
+        def snapshot(self):
+            return {"buses": list(self.buses)}
+
+        def restore(self, snap):
+            self.buses = list(snap["buses"])
+
+    bus = DeviceBus()
+    bus.set_pru_drive_mask((1 << 20) - 1)
+    probe = bus.attach(TimedProbe())
+    bus.settle(1, 0x12345)
+    snap = bus.snapshot()
+
+    bus.settle(2, 0x54321)
+    bus.restore(snap)
+    bus.advance_cycles(None, 1, first_cycle=2)
+
+    assert probe.buses[-1] == (2, 0x12345)
+
+
 # ----------------------------------------------------------------------
 # TCA9538 port
 # ----------------------------------------------------------------------
