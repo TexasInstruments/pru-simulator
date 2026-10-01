@@ -217,7 +217,12 @@ class Simulator:
             core.iep = self.iep
 
             def observe_cycles(elapsed_cycles: int, *, _name=name, _core=core) -> None:
-                _core.io_port.advance_devices(elapsed_cycles)
+                def sample_sd(_cycle: int, gpi: int) -> None:
+                    sd_filter = _core.io_port.sd_filter
+                    if sd_filter is not None:
+                        sd_filter.tick(gpi)
+
+                _core.io_port.advance_devices(elapsed_cycles, after_cycle=sample_sd)
                 self.iep.observe_core_cycles(_name, _core.counters.cycles)
 
             core.cycle_observer = observe_cycles
