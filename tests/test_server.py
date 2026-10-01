@@ -1,4 +1,6 @@
 """Tests for dashboard REST endpoints."""
+import asyncio
+
 import pytest
 from fastapi.testclient import TestClient
 from ui.server import app
@@ -113,3 +115,25 @@ def test_gpo_zero_after_reset(fresh_sim):
         state = ws.receive_json()
         assert all(p == 0 for p in state["io"]["gpo_pins"])
         assert state["registers"][30] == "0x00000000"
+
+
+def test_fault_is_reported_in_state_and_restored_by_step_back(fresh_sim):
+    import ui.server as srv
+
+    errors = fresh_sim.load(
+        "pru0", "ldi r1, 0x4000\nlbbo &r0, r1, 0, 4\nhalt"
+    )
+    assert errors == []
+    snapshot = srv._snapshot("pru0")
+    fresh_sim.step("pru0", count=2)
+
+    class WebSocketSink:
+        async def send_json(self, payload):
+            self.payload = payload
+
+    sink = WebSocketSink()
+    asyncio.run(srv._send_state(sink, "pru0"))
+    assert sink.payload["fault"]["opcode"] == "LBBO"
+
+    srv._restore("pru0", snapshot)
+    assert fresh_sim.cores["pru0"].fault is None

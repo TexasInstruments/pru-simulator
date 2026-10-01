@@ -54,6 +54,46 @@ class TestSimulatorBasic:
         assert status["pru0"]["pc"] == 1
         assert status["pru0"]["cycles"] == 1
 
+    def test_memory_fault_is_available_in_step_and_status(self):
+        sim = Simulator(config_path="nonexistent.cfg")
+        errors = sim.load("pru0", "ldi r1, 0x4000\nlbbo &r0, r1, 0, 4\nhalt")
+        assert errors == []
+
+        result = sim.step("pru0", count=2)
+        expected = {
+            "type": "memory",
+            "opcode": "LBBO",
+            "address": 0x4000,
+            "pc": 1,
+            "error": "No memory region mapped at address 0x00004000",
+        }
+        assert result["fault"] == expected
+        assert sim.status()["pru0"]["fault"] == expected
+
+        sim.reset("pru0")
+        assert sim.status()["pru0"]["fault"] is None
+
+    def test_constants_can_be_loaded_from_the_project_root(self, tmp_path):
+        config_path = tmp_path / "memory.cfg"
+        config_path.write_text("[device]\n", encoding="utf-8")
+        (tmp_path / "constants_am243x.cfg").write_text(
+            "[constants]\nc24 = 0x1234\n", encoding="utf-8"
+        )
+
+        sim = Simulator(config_path=str(config_path))
+
+        assert sim.constant_table.resolve(24) == 0x1234
+
+    def test_hard_reset_resets_iep(self):
+        sim = Simulator(config_path="nonexistent.cfg")
+        sim.iep.write(0x00, (0x11).to_bytes(4, "little"))
+        sim.iep.write(0x10, (123).to_bytes(4, "little"))
+
+        sim.hard_reset()
+
+        assert sim.iep.global_cfg == 0
+        assert sim.iep.count == 0
+
     def test_reset(self):
         """reset() clears register state back to zero."""
         sim = Simulator(config_path="nonexistent.cfg")

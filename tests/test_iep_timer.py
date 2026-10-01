@@ -45,6 +45,16 @@ def test_counter_does_not_run_until_cnt_enable(iep):
     assert r32(iep, COUNT_REG0) == 10
 
 
+def test_hardware_reset_delegates_to_register_reset(iep):
+    w32(iep, GLOBAL_CFG, 0x11)
+    w32(iep, COUNT_REG0, 17)
+
+    iep.hardware_reset()
+
+    assert r32(iep, GLOBAL_CFG) == 0
+    assert r32(iep, COUNT_REG0) == 0
+
+
 def test_default_inc_is_the_step_size(iep):
     """IEP_GLOBAL_CFG_REG[7:4] DEFAULT_INC, not a hardcoded +1."""
     w32(iep, GLOBAL_CFG, (5 << 4) | 1)

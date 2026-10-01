@@ -63,6 +63,7 @@ def _snapshot(core: str) -> dict:
     return {
         "pc": c.pc,
         "halted": c.halted,
+        "fault": dict(c.fault) if c.fault is not None else None,
         "loop_state": {"count": ls.count, "start_address": ls.start_address,
                        "end_address": ls.end_address} if ls else None,
         "regs": list(c.registers.regs),
@@ -84,6 +85,7 @@ def _restore(core: str, snap: dict) -> None:
     c = sim.cores[core]
     c.pc = snap["pc"]
     c.halted = snap["halted"]
+    c.fault = dict(snap["fault"]) if snap["fault"] is not None else None
     c.loop_state = LoopState(**snap["loop_state"]) if snap["loop_state"] else None
     c.registers.regs = list(snap["regs"])
     c.registers.carry = snap["carry"]
@@ -718,6 +720,7 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False):
         "core": core,
         "pc": c.pc,
         "halted": c.halted,
+        "fault": c.fault,
         "at_breakpoint": at_breakpoint,
         # True when a "capture" message already carried this chunk's graph
         # samples, so the client must not sample this state push as well.
