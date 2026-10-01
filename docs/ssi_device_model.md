@@ -277,6 +277,7 @@ The MCP surface stays protocol-generic:
 | `pru_device_state` | Read devices, bus levels, events, and faults |
 | `pru_device_events` | Read all device events or filter by name |
 | `pru_device_faults` | Read all bus/device faults or filter by name |
+| `pru_sd_route_input` | Route an SD channel to a physical GPI pin, or pass `-1` to restore its internal modulator |
 
 The SSI profile accepts encoder options such as `position`, `resolution`,
 `encoding`, `f_max_hz`, and `monoflop_us`, the frame layout fields
@@ -284,11 +285,15 @@ The SSI profile accepts encoder options such as `position`, `resolution`,
 `error_value`) and a `preset` name; `pru_device_discover` lists the presets
 under `profiles.ssi_encoder.presets`. If `core_clock_hz` is omitted, the
 MCP attach tool derives it from the selected core's exact IEP clock. The TCA
-profile accepts a 7-bit
-`address` and distinct `scl_pin`/`sda_pin` values from 0–19. Unknown fields
+profile accepts a 7-bit `address` and distinct `scl_pin`/`sda_pin` values from
+0–19. The `foc_motor` profile models PWM-driven current outputs on GPI3/GPI4
+and is restricted to PRU0. Unknown fields
 and invalid values are rejected before attachment. The existing TCA
 `pru_i2c_attach` tool remains available for compatibility.
 
 When `pru_device_faults` is filtered by device name, its `contentions` field
 contains structured records for each bus conflict involving that exact device.
 The existing `faults` field retains human-readable messages.
+
+See [FOC open-loop PWM and motor model](foc_open_loop.md) for the control ABI
+and runtime example.

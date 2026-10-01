@@ -33,7 +33,8 @@ async def _exercise_stdio_tools():
             required = {
                 "pru_device_discover", "pru_device_attach", "pru_device_detach",
                 "pru_device_state", "pru_device_events", "pru_device_faults",
-                "pru_load", "pru_step", "pru_run_until", "pru_status",
+                "pru_sd_route_input", "pru_load", "pru_step", "pru_run_until",
+                "pru_status",
             }
             assert required <= by_name.keys()
             attach_tool = by_name["pru_device_attach"]
@@ -45,7 +46,7 @@ async def _exercise_stdio_tools():
 
             discovered = _payload(await session.call_tool(
                 "pru_device_discover", {}))
-            assert set(discovered["profiles"]) == {"ssi_encoder", "tca9538"}
+            assert set(discovered["profiles"]) == {"ssi_encoder", "tca9538", "foc_motor"}
 
             attached = _payload(await session.call_tool(
                 "pru_device_attach", {
@@ -65,6 +66,20 @@ async def _exercise_stdio_tools():
                     "faults"] == []
             assert _payload(await session.call_tool(
                 "pru_device_detach", {"device_name": "sdk_encoder"}))[
+                    "success"] is True
+
+            attached_foc = _payload(await session.call_tool(
+                "pru_device_attach", {"profile": "foc_motor"}))
+            assert attached_foc["success"] is True
+            assert attached_foc["device"]["model"] == "three_phase_rl"
+            routed = _payload(await session.call_tool(
+                "pru_sd_route_input", {"channel": 0, "pin": 3}))
+            assert routed == {"channel": 0, "pin": 3}
+            restored = _payload(await session.call_tool(
+                "pru_sd_route_input", {"channel": 0, "pin": -1}))
+            assert restored == {"channel": 0, "pin": None}
+            assert _payload(await session.call_tool(
+                "pru_device_detach", {"device_name": "foc_motor"}))[
                     "success"] is True
 
 

@@ -38,6 +38,8 @@ class SigmaDeltaFilter:
 
         # Async clock accumulators (one per channel)
         self._clock_acc: list[float] = [0.0] * _NUM_CHANNELS
+        # None retains the built-in pattern generator; an integer samples GPI.
+        self.input_routes: list[int | None] = [None] * _NUM_CHANNELS
 
         # Previous R31 write value — for rising-edge command detection
         self._prev_r31_write: int = 0
@@ -88,7 +90,16 @@ class SigmaDeltaFilter:
             ch.reinit()
         self._prev_r31_write = value
 
-    def tick(self) -> None:
+    def route_input(self, channel: int, pin: int | None) -> None:
+        """Route one SD channel to a physical GPIO input, or restore its modulator."""
+        if isinstance(channel, bool) or not isinstance(channel, int) or not 0 <= channel < _NUM_CHANNELS:
+            raise ValueError(f"SD channel {channel!r} out of range")
+        if pin is not None and (isinstance(pin, bool) or not isinstance(pin, int)
+                                or not 0 <= pin < 20):
+            raise ValueError("GPIO input pin must be an integer from 0 to 19")
+        self.input_routes[channel] = pin
+
+    def tick(self, gpi: int = 0) -> None:
         """Advance all channels by one PRU clock tick (async clock model).
 
         Each channel advances 0 or more SD ticks based on its modulator's clock rate
@@ -100,7 +111,8 @@ class SigmaDeltaFilter:
             self._clock_acc[i] += ratio
             while self._clock_acc[i] >= 1.0:
                 self._clock_acc[i] -= 1.0
-                bit = mod.next_bit()
+                pin = self.input_routes[i]
+                bit = mod.next_bit() if pin is None else (gpi >> pin) & 1
                 self.channels[i].tick(bit)
 
     def _on_config_change(self, ch: int, field: str, value: int) -> None:
@@ -118,6 +130,7 @@ class SigmaDeltaFilter:
             "snoop": self.snoop,
             "data_sel": self.data_sel,
             "clock_acc": list(self._clock_acc),
+            "input_routes": list(self.input_routes),
             "prev_r31_write": self._prev_r31_write,
             "regs": bytes(self.registers._data) if self.registers is not None else None,
             "channels": [ch.snapshot() for ch in self.channels],
@@ -131,6 +144,7 @@ class SigmaDeltaFilter:
         self.snoop = snap["snoop"]
         self.data_sel = snap["data_sel"]
         self._clock_acc = list(snap["clock_acc"])
+        self.input_routes = list(snap.get("input_routes", [None] * _NUM_CHANNELS))
         self._prev_r31_write = snap.get("prev_r31_write", 0)
         if snap["regs"] is not None and self.registers is not None:
             self.registers._data[:] = snap["regs"]
@@ -146,6 +160,7 @@ class SigmaDeltaFilter:
             "ch_sel": self.ch_sel,
             "snoop": self.snoop,
             "data_sel": self.data_sel,
+            "input_routes": list(self.input_routes),
             "channels": [
                 {
                     "id": i,

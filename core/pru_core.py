@@ -602,7 +602,7 @@ class PRUCore:
 
         # ---- Advance SD filter clock (if attached) ----------------------
         if self.io_port.sd_filter is not None:
-            self.io_port.sd_filter.tick()
+            self.io_port.sd_filter.tick(self.io_port.gpi)
 
         # ---- Advance Peripheral Interface timeline (if attached) --------
         if self.io_port.perif is not None:

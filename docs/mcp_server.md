@@ -70,6 +70,8 @@ print(mcp.pru_registers())           # {'r0': '0x0000002a', 'r1': '0x00000000', 
 | `pru_reset` | `core="pru0"` | `{ok}` | Reset core (PC=0, regs=0) |
 | `pru_breakpoint` | `core="pru0"`, `address: int` | `{id}` | Add a breakpoint |
 | `pru_status` | — | `{cores: {name: {pc, cycles, halted}}}` | Snapshot all cores |
+| `pru_device_discover` / `pru_device_attach` / `pru_device_detach` | profile, core, config, or device name | device profile/state | Attach an SSI encoder, TCA9538, or PRU0 FOC motor model |
+| `pru_sd_route_input` | `channel`, `pin` (`-1` restores the internal modulator) | `{channel, pin}` | Route an SD channel to a physical GPI pin |
 
 ---
 
