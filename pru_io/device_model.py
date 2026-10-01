@@ -684,7 +684,24 @@ class DeviceBus:
             "wires": self.list_gpio_wires(),
         }
 
-    def restore(self, snap: dict) -> None:
+    def restore(self, snap: dict, preserve_ports: set[str] | None = None) -> None:
+        """Restore bus state, optionally keeping selected endpoints' live GPIO state.
+
+        UI step-back is per core, while a shared bus snapshot contains every
+        endpoint. Preserving the other endpoints avoids rewinding their GPIO
+        outputs without rewinding their register files; the bus is re-resolved
+        after their live state is reinstated.
+        """
+        preserved_ports = {
+            core: {
+                "gpo": port.gpo,
+                "gpi": port.gpi,
+                "gpo_drive_mask": port.gpo_drive_mask,
+                "device_cycle": port._device_cycle,
+            }
+            for core, port in self._ports.items()
+            if preserve_ports and core in preserve_ports
+        }
         self._bus = snap["bus"]
         self._last_gpo = snap.get("last_gpo", self._last_gpo)
         self.contentions = list(snap["contentions"])
@@ -735,6 +752,18 @@ class DeviceBus:
                 self._core_drive_masks.get(core, port.gpo_drive_mask))
             port.gpi = state.get("gpi", port.gpi) & _MASK_20
             port._device_cycle = state.get("device_cycle", port._device_cycle)
+
+        if preserved_ports:
+            for core, state in preserved_ports.items():
+                port = self._ports[core]
+                port.gpo = state["gpo"]
+                port.gpi = state["gpi"]
+                port.gpo_drive_mask = state["gpo_drive_mask"]
+                port._device_cycle = state["device_cycle"]
+                self._port_gpo[core] = port.gpo & _MASK_20
+                self._core_drive_masks[core] = port.gpo_drive_mask & _MASK_20
+            self._refresh_shared(self._current_cycle(), process_reactive=True,
+                                 affected=set(self._ports))
 
     def get_state(self) -> dict:
         return {"bus": self._bus,

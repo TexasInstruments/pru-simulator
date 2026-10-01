@@ -110,7 +110,10 @@ def _restore(core: str, snap: dict) -> None:
     if snap.get("i2c") is not None and c.io_port.i2c_device is not None:
         c.io_port.i2c_device.restore(snap["i2c"])
     if snap.get("device_bus") is not None:
-        sim.device_bus.restore(snap["device_bus"])
+        sim.device_bus.restore(
+            snap["device_bus"],
+            preserve_ports=set(sim.cores) - {core},
+        )
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

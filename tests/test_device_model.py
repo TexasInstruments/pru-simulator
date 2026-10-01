@@ -240,3 +240,52 @@ def test_tca9538_works_on_arbitrary_pins(pins):
     bus.settle(0, high)
     bus.settle(1, 1 << scl_pin)                      # SDA falls, SCL high
     assert [e["kind"] for e in model.events()] == ["start"]
+
+
+def test_tca9538_reset_clears_wrapper_and_protocol_state():
+    bus, model = _make_bus()
+    _drive(bus, 0, 1, 1)
+    _drive(bus, 1, 1, 0)  # START
+    _drive(bus, 2, 1, 1)  # illegal SDA transition also records a fault
+
+    assert model.events()
+    assert model.faults()
+    assert model.device.state == "IDLE"
+
+    bus.reset()
+
+    assert model.events() == []
+    assert model.faults() == []
+    assert model.device.state == "IDLE"
+    assert model.device.saw_start is False
+    assert model.device._bit_count == 0
+    assert model._prev_scl is None
+    assert model._prev_sda is None
+    assert model._driving_low is False
+    assert model._cycle == 0
+
+
+def test_tca9538_snapshot_restore_rewinds_wrapper_and_protocol_state():
+    bus, model = _make_bus()
+    _drive(bus, 0, 1, 1)
+    _drive(bus, 1, 1, 0)  # START
+    _drive(bus, 2, 0, 0)
+    _drive(bus, 3, 1, 0)  # first address bit
+    snap = bus.snapshot()
+
+    _drive(bus, 4, 0, 0)
+    _drive(bus, 5, 1, 0)  # second address bit
+    _drive(bus, 6, 1, 1)  # illegal mid-byte transition
+    assert model.device._bit_count == 0
+    assert model.faults()
+
+    bus.restore(snap)
+
+    assert model.device.state == "ADDR"
+    assert model.device._bit_count == 1
+    assert model.device._shift == 0
+    assert [event["kind"] for event in model.events()] == ["start"]
+    assert model.faults() == []
+    assert model._prev_scl == 1
+    assert model._prev_sda == 0
+    assert model._cycle == 3

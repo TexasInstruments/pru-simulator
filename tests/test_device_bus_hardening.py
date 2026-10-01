@@ -263,13 +263,36 @@ def test_ui_step_back_restores_device_drives_wires_masks_and_cycle(monkeypatch):
     assert port.gpo == before["gpo"]
     assert port.gpo_drive_mask == _MASK_20
     assert port._device_cycle == 4
-    assert sim.cores["rtu0"].io_port.gpo_drive_mask == (_MASK_20 ^ (1 << 5))
+    assert sim.cores["rtu0"].io_port.gpo_drive_mask == _MASK_20
     assert sim.list_gpio_wires() == [
         {"core_a": "pru0", "pin_a": 0, "core_b": "rtu0", "pin_b": 1}
     ]
     assert device in sim.device_bus.devices
     assert device.enabled is True
     assert sim.device_bus._last_drives[id(device)] == (1 << 5, 0)
+
+
+def test_ui_step_back_preserves_other_core_r30_and_resolves_wired_gpio(monkeypatch):
+    from ui import server as ui_server
+
+    sim = Simulator()
+    monkeypatch.setattr(ui_server, "sim", sim)
+    pru0 = sim.cores["pru0"]
+    rtu0 = sim.cores["rtu0"]
+    sim.set_gpio_drive_mask("pru0", 0)
+    sim.set_gpio_drive_mask("rtu0", 1 << 1)
+    sim.add_gpio_wire("pru0", 0, "rtu0", 1)
+    before = ui_server._snapshot("pru0")
+
+    rtu0.registers.write_full(30, 1 << 1)
+    rtu0.io_port.write_r30(1 << 1)
+    assert _level(pru0.io_port.gpi, 0) == 1
+
+    ui_server._restore("pru0", before)
+
+    assert rtu0.registers.read_full(30) == 1 << 1
+    assert rtu0.io_port.gpo == 1 << 1
+    assert _level(pru0.io_port.gpi, 0) == 1
 
 
 def test_ui_step_back_restores_device_attachments(monkeypatch):
