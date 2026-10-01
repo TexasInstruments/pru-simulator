@@ -50,6 +50,29 @@ def test_put_config_writes_to_disk(tmp_path, monkeypatch):
     assert "; patched" in cfg_file.read_text()
 
 
+@pytest.mark.parametrize("replace_clock", [False, True])
+def test_config_replacement_clears_rtu1_step_history(
+    tmp_path, monkeypatch, replace_clock
+):
+    import ui.server as srv
+
+    cfg_file = tmp_path / "memory.cfg"
+    original = client.get("/config").text
+    cfg_file.write_text(original)
+    monkeypatch.setattr(srv, "config_path", str(cfg_file))
+    histories = {core: [] for core in ("pru0", "rtu0", "pru1", "rtu1")}
+    histories["rtu1"].append({"stale": True})
+    monkeypatch.setattr(srv, "_history", histories)
+
+    if replace_clock:
+        response = client.put("/config/clock_speed", json={"mhz": 250})
+    else:
+        response = client.put("/config", content=original)
+
+    assert response.status_code == 200
+    assert all(not history for history in srv._history.values())
+
+
 # ---- WebSocket helpers -------------------------------------------------
 
 

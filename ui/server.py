@@ -184,9 +184,8 @@ async def put_config(request: Request):
             with open(config_path, "w") as f:
                 f.write(text)
             sim = Simulator(config_path=config_path)
-            _history["pru0"].clear()
-            _history["rtu0"].clear()
-            _history["pru1"].clear()
+            for history in _history.values():
+                history.clear()
             return {"ok": True}
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=400)
@@ -242,9 +241,8 @@ async def put_clock_speed(request: Request):
             with open(config_path, "w") as f:
                 f.write(text)
             sim = Simulator(config_path=config_path)
-            _history["pru0"].clear()
-            _history["rtu0"].clear()
-            _history["pru1"].clear()
+            for history in _history.values():
+                history.clear()
             return {"ok": True}
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=400)
