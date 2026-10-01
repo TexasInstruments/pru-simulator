@@ -197,3 +197,22 @@ def test_foc_pwm_period_and_pin_coupled_current_sd_route(tmp_path, monkeypatch):
     assert mcp.sim.device_bus.faults() == []
     motor = mcp.sim.device_bus.devices[0]
     assert motor.get_state()["pwm_periods"] >= 2
+
+
+def test_foc_pwm_period_survives_iep_count_reg0_wrap(tmp_path):
+    mcp = _new_simulator({"alpha_q15": 16384, "beta_q15": 0})
+    mcp.sim.iep.count = 0xFFFF_FF00
+
+    path = tmp_path / "foc-wrap.vcd"
+    capture = mcp.pru_vcd_export(
+        path=str(path), max_steps=20_000, pins="0-2", include_gpi=True
+    )
+
+    assert capture["steps_executed"] == 20_000
+    events = _vcd_events(path)
+    rises = _edges(events["gpo_0"], 1)
+    assert len(rises) >= 2
+    assert rises[1] - rises[0] == pytest.approx(62_500_000, abs=50_000)
+    assert _first_pulse(events["gpo_0"])[1] - rises[0] == pytest.approx(
+        0.875 * 62_500_000, abs=625_000
+    )
