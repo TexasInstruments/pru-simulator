@@ -600,18 +600,18 @@ class PRUCore:
                     # Loop finished
                     self.loop_state = None
 
-        # ---- Advance SD filter clock (if attached) ----------------------
-        if self.io_port.sd_filter is not None:
-            self.io_port.sd_filter.tick(self.io_port.gpi)
-
         # ---- Advance Peripheral Interface timeline (if attached) --------
         if self.io_port.perif is not None:
             self.io_port.perif.advance_cycles(self.counters.cycles)
 
         # ---- Count instruction cycle ------------------------------------
         self.counters.tick()
+        elapsed_cycles = self.counters.cycles - cycles_before
         if self.cycle_observer is not None:
-            self.cycle_observer(self.counters.cycles - cycles_before)
+            self.cycle_observer(elapsed_cycles)
+        elif self.io_port.sd_filter is not None:
+            for _ in range(elapsed_cycles):
+                self.io_port.sd_filter.tick(self.io_port.gpi)
 
     def run(self, max_steps: int = 100_000) -> int:
         """Run until halted or max_steps reached. Returns steps executed."""
