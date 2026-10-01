@@ -60,3 +60,14 @@ class GpcfgRegisters:
         word = int.from_bytes(self._data[off:off + 4], "little")
         word = (word & ~(0xF << 26)) | ((mux_sel & 0xF) << 26)
         self.write(self._base + off, word.to_bytes(4, "little"))
+
+    def snapshot(self) -> bytes:
+        """Capture both mux registers."""
+        return bytes(self._data)
+
+    def restore(self, snapshot: bytes) -> None:
+        """Restore both mux registers and notify their peripheral owners."""
+        self._data[:] = snapshot
+        if self.on_mux_change is not None:
+            for pru_index in (0, 1):
+                self.on_mux_change(pru_index, self.get_mux_sel(pru_index))

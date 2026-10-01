@@ -35,6 +35,22 @@ class XFRBus:
         self.xfr_shift_en = False
         self._warned_unknown.clear()
 
+    def snapshot(self) -> dict:
+        """Capture shared scratchpad contents and XFR configuration."""
+        return {
+            "pads": {device_id: bytes(pad.data)
+                     for device_id, pad in self._pads.items()},
+            "xfr_shift_en": self.xfr_shift_en,
+            "warned_unknown": set(self._warned_unknown),
+        }
+
+    def restore(self, snapshot: dict) -> None:
+        """Restore shared scratchpad contents and XFR configuration."""
+        for device_id, data in snapshot["pads"].items():
+            self._pads[device_id].data[:] = data
+        self.xfr_shift_en = snapshot["xfr_shift_en"]
+        self._warned_unknown = set(snapshot["warned_unknown"])
+
     def _get_pad(self, device_id: int) -> Scratchpad | None:
         return self._pads.get(device_id)
 

@@ -1,6 +1,7 @@
 """FastAPI + WebSocket backend for the PRU Simulator Dashboard."""
 
 import asyncio
+import copy
 import json
 import math
 import os
@@ -51,11 +52,42 @@ _config_lock = asyncio.Lock()
 # ---- Step history (for step-back) ----------------------------------------
 _MAX_HISTORY = 500
 _history: dict[str, list] = {"pru0": [], "rtu0": [], "pru1": [], "rtu1": []}
+_history_order: list[tuple[str, dict]] = []
 
 
-def _snapshot(core: str) -> dict:
-    """Capture full PRU core + memory state before a step."""
-    c = sim.cores[core]
+def _clear_history() -> None:
+    for history in _history.values():
+        history.clear()
+    _history_order.clear()
+
+
+def _record_step(core: str) -> None:
+    snapshot = _snapshot(core)
+    _history[core].append(snapshot)
+    _history_order.append((core, snapshot))
+    if len(_history_order) > _MAX_HISTORY:
+        oldest_core, oldest_snapshot = _history_order.pop(0)
+        _history[oldest_core][:] = [
+            item for item in _history[oldest_core] if item is not oldest_snapshot
+        ]
+
+
+def _step_back(core: str) -> bool:
+    for index in range(len(_history_order) - 1, -1, -1):
+        event_core, snapshot = _history_order[index]
+        if event_core != core:
+            continue
+        _restore(core, snapshot)
+        discarded = {id(item) for _, item in _history_order[index:]}
+        del _history_order[index:]
+        for history in _history.values():
+            history[:] = [item for item in history if id(item) not in discarded]
+        return True
+    return False
+
+
+def _snapshot_core(c) -> dict:
+    """Capture one core's mutable state for the shared simulator history."""
     ls = c.loop_state
     sd = c.io_port.sd_filter
     perif = c.io_port.perif
@@ -70,22 +102,39 @@ def _snapshot(core: str) -> dict:
         "carry": c.registers.carry,
         "gpo": c.io_port.gpo,
         "gpi": c.io_port.gpi,
+        "loopback_mask": c.io_port.loopback_mask,
         "gpo_drive_mask": c.io_port.gpo_drive_mask,
         "cycles": c.counters.cycles,
         "stall_cycles": c.counters.stall_cycles,
         "instruction_count": c.counters.instruction_count,
-        "mem": [bytes(r._data) for r in sim.memory.regions],
-        "iep": sim.iep.snapshot(),
         "sd": sd.snapshot() if sd is not None else None,
         "perif": perif.snapshot() if perif is not None else None,
+        "i2c_device": i2c,
         "i2c": i2c.snapshot() if i2c is not None else None,
-        "device_bus": sim.device_bus.snapshot(),
+        "uart_generator": c.io_port.uart_generator,
+        "accelerators": {
+            device_id: accelerator.snapshot()
+            for device_id, accelerator in c.accelerators.items()
+            if callable(getattr(accelerator, "snapshot", None))
+        },
+        "unsupported_xfr": copy.deepcopy(c.unsupported_xfr),
     }
 
 
-def _restore(core: str, snap: dict) -> None:
-    """Restore PRU core + memory state from a snapshot."""
-    c = sim.cores[core]
+def _snapshot(core: str) -> dict:
+    """Capture every core plus shared memory and devices before a step."""
+    return {
+        "cores": {name: _snapshot_core(c) for name, c in sim.cores.items()},
+        "device_bus": sim.device_bus.snapshot(),
+        "xfr": sim.xfr.snapshot(),
+        "gpcfg": sim._gpcfg.snapshot(),
+        "loopback": sim._loopback.snapshot(),
+        "mem": [bytes(r._data) for r in sim.memory.regions],
+        "iep": sim.iep.snapshot(),
+    }
+
+
+def _restore_core(c, snap: dict) -> None:
     c.pc = snap["pc"]
     c.halted = snap["halted"]
     c.fault = dict(snap["fault"]) if snap["fault"] is not None else None
@@ -94,27 +143,45 @@ def _restore(core: str, snap: dict) -> None:
     c.registers.carry = snap["carry"]
     c.io_port.gpo = snap["gpo"]
     c.io_port.gpi = snap["gpi"]
+    c.io_port.loopback_mask = snap.get("loopback_mask", c.io_port.loopback_mask)
     c.io_port.gpo_drive_mask = snap.get("gpo_drive_mask", c.io_port.gpo_drive_mask)
     c.counters.cycles = snap["cycles"]
     c.counters.stall_cycles = snap["stall_cycles"]
     c.counters.instruction_count = snap["instruction_count"]
+    if snap.get("sd") is not None and c.io_port.sd_filter is not None:
+        c.io_port.sd_filter.restore(snap["sd"])
+    if snap.get("perif") is not None and c.io_port.perif is not None:
+        c.io_port.perif.restore(snap["perif"])
+    if "i2c_device" in snap:
+        c.io_port.i2c_device = snap["i2c_device"]
+    if snap.get("i2c") is not None and c.io_port.i2c_device is not None:
+        c.io_port.i2c_device.restore(snap["i2c"])
+    c.io_port.uart_generator = snap.get("uart_generator")
+    for device_id, accelerator_snap in snap.get("accelerators", {}).items():
+        accelerator = c.accelerators.get(device_id)
+        if accelerator is not None:
+            accelerator.restore(accelerator_snap)
+    c.unsupported_xfr = copy.deepcopy(snap.get("unsupported_xfr", {}))
+
+
+def _restore(core: str, snap: dict) -> None:
+    """Restore every core and shared device to the same saved point in time."""
+    for core_name, core_snap in snap.get("cores", {core: snap}).items():
+        if core_name in sim.cores:
+            _restore_core(sim.cores[core_name], core_snap)
     for i, region_data in enumerate(snap["mem"]):
         if i < len(sim.memory.regions):
             sim.memory.regions[i]._data[:] = region_data
     if snap.get("iep") is not None:
         sim.iep.restore(snap["iep"])
-    if snap.get("sd") is not None and c.io_port.sd_filter is not None:
-        c.io_port.sd_filter.restore(snap["sd"])
-    if snap.get("perif") is not None and c.io_port.perif is not None:
-        c.io_port.perif.restore(snap["perif"])
-    if snap.get("i2c") is not None and c.io_port.i2c_device is not None:
-        c.io_port.i2c_device.restore(snap["i2c"])
     if snap.get("device_bus") is not None:
-        sim.device_bus.restore(
-            snap["device_bus"],
-            preserve_ports=set(sim.cores) - {core},
-        )
-
+        sim.device_bus.restore(snap["device_bus"])
+    if snap.get("xfr") is not None:
+        sim.xfr.restore(snap["xfr"])
+    if snap.get("gpcfg") is not None:
+        sim._gpcfg.restore(snap["gpcfg"])
+    if snap.get("loopback") is not None:
+        sim._loopback.restore(snap["loopback"])
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -192,8 +259,7 @@ async def put_config(request: Request):
             with open(config_path, "w") as f:
                 f.write(text)
             sim = Simulator(config_path=config_path)
-            for history in _history.values():
-                history.clear()
+            _clear_history()
             return {"ok": True}
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=400)
@@ -249,8 +315,7 @@ async def put_clock_speed(request: Request):
             with open(config_path, "w") as f:
                 f.write(text)
             sim = Simulator(config_path=config_path)
-            for history in _history.values():
-                history.clear()
+            _clear_history()
             return {"ok": True}
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=400)
@@ -267,7 +332,7 @@ async def websocket_endpoint(websocket: WebSocket):
             core = msg.get("core", "pru0")
 
             if action == "load":
-                _history[core].clear()
+                _clear_history()
                 filename = msg.get("filename")
                 include_paths = None
                 if filename and isinstance(filename, str) and '\\' not in filename and len(filename) <= 300:
@@ -285,7 +350,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json({"type": "error", "errors": errors})
                 await _send_state(websocket, core)
             elif action == "load_elf":
-                _history[core].clear()
+                _clear_history()
                 # ELF binary sent as base64-encoded string
                 elf_b64 = msg.get("data", "")
                 try:
@@ -298,9 +363,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json({"type": "error", "errors": errors})
                 await _send_state(websocket, core)
             elif action == "step":
-                _history[core].append(_snapshot(core))
-                if len(_history[core]) > _MAX_HISTORY:
-                    _history[core].pop(0)
+                _record_step(core)
                 at_breakpoint = False
                 try:
                     sim.step(core, msg.get("count", 1))
@@ -331,12 +394,11 @@ async def websocket_endpoint(websocket: WebSocket):
                         except ValueError:
                             pass
             elif action == "reset":
-                _history[core].clear()
+                _clear_history()
                 sim.reset(core)
                 await _send_state(websocket, core)
             elif action == "hard_reset":
-                for k in _history:
-                    _history[k].clear()
+                _clear_history()
                 sim.hard_reset()
                 await _send_state(websocket, core)
             elif action == "set_input":
@@ -384,9 +446,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     c.io_port.set_gpi_word(val)
                 await _send_state(websocket, core)
             elif action == "step_back":
-                if _history[core]:
-                    _restore(core, _history[core].pop())
-                await _send_state(websocket, core)
+                if _step_back(core):
+                    for state_core in sim.cores:
+                        await _send_state(websocket, state_core)
+                else:
+                    await _send_state(websocket, core)
             elif action == "toggle_breakpoint":
                 addr = int(msg.get("addr", 0))
                 pru = sim.cores[core]

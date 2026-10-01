@@ -2,6 +2,7 @@
 
 from pru_io.device_model import OPEN_DRAIN, PUSH_PULL, DeviceModel
 from pru_io.io_port import IOPort
+from pru_io.tca9538_device_model import TCA9538Model
 from simulator import Simulator
 
 _MASK_20 = (1 << 20) - 1
@@ -260,10 +261,10 @@ def test_ui_step_back_restores_device_drives_wires_masks_and_cycle(monkeypatch):
 
     ui_server._restore("pru0", before)
 
-    assert port.gpo == before["gpo"]
+    assert port.gpo == before["cores"]["pru0"]["gpo"]
     assert port.gpo_drive_mask == _MASK_20
     assert port._device_cycle == 4
-    assert sim.cores["rtu0"].io_port.gpo_drive_mask == _MASK_20
+    assert sim.cores["rtu0"].io_port.gpo_drive_mask == (_MASK_20 ^ (1 << 5))
     assert sim.list_gpio_wires() == [
         {"core_a": "pru0", "pin_a": 0, "core_b": "rtu0", "pin_b": 1}
     ]
@@ -272,7 +273,7 @@ def test_ui_step_back_restores_device_drives_wires_masks_and_cycle(monkeypatch):
     assert sim.device_bus._last_drives[id(device)] == (1 << 5, 0)
 
 
-def test_ui_step_back_preserves_other_core_r30_and_resolves_wired_gpio(monkeypatch):
+def test_ui_step_back_restores_every_core_with_shared_gpio(monkeypatch):
     from ui import server as ui_server
 
     sim = Simulator()
@@ -290,9 +291,102 @@ def test_ui_step_back_preserves_other_core_r30_and_resolves_wired_gpio(monkeypat
 
     ui_server._restore("pru0", before)
 
-    assert rtu0.registers.read_full(30) == 1 << 1
-    assert rtu0.io_port.gpo == 1 << 1
-    assert _level(pru0.io_port.gpi, 0) == 1
+    assert rtu0.registers.read_full(30) == 0
+    assert rtu0.io_port.gpo == 0
+    assert _level(pru0.io_port.gpi, 0) == 0
+
+
+def test_ui_step_back_rewinds_remote_core_and_tca_transaction(
+        monkeypatch, nominal_config):
+    from pathlib import Path
+    from ui import server as ui_server
+
+    sim = Simulator(nominal_config)
+    monkeypatch.setattr(ui_server, "sim", sim)
+    firmware = Path("source/i2c_tca9538_running_led.asm").read_text()
+    assert sim.load("rtu0", firmware) == []
+    model = sim.attach_device("rtu0", TCA9538Model())
+    rtu0 = sim.cores["rtu0"]
+    before = ui_server._snapshot("pru0")
+
+    sim.step("rtu0", count=20_000)
+
+    assert model.device.config_reg == 0x00
+    assert model.events()
+    assert rtu0.counters.instruction_count > 0
+
+    ui_server._restore("pru0", before)
+
+    assert rtu0.pc == 0
+    assert rtu0.counters.instruction_count == 0
+    assert rtu0.registers.read_full(30) == 0
+    assert model.device.config_reg == 0xFF
+    assert model.events() == []
+
+
+def test_ui_step_back_preserves_shared_history_order(monkeypatch):
+    from ui import server as ui_server
+
+    sim = Simulator()
+    monkeypatch.setattr(ui_server, "sim", sim)
+    histories = {name: [] for name in sim.cores}
+    monkeypatch.setattr(ui_server, "_history", histories)
+    monkeypatch.setattr(ui_server, "_history_order", [])
+    assert sim.load("pru0", "ldi r1, 1\nldi r2, 2") == []
+    assert sim.load("rtu0", "ldi r3, 3") == []
+
+    ui_server._record_step("pru0")
+    sim.step("pru0")
+    ui_server._record_step("rtu0")
+    sim.step("rtu0")
+    ui_server._record_step("pru0")
+    sim.step("pru0")
+
+    assert sim.cores["pru0"].pc == 2
+    assert sim.cores["rtu0"].pc == 1
+
+    assert ui_server._step_back("pru0")
+    assert sim.cores["pru0"].pc == 1
+    assert sim.cores["rtu0"].pc == 1
+    assert [core for core, _ in ui_server._history_order] == ["pru0", "rtu0"]
+
+    # Rewinding the earlier PRU0 instruction also rewinds the later RTU0
+    # instruction and discards that event from the shared timeline.
+    assert ui_server._step_back("pru0")
+    assert sim.cores["pru0"].pc == 0
+    assert sim.cores["rtu0"].pc == 0
+    assert ui_server._history_order == []
+    assert all(not history for history in histories.values())
+
+
+def test_ui_step_back_restores_xfr_mac_mux_loopback_and_diagnostics(monkeypatch):
+    from ui import server as ui_server
+
+    sim = Simulator()
+    monkeypatch.setattr(ui_server, "sim", sim)
+    mac = sim.cores["pru0"].accelerators[0]
+    sim.xfr.xout(10, 0, b"before")
+    sim.gpcfg_write("pru0", 0)
+    sim.perif_loopback(0, False)
+    sim.cores["pru0"].unsupported_xfr.clear()
+    before = ui_server._snapshot("pru0")
+
+    sim.xfr.xout(10, 0, b"after!")
+    sim.xfr.xfr_shift_en = True
+    mac.xout(26, (5).to_bytes(8, "little"))
+    mac.xout(25, b"\x01")
+    sim.gpcfg_write("pru0", 1)
+    sim.perif_loopback(0, True, latency_ns=3.0)
+    sim.cores["pru0"].unsupported_xfr[99] = {"count": 1}
+
+    ui_server._restore("pru0", before)
+
+    assert sim.xfr.xin(10, 0, 6) == b"before"
+    assert sim.xfr.xfr_shift_en is False
+    assert (mac._accumulator, mac.mac_mode, mac.acc_carry) == (0, False, False)
+    assert sim.gpcfg_state("pru0")["mux_sel"] == 0
+    assert sim.loopback_state()["channels"][0]["enabled"] is False
+    assert sim.cores["pru0"].unsupported_xfr == {}
 
 
 def test_ui_step_back_restores_device_attachments(monkeypatch):

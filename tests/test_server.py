@@ -140,6 +140,22 @@ def test_gpo_zero_after_reset(fresh_sim):
         assert state["registers"][30] == "0x00000000"
 
 
+def test_core_reset_invalidates_all_global_step_histories(fresh_sim):
+    import ui.server as srv
+
+    srv._clear_history()
+    for history in srv._history.values():
+        history.append({"stale": True})
+    srv._history_order.append(("pru0", {"stale": True}))
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "reset", "core": "pru0"})
+        ws.receive_json()
+
+    assert all(not history for history in srv._history.values())
+    assert srv._history_order == []
+
+
 def test_fault_is_reported_in_state_and_restored_by_step_back(fresh_sim):
     import ui.server as srv
 
