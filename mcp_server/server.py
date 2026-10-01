@@ -62,6 +62,7 @@ class PRUSimulatorMCP:
     def __init__(self, config_path: str = "memory.cfg"):
         self._config_path = config_path
         self.sim = Simulator(config_path)
+        self._device_drive_masks: dict[str, tuple[str, int]] = {}
 
     def pru_load(self, source: str, core: str = "pru0",
                  include_paths: list[str] | None = None) -> dict:
@@ -191,6 +192,7 @@ class PRUSimulatorMCP:
                 candidate.cores[core].pc = entry_pc
                 self.sim.device_bus.detach_all()
                 self.sim.device_bus.release_all_core_outputs()
+                self._restore_device_output_masks(self.sim)
                 self.sim = candidate
         except (OSError, ValueError, binascii.Error) as exc:
             errors = [f"ELF load failed: {exc}"]
@@ -410,27 +412,62 @@ class PRUSimulatorMCP:
     def pru_device_attach(self, profile: str, core: str = "pru0",
                           config: dict | None = None) -> dict:
         """Attach one validated generic device profile to a core's GPIO pins."""
+        profile_info = discover_device_profiles().get(profile)
+        clock_field = profile_info.get("sim_clock_field") if profile_info else None
+        if clock_field and (config is None or isinstance(config, dict)
+                            and clock_field not in config):
+            if config is None:
+                config = {}
+            config = {**config,
+                      clock_field: float(self.sim.iep.core_clock_hz(core))}
         default_core_clock_hz = (
             self.sim.iep.core_clock_hz(core) if profile == "ssi_encoder" else None
         )
         device = create_device(
             profile, config, default_core_clock_hz=default_core_clock_hz)
+        supported_cores = profile_info.get("supported_cores") if profile_info else None
+        if supported_cores is not None and core not in supported_cores:
+            raise ValueError(f"{profile} is only supported on {', '.join(supported_cores)}")
         if any(attached.name == device.name for attached in self.sim.device_bus.devices):
             raise ValueError(f"device name {device.name!r} is already attached")
+        attached_on_core = [
+            attached for attached in self.sim.device_bus.devices
+            if self.sim.device_bus._device_ports.get(id(attached)) == core
+        ]
+        mask_owner = next((name for name, (owner_core, _) in self._device_drive_masks.items()
+                           if owner_core == core), None)
+        if mask_owner is not None or (
+                getattr(device, "pru_output_mask", None) is not None
+                and attached_on_core):
+            owner = mask_owner or profile
+            raise ValueError(
+                f"{owner} controls the {core} GPIO output mask and cannot share that core"
+            )
 
         # A push-pull device output owns that pin while attached. Open-drain
         # lines remain driven by the PRU so I2C masters can pull SDA/SCL low.
+        previous_mask = self.sim.io(core)["gpo_drive_mask"]
         output_mask = sum(1 << pin for pin, mode in device.nets.items()
                           if mode == PUSH_PULL)
         if output_mask:
             self.sim.lease_gpio_outputs(core, output_mask, device)
         self.sim.attach_device(core, device)
+        device_drive_mask = getattr(device, "pru_output_mask", None)
+        if device_drive_mask is not None:
+            self._device_drive_masks[device.name] = (core, previous_mask)
+            self.sim.set_gpio_drive_mask(core, device_drive_mask)
         return {"success": True, "core": core, "device": device.get_state()}
 
     def pru_device_detach(self, device_name: str) -> dict:
         """Detach a generic device by name and release its bus ownership."""
         device = self._get_device(device_name)
+        core = self.sim.device_bus._device_ports.get(id(device))
         self.sim.detach_device(device)
+        saved_drive = self._device_drive_masks.pop(device_name, None)
+        if saved_drive is not None:
+            drive_core, previous_mask = saved_drive
+            if drive_core == core:
+                self.sim.set_gpio_drive_mask(core, previous_mask)
         return {"success": True, "device": device_name}
 
     def pru_device_state(self) -> dict:
@@ -455,6 +492,13 @@ class PRUSimulatorMCP:
             }
         return {"faults": self.sim.device_bus.faults()}
 
+    def pru_sd_route_input(self, channel: int, pin: int = -1) -> dict:
+        """Route an SD channel to a physical GPI pin; pin=-1 restores its modulator."""
+        sd = self.sim.cores["pru0"].io_port.sd_filter
+        selected_pin = None if pin == -1 else pin
+        sd.route_input(channel, selected_pin)
+        return {"channel": channel, "pin": selected_pin}
+
     def _get_device(self, name: str):
         matches = [device for device in self.sim.device_bus.devices
                    if device.name == name]
@@ -463,6 +507,11 @@ class PRUSimulatorMCP:
         if len(matches) > 1:
             raise ValueError(f"more than one attached device is named {name!r}")
         return matches[0]
+
+    def _restore_device_output_masks(self, sim: Simulator) -> None:
+        for core, mask in self._device_drive_masks.values():
+            sim.set_gpio_drive_mask(core, mask)
+        self._device_drive_masks.clear()
 
     def pru_reset(self, core: str = "pru0") -> dict:
         """Reset the specified core to its initial state."""

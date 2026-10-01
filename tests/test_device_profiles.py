@@ -9,12 +9,18 @@ from pru_io.tca9538_device_model import TCA9538Model
 def test_device_discovery_describes_validated_profiles():
     profiles = discover_device_profiles()
 
-    assert set(profiles) == {"ssi_encoder", "tca9538"}
+    assert set(profiles) == {"ssi_encoder", "tca9538", "foc_motor"}
     assert profiles["ssi_encoder"]["outputs"] == {"data_pin": PUSH_PULL}
     assert profiles["tca9538"]["outputs"] == {
         "scl_pin": OPEN_DRAIN,
         "sda_pin": OPEN_DRAIN,
     }
+    assert profiles["foc_motor"]["outputs"] == {
+        "current_a_pin": PUSH_PULL,
+        "current_b_pin": PUSH_PULL,
+    }
+    assert profiles["foc_motor"]["pru_output_mask"] == 0x7
+    assert profiles["foc_motor"]["supported_cores"] == ["pru0"]
 
 
 def test_ssi_profile_applies_defaults_and_accepts_overrides():
