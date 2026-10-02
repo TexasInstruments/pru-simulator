@@ -19,6 +19,7 @@ These are simulator-side capabilities, not features of the PRU hardware itself.
 - **Signal graph** — digital logic analyzer for GPO/GPI pin transitions
 - **Memory graph** — analog scope for memory buffer waveform visualization
 - **GPIO loopback** — wire GPO groups directly to GPI for firmware loopback testing without hardware. Can specify loopback latency/jitter/clock-drift
+- **Device bus** — attach external device models (`DeviceModel`) to any core's GPIO pins and wire pins between cores. A shared `DeviceBus` resolves open-drain nets as wired-AND and reports push-pull contention as a fault instead of last-writer-wins; devices expose `events()` and `faults()` for checking firmware
 - **UART decoder** — bit-bang UART decode in the IO panel (8N1, auto-detect bit period)
 - **Multi-core simulation & debug view** — PRU_ICSSG supports simultaneous simulation & debugging of up to 3 PRU cores; PRU-ICSS supports simultaneous simulation & debugging of both PRU cores
 - **Tiling window manager** — drag, split, collapse/expand, and persist panel layouts
@@ -101,7 +102,7 @@ pru_simulator/
 ├── core/               PRU ISA implementation (ALU, parser, disassembler, ELF loader, …)
 ├── mem/                Memory bus and region model
 ├── mcp_server/         MCP server for AI tool integration
-├── pru_io/             GPO/GPI port model, SD filter (R30/R31 interface)
+├── pru_io/             GPO/GPI port model, SD filter (R30/R31 interface), DeviceModel/DeviceBus
 ├── perif/              3-channel Peripheral Interface (SCU), GPCFG mux, TX→RX loopback
 ├── source/             Example PRU assembly programs
 ├── tests/              Pytest test suite
@@ -183,9 +184,15 @@ standalone experiments and may require optional packages (for example,
 
 ## Version
 
-v0.2.8 — hover over **PRU SIM** in the dashboard header to confirm.
+v0.2.9 — hover over **PRU SIM** in the dashboard header to confirm.
 
 ### Changelog
+
+**v0.2.9**
+- **Generic device contract** (`pru_io/device_model.py`) — `DeviceModel` (`tick() -> (drive_mask, drive_values)`, `events()`, `faults()`, snapshot/restore) and a multi-driver `DeviceBus`. Open-drain nets resolve as wired-AND; push-pull contention is recorded as a fault. Reactive devices are settled from `R30` writes, and only devices declaring `time_driven` are ticked, once per elapsed core cycle including stalls. Contract from #44.
+- **TCA9538 on the device bus** — the I²C expander is the first port, works on arbitrary pins, and gives the same firmware-visible result as the existing `attach_i2c_device` path, which remains available.
+- **Simulator API** — `attach_device`/`detach_device`, `device_state`, `set_gpio_drive_mask`, and `add_gpio_wire`/`remove_gpio_wire`/`list_gpio_wires` for core-to-core GPIO wires on the shared bus. Detaching a device releases every pin it drove.
+- **Coherent step-back** — dashboard history is now one ordered timeline across cores. Stepping a core back restores shared memory, MAC/XFR, GPCFG, IEP and device-bus state, and discards later steps from other cores so they cannot disagree with it.
 
 **v0.2.8**
 - **Rational multi-clock IEP timebase** — the single `perif/iep.py` `IepTimer` (compare, capture, 64-bit CMP pairs, `CMP0_RST_CNT_EN`) now advances on exact elapsed core time instead of one tick per instruction. Each core reports its elapsed cycles, stalls included, through a `cycle_observer`, and the timer converts them with `Fraction` clock periods, so PRU0/PRU1/RTU cores at different clocks share one exact timeline. **Behaviour change:** the IEP now runs at `iep_clock_mhz` (200 MHz by default) rather than at the core clock; setting ICSS CFG `IEPCLK` bit 0 (`0x26030`) selects the OCP clock (`pru_clock_mhz`) instead. Tick phase is preserved across firmware writes that do not change the effective clock.
