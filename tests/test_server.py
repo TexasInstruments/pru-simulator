@@ -207,6 +207,20 @@ def _run_websocket_actions(actions):
     return websocket.sent
 
 
+def test_state_preserves_other_core_fault_until_reset(fresh_sim):
+    fault = {"opcode": "LBBO", "address": 12, "error": "Unmapped memory"}
+    fresh_sim.cores["pru0"].fault = fault
+    sent = _run_websocket_actions([
+        {"action": "get_state", "core": "pru0"},
+        {"action": "get_state", "core": "rtu1"},
+        {"action": "reset", "core": "pru0"},
+    ])
+    assert sent[0]["core_faults"] == {"pru0": fault}
+    assert sent[1]["fault"] is None
+    assert sent[1]["core_faults"] == {"pru0": fault}
+    assert sent[2]["core_faults"] == {}
+
+
 def test_websocket_attaches_updates_and_detaches_ssi_encoder(fresh_sim):
     import ui.server as srv
 
@@ -280,3 +294,43 @@ def test_websocket_rejects_invalid_foc_route_without_partial_update(fresh_sim):
     assert "routes" in error["errors"][0]
     assert fresh_sim.memory_read(foc_abi.CONTROL_ADDRESS, foc_abi.CONFIG_SIZE) == original_config
     assert sd.input_routes[:2] == [7, 8]
+
+
+def test_websocket_swaps_foc_routes_with_unequal_clocks_atomically(fresh_sim):
+    fresh_sim.set_sd_modulator("pru0", 0, sd_clock_mhz=10)
+    sent = _run_websocket_actions([
+        {"action": "device_attach", "core": "pru0", "profile": "foc_motor"},
+        {"action": "foc_apply", "core": "pru0", "config": {}, "routes": [3, 4]},
+        {"action": "foc_apply", "core": "pru0", "config": {}, "routes": [4, 3]},
+    ])
+    assert not any(message.get("type") == "error" for message in sent)
+    assert fresh_sim.cores["pru0"].io_port.sd_filter.input_routes[:2] == [4, 3]
+    motor = fresh_sim.device_bus.get_device("foc_motor")
+    assert motor.current_a_clock_hz == 20_000_000
+    assert motor.current_b_clock_hz == 10_000_000
+
+
+def test_websocket_rejects_conflicting_foc_clocks_and_keeps_session(fresh_sim):
+    original_config = foc_abi.pack_config(alpha_q15=321)
+    fresh_sim.memory.write(foc_abi.CONTROL_ADDRESS, original_config)
+    fresh_sim.set_sd_modulator("pru0", 0, sd_clock_mhz=10)
+    sd = fresh_sim.cores["pru0"].io_port.sd_filter
+    sd.route_input(2, 4)
+    sent = _run_websocket_actions([
+        {"action": "device_attach", "core": "pru0", "profile": "foc_motor"},
+        {"action": "foc_apply", "core": "pru0", "config": {}, "routes": [3, 3]},
+        {"action": "foc_apply", "core": "pru0", "config": {}, "routes": [3, 4]},
+        {"action": "set_sd_modulator", "core": "pru0", "channel": 2,
+         "params": {"sd_clock_mhz": 10}},
+        {"action": "set_sd_modulator", "core": "pru0", "channel": 0,
+         "params": {"sd_clock_mhz": 15}},
+    ])
+    errors = [message for message in sent if message.get("type") == "error"]
+    assert len(errors) == 2
+    assert all("different clocks" in error["errors"][0] for error in errors)
+    error_index = sent.index(errors[0])
+    unchanged = sent[error_index + 1]
+    assert unchanged["io"]["foc_config"]["alpha_q15"] == 321
+    assert sd.input_routes == [3, 4, 4]
+    assert sd.modulators[2].sd_clock_mhz == 20
+    assert sd.modulators[0].sd_clock_mhz == 15

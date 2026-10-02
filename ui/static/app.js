@@ -370,6 +370,7 @@ function connect() {
     try {
       const msg = JSON.parse(event.data);
       if (msg.type === "state") {
+        window.updateWorkspaceEvents?.(msg, multiCoreMode ? ['pru0', mcPartner] : [currentCore]);
         if (multiCoreMode) {
           updateMCUI(msg);
         } else if (!msg.core || msg.core === currentCore) {
@@ -834,7 +835,7 @@ function updatePerifPanel(io) {
 
   // RTU0 has no GPCFG GP-mux (TRM) — hide the mux row for it.
   const muxRow = document.getElementById('io-mux-row');
-  if (muxRow) muxRow.style.display = (currentCore === 'rtu0') ? 'none' : '';
+  if (muxRow) muxRow.style.display = currentCore.startsWith('rtu') ? 'none' : '';
 
   // Keep the GP-mux selector in sync (unless the user is interacting with it).
   const muxSel = document.getElementById('io-mux-sel');
@@ -3556,7 +3557,7 @@ function syncDeviceCoreSelect() {
   if (!deviceCoreSelect || !deviceCoreSelectWrap) return;
   const partnerOption = deviceCoreSelect.options[1];
   partnerOption.value = mcPartner;
-  partnerOption.textContent = mcPartner === 'pru1' ? 'PRU1' : 'RTU0';
+  partnerOption.textContent = mcPartner.toUpperCase();
   deviceCoreSelectWrap.hidden = !multiCoreMode;
   if (multiCoreMode) {
     if (devicePanelCore !== 'pru0' && devicePanelCore !== mcPartner) {
@@ -3574,7 +3575,7 @@ deviceCoreSelect?.addEventListener('change', () => {
 });
 
 function applyMCPartnerLabels() {
-  const label = mcPartner === "pru1" ? "PRU1" : "RTU0";
+  const label = mcPartner.toUpperCase();
   const srcTitle = document.getElementById("mc-partner-source-title");
   const regTitle = document.getElementById("mc-partner-reg-title");
   const cntLabel = document.getElementById("cnt-p1-label");
