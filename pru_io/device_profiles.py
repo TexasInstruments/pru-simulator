@@ -39,7 +39,10 @@ def discover_device_profiles() -> dict:
     """Return profile names, defaults, and the pins each profile drives."""
     return {
         name: {
-            "defaults": deepcopy(defaults),
+            "defaults": deepcopy({
+                field: value for field, value in defaults.items()
+                if not (name == "ssi_encoder" and field == "core_clock_hz")
+            }),
             "outputs": dict(_PROFILE_OUTPUTS[name]),
         }
         for name, defaults in _PROFILE_DEFAULTS.items()

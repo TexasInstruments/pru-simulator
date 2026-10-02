@@ -56,9 +56,13 @@ def test_ssi_profile_defaults_to_exact_selected_core_clock(tmp_path):
         encoding="utf-8",
     )
     mcp = PRUSimulatorMCP(config_path=str(config))
+    defaults = mcp.pru_device_discover()["profiles"]["ssi_encoder"]["defaults"]
 
-    mcp.pru_device_attach("ssi_encoder", core="pru0", config={"name": "axis0"})
-    mcp.pru_device_attach("ssi_encoder", core="pru1", config={"name": "axis1"})
+    assert "core_clock_hz" not in defaults
+    mcp.pru_device_attach(
+        "ssi_encoder", core="pru0", config={**defaults, "name": "axis0"})
+    mcp.pru_device_attach(
+        "ssi_encoder", core="pru1", config={**defaults, "name": "axis1"})
     axis0, axis1 = mcp.sim.device_bus.devices
 
     assert axis0.core_clock_hz == Fraction("200.123456789123456") * 1_000_000
