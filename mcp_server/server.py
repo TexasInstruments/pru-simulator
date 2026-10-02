@@ -430,74 +430,28 @@ class PRUSimulatorMCP:
 def run_stdio_server():
     """Start the MCP stdio server. Requires the 'mcp' SDK to be installed."""
     try:
-        import mcp  # noqa: F401
-        from mcp.server import Server
-        from mcp.server.stdio import stdio_server
-        from mcp.types import Tool, TextContent
-        import asyncio
-        import inspect
-        import json
-
-        server = Server("pru-simulator")
-        mcp_wrapper = PRUSimulatorMCP()
-
-        # Build tool list from PRUSimulatorMCP public methods
-        _TOOLS = []
-        for name, method in inspect.getmembers(mcp_wrapper, predicate=inspect.ismethod):
-            if name.startswith("_"):
-                continue
-            sig = inspect.signature(method)
-            properties = {}
-            required = []
-            for param_name, param in sig.parameters.items():
-                if param_name == "self":
-                    continue
-                ptype = "string"
-                annotation = param.annotation
-                if annotation in (int,):
-                    ptype = "integer"
-                elif annotation in (float,):
-                    ptype = "number"
-                elif annotation in (bool,):
-                    ptype = "boolean"
-                prop = {"type": ptype}
-                if param.default is inspect.Parameter.empty:
-                    required.append(param_name)
-                else:
-                    prop["default"] = param.default
-                properties[param_name] = prop
-            _TOOLS.append(Tool(
-                name=name,
-                description=method.__doc__ or name,
-                inputSchema={
-                    "type": "object",
-                    "properties": properties,
-                    "required": required,
-                },
-            ))
-
-        @server.list_tools()
-        async def list_tools():
-            return _TOOLS
-
-        @server.call_tool()
-        async def call_tool(name, arguments):
-            method = getattr(mcp_wrapper, name, None)
-            if method is None:
-                raise ValueError(f"Unknown tool: {name}")
-            result = method(**arguments)
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
-
-        async def main():
-            async with stdio_server() as (read_stream, write_stream):
-                await server.run(read_stream, write_stream, server.create_initialization_options())
-
-        asyncio.run(main())
-
+        # mcp 2.x renamed FastMCP to MCPServer; fall back for mcp 1.x.
+        try:
+            from mcp.server import MCPServer
+        except ImportError:
+            from mcp.server.fastmcp import FastMCP as MCPServer
     except ImportError:
         print("Error: 'mcp' SDK is not installed. Install it with: pip install mcp", file=sys.stderr)
         sys.exit(1)
 
+    import inspect
+
+    server = MCPServer("pru-simulator")
+    mcp_wrapper = PRUSimulatorMCP()
+
+    # Register every public PRUSimulatorMCP method as a tool; the input schema
+    # is derived from the method signature.
+    for name, method in inspect.getmembers(mcp_wrapper, predicate=inspect.ismethod):
+        if name.startswith("_"):
+            continue
+        server.add_tool(method, name=name, description=method.__doc__ or name)
+
+    server.run("stdio")
 
 if __name__ == "__main__":
     run_stdio_server()
