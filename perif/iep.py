@@ -206,14 +206,18 @@ class IepTimer:
         rate = _mhz_to_hz(clock_mhz)
         if rate <= 0:
             raise ValueError(f"IEP clock must be positive, got {clock_mhz}")
+        previous_rate = self.active_clock_hz
         self.external_clock_hz = rate
-        self._tick_remainder = 0
-        self._refresh_tick_rate()
+        if self.active_clock_hz != previous_rate:
+            self._tick_remainder = 0
+            self._refresh_tick_rate()
 
     def write_iepclk(self, value: int) -> None:
+        previous_rate = self.active_clock_hz
         self.iepclk = value & _MASK32
-        self._tick_remainder = 0
-        self._refresh_tick_rate()
+        if self.active_clock_hz != previous_rate:
+            self._tick_remainder = 0
+            self._refresh_tick_rate()
 
     @property
     def global_time_units(self) -> int:

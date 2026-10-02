@@ -200,6 +200,39 @@ def test_iep_clock_source_and_rate_transitions_reset_tick_phase():
     assert iep._tick_remainder == 2
 
 
+def test_repeated_iepclk_firmware_writes_preserve_tick_phase():
+    sim = Simulator("memory.cfg")
+    sim.iep.global_cfg = 0x11
+    assert sim.load("pru0", "ldi32 r0, 0x26030\nldi r1, 0\n"
+                    "loop: sbbo &r1, r0, 0, 4\nqba loop\n") == []
+    result = sim.step("pru0", 302)
+    assert result["cycles"] == 452
+    assert sim.iep.count == 361
+
+
+def test_unchanged_effective_clock_preserves_tick_phase():
+    iep = IepTimer()
+    iep.global_cfg = 0x11
+    iep.observe_core_cycles("pru0", 1)
+    iep.write_iepclk(0)
+    iep.write_iepclk(2)  # unmodeled bit, still the external clock
+    iep.set_clock_mhz("200")
+    assert iep._tick_remainder == 4
+    iep.observe_core_cycles("pru0", 2)
+    assert iep.count == 1
+
+
+def test_inactive_external_clock_change_preserves_ocp_phase():
+    iep = IepTimer(ocp_clock_mhz="200", core_clocks_mhz={"pru0": "250"})
+    iep.global_cfg = 0x11
+    iep.write_iepclk(1)
+    iep.observe_core_cycles("pru0", 1)
+    iep.set_clock_mhz("100")
+    assert iep._tick_remainder == 4
+    iep.observe_core_cycles("pru0", 2)
+    assert iep.count == 1
+
+
 def test_lbbo_and_wait_stalls_reach_the_cycle_observer():
     sim = Simulator()
     assert sim.load(
