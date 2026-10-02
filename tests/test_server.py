@@ -1,10 +1,13 @@
 """Tests for dashboard REST endpoints."""
 import asyncio
+import json
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 from ui.server import app
 from simulator import Simulator
+from pru_io import foc_control_abi as foc_abi
 
 
 client = TestClient(app)
@@ -176,3 +179,104 @@ def test_fault_is_reported_in_state_and_restored_by_step_back(fresh_sim):
 
     srv._restore("pru0", snapshot)
     assert fresh_sim.cores["pru0"].fault is None
+
+
+class _ActionWebSocket:
+    def __init__(self, actions):
+        self._actions = iter(actions)
+        self.sent = []
+
+    async def accept(self):
+        pass
+
+    async def receive_text(self):
+        try:
+            return json.dumps(next(self._actions))
+        except StopIteration:
+            raise WebSocketDisconnect(code=1000)
+
+    async def send_json(self, payload):
+        self.sent.append(payload)
+
+
+def _run_websocket_actions(actions):
+    import ui.server as srv
+
+    websocket = _ActionWebSocket(actions)
+    asyncio.run(srv.websocket_endpoint(websocket))
+    return websocket.sent
+
+
+def test_websocket_attaches_updates_and_detaches_ssi_encoder(fresh_sim):
+    import ui.server as srv
+
+    for history in srv._history.values():
+        history.append({"stale": True})
+    srv._history_order.append(("pru1", {"stale": True}))
+
+    sent = _run_websocket_actions([
+        {"action": "device_attach", "core": "pru1", "profile": "ssi_encoder",
+         "config": {"name": "axis", "clock_pin": 0, "data_pin": 8,
+                    "position": 17, "resolution": 8}},
+        {"action": "ssi_set_position", "core": "pru1", "name": "axis",
+         "position": 42},
+        {"action": "device_detach", "core": "pru1", "name": "axis"},
+    ])
+
+    attached = next(message for message in sent if message.get("type") == "state")
+    device = attached["io"]["device_bus"]["devices"][0]
+    assert device["core"] == "pru1"
+    assert device["position"] == 17
+    assert fresh_sim.device_bus.devices == []
+    assert fresh_sim.io("pru1")["gpo_drive_mask"] == (1 << 20) - 1
+    assert all(not history for history in srv._history.values())
+    assert srv._history_order == []
+
+    detached = [message for message in sent if message.get("type") == "state"][-1]
+    assert "device_bus" not in detached["io"]
+
+
+def test_websocket_foc_apply_writes_control_abi_and_sd_routes(fresh_sim):
+    sent = _run_websocket_actions([
+        {"action": "device_attach", "core": "pru0", "profile": "foc_motor"},
+        {"action": "foc_apply", "core": "pru0",
+         "config": {"alpha_q15": -4096, "beta_q15": 2048,
+                    "phase_increment_q32": 0x10000000,
+                    "modulation_q15": 12000, "initial_phase_q32": 0x20000000},
+         "routes": [3, 4]},
+    ])
+
+    config = foc_abi.unpack_config(
+        fresh_sim.memory_read(foc_abi.CONTROL_ADDRESS, foc_abi.CONFIG_SIZE)
+    )
+    assert config["alpha_q15"] == -4096
+    assert config["beta_q15"] == 2048
+    assert config["phase_increment_q32"] == 0x10000000
+    assert config["modulation_q15"] == 12000
+    assert config["initial_phase_q32"] == 0x20000000
+    assert fresh_sim.cores["pru0"].io_port.sd_filter.input_routes[:2] == [3, 4]
+
+    state = [message for message in sent if message.get("type") == "state"][-1]
+    assert state["io"]["foc_config"]["alpha_q15"] == -4096
+    assert state["io"]["device_bus"]["devices"][0]["model"] == "three_phase_rl"
+
+
+def test_websocket_rejects_invalid_foc_route_without_partial_update(fresh_sim):
+    original_config = foc_abi.pack_config(alpha_q15=321, beta_q15=-654)
+    fresh_sim.memory.write(foc_abi.CONTROL_ADDRESS, original_config)
+    sd = fresh_sim.cores["pru0"].io_port.sd_filter
+    sd.route_input(0, 7)
+    sd.route_input(1, 8)
+
+    sent = _run_websocket_actions([
+        {"action": "device_attach", "core": "pru0", "profile": "foc_motor"},
+        {"action": "foc_apply", "core": "pru0",
+         "config": {"alpha_q15": 1000, "beta_q15": 2000},
+         "routes": [9, 20]},
+    ])
+
+    error = next(message for message in sent
+                 if message.get("type") == "error" and message.get("tag") == "device")
+    assert "routes" in error["errors"][0]
+    assert fresh_sim.memory_read(foc_abi.CONTROL_ADDRESS, foc_abi.CONFIG_SIZE) == original_config
+    assert sd.input_routes[:2] == [7, 8]

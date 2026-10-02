@@ -8,6 +8,18 @@
 let ws = null;
 let prevRegisters = new Array(32).fill("0x00000000");
 let currentCore = "pru0";
+let devicePanelCore = "pru0";
+let focMotorName = null;
+const focConfigFields = [
+  ['foc-alpha-q15', 'alpha_q15'],
+  ['foc-beta-q15', 'beta_q15'],
+  ['foc-modulation-q15', 'modulation_q15'],
+  ['foc-phase-step', 'phase_increment_q32'],
+  ['foc-initial-phase', 'initial_phase_q32'],
+];
+const focRouteIds = ['foc-sd-route-0', 'foc-sd-route-1'];
+const focDirtyFields = new Set();
+let focApplyDraft = null;
 let running = false;
 let runInterval = null;
 let simRunning = false;
@@ -388,6 +400,7 @@ function connect() {
         }
       } else if (msg.type === "error") {
         if (msg.tag && msg.tag.startsWith("graph-")) graphMarkChannelError(msg.tag);
+        else if (msg.tag === "device") showDeviceError(msg.errors);
         else showErrors(msg.errors);
       }
     } catch (e) {
@@ -453,6 +466,7 @@ function updateUI(state) {
   updateSDPanel(state.io);
   updatePerifPanel(state.io);
   updateI2CPanel(state.io);
+  updateDevicePanel(state.io, state.core || currentCore);
 
   // Signal graph sample
   graphSample(state);
@@ -657,7 +671,7 @@ function updateSDPanel(io) {
   if (!sdSection) return;
 
   const gpioSections = document.querySelectorAll(
-    '#io-panel .io-section:not(.sd-interface):not(.perif-interface):not(.io-mux-row):not(.i2c-interface)'
+    '#io-panel .io-section:not(.sd-interface):not(.perif-interface):not(.io-mux-row):not(.i2c-interface):not(.device-runtime)'
   );
 
   if (!io || io.mode !== 'sd') {
@@ -998,6 +1012,236 @@ function updateI2CPanel(io) {
     const regStr = t.reg === null || t.reg === undefined ? '--' : `0x${t.reg.toString(16).toUpperCase().padStart(2, '0')}`;
     const dataStr = t.data === null || t.data === undefined ? '--' : `0x${t.data.toString(16).toUpperCase().padStart(2, '0')}`;
     logEl.textContent = `addr=0x${t.address.toString(16).toUpperCase()} reg=${regStr} data=${dataStr} ${t.ack ? 'ACK' : 'NACK'}`;
+  }
+}
+
+function showDeviceError(errors) {
+  const errorEl = document.getElementById('device-error');
+  if (!errorEl) {
+    showErrors(errors);
+    return;
+  }
+  errorEl.textContent = Array.isArray(errors) ? errors.join('\n') : String(errors || 'Device action failed');
+  errorEl.hidden = false;
+}
+
+function clearDeviceError() {
+  const errorEl = document.getElementById('device-error');
+  if (!errorEl) return;
+  errorEl.textContent = '';
+  errorEl.hidden = true;
+}
+
+function updateDevicePanel(io, core) {
+  const panel = document.getElementById('device-runtime-panel');
+  if (!panel || !io) return;
+
+  const incomingCore = core || currentCore;
+  if (multiCoreMode && incomingCore !== devicePanelCore) return;
+  devicePanelCore = incomingCore;
+  const bus = io && io.device_bus ? io.device_bus : {};
+  const devices = Array.isArray(bus.devices) ? bus.devices : [];
+  const events = Array.isArray(bus.events) ? bus.events : [];
+  const faults = Array.isArray(bus.faults) ? bus.faults : [];
+  const list = document.getElementById('ssi-device-list');
+
+  for (let channel = 0; channel < 2; channel++) {
+    const select = document.getElementById(`foc-sd-route-${channel}`);
+    if (select && select.options.length === 0) {
+      const internal = document.createElement('option');
+      internal.value = '-1';
+      internal.textContent = 'Internal modulator';
+      select.appendChild(internal);
+      for (let pin = 0; pin < 20; pin++) {
+        const option = document.createElement('option');
+        option.value = String(pin);
+        option.textContent = `GPI ${pin}`;
+        select.appendChild(option);
+      }
+    }
+  }
+
+  const ssiDevices = devices.filter(device =>
+    device.core === devicePanelCore && Number.isInteger(device.clock_pin) &&
+    Number.isInteger(device.data_pin));
+  const empty = document.getElementById('ssi-empty-state');
+  if (empty) {
+    empty.textContent = ssiDevices.length
+      ? `${ssiDevices.length} SSI encoder${ssiDevices.length === 1 ? '' : 's'} attached to ${devicePanelCore}.`
+      : `No SSI encoder attached to ${devicePanelCore}.`;
+  }
+  if (list) {
+    const existingRows = new Map(
+      Array.from(list.children, row => [row.dataset.deviceName, row])
+    );
+    const nextRows = [];
+    for (const device of ssiDevices) {
+      let row = existingRows.get(device.name);
+      if (row) {
+        existingRows.delete(device.name);
+      } else {
+        row = document.createElement('div');
+        row.className = 'runtime-device-row';
+        row.dataset.deviceName = device.name;
+
+        const title = document.createElement('div');
+        title.className = 'runtime-device-row-title';
+        row.appendChild(title);
+
+        const detail = document.createElement('div');
+        detail.className = 'runtime-device-row-detail';
+        detail.dataset.role = 'detail';
+        row.appendChild(detail);
+
+        const positionLabel = document.createElement('label');
+        positionLabel.className = 'runtime-device-field runtime-device-position';
+        positionLabel.textContent = 'Set next position';
+        const position = document.createElement('input');
+        position.type = 'number';
+        position.min = '0';
+        position.step = '1';
+        position.required = true;
+        position.dataset.position = 'true';
+        position.addEventListener('input', () => {
+          position.dataset.dirty = 'true';
+          delete position.dataset.pending;
+        });
+        positionLabel.appendChild(position);
+        row.appendChild(positionLabel);
+
+        const actions = document.createElement('div');
+        actions.className = 'runtime-device-actions';
+        for (const [action, label] of [['set-position', 'Set position'], ['detach', 'Detach']]) {
+          const button = document.createElement('button');
+          button.className = 'runtime-device-button';
+          button.type = 'button';
+          button.textContent = label;
+          button.dataset.deviceAction = action;
+          actions.appendChild(button);
+        }
+        row.appendChild(actions);
+      }
+
+      row.querySelector('.runtime-device-row-title').textContent = device.name;
+      const detail = row.querySelector('[data-role="detail"]');
+      detail.textContent = `CLK GPO ${device.clock_pin} · DATA GPI ${device.data_pin} · ` +
+        `${device.resolution}-bit ${device.encoding} · position ${device.position} · ` +
+        `${device.frames_captured || 0} frame${device.frames_captured === 1 ? '' : 's'} · ` +
+        `${device.bits_clocked || 0}/${device.resolution} bits (${device.state || 'idle'})`;
+
+      const deviceEvents = events.filter(event => event.device === device.name);
+      const lastFrame = deviceEvents.slice().reverse().find(event => event.kind === 'frame');
+      let frame = row.querySelector('[data-role="frame"]');
+      if (!frame) {
+        frame = document.createElement('div');
+        frame.className = 'runtime-device-row-detail';
+        frame.dataset.role = 'frame';
+        row.insertBefore(frame, row.querySelector('.runtime-device-field'));
+      }
+      frame.hidden = !lastFrame;
+      if (lastFrame) {
+        frame.textContent = `Latest frame: ${lastFrame.position} at cycle ${lastFrame.cycle}`;
+      }
+      const lastFaultEvent = deviceEvents.slice().reverse().find(event => event.kind === 'fault');
+      const lastFault = faults.slice().reverse().find(message => message.startsWith(`${device.name}:`));
+      let fault = row.querySelector('[data-role="fault"]');
+      if (!fault) {
+        fault = document.createElement('div');
+        fault.className = 'runtime-device-error';
+        fault.dataset.role = 'fault';
+        row.insertBefore(fault, row.querySelector('.runtime-device-field'));
+      }
+      fault.hidden = !lastFaultEvent && !lastFault;
+      if (lastFaultEvent || lastFault) {
+        fault.textContent = `Latest fault: ${lastFaultEvent ? lastFaultEvent.message : lastFault.slice(device.name.length + 1).trim()}`;
+      }
+
+      const position = row.querySelector('input[data-position]');
+      position.min = '0';
+      position.max = String((2 ** device.resolution) - 1);
+      position.step = '1';
+      position.required = true;
+      if (position.dataset.pending === String(device.position)) {
+        delete position.dataset.pending;
+        delete position.dataset.dirty;
+      }
+      if (position.dataset.dirty !== 'true') position.value = String(device.position);
+      for (const button of row.querySelectorAll('button[data-device-action]')) {
+        button.dataset.name = device.name;
+      }
+      nextRows.push(row);
+    }
+    existingRows.forEach(row => row.remove());
+    nextRows.forEach((row, index) => {
+      const current = list.children[index];
+      if (current !== row) list.insertBefore(row, current || null);
+    });
+  }
+
+  const focMotor = devices.find(device => device.model === 'three_phase_rl');
+  focMotorName = focMotor ? focMotor.name : null;
+  const focStatus = document.getElementById('foc-device-status');
+  const focAttach = document.getElementById('foc-attach-button');
+  const focControls = document.getElementById('foc-controls');
+  const focApply = document.getElementById('foc-apply-button');
+  const focDetach = document.getElementById('foc-detach-button');
+  const onFocCore = devicePanelCore === 'pru0';
+  if (onFocCore && !focMotor) {
+    focDirtyFields.clear();
+    focApplyDraft = null;
+  }
+  if (focStatus) {
+    focStatus.textContent = focMotor
+      ? `Attached as ${focMotor.name} on PRU0 · ${focMotor.pwm_periods || 0} PWM periods · ${focMotor.cycles || 0} model cycles.`
+      : 'No FOC motor attached. This profile runs on PRU0.';
+  }
+  if (focAttach) focAttach.disabled = !onFocCore || !!focMotor;
+  if (focControls) focControls.hidden = !focMotor || !onFocCore;
+  if (focApply) focApply.disabled = !focMotor || !onFocCore;
+  if (focDetach) focDetach.disabled = !focMotor || !onFocCore;
+
+  if (focMotor) {
+    const stats = document.getElementById('foc-live-stats');
+    if (stats) {
+      const currents = focMotor.phase_currents_a || [];
+      const currentText = currents.map(value => Number(value).toFixed(3)).join(' / ');
+      const pwmBits = ((bus.buses && bus.buses.pru0) || 0) & 0x7;
+      stats.textContent = `Phase currents A/B/C: ${currentText || '—'} A · ` +
+        `PWM periods: ${focMotor.pwm_periods || 0} · model cycles: ${focMotor.cycles || 0} · ` +
+        `GPO 2:0: ${pwmBits.toString(2).padStart(3, '0')} · bus contentions: ${bus.contentions || 0}`;
+    }
+  } else {
+    const stats = document.getElementById('foc-live-stats');
+    if (stats) stats.textContent = '';
+  }
+
+  const config = io && io.foc_config;
+  const routeValues = io && io.sd && Array.isArray(io.sd.input_routes)
+    ? io.sd.input_routes.map(pin => pin === null || pin === undefined ? -1 : pin)
+    : null;
+  if (focApplyDraft && onFocCore && config && routeValues &&
+      focConfigFields.every(([, key]) => Number(config[key]) === Number(focApplyDraft.config[key])) &&
+      routeValues.length === 2 && routeValues.every((pin, index) => pin === focApplyDraft.routes[index])) {
+    focConfigFields.forEach(([id]) => focDirtyFields.delete(id));
+    focRouteIds.forEach(id => focDirtyFields.delete(id));
+    focApplyDraft = null;
+  }
+  if (config && onFocCore) {
+    for (const [id, key] of focConfigFields) {
+      const input = document.getElementById(id);
+      if (input && document.activeElement !== input && !focDirtyFields.has(id)) {
+        input.value = String(config[key]);
+      }
+    }
+  }
+  if (onFocCore && routeValues) {
+    for (let channel = 0; channel < 2; channel++) {
+      const id = focRouteIds[channel];
+      const select = document.getElementById(id);
+      if (select && document.activeElement !== select && !focDirtyFields.has(id)) {
+        select.value = String(routeValues[channel]);
+      }
+    }
   }
 }
 
@@ -1649,11 +1893,13 @@ coreSelect.addEventListener("change", () => {
   sendAction({ action: 'i2c_attach', core: currentCore, enabled: false });
   document.getElementById('i2c-attach-btn')?.classList.remove('active');
   currentCore = coreSelect.value;
+  devicePanelCore = currentCore;
   prevRegisters = new Array(32).fill("0x00000000");
   document.querySelectorAll('#loopback-strip .lb-btn').forEach(b => b.classList.remove('active'));
   initSpadState();
   sourceList.innerHTML = "";
   sendAction({ action: "get_state", core: currentCore });
+  syncDeviceCoreSelect();
   updateCtableForCore();
 });
 
@@ -2305,6 +2551,129 @@ const _i2cAttachBtn = document.getElementById('i2c-attach-btn');
 if (_i2cAttachBtn) {
   _i2cAttachBtn.addEventListener('click', () => onI2CAttachToggle(_i2cAttachBtn));
 }
+
+function sendDeviceAction(action) {
+  clearDeviceError();
+  sendAction(action);
+}
+
+function markFocDirty(id) {
+  focDirtyFields.add(id);
+  focApplyDraft = null;
+}
+
+focConfigFields.forEach(([id]) => {
+  document.getElementById(id)?.addEventListener('input', () => markFocDirty(id));
+});
+focRouteIds.forEach(id => {
+  document.getElementById(id)?.addEventListener('change', () => markFocDirty(id));
+});
+
+function deviceNumberValue(id) {
+  const input = document.getElementById(id);
+  if (!input || !input.checkValidity()) {
+    input?.reportValidity();
+    return null;
+  }
+  return input.valueAsNumber;
+}
+
+document.getElementById('ssi-attach-button')?.addEventListener('click', () => {
+  const nameInput = document.getElementById('ssi-device-name');
+  if (!nameInput.checkValidity()) {
+    nameInput.reportValidity();
+    return;
+  }
+  const clockPin = deviceNumberValue('ssi-clock-pin');
+  const dataPin = deviceNumberValue('ssi-data-pin');
+  const positionInput = document.getElementById('ssi-position');
+  const resolution = deviceNumberValue('ssi-resolution');
+  positionInput.setCustomValidity('');
+  if (clockPin === null || dataPin === null || resolution === null ||
+      !positionInput.checkValidity()) {
+    positionInput.reportValidity();
+    return;
+  }
+  const position = positionInput.valueAsNumber;
+  if (position >= 2 ** resolution) {
+    positionInput.setCustomValidity(`Position must fit the ${resolution}-bit resolution.`);
+    positionInput.reportValidity();
+    return;
+  }
+  positionInput.setCustomValidity('');
+  sendDeviceAction({
+    action: 'device_attach',
+    core: devicePanelCore,
+    profile: 'ssi_encoder',
+    config: {
+      name: nameInput.value.trim(),
+      clock_pin: clockPin,
+      data_pin: dataPin,
+      position,
+      resolution,
+      encoding: document.getElementById('ssi-encoding').value,
+    },
+  });
+});
+
+document.getElementById('ssi-device-list')?.addEventListener('click', event => {
+  const button = event.target.closest('button[data-device-action]');
+  if (!button) return;
+  const name = button.dataset.name;
+  if (button.dataset.deviceAction === 'detach') {
+    sendDeviceAction({ action: 'device_detach', core: devicePanelCore, name });
+    return;
+  }
+  const row = button.closest('.runtime-device-row');
+  const positionInput = row && row.querySelector('input[data-position]');
+  if (!positionInput || !positionInput.checkValidity()) {
+    positionInput?.reportValidity();
+    return;
+  }
+  sendDeviceAction({
+    action: 'ssi_set_position',
+    core: devicePanelCore,
+    name,
+    position: positionInput.valueAsNumber,
+  });
+  positionInput.dataset.pending = String(positionInput.valueAsNumber);
+  positionInput.dataset.dirty = 'true';
+});
+
+document.getElementById('foc-attach-button')?.addEventListener('click', () => {
+  if (devicePanelCore !== 'pru0') return;
+  sendDeviceAction({ action: 'device_attach', core: 'pru0', profile: 'foc_motor' });
+});
+
+document.getElementById('foc-apply-button')?.addEventListener('click', () => {
+  if (devicePanelCore !== 'pru0') return;
+  const values = [
+    ['alpha_q15', 'foc-alpha-q15'],
+    ['beta_q15', 'foc-beta-q15'],
+    ['modulation_q15', 'foc-modulation-q15'],
+    ['phase_increment_q32', 'foc-phase-step'],
+    ['initial_phase_q32', 'foc-initial-phase'],
+  ];
+  const config = {};
+  for (const [key, id] of values) {
+    const value = deviceNumberValue(id);
+    if (value === null) return;
+    config[key] = value;
+  }
+  const routes = [0, 1].map(channel =>
+    Number.parseInt(document.getElementById(`foc-sd-route-${channel}`).value, 10));
+  focApplyDraft = { config: { ...config }, routes };
+  focConfigFields.forEach(([id]) => focDirtyFields.add(id));
+  focRouteIds.forEach(id => focDirtyFields.add(id));
+  sendDeviceAction({ action: 'foc_apply', core: 'pru0', config, routes });
+});
+
+document.getElementById('foc-detach-button')?.addEventListener('click', () => {
+  if (devicePanelCore !== 'pru0') return;
+  if (focMotorName) {
+    sendDeviceAction({ action: 'device_detach', core: 'pru0', name: focMotorName });
+  }
+});
 
 // ---- Memory panel ---------------------------------------------------------
 
@@ -3180,6 +3549,29 @@ document.getElementById("btn-reset-layout").addEventListener("click", resetLayou
 
 // ---- Multi-core partner (second core in the MC view: RTU0 or PRU1) --------
 const mcPartnerSelect = document.getElementById("mc-partner-select");
+const deviceCoreSelect = document.getElementById('device-core-select');
+const deviceCoreSelectWrap = document.getElementById('device-core-select-wrap');
+
+function syncDeviceCoreSelect() {
+  if (!deviceCoreSelect || !deviceCoreSelectWrap) return;
+  const partnerOption = deviceCoreSelect.options[1];
+  partnerOption.value = mcPartner;
+  partnerOption.textContent = mcPartner === 'pru1' ? 'PRU1' : 'RTU0';
+  deviceCoreSelectWrap.hidden = !multiCoreMode;
+  if (multiCoreMode) {
+    if (devicePanelCore !== 'pru0' && devicePanelCore !== mcPartner) {
+      devicePanelCore = 'pru0';
+    }
+    deviceCoreSelect.value = devicePanelCore;
+  } else {
+    deviceCoreSelect.value = currentCore;
+  }
+}
+
+deviceCoreSelect?.addEventListener('change', () => {
+  devicePanelCore = deviceCoreSelect.value;
+  sendAction({ action: 'get_state', core: devicePanelCore });
+});
 
 function applyMCPartnerLabels() {
   const label = mcPartner === "pru1" ? "PRU1" : "RTU0";
@@ -3193,7 +3585,10 @@ function applyMCPartnerLabels() {
 
 mcPartnerSelect.addEventListener("change", () => {
   stopRun(); stopSim();
+  const previousPartner = mcPartner;
   mcPartner = mcPartnerSelect.value;
+  if (devicePanelCore === previousPartner) devicePanelCore = mcPartner;
+  syncDeviceCoreSelect();
   applyMCPartnerLabels();
   if (multiCoreMode) {
     // Reset the partner DOM slot and re-request state for the new core.
@@ -3213,6 +3608,8 @@ function toggleMultiCore() {
   stopRun(); stopSim();
 
   if (multiCoreMode) {
+    devicePanelCore = 'pru0';
+    syncDeviceCoreSelect();
     coreSelect.style.display = "none";
     mcLoadCore.style.display = "";
     mcPartnerSelect.style.display = "";
@@ -3246,6 +3643,8 @@ function toggleMultiCore() {
     sendAction({ action: "get_state", core: mcPartner });
 
   } else {
+    devicePanelCore = currentCore;
+    syncDeviceCoreSelect();
     coreSelect.style.display = "";
     mcLoadCore.style.display = "none";
     mcPartnerSelect.style.display = "none";
@@ -3386,6 +3785,8 @@ function updateMCUI(state) {
     document.getElementById("cnt-rtu-stalls").textContent = state.stall_cycles;
     document.getElementById("cnt-rtu-pc").textContent     = state.pc;
   }
+
+  if (state.core === devicePanelCore) updateDevicePanel(state.io, state.core);
 
   memAutoOnStateChange();
 }
