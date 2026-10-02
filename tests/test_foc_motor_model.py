@@ -152,3 +152,10 @@ def test_conflicting_consumers_rejected_without_mutating_route_or_clock():
     with pytest.raises(ValueError, match="different clocks"):
         mcp.sim.set_sd_modulator("pru0", 0, sd_clock_mhz=10)
     assert sd.modulators[0].sd_clock_mhz == 20
+
+
+def test_unrouted_explicit_current_clock_is_preserved():
+    from mcp_server.server import PRUSimulatorMCP
+    mcp = PRUSimulatorMCP()
+    mcp.pru_device_attach("foc_motor", config={"current_b_clock_hz": 10_000_000})
+    assert mcp.sim.device_bus.devices[0].current_b_clock_hz == 10_000_000
