@@ -1,6 +1,14 @@
 from fractions import Fraction
 
-from perif.iep import CAP_CFG, CAPR0_REG0, CMP0_REG0, CMP_CFG, COUNT_REG0, COUNT_REG1
+from perif.iep import (
+    CAP_CFG,
+    CAPR0_REG0,
+    CMP0_REG0,
+    CMP_CFG,
+    COUNT_REG0,
+    COUNT_REG1,
+    IepTimer,
+)
 from simulator import Simulator
 
 
@@ -108,6 +116,88 @@ def test_rational_core_clock_preserves_exact_iep_cadence(tmp_path):
 
     assert sim.iep.now_ns == Fraction(10_000)
     assert sim.iep.count == 2500
+
+
+def test_repeated_global_cfg_firmware_writes_preserve_rational_tick_phase():
+    sim = Simulator("memory.cfg")
+    sim.iep.global_cfg = 0x11
+    assert sim.load(
+        "pru0",
+        "ldi32 r0, 0x2E000\n"
+        "ldi r1, 0x11\n"
+        "loop: sbbo &r1, r0, 0, 4\n"
+        "qba loop\n",
+    ) == []
+
+    result = sim.step("pru0", 302)
+
+    # The 302 instruction steps take 452 core cycles because the IEP writes
+    # incur memory stalls. At 200 MHz IEP / 250 MHz PRU, that is 361 ticks.
+    assert result["cycles"] == 452
+    assert sim.iep.count == 361
+
+
+def test_global_cfg_noop_and_non_timing_writes_preserve_tick_phase():
+    iep = IepTimer()
+    iep.write32(GLOBAL_CFG, 0x11)
+    iep.observe_core_cycles("pru0", 1)
+    assert iep._tick_remainder == 4
+
+    iep.write32(GLOBAL_CFG, 0x11)  # exact same configuration
+    iep.write32(GLOBAL_CFG, 0x111)  # bit 8 does not affect modeled timing
+    assert iep._tick_remainder == 4
+
+    iep.observe_core_cycles("pru0", 2)
+    assert iep.count == 1
+    assert iep._tick_remainder == 3
+
+
+def test_global_cfg_enable_and_increment_transitions_reset_tick_phase():
+    iep = IepTimer()
+    iep.write32(GLOBAL_CFG, 0x11)
+    iep.observe_core_cycles("pru0", 1)
+    assert iep._tick_remainder == 4
+
+    iep.write32(GLOBAL_CFG, 0x21)  # DEFAULT_INC changes from 1 to 2
+    assert iep._tick_remainder == 0
+    iep.observe_core_cycles("pru0", 2)
+    assert iep.count == 0
+    assert iep._tick_remainder == 4
+
+    iep.write32(GLOBAL_CFG, 0x20)  # disable the counter
+    assert iep._tick_remainder == 0
+    iep.observe_core_cycles("pru0", 3)
+    assert iep.count == 0
+    assert iep._tick_remainder == 0
+
+    iep.write32(GLOBAL_CFG, 0x21)  # enable it again
+    iep.observe_core_cycles("pru0", 4)
+    assert iep.count == 0
+    assert iep._tick_remainder == 4
+    iep.observe_core_cycles("pru0", 5)
+    assert iep.count == 2
+    assert iep._tick_remainder == 3
+
+
+def test_iep_clock_source_and_rate_transitions_reset_tick_phase():
+    iep = IepTimer()
+    iep.write32(GLOBAL_CFG, 0x11)
+    iep.observe_core_cycles("pru0", 1)
+    assert iep._tick_remainder == 4
+
+    iep.write_iepclk(1)  # select the 250 MHz OCP/core clock
+    assert iep._tick_remainder == 0
+    iep.observe_core_cycles("pru0", 2)
+    assert iep.count == 1
+
+    iep.write_iepclk(0)  # return to the 200 MHz external clock
+    iep.observe_core_cycles("pru0", 3)
+    assert iep._tick_remainder == 4
+    iep.set_clock_mhz("100")
+    assert iep._tick_remainder == 0
+    iep.observe_core_cycles("pru0", 4)
+    assert iep.count == 1
+    assert iep._tick_remainder == 2
 
 
 def test_lbbo_and_wait_stalls_reach_the_cycle_observer():

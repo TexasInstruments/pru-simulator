@@ -290,9 +290,14 @@ class IepTimer:
 
     @global_cfg.setter
     def global_cfg(self, value: int) -> None:
-        self._global_cfg = value & _MASK32
-        self._tick_remainder = 0
-        self._refresh_tick_rate()
+        value &= _MASK32
+        # CNT_ENABLE and DEFAULT_INC are the modeled timing fields. Same-value
+        # writes and changes to other bits must not disturb fractional phase.
+        timing_changed = bool((self._global_cfg ^ value) & 0xF1)
+        self._global_cfg = value
+        if timing_changed:
+            self._tick_remainder = 0
+            self._refresh_tick_rate()
 
     def _refresh_tick_rate(self) -> None:
         if not self.count_enabled:
