@@ -66,6 +66,7 @@ def test_sd_channel_clock_change_keeps_attached_foc_pdm_rate_aligned():
     sim = Simulator()
     model = create_device("foc_motor")
     sim.device_bus.attach(model, port="pru0")
+    sim.cores["pru0"].io_port.sd_filter.route_input(0, model.current_a_pin)
 
     sim.set_sd_modulator("pru0", 0, sd_clock_mhz=12.5)
 
@@ -114,3 +115,40 @@ def test_foc_current_pdm_is_sampled_at_the_sd_clock(
     assert abs(len(samples) - expected_samples) <= 1
     density = sum(samples) / len(samples)
     assert expected_range[0] <= density <= expected_range[1]
+
+
+@pytest.mark.parametrize("channel,pin", [(0, 4), (1, 3), (2, 9)])
+def test_routed_current_clock_follows_output_pin(channel, pin):
+    from mcp_server.server import PRUSimulatorMCP
+    mcp = PRUSimulatorMCP()
+    mcp.pru_device_attach("foc_motor", config={"current_b_pin": 9} if pin == 9 else None)
+    motor = mcp.sim.device_bus.devices[0]
+    mcp.sim.set_sd_modulator("pru0", channel, sd_clock_mhz=10)
+    mcp.pru_sd_route_input(channel, pin)
+    sd = mcp.sim.cores["pru0"].io_port.sd_filter
+    samples = []
+    tick = sd.channels[channel].tick
+    sd.channels[channel].tick = lambda bit: (samples.append(bit), tick(bit))[1]
+    mcp.pru_load("loop: nop\nqba loop\n")
+    mcp.pru_step(count=10000)
+    assert motor.phase_currents_a == [0, 0, 0]
+    assert 0.45 < sum(samples) / len(samples) < 0.55
+    clock = motor.current_a_clock_hz if pin == 3 else motor.current_b_clock_hz
+    assert clock == 10_000_000
+
+
+def test_conflicting_consumers_rejected_without_mutating_route_or_clock():
+    from mcp_server.server import PRUSimulatorMCP
+    mcp = PRUSimulatorMCP()
+    mcp.pru_device_attach("foc_motor")
+    mcp.pru_sd_route_input(0, 3)
+    mcp.sim.set_sd_modulator("pru0", 1, sd_clock_mhz=10)
+    sd = mcp.sim.cores["pru0"].io_port.sd_filter
+    with pytest.raises(ValueError, match="different clocks"):
+        mcp.pru_sd_route_input(1, 3)
+    assert sd.input_routes == [3, None, None]
+    mcp.sim.set_sd_modulator("pru0", 1, sd_clock_mhz=20)
+    mcp.pru_sd_route_input(1, 3)
+    with pytest.raises(ValueError, match="different clocks"):
+        mcp.sim.set_sd_modulator("pru0", 0, sd_clock_mhz=10)
+    assert sd.modulators[0].sd_clock_mhz == 20

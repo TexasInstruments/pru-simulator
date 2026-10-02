@@ -40,6 +40,7 @@ class SigmaDeltaFilter:
         self._clock_acc: list[float] = [0.0] * _NUM_CHANNELS
         # None retains the built-in pattern generator; an integer samples GPI.
         self.input_routes: list[int | None] = [None] * _NUM_CHANNELS
+        self.on_route_change = None
 
         # Previous R31 write value — for rising-edge command detection
         self._prev_r31_write: int = 0
@@ -97,7 +98,19 @@ class SigmaDeltaFilter:
         if pin is not None and (isinstance(pin, bool) or not isinstance(pin, int)
                                 or not 0 <= pin < 20):
             raise ValueError("GPIO input pin must be an integer from 0 to 19")
-        self.input_routes[channel] = pin
+        routes = list(self.input_routes)
+        routes[channel] = pin
+        self.route_inputs(routes)
+
+    def route_inputs(self, routes: list[int | None]) -> None:
+        """Validate and apply all physical routes together."""
+        if len(routes) != _NUM_CHANNELS or any(
+                pin is not None and (isinstance(pin, bool) or not isinstance(pin, int)
+                                     or not 0 <= pin < 20) for pin in routes):
+            raise ValueError("SD routes must contain three GPIO pins or None")
+        if self.on_route_change is not None:
+            self.on_route_change(routes)
+        self.input_routes = list(routes)
 
     def tick(self, gpi: int = 0) -> None:
         """Advance all channels by one PRU clock tick (async clock model).

@@ -433,6 +433,7 @@ class PRUSimulatorMCP:
             for channel in range(2):
                 clock_hz = float(sd.modulators[channel].sd_clock_mhz) * 1_000_000
                 device.set_current_modulator_clock_hz(channel, clock_hz)
+            self.sim._sync_sd_device_clocks(core, devices=[device])
         if any(attached.name == device.name for attached in self.sim.device_bus.devices):
             raise ValueError(f"device name {device.name!r} is already attached")
         attached_on_core = [
