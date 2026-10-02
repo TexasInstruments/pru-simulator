@@ -1217,7 +1217,7 @@ function updateDevicePanel(io, core) {
 
   const config = io && io.foc_config;
   const routeValues = io && io.sd && Array.isArray(io.sd.input_routes)
-    ? io.sd.input_routes.map(pin => pin === null || pin === undefined ? -1 : pin)
+    ? io.sd.input_routes.slice(0, 2).map(pin => pin === null || pin === undefined ? -1 : pin)
     : null;
   if (focApplyDraft && onFocCore && config && routeValues &&
       focConfigFields.every(([, key]) => Number(config[key]) === Number(focApplyDraft.config[key])) &&
