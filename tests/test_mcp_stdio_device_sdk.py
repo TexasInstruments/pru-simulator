@@ -19,6 +19,13 @@ def _payload(result):
     return json.loads(result.content[0].text)
 
 
+def _input_schema(tool):
+    schema = getattr(tool, "input_schema", None)
+    if schema is None:
+        schema = tool.inputSchema
+    return schema
+
+
 async def _exercise_stdio_tools():
     server = StdioServerParameters(
         command=sys.executable,
@@ -38,11 +45,15 @@ async def _exercise_stdio_tools():
             }
             assert required <= by_name.keys()
             attach_tool = by_name["pru_device_attach"]
-            attach_schema = getattr(attach_tool, "input_schema", None)
-            if attach_schema is None:
-                attach_schema = attach_tool.inputSchema
+            attach_schema = _input_schema(attach_tool)
             assert attach_schema[
                 "properties"]["config"]["type"] == "object"
+
+            load_schema = _input_schema(by_name["pru_load"])
+            include_paths_schema = load_schema["properties"]["include_paths"]
+            assert include_paths_schema["type"] == "array"
+            assert include_paths_schema["items"]["type"] == "string"
+            assert "include_paths" not in load_schema.get("required", [])
 
             discovered = _payload(await session.call_tool(
                 "pru_device_discover", {}))
@@ -81,6 +92,26 @@ async def _exercise_stdio_tools():
             assert _payload(await session.call_tool(
                 "pru_device_detach", {"device_name": "foc_motor"}))[
                     "success"] is True
+
+            for core, firmware in (
+                ("pru0", "source/foc_open_loop.asm"),
+                ("pru1", "source/ssi_generic_reader.asm"),
+            ):
+                loaded = _payload(await session.call_tool("pru_load", {
+                    "core": core,
+                    "source": (ROOT / firmware).read_text(encoding="utf-8"),
+                    "include_paths": ["source"],
+                }))
+                assert loaded["success"] is True, loaded["errors"]
+                executed = _payload(await session.call_tool("pru_run_until", {
+                    "core": core, "condition": "halt", "max_steps": 1000,
+                }))
+                assert executed["condition_met"] is True
+                assert executed["reason"] == "halted"
+                assert executed["cycles"] > 0
+                reset = _payload(await session.call_tool(
+                    "pru_reset", {"core": core}))
+                assert reset["success"] is True
 
 
 def test_generic_device_tools_use_the_official_sdk_stdio_transport():
