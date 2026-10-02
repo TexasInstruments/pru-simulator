@@ -600,7 +600,11 @@ async def websocket_endpoint(websocket: WebSocket):
             elif action == "set_sd_modulator":
                 ch = int(msg.get("channel", 0))
                 params = msg.get("params", {})
-                sim.set_sd_modulator(core, ch, **params)
+                try:
+                    sim.set_sd_modulator(core, ch, **params)
+                except (TypeError, ValueError) as exc:
+                    await websocket.send_json({"type": "error", "tag": "device",
+                                               "errors": [str(exc)]})
                 await _send_state(websocket, core)
             elif action == "write_sd_register":
                 addr = int(msg.get("addr", 0))
@@ -695,8 +699,8 @@ async def websocket_endpoint(websocket: WebSocket):
                                    or not -1 <= pin < 20 for pin in routes)):
                         raise ValueError("FOC SD routes must contain two pins from -1 to 19")
                     sd = sim.cores["pru0"].io_port.sd_filter
-                    sd.route_input(0, None if routes[0] == -1 else routes[0])
-                    sd.route_input(1, None if routes[1] == -1 else routes[1])
+                    sd.route_inputs([None if pin == -1 else pin for pin in routes]
+                                    + sd.input_routes[2:])
                     sim.memory.write(foc_control_abi.CONTROL_ADDRESS, config_bytes)
                     _clear_history()
                 except (KeyError, TypeError, ValueError) as exc:
@@ -896,6 +900,8 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False):
         "pc": c.pc,
         "halted": c.halted,
         "fault": c.fault,
+        "core_faults": {name: dict(pru.fault) for name, pru in sim.cores.items()
+                        if pru.fault is not None},
         "at_breakpoint": at_breakpoint,
         # True when a "capture" message already carried this chunk's graph
         # samples, so the client must not sample this state push as well.

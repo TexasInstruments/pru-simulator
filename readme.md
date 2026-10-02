@@ -13,7 +13,7 @@ V4 ISA) and **AM263x** (PRU-ICSS, V3 ISA).
 
 These are simulator-side capabilities, not features of the PRU hardware itself.
 
-- **Interactive dashboard** — register panel, memory panel, IO pin control, disassembly view
+- **Interactive dashboard** — register panel, memory panel, IO pin control, disassembly view; Simulator, Devices and Events views with persistent panel visibility and dark/high-contrast themes. See [dashboard controls](docs/simulator_dashboard.md)
 - **ELF binary loading** — load compiled .out files directly (TI PRU CGT ELF32) with automatic disassembly
 - **Step-back** — reverse any instruction; full machine state including SD filter is restored
 - **Signal graph** — digital logic analyzer for GPO/GPI pin transitions
@@ -23,7 +23,7 @@ These are simulator-side capabilities, not features of the PRU hardware itself.
 - **SSI encoder model and reader** — independent binary/Gray encoder `DeviceModel` with up to 64-bit frames, error fields and 12 SICK encoder presets, clock-rate and monoflop faults, generated shared-memory ABI, and PRU1 reader and PRU0 emulator examples. See [SSI device model and reader](docs/ssi_device_model.md)
 - **FOC open-loop control and PMSM model** — ordinary PRU0 instructions ramp a speed reference, integrate the electrical angle, apply the inverse Park transform to Vd/Vq references and generate 16 kHz three-phase SVGEN PWM on R30.0–2; an optional pin-coupled PMSM model with changeable physics returns current PDM on GPI3/4. See [FOC open-loop example](docs/foc_open_loop.md)
 - **UART decoder** — bit-bang UART decode in the IO panel (8N1, auto-detect bit period)
-- **Multi-core simulation & debug view** — PRU_ICSSG supports simultaneous simulation & debugging of up to 3 PRU cores; PRU-ICSS supports simultaneous simulation & debugging of both PRU cores
+- **Multi-core simulation & debug view** — PRU_ICSSG supports simultaneous simulation & debugging of up to 4 PRU cores (PRU0, RTU0, PRU1, RTU1), shown as PRU0 plus a selected partner; PRU-ICSS supports simultaneous simulation & debugging of both PRU cores
 - **Tiling window manager** — drag, split, collapse/expand, and persist panel layouts
 - **MCP server** — AI assistant integration via Model Context Protocol
 

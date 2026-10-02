@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -12,7 +12,7 @@
       --panel: #252526;
       --border: #3c3c3c;
       --text: #d4d4d4;
-      --text-dim: #858585;
+      --text-dim: #a8a8b0;
       --accent: #569cd6;
       --accent2: #4ec9b0;
       --highlight: #264f78;
@@ -1371,6 +1371,43 @@
       .runtime-device-button { min-height: 40px; padding: 7px 12px; font-size: 12px; }
       .runtime-device-row .runtime-device-actions > button { flex: 1; }
     }
+
+    :root { color-scheme: dark; }
+    :root[data-theme="contrast"] {
+      --bg: #000; --panel: #111; --border: #888;
+      --text: #fff; --text-dim: #ccc; --accent: #85c8ff; --accent2: #8ff3ce;
+      --btn: #222; --btn-hover: #444;
+    }
+    [hidden] { display: none !important; }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    #workspace-tools, #panel-visibility {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+      padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--border);
+      font-family: system-ui, sans-serif;
+    }
+    #workspace-tools nav { display: flex; gap: 6px; }
+    #workspace-tools button[aria-pressed="true"], .panel-toggle[aria-pressed="true"] {
+      border-color: var(--accent); background: var(--highlight); color: var(--text);
+    }
+    #workspace-tools label { margin-left: auto; }
+    #workspace-theme { background: var(--btn); color: var(--text); padding: 4px; }
+    #panel-visibility-buttons { display: flex; flex-wrap: wrap; gap: 5px; }
+    .panel-toggle { font-size: 11px; padding: 3px 8px; }
+    .workspace-view { flex: 1; min-height: 0; overflow: auto; padding: 16px; }
+    .workspace-view h1 { font: 600 20px system-ui, sans-serif; margin-bottom: 8px; }
+    .workspace-view > p { color: var(--text-dim); line-height: 1.5; margin-bottom: 16px; max-width: 70ch; }
+    #devices-view .runtime-device-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); }
+    #device-event-log { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
+    #controls { font-family: system-ui, sans-serif; }
+    @media (max-width: 700px) {
+      #controls { gap: 6px; padding: 8px; }
+      #controls button, #workspace-tools button { min-height: 36px; }
+      #counters { width: 100%; overflow-x: auto; }
+      #tile-root { flex-direction: column; overflow: auto; }
+      #tile-root > .tile-split-h { flex-direction: column; min-height: 900px; }
+      #tile-root > .tile-split-h > .tile-divider { display: none; }
+      #workspace-tools label { margin-left: 0; }
+    }
   </style>
 </head>
 <body>
@@ -1383,6 +1420,7 @@
       <option value="pru0">PRU0</option>
       <option value="rtu0">RTU0</option>
       <option value="pru1">PRU1</option>
+      <option value="rtu1">RTU1</option>
     </select>
 
     <select id="pru-speed-select" title="PRU core clock speed (applies to PRU0, RTU0, and PRU1)">
@@ -1397,6 +1435,7 @@
     <select id="mc-partner-select" title="Second core in multi-core view" style="display:none;">
       <option value="rtu0">RTU0</option>
       <option value="pru1">PRU1</option>
+      <option value="rtu1">RTU1</option>
     </select>
 
     <button id="btn-step" class="btn-step">Step</button>
@@ -1428,6 +1467,18 @@
       <span id="cnt-rtu-pc-wrap"     style="display:none;">PC: <span class="val" id="cnt-rtu-pc">0</span></span>
     </div>
   </div>
+
+  <div id="workspace-tools">
+    <nav aria-label="Workspace views">
+      <button type="button" data-workspace-view="simulator" aria-controls="main" aria-pressed="true">Simulator</button>
+      <button type="button" data-workspace-view="devices" aria-controls="devices-view" aria-pressed="false">Devices</button>
+      <button type="button" data-workspace-view="events" aria-controls="events-view" aria-pressed="false">Events</button>
+    </nav>
+    <label for="workspace-theme">Theme
+      <select id="workspace-theme"><option value="dark">Dark</option><option value="contrast">High contrast</option></select>
+    </label>
+  </div>
+  <div id="panel-visibility"><span>Panels</span><div id="panel-visibility-buttons" role="group" aria-label="Show or hide simulator panels"></div></div>
 
   <!-- Global error band (shown above main for both SC and MC modes) -->
   <div id="error-band" style="display:none;"></div>
@@ -1461,6 +1512,7 @@
             <option value="pru0">→ PRU0</option>
             <option value="rtu0">→ RTU0</option>
             <option value="pru1">→ PRU1</option>
+            <option value="rtu1">→ RTU1</option>
           </select>
           <input type="file" id="file-input" accept=".asm,.inc,.s,.out" style="display:none" />
           <button id="btn-file" class="btn-load">Open</button>
@@ -2079,7 +2131,17 @@ Example:
     </div>
   </div>
 
+  <section id="devices-view" class="workspace-view" aria-labelledby="devices-view-title" hidden>
+    <h1 id="devices-view-title">External devices</h1>
+    <p>Attach models to the selected core’s GPIO pins. SSI faults and FOC currents follow ordinary firmware execution.</p>
+  </section>
+  <section id="events-view" class="workspace-view" aria-labelledby="events-view-title" hidden>
+    <h1 id="events-view-title">Device events and faults</h1>
+    <p>Events use the attached device’s core cycle counter. Faults include electrical contention and protocol violations.</p>
+    <pre id="device-event-log" aria-label="Current device events">No device events. Attach a model and execute firmware to inspect its activity.</pre>
+  </section>
   <script src="/static/layout.js"></script>
   <script src="/static/app.js?v=20260729"></script>
+  <script src="/static/workspace.js"></script>
 </body>
 </html>
