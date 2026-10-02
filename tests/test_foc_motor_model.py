@@ -3,7 +3,6 @@ import pytest
 from pru_io.device_model import PUSH_PULL
 from pru_io.device_profiles import create_device, discover_device_profiles
 from pru_io.foc_motor_model import FocMotorModel
-from pru_io.sd_filter import SigmaDeltaFilter
 from simulator import Simulator
 
 
@@ -83,26 +82,33 @@ def test_sd_channel_clock_change_keeps_attached_foc_pdm_rate_aligned():
     (-10.0, (0.20, 0.30)),
 ])
 def test_foc_current_pdm_is_sampled_at_the_sd_clock(
-        core_clock_mhz, sample_clock_mhz, phase_current_a, expected_range):
+        sim_config, core_clock_mhz, sample_clock_mhz, phase_current_a,
+        expected_range):
     core_clock_hz = core_clock_mhz * 1_000_000
     sample_clock_hz = sample_clock_mhz * 1_000_000
+    sim = Simulator(sim_config(
+        pru_clock_mhz=core_clock_mhz,
+        pru1_clock_mhz=core_clock_mhz,
+    ))
     model = FocMotorModel(
         core_clock_hz=core_clock_hz,
         current_a_clock_hz=sample_clock_hz,
     )
     model.phase_currents_a[0] = phase_current_a
+    sim.attach_device("pru0", model)
+    sim.set_gpio_drive_mask("pru0", 0x7)
 
-    sd = SigmaDeltaFilter(pru_clock_mhz=core_clock_mhz)
+    sd = sim.cores["pru0"].io_port.sd_filter
     sd.route_input(0, model.current_a_pin)
-    sd.modulators[0].sd_clock_mhz = sample_clock_mhz
+    sim.set_sd_modulator("pru0", 0, sd_clock_mhz=sample_clock_mhz)
     samples = []
     channel_tick = sd.channels[0].tick
     sd.channels[0].tick = lambda bit: (samples.append(bit), channel_tick(bit))[1]
 
     elapsed_cycles = core_clock_mhz * 20
-    for cycle in range(1, elapsed_cycles + 1):
-        _, outputs = model.tick(cycle, 0)
-        sd.tick(outputs)
+    assert sim.load("pru0", "loop: NOP\nQBA loop\n") == []
+    sim.step("pru0", count=elapsed_cycles)
+    assert sim.cores["pru0"].counters.cycles == elapsed_cycles
 
     expected_samples = elapsed_cycles * sample_clock_hz // core_clock_hz
     assert abs(len(samples) - expected_samples) <= 1
