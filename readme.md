@@ -125,6 +125,18 @@ The simulator loads `memory.cfg` at startup. Three built-in configs are provided
 
 Switch config by editing `memory.cfg` or copying one of the `config/` files over it.
 
+Clock keys in the `[device]` section:
+
+| Key | Applies to | Default if absent |
+|---|---|---|
+| `pru_clock_mhz` | PRU0, RTU0, and the IEP OCP clock | 200 |
+| `pru1_clock_mhz` | PRU1, RTU1 | `pru_clock_mhz` |
+| `iep_clock_mhz` | IEP while ICSS CFG `IEPCLK` bit 0 is clear | 200 |
+
+All cores share one IEP timer. Each core's elapsed cycles, including stalls,
+are converted to time with exact rational clock periods, so cores at different
+clocks stay aligned without float drift.
+
 ## Example Programs
 
 See [getting_started.md](getting_started.md) for step-by-step walkthroughs of all examples in `source/`.
@@ -171,9 +183,15 @@ standalone experiments and may require optional packages (for example,
 
 ## Version
 
-v0.2.7 — hover over **PRU SIM** in the dashboard header to confirm.
+v0.2.8 — hover over **PRU SIM** in the dashboard header to confirm.
 
 ### Changelog
+
+**v0.2.8**
+- **Rational multi-clock IEP timebase** — the single `perif/iep.py` `IepTimer` (compare, capture, 64-bit CMP pairs, `CMP0_RST_CNT_EN`) now advances on exact elapsed core time instead of one tick per instruction. Each core reports its elapsed cycles, stalls included, through a `cycle_observer`, and the timer converts them with `Fraction` clock periods, so PRU0/PRU1/RTU cores at different clocks share one exact timeline. **Behaviour change:** the IEP now runs at `iep_clock_mhz` (200 MHz by default) rather than at the core clock; setting ICSS CFG `IEPCLK` bit 0 (`0x26030`) selects the OCP clock (`pru_clock_mhz`) instead. Tick phase is preserved across firmware writes that do not change the effective clock.
+- **RTU1 core** — `Simulator.cores` gains `rtu1`, on the slice-1 clock with the PRU1 DRAM mapping (DRAM1 at local `0x0000`).
+- **Time-based multi-core pacing** — `step_paced` (and the new `step_paced_many` for several followers) catches each follower up to the lead's exact elapsed time instead of interleaving instructions 1:1. This keeps cores aligned when clocks differ or when `LBBO`/`WBS` stalls occur. The Peripheral Interface guard (`guard_ns`) now applies only while both cores' Peripheral Interfaces are enabled; otherwise followers catch up with no guard. MCP `pru_step_multicore` uses the same pacing.
+- **Step-back restores the IEP** — dashboard history snapshots include the shared timer, and history for all four cores is cleared on config changes.
 
 **v0.2.7**
 - **Memory faults are reported, not just logged** — an out-of-range `LBBO`/`LBCO`/`SBBO`/`SBCO` still halts the core, and now also records a `fault` (`type`, `opcode`, `address`, `pc`, `error`) on the core. `Simulator.step()` / `status()`, the MCP `pru_step`/`pru_status` tools and the dashboard state push all carry it; it clears on reset and is restored by step-back.
