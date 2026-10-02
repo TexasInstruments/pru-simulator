@@ -14,12 +14,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import base64
 
-from fastapi import FastAPI, Request, WebSocket
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from simulator import Simulator
+from mcp_server.server import PRUSimulatorMCP
 from core.branch import LoopState
 from perif.gpcfg import MUX_SD
+from pru_io import foc_control_abi
+from pru_io.ssi_encoder_model import SSIEncoderModel
 from xfr.xfr_bus import SPAD_BANK0, SPAD_BANK1, SPAD_BANK2, IPC_SPAD
 
 app = FastAPI(title="PRU Simulator Dashboard")
@@ -47,7 +50,15 @@ def _safe_source_subpath(path: str) -> pathlib.Path | None:
         return None
     return candidate
 sim = Simulator(config_path=config_path)
+_device_api = PRUSimulatorMCP(config_path=config_path, simulator=sim)
 _config_lock = asyncio.Lock()
+
+
+def _device_api_for_current_sim() -> PRUSimulatorMCP:
+    global _device_api
+    if _device_api.sim is not sim:
+        _device_api = PRUSimulatorMCP(config_path=config_path, simulator=sim)
+    return _device_api
 
 # ---- Step history (for step-back) ----------------------------------------
 _MAX_HISTORY = 500
@@ -623,6 +634,75 @@ async def websocket_endpoint(websocket: WebSocket):
             elif action == "i2c_attach":
                 sim.i2c_attach(core, bool(msg.get("enabled", False)), int(msg.get("address", 0x23)))
                 await _send_state(websocket, core)
+            elif action == "device_attach":
+                try:
+                    _device_api_for_current_sim().pru_device_attach(
+                        profile=msg.get("profile", ""), core=core,
+                        config=msg.get("config"),
+                    )
+                    _clear_history()
+                except (KeyError, TypeError, ValueError) as exc:
+                    await websocket.send_json({"type": "error", "tag": "device",
+                                               "errors": [str(exc)]})
+                await _send_state(websocket, core)
+            elif action == "device_detach":
+                try:
+                    name = msg.get("name", "")
+                    device = sim.device_bus.get_device(name)
+                    attached_core = sim.device_bus.core_for_device(device)
+                    if attached_core != core:
+                        raise ValueError(f"device {name!r} is attached to {attached_core}")
+                    _device_api_for_current_sim().pru_device_detach(name)
+                    _clear_history()
+                except (KeyError, TypeError, ValueError) as exc:
+                    await websocket.send_json({"type": "error", "tag": "device",
+                                               "errors": [str(exc)]})
+                await _send_state(websocket, core)
+            elif action == "ssi_set_position":
+                try:
+                    name = msg.get("name", "")
+                    device = sim.device_bus.get_device(name)
+                    attached_core = sim.device_bus.core_for_device(device)
+                    if attached_core != core:
+                        raise ValueError(f"device {name!r} is attached to {attached_core}")
+                    if not isinstance(device, SSIEncoderModel):
+                        raise ValueError(f"device {name!r} is not an SSI encoder")
+                    device.set_position(msg.get("position"))
+                    _clear_history()
+                except (KeyError, TypeError, ValueError) as exc:
+                    await websocket.send_json({"type": "error", "tag": "device",
+                                               "errors": [str(exc)]})
+                await _send_state(websocket, core)
+            elif action == "foc_apply":
+                try:
+                    if core != "pru0":
+                        raise ValueError("FOC controls are available on PRU0 only")
+                    motor = next(
+                        (device for device in sim.device_state()["devices"]
+                         if device.get("model") == "three_phase_rl"
+                         and device.get("core") == "pru0"),
+                        None,
+                    )
+                    if motor is None:
+                        raise ValueError("Attach a FOC motor on PRU0 before applying controls")
+                    config = msg.get("config")
+                    if not isinstance(config, dict):
+                        raise ValueError("FOC config must be an object")
+                    config_bytes = foc_control_abi.pack_config(**config)
+                    routes = msg.get("routes")
+                    if (not isinstance(routes, list) or len(routes) != 2
+                            or any(isinstance(pin, bool) or not isinstance(pin, int)
+                                   or not -1 <= pin < 20 for pin in routes)):
+                        raise ValueError("FOC SD routes must contain two pins from -1 to 19")
+                    sd = sim.cores["pru0"].io_port.sd_filter
+                    sd.route_input(0, None if routes[0] == -1 else routes[0])
+                    sd.route_input(1, None if routes[1] == -1 else routes[1])
+                    sim.memory.write(foc_control_abi.CONTROL_ADDRESS, config_bytes)
+                    _clear_history()
+                except (KeyError, TypeError, ValueError) as exc:
+                    await websocket.send_json({"type": "error", "tag": "device",
+                                               "errors": [str(exc)]})
+                await _send_state(websocket, core)
             elif action == "uart_inject":
                 pin = int(msg.get("pin", 0))
                 payload = msg.get("payload", [])
@@ -644,6 +724,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     "payload_len": len(payload),
                     "frames": frames,
                 }))
+    except WebSocketDisconnect:
+        return
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -783,7 +865,24 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False):
         "gpo_drive_mask": c.io_port.gpo_drive_mask,
     }
     if sim.device_bus.active:
-        io_section["device_bus"] = sim.device_state()
+        device_state = sim.device_state()
+        io_section["device_bus"] = device_state
+        foc_device = next(
+            (device for device in device_state["devices"]
+             if device.get("model") == "three_phase_rl"
+             and device.get("core") == "pru0"),
+            None,
+        )
+        if core == "pru0" and foc_device is not None:
+            foc_config = foc_control_abi.unpack_config(
+                sim.memory_read(foc_control_abi.CONTROL_ADDRESS,
+                                foc_control_abi.CONFIG_SIZE)
+            )
+            if foc_config["abi_version"] != foc_control_abi.ABI_VERSION:
+                foc_config = foc_control_abi.unpack_config(
+                    foc_control_abi.pack_config()
+                )
+            io_section["foc_config"] = foc_config
     if sd_data is not None:
         io_section["sd"] = sd_data
     if perif_data is not None:

@@ -59,9 +59,10 @@ def _build_tool_input_schema(method) -> dict:
 class PRUSimulatorMCP:
     """Wraps the Simulator and exposes its methods as MCP-compatible tool functions."""
 
-    def __init__(self, config_path: str = "memory.cfg"):
+    def __init__(self, config_path: str = "memory.cfg",
+                 simulator: Simulator | None = None):
         self._config_path = config_path
-        self.sim = Simulator(config_path)
+        self.sim = simulator if simulator is not None else Simulator(config_path)
         self._device_drive_masks: dict[str, tuple[str, int]] = {}
 
     def pru_load(self, source: str, core: str = "pru0",
@@ -440,7 +441,7 @@ class PRUSimulatorMCP:
             raise ValueError(f"device name {device.name!r} is already attached")
         attached_on_core = [
             attached for attached in self.sim.device_bus.devices
-            if self.sim.device_bus._device_ports.get(id(attached)) == core
+            if self.sim.device_bus.core_for_device(attached) == core
         ]
         mask_owner = next((name for name, (owner_core, _) in self._device_drive_masks.items()
                            if owner_core == core), None)
@@ -469,7 +470,7 @@ class PRUSimulatorMCP:
     def pru_device_detach(self, device_name: str) -> dict:
         """Detach a generic device by name and release its bus ownership."""
         device = self._get_device(device_name)
-        core = self.sim.device_bus._device_ports.get(id(device))
+        core = self.sim.device_bus.core_for_device(device)
         self.sim.detach_device(device)
         saved_drive = self._device_drive_masks.pop(device_name, None)
         if saved_drive is not None:
@@ -514,13 +515,7 @@ class PRUSimulatorMCP:
         return {"channel": channel, "pin": selected_pin}
 
     def _get_device(self, name: str):
-        matches = [device for device in self.sim.device_bus.devices
-                   if device.name == name]
-        if not matches:
-            raise KeyError(f"No attached device named {name!r}")
-        if len(matches) > 1:
-            raise ValueError(f"more than one attached device is named {name!r}")
-        return matches[0]
+        return self.sim.device_bus.get_device(name)
 
     def _restore_device_output_masks(self, sim: Simulator) -> None:
         for core, mask in self._device_drive_masks.values():

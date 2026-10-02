@@ -738,6 +738,21 @@ class DeviceBus:
 
     # -- aggregate views -----------------------------------------------------
 
+    def get_device(self, name: str) -> DeviceModel:
+        """Return the uniquely attached device with *name*."""
+        matches = [device for device in self.devices if device.name == name]
+        if not matches:
+            raise KeyError(f"No attached device named {name!r}")
+        if len(matches) > 1:
+            raise ValueError(f"more than one attached device is named {name!r}")
+        return matches[0]
+
+    def core_for_device(self, device: DeviceModel) -> str | None:
+        """Return the GPIO endpoint that owns *device*, if it is attached."""
+        if device not in self.devices:
+            return None
+        return self._device_ports.get(id(device))
+
     def events(self) -> list[dict]:
         out = []
         for dev in self.devices:
@@ -892,4 +907,8 @@ class DeviceBus:
                 "contentions": len(self.contentions),
                 "faults": self.faults(),
                 "events": self.events(),
-                "devices": [d.get_state() for d in self.devices]}
+                "devices": [
+                    {**device.get_state(),
+                     "core": self._device_ports.get(id(device))}
+                    for device in self.devices
+                ]}

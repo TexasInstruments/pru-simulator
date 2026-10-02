@@ -1327,6 +1327,50 @@
     .i2c-led { width: 18px; height: 18px; border-radius: 3px; background: #333; border: 1px solid #555; }
     .i2c-led.on { background: #66bb6a; border-color: #66bb6a; }
     .i2c-log { font-family: monospace; font-size: 11px; color: #bbb; white-space: pre-wrap; }
+
+    /* Runtime models attached to GPIO pins */
+    .device-runtime { color: #e0e0e0; }
+    .device-runtime-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .device-core-select { display: inline-flex; align-items: center; gap: 5px; color: #aab4c2; font-size: 10px; letter-spacing: 0; text-transform: none; }
+    #device-core-select-wrap[hidden] { display: none; }
+    .device-core-select select { max-width: 90px; padding: 2px 4px; border: 1px solid #454e5a; border-radius: 3px; background: #0d1117; color: #e7edf5; font: inherit; }
+    .runtime-device-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .runtime-device { min-width: 0; padding: 8px; border: 1px solid #3a414b; border-radius: 4px; background: #111722; }
+    .runtime-device-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 5px; }
+    .runtime-device-heading strong { color: #e8edf4; font-size: 11px; }
+    .runtime-device-status, .runtime-device-help { margin: 4px 0 7px; color: #aab4c2; font-size: 10px; line-height: 1.45; }
+    .runtime-device-help { color: #9aa5b4; }
+    .runtime-device-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 6px 8px; }
+    .runtime-device-field { min-width: 0; display: flex; flex-direction: column; gap: 3px; color: #b6c0ce; font-size: 10px; }
+    .runtime-device-field input, .runtime-device-field select {
+      width: 100%; min-width: 0; box-sizing: border-box; padding: 3px 5px;
+      border: 1px solid #454e5a; border-radius: 3px; background: #0d1117; color: #e7edf5;
+      font: inherit; font-variant-numeric: tabular-nums;
+    }
+    .runtime-device-field input:focus-visible, .runtime-device-field select:focus-visible,
+    .runtime-device-button:focus-visible { outline: 2px solid #4fc3f7; outline-offset: 2px; }
+    .runtime-device-actions { display: flex; align-items: center; gap: 6px; margin-top: 7px; flex-wrap: wrap; }
+    .runtime-device-button { padding: 3px 9px; border: 1px solid #4a5664; border-radius: 3px; background: #252f3b; color: #e7edf5; font: inherit; font-size: 10px; cursor: pointer; }
+    .runtime-device-button:hover:not(:disabled) { background: #303d4b; }
+    .runtime-device-button.primary { border-color: #397ca0; background: #18384a; color: #c9efff; }
+    .runtime-device-button:disabled { opacity: .5; cursor: not-allowed; }
+    .runtime-device-error { color: #ff8f86; font-size: 10px; margin-top: 5px; }
+    .runtime-device-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+    .runtime-device-row { padding-top: 6px; border-top: 1px solid #303844; min-width: 0; }
+    .runtime-device-row-title { color: #dce6f0; font-size: 10px; font-weight: 600; overflow-wrap: anywhere; }
+    .runtime-device-row-detail { color: #aab4c2; font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
+    .runtime-device-row input { width: 95px; max-width: 100%; padding: 3px 5px; border: 1px solid #454e5a; border-radius: 3px; background: #0d1117; color: #e7edf5; font: inherit; font-size: 10px; }
+    .runtime-device-value { color: #e7edf5; font-variant-numeric: tabular-nums; }
+    #foc-live-stats { margin: 5px 0; overflow-wrap: anywhere; }
+    .runtime-device [hidden] { display: none !important; }
+    @media (max-width: 600px) {
+      .runtime-device-grid { grid-template-columns: minmax(0, 1fr); }
+      .runtime-device-field { font-size: 12px; }
+      .runtime-device-field input, .runtime-device-field select { min-height: 40px; font-size: 14px; }
+      .runtime-device-row input { width: 100%; min-height: 40px; box-sizing: border-box; font-size: 14px; }
+      .runtime-device-button { min-height: 40px; padding: 7px 12px; font-size: 12px; }
+      .runtime-device-row .runtime-device-actions > button { flex: 1; }
+    }
   </style>
 </head>
 <body>
@@ -1589,6 +1633,95 @@ Example:
             </div>
             <div class="i2c-leds" id="i2c-leds"></div>
             <div class="i2c-log" id="i2c-log"></div>
+          </div>
+
+          <div class="io-section device-runtime" id="device-runtime-panel">
+            <div class="io-section-title device-runtime-title">
+              <span>SSI and FOC Devices</span>
+              <label class="device-core-select" id="device-core-select-wrap" hidden>Core
+                <select id="device-core-select" aria-label="Device panel core">
+                  <option value="pru0">PRU0</option>
+                  <option value="rtu0">RTU0</option>
+                </select>
+              </label>
+            </div>
+            <div class="runtime-device-error" id="device-error" role="alert" aria-live="assertive" hidden></div>
+            <div class="runtime-device-grid">
+              <section class="runtime-device" aria-labelledby="ssi-runtime-title">
+                <div class="runtime-device-heading">
+                  <strong id="ssi-runtime-title">SSI encoder</strong>
+                </div>
+                <p class="runtime-device-status" id="ssi-empty-state" role="status">No SSI encoder attached to this core.</p>
+                <div class="runtime-device-fields" id="ssi-attach-fields">
+                  <label class="runtime-device-field" for="ssi-device-name">Device name
+                    <input id="ssi-device-name" type="text" value="ssi_encoder" maxlength="48" autocomplete="off" required>
+                  </label>
+                  <label class="runtime-device-field" for="ssi-clock-pin">Clock GPO pin
+                    <input id="ssi-clock-pin" type="number" value="0" min="0" max="19" step="1" required>
+                  </label>
+                  <label class="runtime-device-field" for="ssi-data-pin">Data GPI pin
+                    <input id="ssi-data-pin" type="number" value="8" min="0" max="19" step="1" required>
+                  </label>
+                  <label class="runtime-device-field" for="ssi-position">Position
+                    <input id="ssi-position" type="number" value="0" min="0" max="4294967295" step="1" required>
+                  </label>
+                  <label class="runtime-device-field" for="ssi-resolution">Resolution (bits)
+                    <input id="ssi-resolution" type="number" value="12" min="1" max="32" step="1" required>
+                  </label>
+                  <label class="runtime-device-field" for="ssi-encoding">Encoding
+                    <select id="ssi-encoding">
+                      <option value="binary">Binary</option>
+                      <option value="gray">Gray code</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="runtime-device-actions">
+                  <button class="runtime-device-button primary" id="ssi-attach-button" type="button">Attach encoder</button>
+                </div>
+                <div class="runtime-device-list" id="ssi-device-list"></div>
+              </section>
+
+              <section class="runtime-device" aria-labelledby="foc-runtime-title">
+                <div class="runtime-device-heading">
+                  <strong id="foc-runtime-title">FOC motor</strong>
+                </div>
+                <p class="runtime-device-status" id="foc-device-status" role="status">No FOC motor attached. This profile runs on PRU0.</p>
+                <div class="runtime-device-actions">
+                  <button class="runtime-device-button primary" id="foc-attach-button" type="button">Attach motor</button>
+                </div>
+                <div id="foc-controls" hidden>
+                  <div class="runtime-device-row-detail" id="foc-live-stats"></div>
+                  <div class="runtime-device-fields" style="margin-top:7px;">
+                    <label class="runtime-device-field" for="foc-alpha-q15">Alpha Q15
+                      <input id="foc-alpha-q15" type="number" value="16384" min="-32768" max="32767" step="1" required>
+                    </label>
+                    <label class="runtime-device-field" for="foc-beta-q15">Beta Q15
+                      <input id="foc-beta-q15" type="number" value="0" min="-32768" max="32767" step="1" required>
+                    </label>
+                    <label class="runtime-device-field" for="foc-modulation-q15">Modulation Q15
+                      <input id="foc-modulation-q15" type="number" value="16384" min="0" max="32768" step="1" required>
+                    </label>
+                    <label class="runtime-device-field" for="foc-phase-step">Phase increment Q32
+                      <input id="foc-phase-step" type="number" value="0" min="0" max="4294967295" step="1" required>
+                    </label>
+                    <label class="runtime-device-field" for="foc-initial-phase">Initial phase Q32
+                      <input id="foc-initial-phase" type="number" value="0" min="0" max="4294967295" step="1" required>
+                    </label>
+                    <label class="runtime-device-field" for="foc-sd-route-0">SD channel 0 input
+                      <select id="foc-sd-route-0" data-foc-route="0"></select>
+                    </label>
+                    <label class="runtime-device-field" for="foc-sd-route-1">SD channel 1 input
+                      <select id="foc-sd-route-1" data-foc-route="1"></select>
+                    </label>
+                  </div>
+                  <p class="runtime-device-help">Apply writes the FOC control block and these SD input routes. Load <code>source/foc_open_loop.asm</code> to use it.</p>
+                  <div class="runtime-device-actions">
+                    <button class="runtime-device-button primary" id="foc-apply-button" type="button">Apply controls</button>
+                    <button class="runtime-device-button" id="foc-detach-button" type="button">Detach motor</button>
+                  </div>
+                </div>
+              </section>
+            </div>
           </div>
 
           <hr class="uart-divider" />
