@@ -103,10 +103,12 @@ pru_simulator/
 ├── core/               PRU ISA implementation (ALU, parser, disassembler, ELF loader, …)
 ├── mem/                Memory bus and region model
 ├── mcp_server/         MCP server for AI tool integration
-├── pru_io/             GPO/GPI port model, SD filter (R30/R31 interface), DeviceModel/DeviceBus
+├── pru_io/             GPO/GPI port model, SD filter (R30/R31 interface), DeviceModel/DeviceBus, device models (SSI encoder, TCA9538), generated ABIs
 ├── perif/              3-channel Peripheral Interface (SCU), GPCFG mux, TX→RX loopback
+├── schema/             Shared-memory ABI schemas (source for generated .py/.inc files)
 ├── source/             Example PRU assembly programs
 ├── tests/              Pytest test suite
+├── tools/              Headless runner, ABI code generators, perif drift report
 ├── ui/
 │   ├── server.py       FastAPI WebSocket server
 │   └── static/         Dashboard HTML/JS (index.html, app.js, layout.js)
@@ -186,9 +188,16 @@ standalone experiments and may require optional packages (for example,
 
 ## Version
 
-v0.2.9 — hover over **PRU SIM** in the dashboard header to confirm.
+v0.3.0 — hover over **PRU SIM** in the dashboard header to confirm.
 
 ### Changelog
+
+**v0.3.0**
+- **SSI encoder device model** (`pru_io/ssi_encoder_model.py`) — an independent, time-driven `DeviceModel` with binary or Gray output that reports faults rather than producing a plausible waveform from wrong firmware: clock above `f_max_hz`, incomplete words (monoflop timeout), and extra clock pulses. The edge convention follows the Hengstler AC58 and Pepperl+Fuchs AVM78E/AVS36M datasheets: the first falling edge latches the position, each rising edge presents the next bit MSB first, and Tm runs from the last falling edge.
+- **SSI reader firmware and ABI** — `source/ssi_generic_reader/ssi_generic_reader.asm` runs on PRU1 (clock R30.0, data R31.16) and publishes each frame to a seqlock mailbox. The ABI is generated from `schema/ssi_config_abi.json` by `python -m tools.gen_ssi_abi` (`--check` in CI). `pru_io/ssi_runtime.py` runs the reader against the encoder model through ordinary `Simulator.step` execution. `source/ssi_generic_emulator.asm` remains as a two-core board loopback example.
+- **Generic MCP device tools** — `pru_device_discover`, `pru_device_attach`, `pru_device_detach`, `pru_device_state`, `pru_device_events` and `pru_device_faults`. SSI and TCA9538 are attach profiles with validated options rather than protocol-specific tools. `pru_i2c_attach` is unchanged.
+- **MCP stdio** — tool handlers work with the current Python MCP SDK through its own `stdio_server`.
+- `memory.cfg` stays at 250 MHz; [docs/ssi_device_model.md](docs/ssi_device_model.md) shows how to run the example at 300 MHz from a temporary config.
 
 **v0.2.9**
 - **Generic device contract** (`pru_io/device_model.py`) — `DeviceModel` (`tick() -> (drive_mask, drive_values)`, `events()`, `faults()`, snapshot/restore) and a multi-driver `DeviceBus`. Open-drain nets resolve as wired-AND; push-pull contention is recorded as a fault. Reactive devices are settled from `R30` writes, and only devices declaring `time_driven` are ticked, once per elapsed core cycle including stalls. Contract from #44.
