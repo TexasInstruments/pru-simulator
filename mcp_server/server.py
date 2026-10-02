@@ -35,12 +35,14 @@ def _build_tool_input_schema(method) -> dict:
             prop = {"type": "array", "items": {"type": "string"}}
         else:
             ptype = "string"
-            if annotation is int:
+            if annotated_type is int:
                 ptype = "integer"
-            elif annotation is float:
+            elif annotated_type is float:
                 ptype = "number"
-            elif annotation is bool:
+            elif annotated_type is bool:
                 ptype = "boolean"
+            elif annotated_type is dict:
+                ptype = "object"
             prop = {"type": ptype}
 
         if param.default is inspect.Parameter.empty:
