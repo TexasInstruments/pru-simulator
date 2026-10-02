@@ -104,7 +104,7 @@ pru_simulator/
 ├── core/               PRU ISA implementation (ALU, parser, disassembler, ELF loader, …)
 ├── mem/                Memory bus and region model
 ├── mcp_server/         MCP server for AI tool integration
-├── pru_io/             GPO/GPI port model, SD filter (R30/R31 interface), DeviceModel/DeviceBus, device models (SSI encoder, TCA9538), generated ABIs
+├── pru_io/             GPO/GPI port model, SD filter (R30/R31 interface), DeviceModel/DeviceBus, device models (SSI encoder, TCA9538, FOC motor), generated ABIs
 ├── perif/              3-channel Peripheral Interface (SCU), GPCFG mux, TX→RX loopback
 ├── schema/             Shared-memory ABI schemas (source for generated .py/.inc files)
 ├── source/             Example PRU assembly programs
@@ -190,9 +190,15 @@ standalone experiments and may require optional packages (for example,
 
 ## Version
 
-v0.3.0 — hover over **PRU SIM** in the dashboard header to confirm.
+v0.3.1 — hover over **PRU SIM** in the dashboard header to confirm.
 
 ### Changelog
+
+**v0.3.1**
+- **FOC open-loop PWM example** — `source/foc_open_loop.asm` produces three-phase space-vector PWM on PRU0 R30.0–2 with ordinary, cycle-counted PRU instructions. Each 12,500-tick period (62.5 μs, or 16 kHz, at the default 200 MHz IEP clock) is started by polling the IEP counter, including across counter rollover. There is no simulator fast path or callback that skips firmware. Phase order and common-mode injection follow TI's Motor Control SDK `SVGEN_runCom`, and the test checks the firmware against independently computed `SVGEN_runCom` vectors.
+- **FOC control ABI** — generated from `schema/foc_control_abi.json` by `python -m tools.gen_foc_abi` (`--check` in CI); the config block is at `0x00010100`.
+- **Pin-coupled motor model** — the optional `foc_motor` device profile (PRU0 only) observes the real GPO0–2 PWM pins, integrates a three-phase RL load and drives phase A/B current as sigma-delta PDM on GPI3/GPI4. It has no shared-memory feedback path. PDM runs at each routed SD channel's sample clock, 20 MHz by default.
+- **SD inputs from GPI pins** — a sigma-delta channel can sample a physical GPI pin instead of its internal pattern generator. Route it with the new MCP `pru_sd_route_input` tool (`pin=-1` restores the internal modulator). The SD filter now advances once per elapsed core cycle, stalls included, instead of once per instruction.
 
 **v0.3.0**
 - **SSI encoder device model** (`pru_io/ssi_encoder_model.py`) — an independent, time-driven `DeviceModel` with binary or Gray output that reports faults rather than producing a plausible waveform from wrong firmware: clock above `f_max_hz`, incomplete words (monoflop timeout), and extra clock pulses. The edge convention follows the Hengstler AC58 and Pepperl+Fuchs AVM78E/AVS36M datasheets: the first falling edge latches the position, each rising edge presents the next bit MSB first, and Tm runs from the last falling edge.
