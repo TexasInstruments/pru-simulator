@@ -171,9 +171,16 @@ standalone experiments and may require optional packages (for example,
 
 ## Version
 
-v0.2.6 — hover over **PRU SIM** in the dashboard header to confirm.
+v0.2.7 — hover over **PRU SIM** in the dashboard header to confirm.
 
 ### Changelog
+
+**v0.2.7**
+- **Memory faults are reported, not just logged** — an out-of-range `LBBO`/`LBCO`/`SBBO`/`SBCO` still halts the core, and now also records a `fault` (`type`, `opcode`, `address`, `pc`, `error`) on the core. `Simulator.step()` / `status()`, the MCP `pru_step`/`pru_status` tools and the dashboard state push all carry it; it clears on reset and is restored by step-back.
+- **`WBS`/`WBC` accept both operand forms** — the single-operand form (`WBS 5`, bit implied on R31) still works, and the explicit `WBS r31, 5` form is now accepted as well. Parser tests cover both.
+- **HW Reset also resets the IEP timer** — `Simulator.hard_reset()` now calls `IepTimer.hardware_reset()`, so the counter, compare and capture state no longer survive a full reset.
+- **Constants file fallback** — `constants_am243x.cfg` is found in `config/` next to `memory.cfg` as before, or directly beside it, so a copied config directory works.
+- **MCP tool schemas** — `list[str]` parameters (for example `include_paths`) are advertised as JSON arrays and `dict` parameters as objects instead of strings, so MCP clients can pass them without string-encoding.
 
 **v0.2.6**
 - **Peripheral Interface TX test patterns** (`source/perif_tx_patterns.asm`) — the existing `perif_tx_pattern.asm` streams an 8-bit counter, which is ~90% zeros MSB-first and reads as sparse noise on the Signal Graph. New self-configuring firmware transmits the classic bit patterns instead, selected by a `PATTERN .set` at the top of the file: `0x00`, `0xFF`, `0xAA`, `0x55`, walking 1, walking 0, counter-only, or (the default) one byte of each followed by the counter — `00 FF AA 55 | 01 02 04 08 10 20 40 80 | FE FD FB F7 EF DF BF 7F | 00 01 02 …`. Twenty bytes, about 1280 graph samples, so the 2048 window catches the whole sequence in one single-shot capture. Patterns come from a table the prologue writes to DRAM at `0x1F00`, so changing them is five `ldi` pairs. Keeps the same pre-shifted start-bit framing, so the receiver still byte-aligns; every `PATTERN` value is checked end-to-end over the ch0 loopback in `tests/test_perif_tx_patterns.py`. `perif_tx_pattern.asm` is untouched — the drift experiment and `tools/perif_drift_report.py` depend on its exact counter output. Cross-machine [handoff note](docs/handoff/2026-07-28-perif-tx-test-patterns.md).
