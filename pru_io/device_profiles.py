@@ -37,6 +37,8 @@ _PROFILE_DEFAULTS = {
         "current_scale_a": 20.0,
         "current_limit_a": 40.0,
         "core_clock_hz": 250_000_000,
+        "current_a_clock_hz": 20_000_000,
+        "current_b_clock_hz": 20_000_000,
         "name": "foc_motor",
     },
 }

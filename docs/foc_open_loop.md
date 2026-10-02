@@ -56,7 +56,11 @@ one of six 60-degree vectors scaled by `modulation_q15`.
 The optional `foc_motor` `DeviceModel` observes the real PRU0 GPO0–2 PWM bus,
 integrates a three-phase RL load using the configured PRU clock, and drives
 phase-A and phase-B current measurements as push-pull PDM on GPI3 and GPI4.
-It has no shared-memory feedback path. Its profile is restricted to PRU0 and
+Each output's PDM quantizer advances at its explicit sample clock, which
+defaults to 20 MHz and holds its GPIO level between samples. This matches the
+default SD channel clock; changing a PRU0 SD channel clock through the
+simulator also updates the matching FOC output clock. It has no shared-memory
+feedback path. Its profile is restricted to PRU0 and
 sets that core's GPO drive mask to `0x7`, leaving GPI3/GPI4 owned by the model.
 Because the profile controls the core's output mask, it cannot be attached
 alongside another device on PRU0.
