@@ -95,7 +95,7 @@ async def _exercise_stdio_tools():
 
             for core, firmware in (
                 ("pru0", "source/foc_open_loop.asm"),
-                ("pru1", "source/ssi_generic_reader.asm"),
+                ("pru1", "source/ssi_generic_reader/ssi_generic_reader.asm"),
             ):
                 loaded = _payload(await session.call_tool("pru_load", {
                     "core": core,
@@ -111,7 +111,7 @@ async def _exercise_stdio_tools():
                 assert executed["cycles"] > 0
                 reset = _payload(await session.call_tool(
                     "pru_reset", {"core": core}))
-                assert reset["success"] is True
+                assert reset == {"ok": True}
 
 
 def test_generic_device_tools_use_the_official_sdk_stdio_transport():
