@@ -7,12 +7,49 @@ import binascii
 import struct
 import copy
 import random
+import inspect
+from typing import get_args, get_origin
 
 # Allow imports from parent directory when run directly
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from simulator import Simulator
 from mcp_server.vcd_export import export_pin_waveform
+
+
+def _build_tool_input_schema(method) -> dict:
+    """Build an MCP JSON schema from a wrapper method's signature."""
+    properties = {}
+    required = []
+    sig = inspect.signature(method)
+    for param_name, param in sig.parameters.items():
+        if param_name == "self":
+            continue
+        annotation = param.annotation
+        annotated_type = annotation
+        union_args = get_args(annotation)
+        if type(None) in union_args:
+            annotated_type = next(arg for arg in union_args if arg is not type(None))
+
+        if get_origin(annotated_type) is list and get_args(annotated_type) == (str,):
+            prop = {"type": "array", "items": {"type": "string"}}
+        else:
+            ptype = "string"
+            if annotation is int:
+                ptype = "integer"
+            elif annotation is float:
+                ptype = "number"
+            elif annotation is bool:
+                ptype = "boolean"
+            prop = {"type": ptype}
+
+        if param.default is inspect.Parameter.empty:
+            required.append(param_name)
+        else:
+            prop["default"] = param.default
+        properties[param_name] = prop
+
+    return {"type": "object", "properties": properties, "required": required}
 
 
 class PRUSimulatorMCP:
@@ -435,7 +472,6 @@ def run_stdio_server():
         from mcp.server.stdio import stdio_server
         from mcp.types import Tool, TextContent
         import asyncio
-        import inspect
         import json
 
         server = Server("pru-simulator")
@@ -446,34 +482,10 @@ def run_stdio_server():
         for name, method in inspect.getmembers(mcp_wrapper, predicate=inspect.ismethod):
             if name.startswith("_"):
                 continue
-            sig = inspect.signature(method)
-            properties = {}
-            required = []
-            for param_name, param in sig.parameters.items():
-                if param_name == "self":
-                    continue
-                ptype = "string"
-                annotation = param.annotation
-                if annotation in (int,):
-                    ptype = "integer"
-                elif annotation in (float,):
-                    ptype = "number"
-                elif annotation in (bool,):
-                    ptype = "boolean"
-                prop = {"type": ptype}
-                if param.default is inspect.Parameter.empty:
-                    required.append(param_name)
-                else:
-                    prop["default"] = param.default
-                properties[param_name] = prop
             _TOOLS.append(Tool(
                 name=name,
                 description=method.__doc__ or name,
-                inputSchema={
-                    "type": "object",
-                    "properties": properties,
-                    "required": required,
-                },
+                inputSchema=_build_tool_input_schema(method),
             ))
 
         @server.list_tools()
