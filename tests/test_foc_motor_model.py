@@ -3,6 +3,8 @@ import pytest
 from pru_io.device_model import PUSH_PULL
 from pru_io.device_profiles import create_device, discover_device_profiles
 from pru_io.foc_motor_model import FocMotorModel
+from pru_io.sd_filter import SigmaDeltaFilter
+from simulator import Simulator
 
 
 def test_foc_motor_is_discoverable_and_uses_push_pull_current_pins():
@@ -59,3 +61,50 @@ def test_foc_motor_snapshot_restores_current_pdm_and_period_state():
     model.restore(snapshot)
     assert model.tick(1500, 0x4) == expected_drive
     assert model.get_state() == expected_state
+
+
+def test_sd_channel_clock_change_keeps_attached_foc_pdm_rate_aligned():
+    sim = Simulator()
+    model = create_device("foc_motor")
+    sim.device_bus.attach(model, port="pru0")
+
+    sim.set_sd_modulator("pru0", 0, sd_clock_mhz=12.5)
+
+    assert model.current_a_clock_hz == 12_500_000
+    assert model.current_b_clock_hz == 20_000_000
+    assert sim.cores["pru0"].io_port.sd_filter.modulators[0].sd_clock_mhz == 12.5
+
+
+@pytest.mark.parametrize("core_clock_mhz", [200, 250, 300])
+@pytest.mark.parametrize("sample_clock_mhz", [10, 20, 25])
+@pytest.mark.parametrize("phase_current_a,expected_range", [
+    (0.0, (0.45, 0.55)),
+    (10.0, (0.70, 0.80)),
+    (-10.0, (0.20, 0.30)),
+])
+def test_foc_current_pdm_is_sampled_at_the_sd_clock(
+        core_clock_mhz, sample_clock_mhz, phase_current_a, expected_range):
+    core_clock_hz = core_clock_mhz * 1_000_000
+    sample_clock_hz = sample_clock_mhz * 1_000_000
+    model = FocMotorModel(
+        core_clock_hz=core_clock_hz,
+        current_a_clock_hz=sample_clock_hz,
+    )
+    model.phase_currents_a[0] = phase_current_a
+
+    sd = SigmaDeltaFilter(pru_clock_mhz=core_clock_mhz)
+    sd.route_input(0, model.current_a_pin)
+    sd.modulators[0].sd_clock_mhz = sample_clock_mhz
+    samples = []
+    channel_tick = sd.channels[0].tick
+    sd.channels[0].tick = lambda bit: (samples.append(bit), channel_tick(bit))[1]
+
+    elapsed_cycles = core_clock_mhz * 20
+    for cycle in range(1, elapsed_cycles + 1):
+        _, outputs = model.tick(cycle, 0)
+        sd.tick(outputs)
+
+    expected_samples = elapsed_cycles * sample_clock_hz // core_clock_hz
+    assert abs(len(samples) - expected_samples) <= 1
+    density = sum(samples) / len(samples)
+    assert expected_range[0] <= density <= expected_range[1]

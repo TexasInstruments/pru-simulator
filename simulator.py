@@ -520,6 +520,12 @@ class Simulator:
         for key, val in params.items():
             if hasattr(mod, key):
                 setattr(mod, key, val)
+        if core == "pru0" and channel < 2:
+            clock_setter = float(mod.sd_clock_mhz) * 1_000_000
+            for device in self.device_bus.devices:
+                set_clock = getattr(device, "set_current_modulator_clock_hz", None)
+                if callable(set_clock):
+                    set_clock(channel, clock_setter)
 
     def reset(self, core: str) -> None:
         """Reset *core* to its initial state (registers, counters, PC, halted flag)."""
