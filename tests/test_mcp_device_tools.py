@@ -174,6 +174,18 @@ def test_foc_motor_profile_uses_configured_pru_clock(sim_config):
     assert mcp.sim.device_bus.devices[0].core_clock_hz == 250_000_000
 
 
+def test_foc_motor_profile_uses_active_sd_modulator_clocks():
+    mcp = fresh_mcp()
+    mcp.sim.set_sd_modulator("pru0", 0, sd_clock_mhz=10.0)
+    mcp.sim.set_sd_modulator("pru0", 1, sd_clock_mhz=25.0)
+
+    mcp.pru_device_attach(profile="foc_motor")
+    motor = mcp.sim.device_bus.devices[0]
+
+    assert motor.current_a_clock_hz == 10_000_000
+    assert motor.current_b_clock_hz == 25_000_000
+
+
 def test_foc_motor_profile_rejects_non_object_config():
     mcp = fresh_mcp()
     with pytest.raises(ValueError, match="device profile config must be an object"):
