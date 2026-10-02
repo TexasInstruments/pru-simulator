@@ -266,7 +266,8 @@ ps_skip:
 ; -------------------------------------------------------------
 ; rx_crc_check: CRC-32 over the reconstructed payload at 0x0E00,
 ;   compared against the 4 received FCS octets.  ret r28
-;   The inner loop is the shared crc32_core from pif_eth_crc32.inc.
+;   Uses the shared crc32_core from pif_eth_crc32_hw.inc (CRC16/32
+;   broadside accelerator); it saves/restores r28/r29, both live here.
 ;   r26 is free here (post_frame uses r28/r29 for returns).
 ; -------------------------------------------------------------
 rx_crc_check:
@@ -333,4 +334,4 @@ rb_publish:
     sbbo &r6, r3, 24, 4         ; total_bits_checked
     jmp  r28
 
-    .include "pif_eth_crc32.inc"
+    .include "pif_eth_crc32_hw.inc"
