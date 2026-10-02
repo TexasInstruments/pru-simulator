@@ -428,6 +428,11 @@ class PRUSimulatorMCP:
         supported_cores = profile_info.get("supported_cores") if profile_info else None
         if supported_cores is not None and core not in supported_cores:
             raise ValueError(f"{profile} is only supported on {', '.join(supported_cores)}")
+        if profile == "foc_motor":
+            sd = self.sim.cores[core].io_port.sd_filter
+            for channel in range(2):
+                clock_hz = float(sd.modulators[channel].sd_clock_mhz) * 1_000_000
+                device.set_current_modulator_clock_hz(channel, clock_hz)
         if any(attached.name == device.name for attached in self.sim.device_bus.devices):
             raise ValueError(f"device name {device.name!r} is already attached")
         attached_on_core = [
