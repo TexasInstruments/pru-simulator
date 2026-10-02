@@ -58,8 +58,13 @@ integrates a three-phase RL load using the configured PRU clock, and drives
 phase-A and phase-B current measurements as push-pull PDM on GPI3 and GPI4.
 Each output's PDM quantizer advances at its explicit sample clock, which
 defaults to 20 MHz and holds its GPIO level between samples. This matches the
-default SD channel clock; changing a PRU0 SD channel clock through the
-simulator also updates the matching FOC output clock. It has no shared-memory
+default SD channel clock. Routing an SD channel to a current pin, or changing
+that channel's clock, updates the output connected to that pin. Channel order
+does not determine which phase is sampled; SD2 and custom current pins are
+also supported. Multiple channels may sample one current pin at the same
+clock. Conflicting clocks on that pin are rejected before changing the routes
+or clocks. Explicit model clocks are preserved while their pins are unrouted.
+The model has no shared-memory
 feedback path. Its profile is restricted to PRU0 and
 sets that core's GPO drive mask to `0x7`, leaving GPI3/GPI4 owned by the model.
 Because the profile controls the core's output mask, it cannot be attached
