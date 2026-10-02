@@ -432,6 +432,10 @@ class Simulator:
         """Attach a generic pin device at one core's GPIO endpoint."""
         return self._get_core(core).io_port.attach_device(device)
 
+    def lease_gpio_outputs(self, core: str, mask: int, owner: object) -> None:
+        """Release selected output directions for an attached external device."""
+        self.device_bus.lease_core_outputs(core, mask, owner)
+
     def detach_device(self, device: DeviceModel) -> None:
         """Detach a generic device and release all pins it previously drove."""
         self.device_bus.detach(device)

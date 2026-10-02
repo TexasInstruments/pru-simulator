@@ -28,8 +28,7 @@ class SSIRuntime:
                  name: str = "ssi_encoder") -> None:
         self.sim = sim
         self.core = core
-        clock_mhz = (sim._pru1_clock_mhz if core.endswith("1")
-                     else sim._pru_clock_mhz)
+        core_clock_hz = sim.iep.core_clock_hz(core)
         self.encoder = SSIEncoderModel(
             clock_pin=_CLOCK_PIN,
             data_pin=_DATA_PIN,
@@ -38,14 +37,11 @@ class SSIRuntime:
             encoding=encoding,
             f_max_hz=f_max_hz,
             monoflop_us=monoflop_us,
-            core_clock_hz=clock_mhz * 1_000_000,
+            core_clock_hz=core_clock_hz,
             name=name,
         )
         self._data_mask = 1 << _DATA_PIN
-        self._restore_data_output = bool(
-            sim.io(core)["gpo_drive_mask"] & self._data_mask)
-        sim.set_gpio_drive_mask(
-            core, sim.io(core)["gpo_drive_mask"] & ~self._data_mask)
+        sim.lease_gpio_outputs(core, self._data_mask, self.encoder)
         sim.attach_device(core, self.encoder)
         self._closed = False
         self._loaded = False
@@ -102,15 +98,6 @@ class SSIRuntime:
         if self._closed:
             return
         self.sim.detach_device(self.encoder)
-        if self._restore_data_output:
-            other_push_pull = any(
-                self.sim.device_bus._device_ports.get(id(device)) == self.core
-                and device.nets.get(_DATA_PIN) == "push_pull"
-                for device in self.sim.device_bus.devices
-            )
-            if not other_push_pull:
-                mask = self.sim.io(self.core)["gpo_drive_mask"]
-                self.sim.set_gpio_drive_mask(self.core, mask | self._data_mask)
         self._closed = True
 
     def __enter__(self) -> "SSIRuntime":

@@ -46,7 +46,8 @@ def discover_device_profiles() -> dict:
     }
 
 
-def create_device(profile: str, config: dict | None = None):
+def create_device(profile: str, config: dict | None = None, *,
+                  default_core_clock_hz=None):
     """Create an SSI encoder or TCA9538 from a closed, validated config."""
     if not isinstance(profile, str) or profile not in _PROFILE_DEFAULTS:
         raise ValueError(f"unknown device profile {profile!r}")
@@ -65,6 +66,8 @@ def create_device(profile: str, config: dict | None = None):
     _validate_name(values["name"])
 
     if profile == "ssi_encoder":
+        if "core_clock_hz" not in config and default_core_clock_hz is not None:
+            values["core_clock_hz"] = default_core_clock_hz
         return SSIEncoderModel(**values)
 
     _validate_pin(values["scl_pin"], "scl_pin")

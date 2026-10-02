@@ -1,8 +1,10 @@
+from fractions import Fraction
 from pathlib import Path
 
 import pytest
 
 from mcp_server.server import PRUSimulatorMCP
+from pru_io.device_model import DeviceModel, PUSH_PULL
 
 
 ELF_FIXTURE = Path(__file__).parents[1] / "references" / "pru_encoding_test.out"
@@ -10,6 +12,17 @@ ELF_FIXTURE = Path(__file__).parents[1] / "references" / "pru_encoding_test.out"
 
 def fresh_mcp():
     return PRUSimulatorMCP(config_path="nonexistent.cfg")
+
+
+class _FixedPushPullDevice(DeviceModel):
+    def __init__(self, name, pin, value):
+        self.name = name
+        self.nets = {pin: PUSH_PULL}
+        self.pin = pin
+        self.value = value
+
+    def tick(self, cycle, bus):
+        return 1 << self.pin, self.value << self.pin
 
 
 def test_generic_discovery_attach_state_and_detach_preserve_output_ownership():
@@ -32,6 +45,24 @@ def test_generic_discovery_attach_state_and_detach_preserve_output_ownership():
     assert detached["success"] is True
     assert mcp.pru_device_state()["devices"] == []
     assert mcp.sim.io("pru1")["gpo_drive_mask"] == initial_mask
+
+
+def test_ssi_profile_defaults_to_exact_selected_core_clock(tmp_path):
+    config = tmp_path / "clock.cfg"
+    config.write_text(
+        "[device]\n"
+        "pru_clock_mhz = 200.123456789123456\n"
+        "pru1_clock_mhz = 201.987654321987654\n",
+        encoding="utf-8",
+    )
+    mcp = PRUSimulatorMCP(config_path=str(config))
+
+    mcp.pru_device_attach("ssi_encoder", core="pru0", config={"name": "axis0"})
+    mcp.pru_device_attach("ssi_encoder", core="pru1", config={"name": "axis1"})
+    axis0, axis1 = mcp.sim.device_bus.devices
+
+    assert axis0.core_clock_hz == Fraction("200.123456789123456") * 1_000_000
+    assert axis1.core_clock_hz == Fraction("201.987654321987654") * 1_000_000
 
 
 def test_overlapping_ssi_outputs_stay_released_until_last_device_detaches():
@@ -190,3 +221,27 @@ def test_successful_elf_load_cleans_up_generic_device_output_ownership():
     assert previous.device_bus.devices == []
     assert previous.io("pru0")["gpo_drive_mask"] == (1 << 20) - 1
     assert mcp.pru_device_state()["devices"] == []
+
+
+def test_each_device_receives_structured_contentions_with_exact_name_matching():
+    mcp = fresh_mcp()
+    sim = mcp.sim
+    sim.set_gpio_drive_mask("pru0", 0)
+    sim.attach_device("pru0", _FixedPushPullDevice("axis_a", 8, 0))
+    sim.attach_device("pru0", _FixedPushPullDevice("axis_b", 8, 1))
+    sim.attach_device("pru0", _FixedPushPullDevice("prefix_axis_a", 9, 0))
+    sim.attach_device("pru0", _FixedPushPullDevice("axis_a_suffix", 9, 1))
+    sim.cores["pru0"].io_port.tick_devices(1)
+
+    axis_a = mcp.pru_device_faults(device_name="axis_a")
+    axis_b = mcp.pru_device_faults(device_name="axis_b")
+    prefixed = mcp.pru_device_faults(device_name="prefix_axis_a")
+    suffixed = mcp.pru_device_faults(device_name="axis_a_suffix")
+
+    assert axis_a["faults"] and axis_b["faults"] == axis_a["faults"]
+    assert {driver["name"] for driver in axis_b["contentions"][0]["drivers"]} == {
+        "axis_a", "axis_b",
+    }
+    assert {record["pin"] for record in axis_a["contentions"]} == {8}
+    assert {record["pin"] for record in prefixed["contentions"]} == {9}
+    assert suffixed["faults"] and suffixed["contentions"][0]["pin"] == 9

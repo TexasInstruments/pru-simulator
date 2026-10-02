@@ -141,6 +141,7 @@ class DeviceBus:
     def __init__(self) -> None:
         self.devices: list[DeviceModel] = []
         self.contentions: list[str] = []
+        self.contention_records: list[dict] = []
         self._last_drives: dict[int, tuple[int, int]] = {}
         self._device_ports: dict[int, str | None] = {}
         self._last_inputs: dict[int, int] = {}
@@ -155,6 +156,9 @@ class DeviceBus:
         self._core_drive_masks: dict[str, int] = {}
         self._port_buses: dict[str, int] = {}
         self._managed_masks: dict[str, int] = {}
+        self._output_leases: dict[tuple[str, int], dict] = {}
+        self._lease_owner_pins: dict[int, set[tuple[str, int]]] = {}
+        self._lease_owners: dict[int, object] = {}
         self._wires: set[tuple[tuple[str, int], tuple[str, int]]] = set()
         self._last_endpoint: str | None = None
         self._component_finder = None
@@ -175,6 +179,82 @@ class DeviceBus:
         self._port_buses[name] = _MASK_20
         self._managed_masks[name] = 0
 
+    def lease_core_outputs(self, core: str, mask: int, owner: object) -> None:
+        """Temporarily release output pins while their external device is attached."""
+        if core not in self._ports:
+            raise KeyError(f"Unknown GPIO endpoint {core!r}")
+        mask &= _MASK_20
+        if not mask:
+            return
+        owner_id = id(owner)
+        held = self._lease_owner_pins.setdefault(owner_id, set())
+        self._lease_owners[owner_id] = owner
+        current = self._ports[core].gpo_drive_mask & _MASK_20
+        changed = False
+        for pin in range(20):
+            bit = 1 << pin
+            key = (core, pin)
+            if not mask & bit or key in held:
+                continue
+            lease = self._output_leases.get(key)
+            if lease is None:
+                lease = {"was_output": bool(current & bit), "owners": set()}
+                self._output_leases[key] = lease
+            lease["owners"].add(owner_id)
+            held.add(key)
+            changed = True
+        if changed:
+            self.set_core_drive_mask(core, current & ~mask,
+                                     cycle=self._current_cycle())
+
+    def release_core_outputs(self, owner: object) -> None:
+        """Release an owner's GPIO direction leases and restore initial directions."""
+        owner_id = id(owner)
+        held = self._lease_owner_pins.pop(owner_id, set())
+        self._lease_owners.pop(owner_id, None)
+        restore_by_core: dict[str, tuple[int, int]] = {}
+        for core, pin in held:
+            key = (core, pin)
+            lease = self._output_leases.get(key)
+            if lease is None:
+                continue
+            lease["owners"].discard(owner_id)
+            if lease["owners"]:
+                continue
+            mask, value = restore_by_core.get(core, (0, 0))
+            bit = 1 << pin
+            mask |= bit
+            if lease["was_output"]:
+                value |= bit
+            restore_by_core[core] = mask, value
+            del self._output_leases[key]
+        for core, (mask, value) in restore_by_core.items():
+            current = self._ports[core].gpo_drive_mask
+            self.set_core_drive_mask(
+                core, (current & ~mask) | value, cycle=self._current_cycle())
+
+    def release_all_core_outputs(self) -> None:
+        """Release every temporary GPIO direction lease on this bus."""
+        for owner in list(self._lease_owners.values()):
+            self.release_core_outputs(owner)
+
+    def contentions_for_device(self, device: DeviceModel) -> list[dict]:
+        """Return bus contention records involving this exact device instance."""
+        device_id = id(device)
+        return [
+            {**record, "drivers": [dict(driver) for driver in record["drivers"]]}
+            for record in self.contention_records
+            if any(driver.get("device_id") == device_id
+                   for driver in record["drivers"])
+        ]
+
+    def faults_for_device(self, device: DeviceModel) -> list[str]:
+        """Return model faults and contentions involving this device."""
+        out = [f"{device.name}: {fault}" for fault in device.faults()]
+        out.extend(record["message"]
+                   for record in self.contentions_for_device(device))
+        return out
+
     def attach(self, device: DeviceModel, port: str | None = None,
                cycle: int = 0) -> DeviceModel:
         """Attach a device at one GPIO endpoint (or the stand-alone bus)."""
@@ -194,6 +274,7 @@ class DeviceBus:
         """Detach one model and immediately remove its previous pin drives."""
         key = id(device)
         if device not in self.devices:
+            self.release_core_outputs(device)
             return
         self.devices.remove(device)
         port = self._device_ports.pop(key, None)
@@ -208,6 +289,7 @@ class DeviceBus:
         elif port is None:
             self._bus = self._resolve_standalone(0, self._last_gpo,
                                                  record_contention=False)
+        self.release_core_outputs(device)
 
     def detach_all(self, port: str | None = None) -> None:
         """Detach models; removed outputs are released before returning."""
@@ -360,12 +442,15 @@ class DeviceBus:
             modes = device_types[pin]
             if self._pru_drive_mask & bit:
                 mode = OPEN_DRAIN if OPEN_DRAIN in modes and PUSH_PULL not in modes else PUSH_PULL
-                drivers.append(("PRU", (gpo >> pin) & 1, mode))
+                drivers.append(("PRU", (gpo >> pin) & 1, mode,
+                                {"type": "core", "name": "PRU"}))
             for device in self.devices:
                 mask, values = self._last_drives.get(id(device), (0, 0))
                 if mask & bit:
                     drivers.append((device.name, (values >> pin) & 1,
-                                    device.nets.get(pin, PUSH_PULL)))
+                                    device.nets.get(pin, PUSH_PULL),
+                                    {"type": "device", "name": device.name,
+                                     "device_id": id(device)}))
             level = self._resolve_pin(cycle, pin, drivers, record_contention)
             if level:
                 levels |= bit
@@ -377,19 +462,43 @@ class DeviceBus:
                      record_contention: bool) -> int:
         if not drivers:
             return 1
-        pp = [(name, value) for name, value, mode in drivers if mode == PUSH_PULL]
-        od = [(name, value) for name, value, mode in drivers if mode == OPEN_DRAIN]
-        pp_values = {value for _, value in pp}
+        pp = [(name, value, identity) for name, value, mode, identity in drivers
+              if mode == PUSH_PULL]
+        od = [(name, value) for name, value, mode, _identity in drivers
+              if mode == OPEN_DRAIN]
+        pp_values = {value for _, value, _identity in pp}
         if record_contention and len(pp_values) > 1:
-            who = ", ".join(f"{name}={value}" for name, value in pp)
-            self.contentions.append(
-                f"cycle {cycle}: push-pull contention on pin {pin} ({who})")
+            message = (f"cycle {cycle}: push-pull contention on pin {pin} "
+                       f"({', '.join(f'{name}={value}' for name, value, _ in pp)})")
+            self.contentions.append(message)
+            self.contention_records.append({
+                "kind": "push_pull",
+                "cycle": cycle,
+                "pin": pin,
+                "message": message,
+                "drivers": [
+                    {**identity, "value": value, "mode": PUSH_PULL}
+                    for _name, value, identity in pp
+                ],
+            })
         od_low = any(value == 0 for _, value in od)
-        pp_high = any(value == 1 for _, value in pp)
+        pp_high = any(value == 1 for _, value, _identity in pp)
         if record_contention and od_low and pp_high:
-            who = ", ".join(f"{name}={value}" for name, value, _ in drivers)
-            self.contentions.append(
-                f"cycle {cycle}: mixed open-drain/push-pull contention on pin {pin} ({who})")
+            message = (
+                f"cycle {cycle}: mixed open-drain/push-pull contention on pin {pin} "
+                f"({', '.join(f'{name}={value}' for name, value, _, _ in drivers)})"
+            )
+            self.contentions.append(message)
+            self.contention_records.append({
+                "kind": "mixed_open_drain_push_pull",
+                "cycle": cycle,
+                "pin": pin,
+                "message": message,
+                "drivers": [
+                    {**identity, "value": value, "mode": mode}
+                    for _name, value, mode, identity in drivers
+                ],
+            })
         if od_low:
             return 0
         if pp:
@@ -433,7 +542,9 @@ class DeviceBus:
                 node = find((core, pin))
                 modes = declared.get(node, set())
                 mode = OPEN_DRAIN if OPEN_DRAIN in modes and PUSH_PULL not in modes else PUSH_PULL
-                drivers.setdefault(node, []).append((core, (gpo >> pin) & 1, mode))
+                drivers.setdefault(node, []).append(
+                    (core, (gpo >> pin) & 1, mode,
+                     {"type": "core", "name": core}))
         for device in self.devices:
             port = self._device_ports.get(id(device))
             mask, values = self._last_drives.get(id(device), (0, 0))
@@ -443,7 +554,9 @@ class DeviceBus:
                     node = find((port, pin))
                     drivers.setdefault(node, []).append(
                         (device.name, (values >> pin) & 1,
-                         device.nets.get(pin, PUSH_PULL)))
+                         device.nets.get(pin, PUSH_PULL),
+                         {"type": "device", "name": device.name,
+                          "device_id": id(device)}))
         return find, drivers
 
     def _resolve_shared_levels(self, cycle: int, find, drivers,
@@ -480,12 +593,15 @@ class DeviceBus:
             drivers = []
             if core_mask & bit:
                 mode = OPEN_DRAIN if OPEN_DRAIN in modes and PUSH_PULL not in modes else PUSH_PULL
-                drivers.append((port, (gpo >> pin) & 1, mode))
+                drivers.append((port, (gpo >> pin) & 1, mode,
+                                {"type": "core", "name": port}))
             for device in self._port_devices[port]:
                 mask, values = device_masks[id(device)]
                 if mask & bit:
                     drivers.append((device.name, (values >> pin) & 1,
-                                    device.nets.get(pin, PUSH_PULL)))
+                                    device.nets.get(pin, PUSH_PULL),
+                                    {"type": "device", "name": device.name,
+                                     "device_id": id(device)}))
             if self._resolve_pin(cycle, pin, drivers, record_contention):
                 word |= bit
         return word
@@ -629,6 +745,7 @@ class DeviceBus:
 
     def reset(self) -> None:
         self.contentions.clear()
+        self.contention_records.clear()
         self._last_inputs.clear()
         for device in self.devices:
             self._last_drives[id(device)] = (0, 0)
@@ -649,6 +766,7 @@ class DeviceBus:
             self.reset()
             return
         self.contentions.clear()
+        self.contention_records.clear()
         self._port_gpo[port] = self._ports[port].gpo & _MASK_20
         self._core_drive_masks[port] = self._ports[port].gpo_drive_mask & _MASK_20
         for device in self.devices:
@@ -662,6 +780,10 @@ class DeviceBus:
         return {
             "bus": self._bus,
             "contentions": list(self.contentions),
+            "contention_records": [
+                {**record, "drivers": [dict(driver) for driver in record["drivers"]]}
+                for record in self.contention_records
+            ],
             "device_refs": list(self.devices),
             "device_ports": [self._device_ports.get(id(d)) for d in self.devices],
             "devices": [d.snapshot() for d in self.devices],
@@ -688,6 +810,10 @@ class DeviceBus:
         self._bus = snap["bus"]
         self._last_gpo = snap.get("last_gpo", self._last_gpo)
         self.contentions = list(snap["contentions"])
+        self.contention_records = [
+            {**record, "drivers": [dict(driver) for driver in record["drivers"]]}
+            for record in snap.get("contention_records", [])
+        ]
         if "device_refs" in snap:
             self.devices = list(snap["device_refs"])
             self._device_ports = {

@@ -81,40 +81,56 @@ is published to the mailbox immediately after its last bit; the encoder's
 `frame` event is emitted after Tm expires so a later extra pulse can invalidate
 the transaction.
 
+## Two-core firmware loopback
+
+`source/ssi_generic_emulator.asm` runs a fixed 12-bit SSI encoder on PRU0 while
+the reader runs on PRU1. Connect PRU1 R30.0 to PRU0 R31.0 for clock, and PRU0
+R30.16 to PRU1 R31.16 for data. The emulator serves position `0xABC`; the
+integration test runs both firmware images and checks the reader mailbox.
+
 ## Manual 300 MHz run
 
 `memory.cfg` stays at the shipped 250 MHz default. To try the example at
-300 MHz, make a temporary copy and change only the copy:
-
-```bash
-python - <<'PY'
-from pathlib import Path
-
-data = Path("memory.cfg").read_bytes()
-data = data.replace(b"pru_clock_mhz = 250", b"pru_clock_mhz = 300", 1)
-data = data.replace(b"pru1_clock_mhz = 250", b"pru1_clock_mhz = 300", 1)
-Path("/tmp/memory-ssi-300.cfg").write_bytes(data)
-PY
-```
-
-Then run the same firmware with the temporary clock configuration:
+300 MHz, copy the config and its constants sidecar into a temporary directory.
+The simulator locates `constants_am243x.cfg` relative to the config file, so
+the sidecar needs to follow the copied `memory.cfg`:
 
 ```python
+from pathlib import Path
+import shutil
+import tempfile
+
 from pru_io.ssi_runtime import SSIRuntime
 from simulator import Simulator
 
-sim = Simulator("/tmp/memory-ssi-300.cfg")
-with SSIRuntime(sim, position=0xABC, resolution=12,
-                f_max_hz=4_000_000, monoflop_us=20.5) as ssi:
-    ssi.load(clock_delay_loops=20)
-    result = ssi.run_until_frames(1, max_steps=20_000)
-    assert result["reached"]
-    assert ssi.encoder.faults() == []
-    print(result["mailbox"])
+project = Path.cwd()
+with tempfile.TemporaryDirectory(prefix="ssi-300-") as temporary:
+    temporary = Path(temporary)
+    sidecar = temporary / "config"
+    sidecar.mkdir()
+    data = (project / "memory.cfg").read_bytes()
+    data = data.replace(b"pru_clock_mhz = 250", b"pru_clock_mhz = 300", 1)
+    data = data.replace(b"pru1_clock_mhz = 250", b"pru1_clock_mhz = 300", 1)
+    config = temporary / "memory.cfg"
+    config.write_bytes(data)
+    shutil.copy2(project / "config" / "constants_am243x.cfg",
+                 sidecar / "constants_am243x.cfg")
+
+    sim = Simulator(str(config))
+    assert sim.constant_table.resolve(28) == 0x00010000
+    with SSIRuntime(sim, position=0xABC, resolution=12,
+                    f_max_hz=4_000_000, monoflop_us=20.5) as ssi:
+        ssi.load(clock_delay_loops=20)
+        result = ssi.run_until_frames(1, max_steps=20_000)
+        assert result["reached"]
+        assert result["mailbox"]["raw_frame"] == 0xABC
+        assert ssi.encoder.faults() == []
+        print(result["mailbox"])
 ```
 
-The helper reads the selected core clock from that temporary config, and
-computes its idle delay from Tm. It leaves the tracked `memory.cfg` untouched.
+The helper reads the selected core clock exactly from the simulator and
+computes its idle delay from Tm. The temporary config and constants sidecar are
+removed automatically; the tracked `memory.cfg` remains untouched.
 
 ## Generic MCP device profiles
 
@@ -130,7 +146,13 @@ The MCP surface stays protocol-generic:
 | `pru_device_faults` | Read all bus/device faults or filter by name |
 
 The SSI profile accepts encoder options such as `position`, `resolution`,
-`encoding`, `f_max_hz`, and `monoflop_us`. The TCA profile accepts a 7-bit
+`encoding`, `f_max_hz`, and `monoflop_us`. If `core_clock_hz` is omitted, the
+MCP attach tool derives it from the selected core's exact IEP clock. The TCA
+profile accepts a 7-bit
 `address` and distinct `scl_pin`/`sda_pin` values from 0–19. Unknown fields
 and invalid values are rejected before attachment. The existing TCA
 `pru_i2c_attach` tool remains available for compatibility.
+
+When `pru_device_faults` is filtered by device name, its `contentions` field
+contains structured records for each bus conflict involving that exact device.
+The existing `faults` field retains human-readable messages.
