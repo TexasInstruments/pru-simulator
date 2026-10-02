@@ -157,6 +157,9 @@ class Simulator:
                        "pru1": pru1_clock_mhz, "rtu1": pru1_clock_mhz}
         for name, core in self.cores.items():
             core.io_port.sd_filter = SigmaDeltaFilter(pru_clock_mhz=core_clocks[name])
+            core.io_port.sd_filter.on_route_change = (
+                lambda routes, _name=name: self._sync_sd_device_clocks(_name, routes=routes)
+            )
 
         # Wire SD registers into memory bus (pru0 owns the register region)
         pru0_sd = self.cores["pru0"].io_port.sd_filter
@@ -516,16 +519,39 @@ class Simulator:
             return
         if channel < 0 or channel >= len(sd.modulators):
             raise ValueError(f"Channel {channel} out of range")
+        clocks = [mod.sd_clock_mhz * 1_000_000 for mod in sd.modulators]
+        if "sd_clock_mhz" in params:
+            clocks[channel] = params["sd_clock_mhz"] * 1_000_000
+            self._sync_sd_device_clocks(core, clocks=clocks)
         mod = sd.modulators[channel]
         for key, val in params.items():
             if hasattr(mod, key):
                 setattr(mod, key, val)
-        if core == "pru0" and channel < 2:
-            clock_setter = float(mod.sd_clock_mhz) * 1_000_000
-            for device in self.device_bus.devices:
-                set_clock = getattr(device, "set_current_modulator_clock_hz", None)
-                if callable(set_clock):
-                    set_clock(channel, clock_setter)
+
+    def _sync_sd_device_clocks(self, core: str, routes=None, clocks=None,
+                               devices=None) -> None:
+        """Match clock-aware pin drivers to their routed consumers before mutation."""
+        sd = self._get_core(core).io_port.sd_filter
+        routes = sd.input_routes if routes is None else routes
+        clocks = ([mod.sd_clock_mhz * 1_000_000 for mod in sd.modulators]
+                  if clocks is None else clocks)
+        devices = ([device for device in self.device_bus.devices
+                    if self.device_bus._device_ports.get(id(device)) == core]
+                   if devices is None else devices)
+        updates = []
+        for device in devices:
+            setter = getattr(device, "set_pin_clock_hz", None)
+            if not callable(setter):
+                continue
+            for pin in device.nets:
+                rates = {clocks[channel] for channel, route in enumerate(routes)
+                         if route == pin}
+                if len(rates) > 1:
+                    raise ValueError(f"SD channels sampling GPIO {pin} have different clocks")
+                if rates:
+                    updates.append((setter, pin, rates.pop()))
+        for setter, pin, rate in updates:
+            setter(pin, rate)
 
     def reset(self, core: str) -> None:
         """Reset *core* to its initial state (registers, counters, PC, halted flag)."""

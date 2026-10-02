@@ -89,6 +89,8 @@ class FocMotorModel(DeviceModel):
         self._set_current_modulator_clock(output, rate)
 
     def _set_current_modulator_clock(self, output: int, rate: Fraction) -> None:
+        if self._current_modulator_clock_hz[output] == rate:
+            return
         ratio = rate / Fraction(str(self.core_clock_hz))
         self._current_modulator_clock_hz[output] = rate
         if output == 0:
@@ -97,6 +99,11 @@ class FocMotorModel(DeviceModel):
             self.current_b_clock_hz = float(rate)
         self._pdm_clock_ratios[output] = ratio
         self._pdm_clock_accumulators[output] = 0
+
+    def set_pin_clock_hz(self, pin: int, clock_hz: float) -> None:
+        """Match a physical current output to the SD channel sampling its pin."""
+        output = (self.current_a_pin, self.current_b_pin).index(pin)
+        self.set_current_modulator_clock_hz(output, clock_hz)
 
     def tick(self, cycle: int, bus: int) -> tuple[int, int]:
         pwm = bus & 0x7
