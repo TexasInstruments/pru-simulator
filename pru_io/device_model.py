@@ -779,6 +779,12 @@ class DeviceBus:
     def snapshot(self) -> dict:
         return {
             "bus": self._bus,
+            "output_leases": {key: {"was_output": lease["was_output"],
+                                    "owners": set(lease["owners"])}
+                              for key, lease in self._output_leases.items()},
+            "lease_owner_pins": {owner: set(pins)
+                                 for owner, pins in self._lease_owner_pins.items()},
+            "lease_owners": dict(self._lease_owners),
             "contentions": list(self.contentions),
             "contention_records": [
                 {**record, "drivers": [dict(driver) for driver in record["drivers"]]}
@@ -808,6 +814,13 @@ class DeviceBus:
 
     def restore(self, snap: dict) -> None:
         self._bus = snap["bus"]
+        self._output_leases = {
+            key: {"was_output": lease["was_output"], "owners": set(lease["owners"])}
+            for key, lease in snap.get("output_leases", {}).items()
+        }
+        self._lease_owner_pins = {owner: set(pins)
+                                  for owner, pins in snap.get("lease_owner_pins", {}).items()}
+        self._lease_owners = dict(snap.get("lease_owners", {}))
         self._last_gpo = snap.get("last_gpo", self._last_gpo)
         self.contentions = list(snap["contentions"])
         self.contention_records = [

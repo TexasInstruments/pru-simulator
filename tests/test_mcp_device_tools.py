@@ -69,6 +69,32 @@ def test_ssi_profile_defaults_to_exact_selected_core_clock(tmp_path):
     assert axis1.core_clock_hz == Fraction("201.987654321987654") * 1_000_000
 
 
+@pytest.mark.parametrize("initially_output", [True, False])
+@pytest.mark.parametrize("before_attachment", [True, False])
+def test_device_snapshot_restores_gpio_leases(initially_output, before_attachment):
+    mcp = fresh_mcp()
+    initial = mcp.sim.io("pru0")["gpo_drive_mask"]
+    if not initially_output:
+        initial &= ~(1 << 8)
+        mcp.sim.set_gpio_drive_mask("pru0", initial)
+    before = mcp.sim.device_bus.snapshot()
+    mcp.pru_device_attach("ssi_encoder", config={"name": "axis_a"})
+    mcp.pru_device_attach("ssi_encoder", config={"name": "axis_b"})
+    attached = mcp.sim.device_bus.snapshot()
+    if not before_attachment:
+        mcp.pru_device_detach("axis_a")
+        mcp.pru_device_detach("axis_b")
+    mcp.sim.device_bus.restore(before if before_attachment else attached)
+    if not before_attachment:
+        mcp.pru_device_detach("axis_a")
+        assert not mcp.sim.io("pru0")["gpo_drive_mask"] & (1 << 8)
+        mcp.pru_device_detach("axis_b")
+    else:
+        mcp.pru_device_attach("ssi_encoder", config={"name": "axis_c"})
+        mcp.pru_device_detach("axis_c")
+    assert mcp.sim.io("pru0")["gpo_drive_mask"] == initial
+
+
 def test_overlapping_ssi_outputs_stay_released_until_last_device_detaches():
     mcp = fresh_mcp()
     initial_mask = mcp.sim.io("pru0")["gpo_drive_mask"]
