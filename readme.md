@@ -112,7 +112,7 @@ pru_simulator/
 ├── tools/              Headless runner, ABI code generators, perif drift report
 ├── ui/
 │   ├── server.py       FastAPI WebSocket server
-│   └── static/         Dashboard HTML/JS (index.html, app.js, layout.js)
+│   └── static/         Dashboard HTML/JS (index.html, app.js, layout.js, workspace.js)
 ├── xfr/                XFR scratchpad + MAC accelerator
 ├── memory.cfg          Default memory configuration (AM243x)
 ├── requirements.txt
@@ -191,9 +191,16 @@ standalone experiments and may require optional packages (for example,
 
 ## Version
 
-v0.3.1 — hover over **PRU SIM** in the dashboard header to confirm.
+v0.3.2 — hover over **PRU SIM** in the dashboard header to confirm.
 
 ### Changelog
+
+**v0.3.2**
+- **Dashboard workspace views** — the toolbar switches between **Simulator** (source, editor, registers, memory, GPIO and graph panels), **Devices** and **Events** without resetting or stopping execution. Panels can be hidden from the Panels buttons, and visibility and layout are remembered separately for single-core and multicore modes. Reset Layout restores the defaults. View, panel visibility and the new Dark/High-contrast themes are stored as local browser preferences. See [docs/simulator_dashboard.md](docs/simulator_dashboard.md).
+- **Devices view** — attaches the generic SSI encoder (any core) and FOC motor (PRU0) profiles, sets the encoder position, and applies the FOC control config and SD routes. It uses the same device API as MCP; there are no protocol-specific run shortcuts.
+- **Events view** — device frame/fault events, bus contention and core memory faults from the live simulator state, so it stays consistent across reset and step-back. Shows up to 500 events and 100 faults.
+- **RTU1 selectable** — single-core mode can show PRU0, PRU1, RTU0 or RTU1, and multicore mode pairs PRU0 with any of the other three.
+- **MCP over SDK stdio** — tests load the SSI reader and FOC firmware through the SDK stdio transport and verify SSI frames and FOC PWM end to end.
 
 **v0.3.1**
 - **FOC open-loop control example** — `source/foc_open_loop.asm` ramps a per-unit speed reference, integrates the electrical angle, applies the inverse Park transform to Vd/Vq references and produces three-phase space-vector PWM on PRU0 R30.0–2 with ordinary, cycle-counted PRU instructions (`cycles == instructions + stalls`). Each 12,500-tick period (62.5 μs, or 16 kHz, at the default 200 MHz IEP clock) is started by polling the IEP counter, including across counter rollover. There is no simulator fast path or callback that skips firmware. Phase order and common-mode injection follow TI's Motor Control SDK `SVGEN_runCom`; the tests check the firmware against TI vectors and an independent pure-Python Park + SVGEN + ramp reference.
