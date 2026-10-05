@@ -5,6 +5,7 @@ from copy import deepcopy
 
 from pru_io.device_model import OPEN_DRAIN, PUSH_PULL
 from pru_io.ssi_encoder_model import SSIEncoderModel
+from pru_io.ssi_presets import PRESETS, PRESET_SOURCES
 from pru_io.tca9538_device_model import TCA9538Model
 
 
@@ -20,6 +21,12 @@ _PROFILE_DEFAULTS = {
         "core_clock_hz": 250_000_000,
         "idle_value": 1,
         "name": "ssi_encoder",
+        "preset": None,
+        "position_bits": None,
+        "position_offset": None,
+        "error_bits": 0,
+        "error_offset": None,
+        "error_value": 0,
     },
     "tca9538": {
         "address": 0x23,
@@ -29,6 +36,8 @@ _PROFILE_DEFAULTS = {
     },
 }
 
+_PRESET_FIELDS = set().union(*PRESETS.values())
+
 _PROFILE_OUTPUTS = {
     "ssi_encoder": {"data_pin": PUSH_PULL},
     "tca9538": {"scl_pin": OPEN_DRAIN, "sda_pin": OPEN_DRAIN},
@@ -37,7 +46,7 @@ _PROFILE_OUTPUTS = {
 
 def discover_device_profiles() -> dict:
     """Return profile names, defaults, and the pins each profile drives."""
-    return {
+    profiles = {
         name: {
             "defaults": deepcopy({
                 field: value for field, value in defaults.items()
@@ -47,6 +56,11 @@ def discover_device_profiles() -> dict:
         }
         for name, defaults in _PROFILE_DEFAULTS.items()
     }
+    profiles["ssi_encoder"]["presets"] = {
+        name: {**fields, "source": PRESET_SOURCES[name]}
+        for name, fields in PRESETS.items()
+    }
+    return profiles
 
 
 def create_device(profile: str, config: dict | None = None, *,
@@ -71,7 +85,13 @@ def create_device(profile: str, config: dict | None = None, *,
     if profile == "ssi_encoder":
         if "core_clock_hz" not in config and default_core_clock_hz is not None:
             values["core_clock_hz"] = default_core_clock_hz
-        return SSIEncoderModel(**values)
+        preset = values.pop("preset")
+        if preset is None:
+            return SSIEncoderModel(**values)
+        # The preset supplies its frame fields; only explicit config overrides.
+        overrides = {key: value for key, value in values.items()
+                     if key in config or key not in _PRESET_FIELDS}
+        return SSIEncoderModel.from_preset(preset, **overrides)
 
     _validate_pin(values["scl_pin"], "scl_pin")
     _validate_pin(values["sda_pin"], "sda_pin")

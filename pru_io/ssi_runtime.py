@@ -8,8 +8,9 @@ from pru_io import ssi_config_abi as abi
 from pru_io.ssi_encoder_model import SSIEncoderModel
 
 
-_FIRMWARE = (Path(__file__).resolve().parents[1]
-             / "source" / "ssi_generic_reader" / "ssi_generic_reader.asm")
+_SOURCE = Path(__file__).resolve().parents[1] / "source"
+_FIRMWARE = _SOURCE / "ssi_generic_reader" / "ssi_generic_reader.asm"
+_EMULATOR_FIRMWARE = _SOURCE / "ssi_generic_emulator.asm"
 _CLOCK_PIN = 0
 _DATA_PIN = 16
 
@@ -19,27 +20,26 @@ class SSIRuntime:
 
     The helper does not replace simulator execution: ``run_until_frames``
     advances the selected PRU by calling ``Simulator.step`` one instruction
-    at a time.
+    at a time. ``preset`` names a ``pru_io.ssi_presets`` frame; other
+    ``SSIEncoderModel`` options (``resolution``, ``error_bits``, ...)
+    override it.
     """
 
     def __init__(self, sim, core: str = "pru1", position: int = 0,
-                 resolution: int = 12, encoding: str = "binary",
-                 f_max_hz=4_000_000, monoflop_us=20.5,
-                 name: str = "ssi_encoder") -> None:
+                 preset: str | None = None, name: str = "ssi_encoder",
+                 **encoder_options) -> None:
         self.sim = sim
         self.core = core
-        core_clock_hz = sim.iep.core_clock_hz(core)
-        self.encoder = SSIEncoderModel(
-            clock_pin=_CLOCK_PIN,
-            data_pin=_DATA_PIN,
-            position=position,
-            resolution=resolution,
-            encoding=encoding,
-            f_max_hz=f_max_hz,
-            monoflop_us=monoflop_us,
-            core_clock_hz=core_clock_hz,
-            name=name,
-        )
+        options = {
+            "clock_pin": _CLOCK_PIN,
+            "data_pin": _DATA_PIN,
+            "position": position,
+            "core_clock_hz": sim.iep.core_clock_hz(core),
+            "name": name,
+            **encoder_options,
+        }
+        self.encoder = (SSIEncoderModel(**options) if preset is None
+                        else SSIEncoderModel.from_preset(preset, **options))
         self._data_mask = 1 << _DATA_PIN
         sim.lease_gpio_outputs(core, self._data_mask, self.encoder)
         sim.attach_device(core, self.encoder)
@@ -71,9 +71,17 @@ class SSIRuntime:
         return self.sim.step(self.core, count)
 
     def mailbox(self) -> dict:
-        """Read the latest seqlock mailbox sample from shared memory."""
-        return abi.unpack_mailbox(
+        """Read the latest seqlock mailbox sample from shared memory.
+
+        Adds the combined ``raw_frame`` and the ``position``/``error`` fields
+        decoded with the encoder's layout.
+        """
+        mailbox = abi.unpack_mailbox(
             self.sim.memory_read(abi.MAILBOX_ADDRESS, abi.MAILBOX_SIZE))
+        raw_frame = mailbox["raw_frame_lo"] | mailbox["raw_frame_hi"] << 32
+        position, error = self.encoder.decode_frame(raw_frame)
+        return {**mailbox, "raw_frame": raw_frame,
+                "position": position, "error": error}
 
     def run_until_frames(self, frame_count: int, max_steps: int = 20_000) -> dict:
         """Step until the mailbox reaches ``frame_count`` or the budget ends."""
@@ -105,3 +113,49 @@ class SSIRuntime:
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         self.close()
+
+
+class SSIEmulatorRuntime:
+    """Load the SSI emulator firmware and write its host-packed frame word.
+
+    ``layout`` is an unattached ``SSIEncoderModel`` used only to pack the
+    position and error fields; the emulator firmware just shifts the word out.
+    The firmware re-reads the block at every frame start, so
+    ``set_position``/``set_error`` apply to the next frame.
+    """
+
+    def __init__(self, sim, core: str = "pru0", position: int = 0,
+                 preset: str | None = None, **encoder_options) -> None:
+        self.sim = sim
+        self.core = core
+        options = {"position": position, **encoder_options}
+        self.layout = (SSIEncoderModel(**options) if preset is None
+                       else SSIEncoderModel.from_preset(preset, **options))
+
+    def write_config(self) -> None:
+        """Pack the current frame into the emulator block in shared memory."""
+        frame = self.layout.pack_frame(self.layout.position, self.layout.error)
+        self.sim.memory.write(abi.EMULATOR_ADDRESS, abi.pack_emulator_config(
+            self.layout.resolution, frame & 0xFFFFFFFF, frame >> 32))
+
+    def load(self) -> None:
+        """Write the emulator block and load its assembly."""
+        self.write_config()
+        errors = self.sim.load(
+            self.core, _EMULATOR_FIRMWARE.read_text(encoding="utf-8"),
+            include_paths=[str(_EMULATOR_FIRMWARE.parent)])
+        if errors:
+            raise ValueError("SSI emulator assembly failed: " + "; ".join(errors))
+
+    def set_position(self, position: int) -> None:
+        self.layout.set_position(position)
+        self.write_config()
+
+    def set_error(self, error: int) -> None:
+        self.layout.set_error(error)
+        self.write_config()
+
+    def status(self) -> int:
+        """Return the emulator status: 0 running, 1 halted on invalid config."""
+        return abi.unpack_emulator(self.sim.memory_read(
+            abi.EMULATOR_ADDRESS, abi.EMULATOR_SIZE))["status"]
