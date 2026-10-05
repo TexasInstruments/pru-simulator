@@ -253,3 +253,104 @@ def test_snapshot_restores_frame_progress_and_reports():
     assert model.get_state()["bits_clocked"] == 1
     assert model.faults() == []
     assert model.events() == []
+
+
+def clock_frame(model: SSIEncoderModel, start: int = 0, period: int = 20) -> int:
+    """Clock one word and return the bits the encoder presented."""
+    sampled, last_falling = send_word(model, start=start, period=period)
+    for cycle in range(last_falling + 1, last_falling + model.monoflop_cycles + 1):
+        tick(model, cycle, 0)
+    return int("".join(map(str, sampled)), 2)
+
+
+def test_error_field_is_packed_after_the_position_and_decoded_in_events():
+    model = SSIEncoderModel(resolution=8, position=0b10110, error_bits=3,
+                            error_value=0b101, core_clock_hz=100_000_000,
+                            f_max_hz=10_000_000, monoflop_us=1)
+
+    assert (model.position_bits, model.position_offset,
+            model.error_offset) == (5, 3, 0)
+    assert clock_frame(model) == 0b10110_101
+    assert complete_events(model)[0]["position"] == 0b10110
+    assert complete_events(model)[0]["error"] == 0b101
+    assert complete_events(model)[0]["raw_value"] == 0b10110_101
+
+
+def test_wide_multiturn_and_over_32_bit_frames_keep_every_bit():
+    model = SSIEncoderModel(resolution=33, position=(1 << 30) - 2, error_bits=3,
+                            error_value=0b011, core_clock_hz=100_000_000,
+                            f_max_hz=10_000_000, monoflop_us=1)
+
+    word = clock_frame(model)
+
+    assert word == (((1 << 30) - 2) << 3) | 0b011
+    assert word >> 32 == 1
+    event = complete_events(model)[0]
+    assert (event["raw_value"], event["position"], event["error"]) == (
+        word, (1 << 30) - 2, 0b011)
+    assert model.faults() == []
+
+
+def test_gray_encoding_applies_to_the_position_field_not_the_error_field():
+    model = SSIEncoderModel(resolution=7, position=0b1101, encoding="gray",
+                            position_bits=4, error_bits=3, error_value=0b101,
+                            core_clock_hz=100_000_000, f_max_hz=10_000_000,
+                            monoflop_us=1)
+
+    assert clock_frame(model) == (0b1011 << 3) | 0b101
+    event = complete_events(model)[0]
+    assert (event["position"], event["error"]) == (0b1101, 0b101)
+
+
+def test_explicit_offsets_place_a_leading_error_and_a_64_bit_frame():
+    model = SSIEncoderModel(resolution=64, position=(1 << 59) + 5,
+                            position_bits=60, error_bits=4, error_offset=60,
+                            error_value=0b1001, core_clock_hz=1_000_000_000,
+                            f_max_hz=10_000_000, monoflop_us=1)
+
+    assert model.position_offset == 0
+    assert clock_frame(model, period=200) == (0b1001 << 60) | ((1 << 59) + 5)
+
+
+def test_position_and_error_can_change_between_frames():
+    model = SSIEncoderModel(resolution=8, position=1, error_bits=2,
+                            core_clock_hz=100_000_000, f_max_hz=10_000_000,
+                            monoflop_us=1)
+    first = clock_frame(model, start=0)
+    model.set_position(0b111111)
+    model.set_error(0b10)
+    second = clock_frame(model, start=10_000)
+
+    assert (first, second) == (0b000001_00, 0b111111_10)
+    assert [(event["position"], event["error"])
+            for event in complete_events(model)] == [(1, 0), (0b111111, 0b10)]
+
+
+def test_snapshot_restores_the_error_field():
+    model = SSIEncoderModel(resolution=8, error_bits=2, error_value=0b11)
+    snap = model.snapshot()
+    model.set_error(0)
+    model.restore(snap)
+
+    assert model.error == 0b11
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"resolution": 8, "error_bits": 8},
+    {"resolution": 8, "error_bits": -1},
+    {"resolution": 8, "position_bits": 9},
+    {"resolution": 8, "position_bits": 0},
+    {"resolution": 8, "error_bits": 2, "error_value": 4},
+    {"resolution": 8, "error_value": 1},
+    {"resolution": 8, "position_bits": 6, "position": 64},
+    {"resolution": 8, "position_bits": 4, "position_offset": 5},
+    {"resolution": 8, "error_bits": 2, "error_offset": 7},
+    {"resolution": 8, "position_bits": 4, "error_bits": 2,
+     "position_offset": 0, "error_offset": 3},
+    {"resolution": 8, "error_bits": True},
+    {"resolution": 8, "error_value": True},
+    {"resolution": 8, "error_bits": 1, "error_value": -1},
+])
+def test_invalid_frame_layouts_are_rejected(kwargs):
+    with pytest.raises(ValueError):
+        SSIEncoderModel(**kwargs)

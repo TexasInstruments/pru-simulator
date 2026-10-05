@@ -1,9 +1,11 @@
 from fractions import Fraction
 from pathlib import Path
 import shutil
+import struct
 
 import pytest
 
+from pru_io import ssi_config_abi as abi
 from pru_io.ssi_runtime import SSIRuntime
 from simulator import Simulator
 
@@ -115,3 +117,83 @@ def test_documented_300mhz_run_uses_copied_config_and_constants_sidecar(tmp_path
 
     assert result["reached"] is True
     assert result["mailbox"]["raw_frame"] == 0xABC
+
+
+# preset: (frame bits, position bits, error bits); values written from the
+# SICK document, not read back from the model under test.
+PRESET_CASES = [
+    ("CUSTOM_LEGACY_12BIT_4MHZ", 12, 12, 0),
+    ("AHS_AHM36_SINGLETURN", 15, 14, 1),
+    ("AFS_AFM60_SINGLETURN", 21, 18, 3),
+    ("AFS_AFM60_MULTITURN_30BIT", 33, 30, 3),
+    ("TTK70", 26, 24, 2),
+    ("KH53", 24, 24, 0),
+]
+
+
+@pytest.mark.parametrize(("preset", "frame_bits", "position_bits", "error_bits"),
+                         PRESET_CASES)
+def test_reader_publishes_both_mailbox_words_for_each_preset(
+        preset, frame_bits, position_bits, error_bits):
+    sim = Simulator("memory.cfg")
+    position = 0xA5A5A5A5A5A5A5A5 & ((1 << position_bits) - 1)
+    error = 0b101 & ((1 << error_bits) - 1)
+    expected = (position << error_bits) | error  # error bits are sent last
+
+    with SSIRuntime(sim, preset=preset, position=position,
+                    error_value=error) as runtime:
+        runtime.load(clock_delay_loops=40)
+        result = runtime.run_until_frames(1, max_steps=40_000)
+        runtime.step(10_000)  # let the encoder's Tm guard expire
+        mailbox = runtime.mailbox()
+        events = runtime.encoder.events()
+        faults = runtime.encoder.faults()
+
+    assert result["reached"] is True
+    assert (mailbox["raw_frame_lo"], mailbox["raw_frame_hi"]) == (
+        expected & 0xFFFFFFFF, expected >> 32)
+    assert (mailbox["raw_frame"], mailbox["position"], mailbox["error"]) == (
+        expected, position, error)
+    assert mailbox["status"] == 0
+    assert faults == []
+    assert [event["raw_value"] for event in events] == [expected]
+
+
+def test_reader_runtime_decodes_gray_position_next_to_an_error_field():
+    sim = Simulator("memory.cfg")
+
+    with SSIRuntime(sim, preset="AFS_AFM60_SINGLETURN", position=0x2AAAA,
+                    error_value=0b010, encoding="gray") as runtime:
+        runtime.load(clock_delay_loops=40)
+        runtime.run_until_frames(1, max_steps=40_000)
+        runtime.step(10_000)
+        mailbox = runtime.mailbox()
+
+    assert mailbox["raw_frame"] == ((0x2AAAA ^ 0x15555) << 3) | 0b010
+    assert (mailbox["position"], mailbox["error"]) == (0x2AAAA, 0b010)
+
+
+def test_reader_runtime_rejects_unknown_preset():
+    with pytest.raises(ValueError, match="unknown SSI preset"):
+        SSIRuntime(Simulator("memory.cfg"), preset="NOT_A_PRESET")
+
+
+@pytest.mark.parametrize("config", [
+    struct.pack("<IIII", abi.ABI_VERSION, 0, 20, 8),
+    struct.pack("<IIII", abi.ABI_VERSION, 65, 20, 8),
+    struct.pack("<IIII", abi.ABI_VERSION - 1, 12, 20, 8),
+])
+def test_reader_halts_with_status_one_on_invalid_config(config):
+    sim = Simulator("memory.cfg")
+    runtime = SSIRuntime(sim)
+    sim.memory.write(abi.CONFIG_ADDRESS, config)
+    firmware = Path("source/ssi_generic_reader/ssi_generic_reader.asm")
+    assert sim.load("pru1", firmware.read_text(encoding="utf-8"),
+                    include_paths=["source"]) == []
+    runtime._loaded = True
+
+    runtime.step(100)
+
+    assert runtime.mailbox()["status"] == 1
+    assert runtime.mailbox()["frame_count"] == 0
+    runtime.close()

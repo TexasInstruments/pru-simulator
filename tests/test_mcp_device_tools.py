@@ -47,6 +47,27 @@ def test_generic_discovery_attach_state_and_detach_preserve_output_ownership():
     assert mcp.sim.io("pru1")["gpo_drive_mask"] == initial_mask
 
 
+def test_attach_ssi_preset_and_report_layout_through_generic_tools():
+    mcp = fresh_mcp()
+    assert "TTK70" in mcp.pru_device_discover()["profiles"]["ssi_encoder"]["presets"]
+
+    attached = mcp.pru_device_attach(
+        core="pru1", profile="ssi_encoder",
+        config={"name": "axis", "data_pin": 16, "preset": "TTK70",
+                "position": 0x123456, "error_value": 2, "encoding": "gray"},
+    )
+
+    device = attached["device"]
+    assert (device["preset"], device["resolution"], device["position_bits"],
+            device["error_bits"], device["error"], device["encoding"]) == (
+        "TTK70", 26, 24, 2, 2, "gray")
+    with pytest.raises(ValueError):
+        mcp.pru_device_attach(core="pru1", profile="ssi_encoder",
+                              config={"name": "bad", "preset": "TTK70",
+                                      "error_value": 9})
+    assert [d["name"] for d in mcp.pru_device_state()["devices"]] == ["axis"]
+
+
 def test_ssi_profile_defaults_to_exact_selected_core_clock(tmp_path):
     config = tmp_path / "clock.cfg"
     config.write_text(
