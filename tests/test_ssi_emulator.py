@@ -45,7 +45,7 @@ def sim():
 
 # preset, frame bits, position bits, error bits, position, error
 CASES = [
-    ("CUSTOM_LEGACY_12BIT_4MHZ", 12, 12, 0, 0xABC, 0),
+    ("RM08_12BIT_4MHZ", 12, 12, 0, 0xABC, 0),
     ("AFS_AFM60_MULTITURN_30BIT", 33, 30, 3, 0x2ABCDEF1, 0b101),
     ("AHS_AHM36_MULTITURN", 27, 26, 1, 0x3FFFFFF, 1),
     ("TTK70", 26, 24, 2, 0x800001, 0b10),

@@ -6,7 +6,7 @@ from pru_io.ssi_presets import PRESETS, PRESET_SOURCES, preset_fields
 
 # name: (frame bits, position bits, error bits), written out from the document.
 EXPECTED = {
-    "CUSTOM_LEGACY_12BIT_4MHZ": (12, 12, 0),
+    "RM08_12BIT_4MHZ": (12, 12, 0),
     "AHS_AHM36_SINGLETURN": (15, 14, 1),
     "AHS_AHM36_MULTITURN": (27, 26, 1),
     "AFS_AFM60_SINGLETURN": (21, 18, 3),
@@ -41,19 +41,19 @@ def test_every_preset_validates_with_the_documented_frame(name):
 
 
 def test_sick_presets_use_the_documented_timing_limits():
-    for name in EXPECTED.keys() - {"CUSTOM_LEGACY_12BIT_4MHZ"}:
+    for name in EXPECTED.keys() - {"RM08_12BIT_4MHZ"}:
         assert preset_fields(name)["f_max_hz"] == 2_000_000
         assert preset_fields(name)["monoflop_us"] == 20
 
 
 def test_standard_preset_is_the_rm08_12_bit_4_mhz_encoder():
-    fields = preset_fields("CUSTOM_LEGACY_12BIT_4MHZ")
+    fields = preset_fields("RM08_12BIT_4MHZ")
 
     assert (fields["resolution"], fields["error_bits"]) == (12, 0)
     assert (fields["f_max_hz"], fields["monoflop_us"]) == (4_000_000, 12.5)
     assert fields["encoding"] == "binary"
-    assert "RM08" in PRESET_SOURCES["CUSTOM_LEGACY_12BIT_4MHZ"]
-    assert SSIEncoderModel.from_preset("CUSTOM_LEGACY_12BIT_4MHZ").monoflop_us == 12.5
+    assert "RM08" in PRESET_SOURCES["RM08_12BIT_4MHZ"]
+    assert SSIEncoderModel.from_preset("RM08_12BIT_4MHZ").monoflop_us == 12.5
 
 
 def test_options_override_preset_fields_and_unknown_presets_are_rejected():

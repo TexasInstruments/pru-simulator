@@ -18,7 +18,7 @@ model has no equivalent, so presets do not carry them. Every SICK preset is
 binary; the document says the code is configurable (p. 10) but does not fix a
 default, so binary is an assumption.
 
-``CUSTOM_LEGACY_12BIT_4MHZ`` is the standard simple encoder, not a SICK frame:
+``RM08_12BIT_4MHZ`` is the standard simple encoder, not a SICK frame:
 12 bits, natural binary, no error bits, clock <= 4 MHz and tm = 12.5 us. It
 follows the RM08 magnetic encoder data sheet (RM08D01_18, issue 18), p. 10: SSI
 output with up to 4096 cpr (12 bits), clock <= 4 MHz and 12.5 us <= tm <= 20.5
@@ -36,7 +36,7 @@ def _frame(resolution: int, error_bits: int) -> dict:
 
 
 PRESETS = {
-    "CUSTOM_LEGACY_12BIT_4MHZ": {
+    "RM08_12BIT_4MHZ": {
         "resolution": 12, "position_bits": 12, "error_bits": 0,
         "encoding": "binary", "f_max_hz": 4_000_000, "monoflop_us": 12.5,
     },
@@ -55,7 +55,7 @@ PRESETS = {
 
 # IM0100079 page of each preset's frame diagram.
 PRESET_SOURCES = {
-    "CUSTOM_LEGACY_12BIT_4MHZ": "RM08D01_18 p. 10",
+    "RM08_12BIT_4MHZ": "RM08D01_18 p. 10",
     "AHS_AHM36_SINGLETURN": "IM0100079 p. 8",
     "AHS_AHM36_MULTITURN": "IM0100079 p. 11",
     "AFS_AFM60_SINGLETURN": "IM0100079 p. 14",

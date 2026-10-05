@@ -65,7 +65,7 @@ comes from the RM08 miniature magnetic encoder data sheet, RM08D01_18 (issue 18,
 
 | Preset | Frame bits | Position bits | Error bits | Source |
 |---|---:|---:|---:|---|
-| `CUSTOM_LEGACY_12BIT_4MHZ` | 12 | 12 | 0 | RM08D01_18 p. 10 (standard, not SICK) |
+| `RM08_12BIT_4MHZ` | 12 | 12 | 0 | RM08D01_18 p. 10 (standard, not SICK) |
 | `AHS_AHM36_SINGLETURN` | 15 | 14 | 1 | p. 8 |
 | `AHS_AHM36_MULTITURN` | 27 | 26 | 1 | p. 11 |
 | `AFS_AFM60_SINGLETURN` | 21 | 18 | 3 | p. 14 |
@@ -191,12 +191,31 @@ sim.memory.write(abi.CONFIG_ADDRESS, abi.pack_config(
 sim.load("pru1", reader_source, include_paths=["source"])  # the reader asm
 ```
 
-## Manual 300 MHz run
+## Manual 300 MHz run (test only)
 
-`memory.cfg` stays at the shipped 250 MHz default. To try the example at
-300 MHz, copy the config and its constants sidecar into a temporary directory.
-The simulator locates `constants_am243x.cfg` relative to the config file, so
-the sidecar needs to follow the copied `memory.cfg`:
+The default core clock is **250 MHz** and it stays that way: `memory.cfg`
+ships with `pru_clock_mhz = 250` and `pru1_clock_mhz = 250`, and every default,
+example and test is written for it. Running at 300 MHz is a manual switch that
+someone makes only to try the reader at that clock. Do not change the shipped
+`memory.cfg` for it.
+
+Pick one way to switch, and switch back afterwards:
+
+* **Temporary config (preferred).** Copy the config and its constants sidecar
+  into a temporary directory and edit the copy, as below. The shipped
+  `memory.cfg` is never touched.
+* **Dashboard.** The core speed selector (300) rewrites `memory.cfg` in place.
+  Pick 250 again, or run `git checkout memory.cfg`, before committing.
+* **Editing `memory.cfg` by hand.** Set both `pru_clock_mhz` and
+  `pru1_clock_mhz`, then restore 250 the same way.
+
+The reader needs a longer bit period at 300 MHz. Its bit period is about four
+cycles per `clock_delay_loops` plus eight, and the encoder model enforces
+`f_max_hz`: at 300 MHz the 4 MHz `RM08_12BIT_4MHZ` preset needs at least 75
+cycles per bit (`clock_delay_loops=20` gives about 88), and the 2 MHz SICK
+presets need at least 150 (`clock_delay_loops=40` gives about 168). The
+simulator locates `constants_am243x.cfg` relative to the config file, so the
+sidecar must follow the copied `memory.cfg`:
 
 ```python
 from pathlib import Path
@@ -221,8 +240,7 @@ with tempfile.TemporaryDirectory(prefix="ssi-300-") as temporary:
 
     sim = Simulator(str(config))
     assert sim.constant_table.resolve(28) == 0x00010000
-    with SSIRuntime(sim, position=0xABC, resolution=12,
-                    f_max_hz=4_000_000, monoflop_us=20.5) as ssi:
+    with SSIRuntime(sim, preset="RM08_12BIT_4MHZ", position=0xABC) as ssi:
         ssi.load(clock_delay_loops=20)
         result = ssi.run_until_frames(1, max_steps=20_000)
         assert result["reached"]
@@ -233,7 +251,9 @@ with tempfile.TemporaryDirectory(prefix="ssi-300-") as temporary:
 
 The helper reads the selected core clock exactly from the simulator and
 computes its idle delay from Tm. The temporary config and constants sidecar are
-removed automatically; the tracked `memory.cfg` remains untouched.
+removed automatically; the tracked `memory.cfg` remains untouched. The same
+switch works for the emulator firmware on PRU0 (see
+`tests/test_ssi_board_loopback.py`). The IEP clock plays no part in the reader.
 
 ## Generic MCP device profiles
 

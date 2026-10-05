@@ -122,7 +122,7 @@ def test_documented_300mhz_run_uses_copied_config_and_constants_sidecar(tmp_path
 # preset: (frame bits, position bits, error bits); values written from the
 # SICK document, not read back from the model under test.
 PRESET_CASES = [
-    ("CUSTOM_LEGACY_12BIT_4MHZ", 12, 12, 0),
+    ("RM08_12BIT_4MHZ", 12, 12, 0),
     ("AHS_AHM36_SINGLETURN", 15, 14, 1),
     ("AFS_AFM60_SINGLETURN", 21, 18, 3),
     ("AFS_AFM60_MULTITURN_30BIT", 33, 30, 3),
