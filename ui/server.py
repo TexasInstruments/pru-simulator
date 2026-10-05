@@ -22,6 +22,7 @@ from mcp_server.server import PRUSimulatorMCP
 from core.branch import LoopState
 from perif.gpcfg import MUX_SD
 from pru_io import foc_control_abi
+from pru_io.device_profiles import discover_device_profiles
 from pru_io.ssi_encoder_model import SSIEncoderModel
 from xfr.xfr_bus import SPAD_BANK0, SPAD_BANK1, SPAD_BANK2, IPC_SPAD
 
@@ -662,7 +663,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json({"type": "error", "tag": "device",
                                                "errors": [str(exc)]})
                 await _send_state(websocket, core)
-            elif action == "ssi_set_position":
+            elif action == "device_discover":
+                await websocket.send_json({
+                    "type": "device_profiles",
+                    "profiles": discover_device_profiles(),
+                })
+            elif action in ("ssi_set_position", "ssi_set_error"):
                 try:
                     name = msg.get("name", "")
                     device = sim.device_bus.get_device(name)
@@ -671,7 +677,10 @@ async def websocket_endpoint(websocket: WebSocket):
                         raise ValueError(f"device {name!r} is attached to {attached_core}")
                     if not isinstance(device, SSIEncoderModel):
                         raise ValueError(f"device {name!r} is not an SSI encoder")
-                    device.set_position(msg.get("position"))
+                    if action == "ssi_set_position":
+                        device.set_position(msg.get("position"))
+                    else:
+                        device.set_error(msg.get("error"))
                     _clear_history()
                 except (KeyError, TypeError, ValueError) as exc:
                     await websocket.send_json({"type": "error", "tag": "device",

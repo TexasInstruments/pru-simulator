@@ -1714,11 +1714,22 @@ Example:
                   <label class="runtime-device-field" for="ssi-data-pin">Data GPI pin
                     <input id="ssi-data-pin" type="number" value="8" min="0" max="19" step="1" required>
                   </label>
+                  <label class="runtime-device-field" for="ssi-preset">Preset
+                    <select id="ssi-preset">
+                      <option value="">Custom</option>
+                    </select>
+                  </label>
                   <label class="runtime-device-field" for="ssi-position">Position
-                    <input id="ssi-position" type="number" value="0" min="0" max="4294967295" step="1" required>
+                    <input id="ssi-position" type="number" value="0" min="0" max="9007199254740991" step="1" required>
                   </label>
                   <label class="runtime-device-field" for="ssi-resolution">Resolution (bits)
-                    <input id="ssi-resolution" type="number" value="12" min="1" max="32" step="1" required>
+                    <input id="ssi-resolution" type="number" value="12" min="1" max="64" step="1" required>
+                  </label>
+                  <label class="runtime-device-field" for="ssi-error-bits">Error bits
+                    <input id="ssi-error-bits" type="number" value="0" min="0" max="63" step="1" required>
+                  </label>
+                  <label class="runtime-device-field" for="ssi-error-value">Error value
+                    <input id="ssi-error-value" type="number" value="0" min="0" step="1" required>
                   </label>
                   <label class="runtime-device-field" for="ssi-encoding">Encoding
                     <select id="ssi-encoding">

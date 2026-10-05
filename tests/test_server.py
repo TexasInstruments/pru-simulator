@@ -250,6 +250,72 @@ def test_websocket_attaches_updates_and_detaches_ssi_encoder(fresh_sim):
     assert "device_bus" not in detached["io"]
 
 
+def test_websocket_lists_ssi_presets_for_the_device_panel(fresh_sim):
+    sent = _run_websocket_actions([{"action": "device_discover", "core": "pru1"}])
+
+    profiles = next(message for message in sent
+                    if message.get("type") == "device_profiles")["profiles"]
+    presets = profiles["ssi_encoder"]["presets"]
+    assert len(presets) == 12
+    assert presets["AFS_AFM60_MULTITURN_30BIT"]["resolution"] == 33
+    assert presets["TTK70"]["error_bits"] == 2
+
+
+def test_websocket_attaches_ssi_preset_and_sets_position_and_error(fresh_sim):
+    import ui.server as srv
+
+    srv._history["pru1"].append({"stale": True})
+    sent = _run_websocket_actions([
+        {"action": "device_attach", "core": "pru1", "profile": "ssi_encoder",
+         "config": {"name": "axis", "preset": "AFS_AFM60_SINGLETURN",
+                    "position": 0x2AAAA, "error_value": 1}},
+        {"action": "ssi_set_error", "core": "pru1", "name": "axis", "error": 5},
+        {"action": "ssi_set_position", "core": "pru1", "name": "axis",
+         "position": 7},
+    ])
+
+    assert not any(message.get("type") == "error" for message in sent)
+    states = [message for message in sent if message.get("type") == "state"]
+    first = states[0]["io"]["device_bus"]["devices"][0]
+    assert (first["preset"], first["resolution"], first["error_bits"],
+            first["error"]) == ("AFS_AFM60_SINGLETURN", 21, 3, 1)
+    last = states[-1]["io"]["device_bus"]["devices"][0]
+    assert (last["error"], last["position"]) == (5, 7)
+    assert fresh_sim.device_bus.get_device("axis").pack_frame(7, 5) == (7 << 3) | 5
+    assert not srv._history["pru1"]
+
+
+def test_websocket_rejects_invalid_ssi_error_updates(fresh_sim):
+    sent = _run_websocket_actions([
+        {"action": "device_attach", "core": "pru1", "profile": "ssi_encoder",
+         "config": {"name": "axis", "resolution": 8, "error_bits": 2,
+                    "error_value": 1}},
+        {"action": "device_attach", "core": "pru1", "profile": "ssi_encoder",
+         "config": {"name": "plain", "data_pin": 9, "resolution": 8}},
+        {"action": "ssi_set_error", "core": "pru1", "name": "axis", "error": 4},
+        {"action": "ssi_set_error", "core": "pru1", "name": "plain", "error": 1},
+        {"action": "ssi_set_error", "core": "pru0", "name": "axis", "error": 1},
+        {"action": "ssi_set_error", "core": "pru1", "name": "missing", "error": 1},
+        {"action": "ssi_set_error", "core": "pru1", "name": "axis"},
+    ])
+
+    errors = [message for message in sent if message.get("type") == "error"]
+    assert len(errors) == 5
+    assert all(error["tag"] == "device" for error in errors)
+    assert fresh_sim.device_bus.get_device("axis").error == 1
+    assert fresh_sim.device_bus.get_device("plain").error == 0
+
+
+def test_websocket_set_error_rejects_non_ssi_device(fresh_sim):
+    sent = _run_websocket_actions([
+        {"action": "device_attach", "core": "pru0", "profile": "foc_motor"},
+        {"action": "ssi_set_error", "core": "pru0", "name": "foc_motor", "error": 1},
+    ])
+
+    error = next(message for message in sent if message.get("type") == "error")
+    assert "not an SSI encoder" in error["errors"][0]
+
+
 def test_websocket_foc_apply_writes_control_abi_and_sd_routes(fresh_sim):
     sent = _run_websocket_actions([
         {"action": "device_attach", "core": "pru0", "profile": "foc_motor"},

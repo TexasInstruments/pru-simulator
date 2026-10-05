@@ -47,7 +47,7 @@ const harness = new Function('document', `
   const focDirtyFields = new Set(${JSON.stringify(fields.map(([id]) => id).concat(routeIds))});
   let focApplyDraft = { config: ${JSON.stringify(draftConfig)}, routes: [3, 4] };
   ${app.slice(start, end)}
-  return { updateDevicePanel, focDirtyFields, hasPendingApply: () => focApplyDraft !== null };
+  return { updateDevicePanel, ssiFieldMax, syncSsiSetter, focDirtyFields, hasPendingApply: () => focApplyDraft !== null };
 `)(document);
 
 const motor = { model: 'three_phase_rl', name: 'foc_motor', phase_currents_a: [] };
@@ -64,5 +64,19 @@ assert.equal(harness.focDirtyFields.size, 0, 'acknowledged fields become eligibl
 const resetConfig = { ...initialConfig, alpha_q15: 999 };
 harness.updateDevicePanel(state(resetConfig), 'pru0');
 assert.equal(nodes.get('foc-alpha-q15').value, '999', 'later backend reset state replaces the applied value');
+
+assert.equal(harness.ssiFieldMax(3), 7, 'SSI field limit follows the field width');
+assert.equal(harness.ssiFieldMax(64), Number.MAX_SAFE_INTEGER, 'wide SSI fields stay exact in JSON');
+
+const setter = { dataset: {} };
+harness.syncSsiSetter(setter, 5, 7);
+assert.deepEqual([setter.value, setter.max], ['5', '7'], 'SSI setter follows backend value and limit');
+setter.dataset.dirty = 'true';
+harness.syncSsiSetter(setter, 6, 7);
+assert.equal(setter.value, '5', 'a dirty SSI setter keeps the draft');
+setter.dataset.pending = '6';
+harness.syncSsiSetter(setter, 6, 7);
+assert.equal(setter.value, '6', 'an acknowledged SSI setter follows the backend again');
+assert.equal(setter.dataset.dirty, undefined);
 
 console.log('FOC device panel acknowledges Apply and follows later backend state');

@@ -10,6 +10,7 @@ let prevRegisters = new Array(32).fill("0x00000000");
 let currentCore = "pru0";
 let devicePanelCore = "pru0";
 let focMotorName = null;
+let ssiPresets = {};
 const focConfigFields = [
   ['foc-alpha-q15', 'alpha_q15'],
   ['foc-beta-q15', 'beta_q15'],
@@ -348,6 +349,7 @@ function connect() {
     } else {
       sendAction({ action: "get_state", core: currentCore });
     }
+    sendAction({ action: "device_discover" });
     refreshMemory();
     refreshMemory2();
     loadRegions();
@@ -392,6 +394,8 @@ function connect() {
           st.style.color = "#6a9955";
           st.style.display = "";
         }
+      } else if (msg.type === "device_profiles") {
+        populateSsiPresets(msg.profiles);
       } else if (msg.type === "perif_ok") {
         const st = document.getElementById("perif-lb-status");
         if (st) {
@@ -1094,25 +1098,28 @@ function updateDevicePanel(io, core) {
         detail.dataset.role = 'detail';
         row.appendChild(detail);
 
-        const positionLabel = document.createElement('label');
-        positionLabel.className = 'runtime-device-field runtime-device-position';
-        positionLabel.textContent = 'Set next position';
-        const position = document.createElement('input');
-        position.type = 'number';
-        position.min = '0';
-        position.step = '1';
-        position.required = true;
-        position.dataset.position = 'true';
-        position.addEventListener('input', () => {
-          position.dataset.dirty = 'true';
-          delete position.dataset.pending;
-        });
-        positionLabel.appendChild(position);
-        row.appendChild(positionLabel);
+        for (const [key, text] of [['position', 'Set next position'], ['error', 'Set next error']]) {
+          const label = document.createElement('label');
+          label.className = `runtime-device-field runtime-device-${key}-field`;
+          label.dataset.role = `${key}-field`;
+          label.textContent = text;
+          const input = document.createElement('input');
+          input.type = 'number';
+          input.min = '0';
+          input.step = '1';
+          input.required = true;
+          input.dataset[key] = 'true';
+          input.addEventListener('input', () => {
+            input.dataset.dirty = 'true';
+            delete input.dataset.pending;
+          });
+          label.appendChild(input);
+          row.appendChild(label);
+        }
 
         const actions = document.createElement('div');
         actions.className = 'runtime-device-actions';
-        for (const [action, label] of [['set-position', 'Set position'], ['detach', 'Detach']]) {
+        for (const [action, label] of [['set-position', 'Set position'], ['set-error', 'Set error'], ['detach', 'Detach']]) {
           const button = document.createElement('button');
           button.className = 'runtime-device-button';
           button.type = 'button';
@@ -1126,7 +1133,9 @@ function updateDevicePanel(io, core) {
       row.querySelector('.runtime-device-row-title').textContent = device.name;
       const detail = row.querySelector('[data-role="detail"]');
       detail.textContent = `CLK GPO ${device.clock_pin} · DATA GPI ${device.data_pin} · ` +
+        `${device.preset ? `${device.preset} · ` : ''}` +
         `${device.resolution}-bit ${device.encoding} · position ${device.position} · ` +
+        `${device.error_bits ? `error ${device.error} · ` : ''}` +
         `${device.frames_captured || 0} frame${device.frames_captured === 1 ? '' : 's'} · ` +
         `${device.bits_clocked || 0}/${device.resolution} bits (${device.state || 'idle'})`;
 
@@ -1141,7 +1150,8 @@ function updateDevicePanel(io, core) {
       }
       frame.hidden = !lastFrame;
       if (lastFrame) {
-        frame.textContent = `Latest frame: ${lastFrame.position} at cycle ${lastFrame.cycle}`;
+        const frameError = lastFrame.error === undefined ? '' : ` (error ${lastFrame.error})`;
+        frame.textContent = `Latest frame: ${lastFrame.position}${frameError} at cycle ${lastFrame.cycle}`;
       }
       const lastFaultEvent = deviceEvents.slice().reverse().find(event => event.kind === 'fault');
       const lastFault = faults.slice().reverse().find(message => message.startsWith(`${device.name}:`));
@@ -1157,16 +1167,15 @@ function updateDevicePanel(io, core) {
         fault.textContent = `Latest fault: ${lastFaultEvent ? lastFaultEvent.message : lastFault.slice(device.name.length + 1).trim()}`;
       }
 
-      const position = row.querySelector('input[data-position]');
-      position.min = '0';
-      position.max = String((2 ** device.resolution) - 1);
-      position.step = '1';
-      position.required = true;
-      if (position.dataset.pending === String(device.position)) {
-        delete position.dataset.pending;
-        delete position.dataset.dirty;
+      syncSsiSetter(row.querySelector('input[data-position]'), device.position,
+        ssiFieldMax(device.position_bits || device.resolution));
+      const hasError = device.error_bits > 0;
+      row.querySelector('[data-role="error-field"]').hidden = !hasError;
+      row.querySelector('button[data-device-action="set-error"]').hidden = !hasError;
+      if (hasError) {
+        syncSsiSetter(row.querySelector('input[data-error]'), device.error,
+          ssiFieldMax(device.error_bits));
       }
-      if (position.dataset.dirty !== 'true') position.value = String(device.position);
       for (const button of row.querySelectorAll('button[data-device-action]')) {
         button.dataset.name = device.name;
       }
@@ -1244,6 +1253,23 @@ function updateDevicePanel(io, core) {
       }
     }
   }
+}
+
+// The UI sends numbers, so wide fields are limited to 2^53 - 1.
+function ssiFieldMax(bits) {
+  return Math.min(2 ** bits - 1, Number.MAX_SAFE_INTEGER);
+}
+
+function syncSsiSetter(input, value, max) {
+  input.min = '0';
+  input.max = String(max);
+  input.step = '1';
+  input.required = true;
+  if (input.dataset.pending === String(value)) {
+    delete input.dataset.pending;
+    delete input.dataset.dirty;
+  }
+  if (input.dataset.dirty !== 'true') input.value = String(value);
 }
 
 // ---- Signal graph — buffer -------------------------------------------------
@@ -2579,6 +2605,28 @@ function deviceNumberValue(id) {
   return input.valueAsNumber;
 }
 
+function populateSsiPresets(profiles) {
+  const select = document.getElementById('ssi-preset');
+  const presets = profiles && profiles.ssi_encoder && profiles.ssi_encoder.presets;
+  if (!select || !presets) return;
+  ssiPresets = presets;
+  while (select.options.length > 1) select.remove(1);
+  for (const name of Object.keys(presets)) {
+    const option = document.createElement('option');
+    option.value = name;
+    option.textContent = name;
+    select.appendChild(option);
+  }
+}
+
+document.getElementById('ssi-preset')?.addEventListener('change', event => {
+  const preset = ssiPresets[event.target.value];
+  if (!preset) return;
+  document.getElementById('ssi-resolution').value = String(preset.resolution);
+  document.getElementById('ssi-error-bits').value = String(preset.error_bits);
+  document.getElementById('ssi-encoding').value = preset.encoding;
+});
+
 document.getElementById('ssi-attach-button')?.addEventListener('click', () => {
   const nameInput = document.getElementById('ssi-device-name');
   if (!nameInput.checkValidity()) {
@@ -2588,32 +2636,48 @@ document.getElementById('ssi-attach-button')?.addEventListener('click', () => {
   const clockPin = deviceNumberValue('ssi-clock-pin');
   const dataPin = deviceNumberValue('ssi-data-pin');
   const positionInput = document.getElementById('ssi-position');
+  const errorBitsInput = document.getElementById('ssi-error-bits');
+  const errorValueInput = document.getElementById('ssi-error-value');
   const resolution = deviceNumberValue('ssi-resolution');
-  positionInput.setCustomValidity('');
-  if (clockPin === null || dataPin === null || resolution === null ||
-      !positionInput.checkValidity()) {
-    positionInput.reportValidity();
+  const errorBits = deviceNumberValue('ssi-error-bits');
+  for (const input of [positionInput, errorBitsInput, errorValueInput]) input.setCustomValidity('');
+  if (clockPin === null || dataPin === null || resolution === null || errorBits === null ||
+      !positionInput.checkValidity() || !errorValueInput.checkValidity()) {
+    (positionInput.checkValidity() ? errorValueInput : positionInput).reportValidity();
     return;
   }
-  const position = positionInput.valueAsNumber;
-  if (position >= 2 ** resolution) {
-    positionInput.setCustomValidity(`Position must fit the ${resolution}-bit resolution.`);
-    positionInput.reportValidity();
+  const positionBits = resolution - errorBits;
+  if (positionBits < 1) {
+    errorBitsInput.setCustomValidity('Error bits must leave at least one position bit.');
+    errorBitsInput.reportValidity();
     return;
   }
-  positionInput.setCustomValidity('');
+  for (const [input, bits, label] of [[positionInput, positionBits, 'Position'],
+                                      [errorValueInput, errorBits, 'Error value']]) {
+    if (input.valueAsNumber > ssiFieldMax(bits)) {
+      input.setCustomValidity(`${label} must be at most ${ssiFieldMax(bits)}.`);
+      input.reportValidity();
+      return;
+    }
+  }
+  const config = {
+    name: nameInput.value.trim(),
+    clock_pin: clockPin,
+    data_pin: dataPin,
+    position: positionInput.valueAsNumber,
+    resolution,
+    position_bits: positionBits,
+    error_bits: errorBits,
+    error_value: errorValueInput.valueAsNumber,
+    encoding: document.getElementById('ssi-encoding').value,
+  };
+  const preset = document.getElementById('ssi-preset').value;
+  if (preset) config.preset = preset;
   sendDeviceAction({
     action: 'device_attach',
     core: devicePanelCore,
     profile: 'ssi_encoder',
-    config: {
-      name: nameInput.value.trim(),
-      clock_pin: clockPin,
-      data_pin: dataPin,
-      position,
-      resolution,
-      encoding: document.getElementById('ssi-encoding').value,
-    },
+    config,
   });
 });
 
@@ -2625,20 +2689,21 @@ document.getElementById('ssi-device-list')?.addEventListener('click', event => {
     sendDeviceAction({ action: 'device_detach', core: devicePanelCore, name });
     return;
   }
+  const field = button.dataset.deviceAction === 'set-error' ? 'error' : 'position';
   const row = button.closest('.runtime-device-row');
-  const positionInput = row && row.querySelector('input[data-position]');
-  if (!positionInput || !positionInput.checkValidity()) {
-    positionInput?.reportValidity();
+  const input = row && row.querySelector(`input[data-${field}]`);
+  if (!input || !input.checkValidity()) {
+    input?.reportValidity();
     return;
   }
   sendDeviceAction({
-    action: 'ssi_set_position',
+    action: `ssi_set_${field}`,
     core: devicePanelCore,
     name,
-    position: positionInput.valueAsNumber,
+    [field]: input.valueAsNumber,
   });
-  positionInput.dataset.pending = String(positionInput.valueAsNumber);
-  positionInput.dataset.dirty = 'true';
+  input.dataset.pending = String(input.valueAsNumber);
+  input.dataset.dirty = 'true';
 });
 
 document.getElementById('foc-attach-button')?.addEventListener('click', () => {
