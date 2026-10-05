@@ -14,7 +14,8 @@ OUTPUTS = {
 }
 _EXPECTED_FIELDS = {
     "config": ("abi_version", "frame_bits", "clock_delay_loops", "idle_delay_loops"),
-    "mailbox": ("sequence", "raw_frame", "frame_count", "status"),
+    "mailbox": ("sequence", "raw_frame_lo", "raw_frame_hi", "frame_count", "status"),
+    "emulator": ("abi_version", "frame_bits", "frame_lo", "frame_hi", "status"),
 }
 
 
@@ -75,7 +76,7 @@ def load_schema(path: Path = SCHEMA_PATH) -> dict:
 def _constants(schema: dict) -> list[tuple[str, int]]:
     values = [("SSI_ABI_VERSION", schema["version"]),
               ("SSI_SHARED_BASE", schema["shared_base"])]
-    for group_name in ("config", "mailbox"):
+    for group_name in _EXPECTED_FIELDS:
         group = schema[group_name]
         prefix = f"SSI_{group_name.upper()}"
         values.append((f"{prefix}_OFFSET", group["offset"]))
@@ -99,6 +100,8 @@ def _generate_python(schema: dict) -> str:
     mailbox = schema["mailbox"]
     config_size = max(config["fields"].values()) + 4
     mailbox_size = max(mailbox["fields"].values()) + 4
+    emulator = schema["emulator"]
+    emulator_size = max(emulator["fields"].values()) + 4
     lines = [
         '"""GENERATED FILE -- source: schema/ssi_config_abi.json."""',
         "import struct",
@@ -110,8 +113,10 @@ def _generate_python(schema: dict) -> str:
     lines.extend([
         f"CONFIG_SIZE = {config_size}",
         f"MAILBOX_SIZE = {mailbox_size}",
+        f"EMULATOR_SIZE = {emulator_size}",
         f"_CONFIG_STRUCT = struct.Struct('<{'I' * len(config['fields'])}')",
         f"_MAILBOX_STRUCT = struct.Struct('<{'I' * len(mailbox['fields'])}')",
+        f"_EMULATOR_STRUCT = struct.Struct('<{'I' * len(emulator['fields'])}')",
         "_U32_MAX = 0xFFFFFFFF",
         "",
         "def _u32(name, value):",
@@ -122,12 +127,21 @@ def _generate_python(schema: dict) -> str:
         "",
         "def pack_config(frame_bits, clock_delay_loops, idle_delay_loops):",
         "    if (isinstance(frame_bits, bool) or not isinstance(frame_bits, int)",
-        "            or not 1 <= frame_bits <= 32):",
-        "        raise ValueError('frame_bits must be an integer from 1 to 32')",
+        "            or not 1 <= frame_bits <= 64):",
+        "        raise ValueError('frame_bits must be an integer from 1 to 64')",
         "    return _CONFIG_STRUCT.pack(",
         "        ABI_VERSION, _u32('frame_bits', frame_bits),",
         "        _u32('clock_delay_loops', clock_delay_loops),",
         "        _u32('idle_delay_loops', idle_delay_loops),",
+        "    )",
+        "",
+        "def pack_emulator_config(frame_bits, frame_lo, frame_hi):",
+        "    if (isinstance(frame_bits, bool) or not isinstance(frame_bits, int)",
+        "            or not 1 <= frame_bits <= 64):",
+        "        raise ValueError('frame_bits must be an integer from 1 to 64')",
+        "    return _EMULATOR_STRUCT.pack(",
+        "        ABI_VERSION, frame_bits, _u32('frame_lo', frame_lo),",
+        "        _u32('frame_hi', frame_hi), 0,",
         "    )",
         "",
         "def _unpack(structure, buffer, size, names):",
@@ -144,7 +158,12 @@ def _generate_python(schema: dict) -> str:
         "",
         "def unpack_mailbox(buffer):",
         "    return _unpack(_MAILBOX_STRUCT, buffer, MAILBOX_SIZE, (",
-        "        'sequence', 'raw_frame', 'frame_count', 'status',",
+        "        'sequence', 'raw_frame_lo', 'raw_frame_hi', 'frame_count', 'status',",
+        "    ))",
+        "",
+        "def unpack_emulator(buffer):",
+        "    return _unpack(_EMULATOR_STRUCT, buffer, EMULATOR_SIZE, (",
+        "        'abi_version', 'frame_bits', 'frame_lo', 'frame_hi', 'status',",
         "    ))",
         "",
     ])

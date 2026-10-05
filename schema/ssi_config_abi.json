@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "shared_base": "0x00010000",
   "config": {
     "offset": "0x0000",
@@ -14,9 +14,20 @@
     "offset": "0x0020",
     "fields": [
       {"name": "sequence", "offset": "0x00", "type": "u32"},
-      {"name": "raw_frame", "offset": "0x04", "type": "u32"},
-      {"name": "frame_count", "offset": "0x08", "type": "u32"},
-      {"name": "status", "offset": "0x0C", "type": "u32"}
+      {"name": "raw_frame_lo", "offset": "0x04", "type": "u32"},
+      {"name": "raw_frame_hi", "offset": "0x08", "type": "u32"},
+      {"name": "frame_count", "offset": "0x0C", "type": "u32"},
+      {"name": "status", "offset": "0x10", "type": "u32"}
+    ]
+  },
+  "emulator": {
+    "offset": "0x0040",
+    "fields": [
+      {"name": "abi_version", "offset": "0x00", "type": "u32"},
+      {"name": "frame_bits", "offset": "0x04", "type": "u32"},
+      {"name": "frame_lo", "offset": "0x08", "type": "u32"},
+      {"name": "frame_hi", "offset": "0x0C", "type": "u32"},
+      {"name": "status", "offset": "0x10", "type": "u32"}
     ]
   }
 }
