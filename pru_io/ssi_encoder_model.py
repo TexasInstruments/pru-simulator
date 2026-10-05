@@ -10,6 +10,11 @@ those documents.
 This is a DeviceModel: it observes the clock pin, drives only the data pin,
 and advances its monoflop during elapsed simulator cycles. It deliberately
 does not share SSI decoding or timing code with the reader firmware.
+
+A frame is ``resolution`` clocked bits (up to 64) holding a position field and
+an optional error field. The SICK SSI document (IM0100079, section 2.3) sends
+error bits after the position, so by default the error occupies the low bits;
+``pru_io.ssi_presets`` lists SICK families that use this layout.
 """
 from __future__ import annotations
 
@@ -17,6 +22,7 @@ from fractions import Fraction
 from math import ceil
 
 from pru_io.device_model import PUSH_PULL, DeviceModel
+from pru_io.ssi_presets import preset_fields
 
 
 def _positive_fraction(value, name: str) -> Fraction:
@@ -33,8 +39,14 @@ class SSIEncoderModel(DeviceModel):
     """An SSI encoder that latches on falling edges and presents bits on rises.
 
     ``position`` is the host-side unsigned position. ``encoding`` selects the
-    wire representation; Gray-coded frames are reported decoded in frame
-    events while ``raw_value`` preserves the transmitted bits.
+    wire representation of the position field only; Gray-coded frames are
+    reported decoded in frame events while ``raw_value`` preserves the
+    transmitted bits. ``position_bits``/``position_offset`` and
+    ``error_bits``/``error_offset`` place the fields inside the
+    ``resolution``-bit word (offset 0 is the last bit sent). Unset layout
+    fields default to the error bits last: ``position_bits`` fills what the
+    error leaves, ``error_offset`` is 0 and ``position_offset`` is
+    ``error_bits`` (0 if only ``error_offset`` is given).
     """
 
     name = "ssi_encoder"
@@ -44,7 +56,10 @@ class SSIEncoderModel(DeviceModel):
                  position: int = 0, resolution: int = 12,
                  encoding: str = "binary", f_max_hz=4_000_000,
                  monoflop_us=20.5, core_clock_hz=250_000_000,
-                 idle_value: int = 1, name: str = "ssi_encoder") -> None:
+                 idle_value: int = 1, name: str = "ssi_encoder",
+                 position_bits: int | None = None,
+                 position_offset: int | None = None, error_bits: int = 0,
+                 error_offset: int | None = None, error_value: int = 0) -> None:
         self.clock_pin = self._pin(clock_pin, "clock_pin")
         self.data_pin = self._pin(data_pin, "data_pin")
         if self.clock_pin == self.data_pin:
@@ -57,7 +72,11 @@ class SSIEncoderModel(DeviceModel):
         self.encoding = str(encoding).lower()
         if self.encoding not in ("binary", "gray"):
             raise ValueError("encoding must be 'binary' or 'gray'")
+        self._set_layout(position_bits, position_offset, error_bits,
+                         error_offset)
+        self.preset: str | None = None
         self.position = self._position(position)
+        self.error = self._error(error_value)
         self.f_max_hz = _positive_fraction(f_max_hz, "f_max_hz")
         self.monoflop_us = _positive_fraction(monoflop_us, "monoflop_us")
         self.core_clock_hz = _positive_fraction(core_clock_hz, "core_clock_hz")
@@ -78,16 +97,81 @@ class SSIEncoderModel(DeviceModel):
             raise ValueError(f"{name} must be an integer from 0 to 19")
         return value
 
+    @classmethod
+    def from_preset(cls, preset: str, **options) -> "SSIEncoderModel":
+        """Build a model from a ``pru_io.ssi_presets`` frame; options override it."""
+        model = cls(**{**preset_fields(preset), **options})
+        model.preset = preset
+        return model
+
+    def _set_layout(self, position_bits, position_offset, error_bits,
+                    error_offset) -> None:
+        def field(value, name, low, high):
+            if (isinstance(value, bool) or not isinstance(value, int)
+                    or not low <= value <= high):
+                raise ValueError(f"{name} must be an integer from {low} to {high}")
+            return value
+
+        width = self.resolution
+        self.error_bits = field(error_bits, "error_bits", 0, width - 1)
+        if position_bits is None:
+            position_bits = width - self.error_bits
+        self.position_bits = field(position_bits, "position_bits", 1, width)
+        if error_offset is None:
+            error_offset = 0
+            if position_offset is None:
+                position_offset = self.error_bits
+        elif position_offset is None:
+            position_offset = 0
+        self.position_offset = field(
+            position_offset, "position_offset", 0, width - self.position_bits)
+        self.error_offset = field(
+            error_offset, "error_offset", 0, width - self.error_bits)
+        self._position_mask = (1 << self.position_bits) - 1
+        self._error_mask = (1 << self.error_bits) - 1
+        if (self._position_mask << self.position_offset
+                & self._error_mask << self.error_offset):
+            raise ValueError("position and error fields overlap")
+
     def _position(self, value: int) -> int:
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValueError("position must be an unsigned integer")
-        if not 0 <= value < (1 << self.resolution):
-            raise ValueError(f"position must fit the {self.resolution}-bit resolution")
+        if not 0 <= value <= self._position_mask:
+            raise ValueError(f"position must fit the {self.position_bits}-bit position field")
+        return value
+
+    def _error(self, value: int) -> int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("error must be an unsigned integer")
+        if not 0 <= value <= self._error_mask:
+            raise ValueError(f"error must fit the {self.error_bits}-bit error field")
         return value
 
     def set_position(self, position: int) -> None:
         """Set the position latched by the next frame."""
         self.position = self._position(position)
+
+    def set_error(self, error: int) -> None:
+        """Set the error field latched by the next frame."""
+        self.error = self._error(error)
+
+    def pack_frame(self, position: int, error: int = 0) -> int:
+        """Return the ``resolution``-bit wire word for a position and error."""
+        position = self._position(position)
+        error = self._error(error)
+        if self.encoding == "gray":
+            position ^= position >> 1
+        return (position << self.position_offset) | (error << self.error_offset)
+
+    def decode_frame(self, raw_value: int) -> tuple[int, int]:
+        """Return the (position, error) fields carried by a wire word."""
+        position = (raw_value >> self.position_offset) & self._position_mask
+        if self.encoding == "gray":
+            shift = position >> 1
+            while shift:
+                position ^= shift
+                shift >>= 1
+        return position, (raw_value >> self.error_offset) & self._error_mask
 
     def tick(self, cycle: int, bus: int) -> tuple[int, int]:
         clock = (bus >> self.clock_pin) & 1
@@ -125,10 +209,7 @@ class SSIEncoderModel(DeviceModel):
         self._state = "active"
         self._frame_valid = valid
         self._latched_position = self.position
-        if self.encoding == "gray":
-            self._latched_raw = self.position ^ (self.position >> 1)
-        else:
-            self._latched_raw = self.position
+        self._latched_raw = self.pack_frame(self.position, self.error)
         self._bits_clocked = 0
         self._received_raw = 0
         self._last_falling_cycle = cycle
@@ -171,14 +252,18 @@ class SSIEncoderModel(DeviceModel):
 
         if self._state == "guard":
             if self._frame_valid:
-                self._events.append({
+                position, error = self.decode_frame(self._received_raw)
+                event = {
                     "cycle": self._frame_completed_cycle,
                     "kind": "frame",
                     "raw_value": self._received_raw,
-                    "position": self._decode(self._received_raw),
+                    "position": position,
                     "resolution": self.resolution,
                     "encoding": self.encoding,
-                })
+                }
+                if self.error_bits:
+                    event["error"] = error
+                self._events.append(event)
                 self.frames_captured += 1
         else:
             detail = (f"monoflop timeout after {self._bits_clocked} of "
@@ -187,16 +272,6 @@ class SSIEncoderModel(DeviceModel):
         self._state = "idle"
         self._last_falling_cycle = None
         self._output_value = self.idle_value
-
-    def _decode(self, raw_value: int) -> int:
-        if self.encoding == "binary":
-            return raw_value
-        value = raw_value
-        shift = raw_value >> 1
-        while shift:
-            value ^= shift
-            shift >>= 1
-        return value
 
     def _fault(self, cycle: int, message: str) -> None:
         self._faults.append(f"cycle {cycle}: {message}")
@@ -219,7 +294,7 @@ class SSIEncoderModel(DeviceModel):
         self._frame_started_cycle: int | None = None
         self._frame_completed_cycle: int | None = None
         self._latched_position = self.position
-        self._latched_raw = self.position
+        self._latched_raw = self.pack_frame(self.position, self.error)
         self._received_raw = 0
         self._bits_clocked = 0
         self._frame_valid = True
@@ -244,6 +319,7 @@ class SSIEncoderModel(DeviceModel):
             "frame_valid": self._frame_valid,
             "post_word_fall_seen": self._post_word_fall_seen,
             "position": self.position,
+            "error": self.error,
             "events": [dict(event) for event in self._events],
             "faults": list(self._faults),
             "frames_captured": self.frames_captured,
@@ -264,6 +340,7 @@ class SSIEncoderModel(DeviceModel):
         self._frame_valid = snap["frame_valid"]
         self._post_word_fall_seen = snap.get("post_word_fall_seen", False)
         self.position = snap["position"]
+        self.error = snap["error"]
         self._events = [dict(event) for event in snap["events"]]
         self._faults = list(snap["faults"])
         self.frames_captured = snap["frames_captured"]
@@ -274,7 +351,13 @@ class SSIEncoderModel(DeviceModel):
             "clock_pin": self.clock_pin,
             "data_pin": self.data_pin,
             "position": self.position,
+            "error": self.error,
+            "preset": self.preset,
             "resolution": self.resolution,
+            "position_bits": self.position_bits,
+            "position_offset": self.position_offset,
+            "error_bits": self.error_bits,
+            "error_offset": self.error_offset,
             "encoding": self.encoding,
             "state": self._state,
             "bits_clocked": self._bits_clocked,
