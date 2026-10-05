@@ -20,7 +20,7 @@ These are simulator-side capabilities, not features of the PRU hardware itself.
 - **Memory graph** — analog scope for memory buffer waveform visualization
 - **GPIO loopback** — wire GPO groups directly to GPI for firmware loopback testing without hardware. Can specify loopback latency/jitter/clock-drift
 - **Device bus** — attach external device models (`DeviceModel`) to any core's GPIO pins and wire pins between cores. A shared `DeviceBus` resolves open-drain nets as wired-AND and reports push-pull contention as a fault instead of last-writer-wins; devices expose `events()` and `faults()` for checking firmware
-- **SSI encoder model and reader** — independent binary/Gray encoder `DeviceModel` with clock-rate and monoflop faults, generated shared-memory ABI, and a PRU1 reader example. See [SSI device model and reader](docs/ssi_device_model.md)
+- **SSI encoder model and reader** — independent binary/Gray encoder `DeviceModel` with up to 64-bit frames, error fields and 12 SICK encoder presets, clock-rate and monoflop faults, generated shared-memory ABI, and PRU1 reader and PRU0 emulator examples. See [SSI device model and reader](docs/ssi_device_model.md)
 - **UART decoder** — bit-bang UART decode in the IO panel (8N1, auto-detect bit period)
 - **Multi-core simulation & debug view** — PRU_ICSSG supports simultaneous simulation & debugging of up to 3 PRU cores; PRU-ICSS supports simultaneous simulation & debugging of both PRU cores
 - **Tiling window manager** — drag, split, collapse/expand, and persist panel layouts
@@ -153,7 +153,8 @@ See [getting_started.md](getting_started.md) for step-by-step walkthroughs of al
 | `mac_example.asm` | MAC accelerator (MPY mode + accumulate mode) |
 | `uart_tx.asm` | Bit-bang UART TX (115200 baud, 8N1) with UART decoder |
 | `uart_rx_11frame.asm` | Bit-bang UART RX (4 Mbaud, 8N1) with frame injection from IO panel |
-| `ssi_generic_reader/ssi_generic_reader.asm` | SSI encoder reader and generated shared-memory mailbox; see [timing and manual 300 MHz instructions](docs/ssi_device_model.md) |
+| `ssi_generic_reader/ssi_generic_reader.asm` | SSI encoder reader (1-64 bit frames) and generated shared-memory mailbox; see [timing and manual 300 MHz instructions](docs/ssi_device_model.md) |
+| `ssi_generic_emulator.asm` | SSI encoder emulator on PRU0 (1-64 bit frame read from a shared-memory block at every frame start); pairs with the reader in a board loopback, see [docs/ssi_device_model.md](docs/ssi_device_model.md) |
 | `mvi_gpio_loopback.asm` | MVIB register-indirect + GPIO loopback (walking-bit pattern) |
 | `sdfm_sinc3_demo/` | Free-running SINC3 filter adapted from AM261x ICSS-M firmware |
 | `perif_duty_cycle_sweep.asm` | Peripheral Interface TX: 125 Mbit 0%→100% duty-cycle pulse sweep on PRU0 ch0 (needs `memory_perif_125mbit_demo.cfg`) |
@@ -193,9 +194,9 @@ v0.3.0 — hover over **PRU SIM** in the dashboard header to confirm.
 ### Changelog
 
 **v0.3.0**
-- **SSI encoder device model** (`pru_io/ssi_encoder_model.py`) — an independent, time-driven `DeviceModel` with binary or Gray output that reports faults rather than producing a plausible waveform from wrong firmware: clock above `f_max_hz`, incomplete words (monoflop timeout), and extra clock pulses. The edge convention follows the Hengstler AC58 and Pepperl+Fuchs AVM78E/AVS36M datasheets: the first falling edge latches the position, each rising edge presents the next bit MSB first, and Tm runs from the last falling edge.
-- **SSI reader firmware and ABI** — `source/ssi_generic_reader/ssi_generic_reader.asm` runs on PRU1 (clock R30.0, data R31.16) and publishes each frame to a seqlock mailbox. The ABI is generated from `schema/ssi_config_abi.json` by `python -m tools.gen_ssi_abi` (`--check` in CI). `pru_io/ssi_runtime.py` runs the reader against the encoder model through ordinary `Simulator.step` execution. `source/ssi_generic_emulator.asm` remains as a two-core board loopback example.
-- **Generic MCP device tools** — `pru_device_discover`, `pru_device_attach`, `pru_device_detach`, `pru_device_state`, `pru_device_events` and `pru_device_faults`. SSI and TCA9538 are attach profiles with validated options rather than protocol-specific tools. `pru_i2c_attach` is unchanged.
+- **SSI encoder device model** (`pru_io/ssi_encoder_model.py`) — an independent, time-driven `DeviceModel` with binary or Gray output, 1-64 bit frames, an optional error field and twelve frame presets for SICK encoder families (SICK SSI Interface Description, IM0100079) that reports faults rather than producing a plausible waveform from wrong firmware: clock above `f_max_hz`, incomplete words (monoflop timeout), and extra clock pulses. The edge convention follows the Hengstler AC58 and Pepperl+Fuchs AVM78E/AVS36M datasheets: the first falling edge latches the position, each rising edge presents the next bit MSB first, and Tm runs from the last falling edge.
+- **SSI reader firmware and ABI** — `source/ssi_generic_reader/ssi_generic_reader.asm` runs on PRU1 (clock R30.0, data R31.16) and publishes each frame to a seqlock mailbox. The ABI is generated from `schema/ssi_config_abi.json` by `python -m tools.gen_ssi_abi` (`--check` in CI). `pru_io/ssi_runtime.py` runs the reader against the encoder model through ordinary `Simulator.step` execution. `source/ssi_generic_emulator.asm` is a runtime-configurable encoder emulator (the host packs position and error into an ABI block; the firmware shifts up to 64 bits out) used in a two-core board loopback, and the firmware is checked against a separate Python SSI master.
+- **Generic MCP device tools** — `pru_device_discover`, `pru_device_attach`, `pru_device_detach`, `pru_device_state`, `pru_device_events` and `pru_device_faults`. SSI (including its `preset` and frame-layout options) and TCA9538 are attach profiles with validated options rather than protocol-specific tools. `pru_i2c_attach` is unchanged.
 - **MCP stdio** — tool handlers work with the current Python MCP SDK through its own `stdio_server`.
 - `memory.cfg` stays at 250 MHz; [docs/ssi_device_model.md](docs/ssi_device_model.md) shows how to run the example at 300 MHz from a temporary config.
 

@@ -24,12 +24,68 @@ edge then drives data low for the rest of Tm, after which the model returns it
 to its configured idle value.
 An incomplete word and an SSI clock above `f_max_hz` also produce fault
 events. Completed-frame events retain both the transmitted `raw_value` and
-the decoded binary `position` for binary or Gray encoding.
+the decoded binary `position` for binary or Gray encoding, plus the decoded
+`error` when the frame has error bits.
 
 SSI data is push-pull. When an SSI profile is attached through the generic MCP
 API, its data pin is released from the PRU's output mask while attached. TCA
 SCL/SDA stay open-drain, so the PRU master can still pull either line low and
 release it high.
+
+## Frame layout and presets
+
+A frame is `resolution` clocked bits (1-64) holding a position field and an
+optional error field, sent MSB first. Offset 0 is the last bit sent:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `resolution` | 12 | total clocked bits |
+| `position_bits` | `resolution - error_bits` | width of the position field |
+| `error_bits` | 0 | width of the error field |
+| `error_offset` | 0 | lowest bit of the error field |
+| `position_offset` | `error_bits` (0 if only `error_offset` is given) | lowest bit of the position field |
+| `error_value` | 0 | error field latched by the next frame |
+
+The defaults send the error bits after the position, which is how the SICK
+document draws every frame. Fields must fit the frame and may not overlap;
+unused bits are sent as 0. `encoding="gray"` converts the position field only.
+`set_position()` and `set_error()` change what the next frame latches, and
+`pack_frame()`/`decode_frame()` convert between fields and the wire word.
+
+`pru_io/ssi_presets.py` holds twelve frames, selected with
+`SSIEncoderModel.from_preset(name, **overrides)`, `SSIRuntime(preset=...)` or
+the `preset` field of the `ssi_encoder` profile. Explicit options override the
+preset.
+
+The frame sizes come from *Technical information - SSI Interface Description -
+Synchronous Serial Interface for Absolute Encoders*, SICK AG, IM0100079
+(part no. 8027422, 2022-02-08), section 3. The document is not included in
+this repository.
+
+| Preset | Frame bits | Position bits | Error bits | IM0100079 |
+|---|---:|---:|---:|---|
+| `CUSTOM_LEGACY_12BIT_4MHZ` | 12 | 12 | 0 | not a SICK frame (model default) |
+| `AHS_AHM36_SINGLETURN` | 15 | 14 | 1 | p. 8 |
+| `AHS_AHM36_MULTITURN` | 27 | 26 | 1 | p. 11 |
+| `AFS_AFM60_SINGLETURN` | 21 | 18 | 3 | p. 14 |
+| `AFS_AFM60_MULTITURN_30BIT` | 33 | 30 | 3 | p. 14 |
+| `AFS_AFM60_MULTITURN_27BIT` | 30 | 27 | 3 | pp. 14-15 |
+| `AFS_AFM60S_PRO_SINGLETURN` | 21 | 18 | 3 | p. 17 |
+| `AFS_AFM60S_PRO_MULTITURN` | 28 | 25 | 3 | p. 18 (the 25-bit example) |
+| `ARS60_SHORT` | 13 | 13 | 0 | p. 22 |
+| `ARS60_LONG` | 17 | 15 | 2 | p. 22 |
+| `TTK70` | 26 | 24 | 2 | p. 23 |
+| `KH53` | 24 | 24 | 0 | p. 24 |
+
+Timing fields the model uses: SICK presets set `f_max_hz` to 2 MHz, the
+highest baud rate the document allows (p. 4), and `monoflop_us` to 20, the
+middle of its 15-25 us tm range (p. 5). The document's tv (< T/2) and Tp
+(> tm) constrain the master and have no equivalent in the model, so presets
+do not carry them. Every preset is binary because the document says the code
+is configurable but gives no default. The multi-turn presets are a plain
+position field; the model does not split turns from steps. Left/right
+justification, round-axis and ATM60/ATM90 formats are not presets (use
+`position_offset`/`position_bits` for a custom layout).
 
 ## Shared-memory ABI
 
@@ -47,13 +103,23 @@ All fields are little-endian unsigned 32-bit values. The shared-memory base is
 
 | Block | Offset | Fields |
 |---|---:|---|
-| Reader config | `0x00` | ABI version, frame width, clock delay loops, idle delay loops |
-| Latest-frame mailbox | `0x20` | seqlock sequence, raw frame, frame count, status |
+| Reader config | `0x00` | ABI version (2), frame width, clock delay loops, idle delay loops |
+| Latest-frame mailbox | `0x20` | seqlock sequence, raw frame low word, raw frame high word, frame count, status |
+| Emulator config | `0x40` | ABI version, frame width, frame word low, frame word high, status |
 
-Frame widths are 1–32 bits because the mailbox contains one 32-bit raw frame.
+Frame widths are 1–64 bits; the mailbox and the emulator block carry the frame
+as low and high 32-bit words (the high word is 0 up to 32 bits).
 The reader sets the sequence odd while publishing, writes the sample and
 count, then sets it even. `status` is zero for a valid config and one if the
 reader halts on an invalid ABI version or frame width.
+
+The emulator block is written by the host with
+`pru_io.ssi_runtime.SSIEmulatorRuntime`, which packs position and error with
+the same layout code as the encoder model; the firmware only shifts the word
+out. The emulator re-reads the block at every frame's first falling clock
+edge, so host changes apply to the next frame (the block is not seqlocked).
+Its `status` is written by the firmware: 0 while running, 1 if it halted on an
+invalid ABI version or a frame width outside 1-64.
 
 ## Run the reader and SSI model
 
@@ -75,6 +141,19 @@ with SSIRuntime(sim, position=0xABC, resolution=12) as ssi:
     print(ssi.encoder.faults())
 ```
 
+`mailbox()` also returns the combined `raw_frame` and the `position` and
+`error` fields decoded with the encoder's layout. To emulate a SICK encoder,
+pass a preset; the 2 MHz limit needs a slower reader clock than the default
+(about `clock_delay_loops=40` at 250 MHz):
+
+```python
+with SSIRuntime(sim, preset="AFS_AFM60_MULTITURN_30BIT",
+                position=0x2ABCDEF1, error_value=0b101) as ssi:
+    ssi.load(clock_delay_loops=40)
+    result = ssi.run_until_frames(1, max_steps=40_000)
+    print(result["mailbox"])  # raw_frame 0x155E6F78D, position, error 5
+```
+
 `clock_delay_loops` adds low and high phase delay. `idle_delay_loops` defaults
 to enough cycles for the configured encoder's Tm to expire. A completed sample
 is published to the mailbox immediately after its last bit; the encoder's
@@ -83,10 +162,29 @@ the transaction.
 
 ## Two-core firmware loopback
 
-`source/ssi_generic_emulator.asm` runs a fixed 12-bit SSI encoder on PRU0 while
-the reader runs on PRU1. Connect PRU1 R30.0 to PRU0 R31.0 for clock, and PRU0
-R30.16 to PRU1 R31.16 for data. The emulator serves position `0xABC`; the
-integration test runs both firmware images and checks the reader mailbox.
+`source/ssi_generic_emulator.asm` runs a runtime-configurable SSI encoder on
+PRU0 while the reader runs on PRU1. Connect PRU1 R30.0 to PRU0 R31.0 for
+clock, and PRU0 R30.16 to PRU1 R31.16 for data. The emulator latches its
+frame on the first falling clock edge and presents one bit after each rising
+edge. `tests/test_ssi_board_loopback.py` runs both images for the 12-bit
+default and for multi-turn presets, and `tests/test_ssi_emulator.py` checks the
+emulator against a separate Python SSI master:
+
+```python
+from pru_io import ssi_config_abi as abi
+from pru_io.ssi_runtime import SSIEmulatorRuntime
+
+sim.add_gpio_wire("pru1", 0, "pru0", 0)
+sim.add_gpio_wire("pru0", 16, "pru1", 16)
+sim.set_gpio_drive_mask("pru0", (1 << 20) - 1 & ~(1 << 0))
+sim.set_gpio_drive_mask("pru1", (1 << 20) - 1 & ~(1 << 16))
+emulator = SSIEmulatorRuntime(sim, preset="AFS_AFM60_MULTITURN_30BIT",
+                              position=0x2ABCDEF1, error_value=0b101)
+emulator.load()                       # PRU0; later: emulator.set_error(0)
+sim.memory.write(abi.CONFIG_ADDRESS, abi.pack_config(
+    frame_bits=33, clock_delay_loops=20, idle_delay_loops=8))
+sim.load("pru1", reader_source, include_paths=["source"])  # the reader asm
+```
 
 ## Manual 300 MHz run
 
@@ -146,7 +244,10 @@ The MCP surface stays protocol-generic:
 | `pru_device_faults` | Read all bus/device faults or filter by name |
 
 The SSI profile accepts encoder options such as `position`, `resolution`,
-`encoding`, `f_max_hz`, and `monoflop_us`. If `core_clock_hz` is omitted, the
+`encoding`, `f_max_hz`, and `monoflop_us`, the frame layout fields
+(`position_bits`, `position_offset`, `error_bits`, `error_offset`,
+`error_value`) and a `preset` name; `pru_device_discover` lists the presets
+under `profiles.ssi_encoder.presets`. If `core_clock_hz` is omitted, the
 MCP attach tool derives it from the selected core's exact IEP clock. The TCA
 profile accepts a 7-bit
 `address` and distinct `scl_pin`/`sda_pin` values from 0–19. Unknown fields
