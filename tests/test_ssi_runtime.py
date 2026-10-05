@@ -156,7 +156,8 @@ def test_reader_publishes_both_mailbox_words_for_each_preset(
         expected, position, error)
     assert mailbox["status"] == 0
     assert faults == []
-    assert [event["raw_value"] for event in events] == [expected]
+    # A short tm lets the reader finish another frame while the test waits.
+    assert events and all(event["raw_value"] == expected for event in events)
 
 
 def test_reader_runtime_decodes_gray_position_next_to_an_error_field():

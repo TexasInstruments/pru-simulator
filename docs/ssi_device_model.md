@@ -57,14 +57,15 @@ unused bits are sent as 0. `encoding="gray"` converts the position field only.
 the `preset` field of the `ssi_encoder` profile. Explicit options override the
 preset.
 
-The frame sizes come from *Technical information - SSI Interface Description -
-Synchronous Serial Interface for Absolute Encoders*, SICK AG, IM0100079
-(part no. 8027422, 2022-02-08), section 3. The document is not included in
-this repository.
+The SICK frame sizes come from *Technical information - SSI Interface
+Description - Synchronous Serial Interface for Absolute Encoders*, SICK AG,
+IM0100079 (part no. 8027422, 2022-02-08), section 3. The standard 12-bit preset
+comes from the RM08 miniature magnetic encoder data sheet, RM08D01_18 (issue 18,
+5 February 2026), p. 10. Neither document is included in this repository.
 
-| Preset | Frame bits | Position bits | Error bits | IM0100079 |
+| Preset | Frame bits | Position bits | Error bits | Source |
 |---|---:|---:|---:|---|
-| `CUSTOM_LEGACY_12BIT_4MHZ` | 12 | 12 | 0 | not a SICK frame (model default) |
+| `CUSTOM_LEGACY_12BIT_4MHZ` | 12 | 12 | 0 | RM08D01_18 p. 10 (standard, not SICK) |
 | `AHS_AHM36_SINGLETURN` | 15 | 14 | 1 | p. 8 |
 | `AHS_AHM36_MULTITURN` | 27 | 26 | 1 | p. 11 |
 | `AFS_AFM60_SINGLETURN` | 21 | 18 | 3 | p. 14 |
@@ -76,6 +77,10 @@ this repository.
 | `ARS60_LONG` | 17 | 15 | 2 | p. 22 |
 | `TTK70` | 26 | 24 | 2 | p. 23 |
 | `KH53` | 24 | 24 | 0 | p. 24 |
+
+The standard preset uses `f_max_hz` 4 MHz and `monoflop_us` 12.5, the RM08
+limits (clock <= 4 MHz, 12.5 us <= tm <= 20.5 us, p. 10); the model default
+`monoflop_us` of 20.5 is the upper limit of the same range.
 
 Timing fields the model uses: SICK presets set `f_max_hz` to 2 MHz, the
 highest baud rate the document allows (p. 4), and `monoflop_us` to 20, the

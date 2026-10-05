@@ -46,6 +46,16 @@ def test_sick_presets_use_the_documented_timing_limits():
         assert preset_fields(name)["monoflop_us"] == 20
 
 
+def test_standard_preset_is_the_rm08_12_bit_4_mhz_encoder():
+    fields = preset_fields("CUSTOM_LEGACY_12BIT_4MHZ")
+
+    assert (fields["resolution"], fields["error_bits"]) == (12, 0)
+    assert (fields["f_max_hz"], fields["monoflop_us"]) == (4_000_000, 12.5)
+    assert fields["encoding"] == "binary"
+    assert "RM08" in PRESET_SOURCES["CUSTOM_LEGACY_12BIT_4MHZ"]
+    assert SSIEncoderModel.from_preset("CUSTOM_LEGACY_12BIT_4MHZ").monoflop_us == 12.5
+
+
 def test_options_override_preset_fields_and_unknown_presets_are_rejected():
     model = SSIEncoderModel.from_preset(
         "TTK70", encoding="gray", error_bits=0, position_bits=24, resolution=24)
