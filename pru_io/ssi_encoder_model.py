@@ -1,11 +1,16 @@
-"""Fault-reporting SSI encoder model for Hengstler and Pepperl+Fuchs devices.
+"""Fault-reporting SSI encoder model for the RM08 and SICK absolute encoders.
 
-The modeled edge convention is documented by Hengstler AC58 datasheet v3
-(210125HF, p. 3) and Pepperl+Fuchs AVM78E (p. 5) / AVS36M (p. 4): the first
-high-to-low transition latches the position, each rising edge presents the
-next MSB-first bit, and monoflop Tm starts at the last falling edge. Sampling
-in the master's high phase before its next falling edge is consistent with
-those documents.
+The modeled edge convention is the one in SICK IM0100079, section 2.2 (p. 5):
+the first high-to-low transition loads the position, the first low-to-high
+edge presents the MSB, each later rising edge presents the next bit, and new
+position values are loaded after the monoflop time tm once the master stops
+clocking. The model measures tm from the latest falling edge. The document does
+not say which edge the master samples on; the model allows sampling during the
+high phase after a rising edge.
+
+Defaults follow the RM08 data sheet (RM08D01_18, p. 10): clock up to 4 MHz and
+tm up to 20.5 us. ``pru_io.ssi_presets`` lists the encoders used and where each
+frame comes from.
 
 This is a DeviceModel: it observes the clock pin, drives only the data pin,
 and advances its monoflop during elapsed simulator cycles. It deliberately

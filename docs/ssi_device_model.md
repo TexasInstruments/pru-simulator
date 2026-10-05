@@ -8,12 +8,22 @@ shares its protocol logic.
 
 ## SSI edge and timing rules
 
-The model follows the SSI timing descriptions in the [Pepperl+Fuchs AVM78E
-data sheet, page 5](https://files.pepperl-fuchs.com/webcat/navi/productInfo/pds/t157829_eng.pdf?v=20241026195055)
-and [AVS36M data sheet, page 4](https://files.pepperl-fuchs.com/webcat/navi/productInfo/pds/t42141_eng.pdf):
-the first falling clock edge latches position, each rising edge presents the
-next bit MSB first, and Tm is measured from the latest falling edge. Data may
-be sampled during the high phase after a rising edge.
+Encoders and documents used. None of the documents is included in this
+repository.
+
+* **RM08** miniature magnetic encoder (RLS), data sheet RM08D01_18, issue 18,
+  p. 10: the standard 12-bit preset, the 4 MHz clock limit and the tm range of
+  12.5 us to 20.5 us.
+* **SICK** AHS/AHM36, AFS/AFM60, AFS/AFM60S Pro, ARS60, TTK70 and KH53:
+  *Technical information - SSI Interface Description*, SICK AG, IM0100079
+  (part no. 8027422, 2022-02-08): frame layouts, error bits, the clock sequence
+  (section 2.2) and the tm range.
+
+The model follows the clock sequence in SICK IM0100079, section 2.2 (p. 5): the
+first falling clock edge latches position, each rising edge presents the next
+bit MSB first, and Tm is measured from the latest falling edge. The document
+does not say which edge the master samples on; data may be sampled during the
+high phase after a rising edge.
 
 The Nth rising edge completes a word. Tm can then expire with the clock held
 high, or the reader may produce its closing falling edge followed by the
