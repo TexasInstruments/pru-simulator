@@ -19,7 +19,16 @@ core; the FOC motor remains restricted to PRU0.
 
 Devices contains the generic SSI and FOC runtime panels. Attach an encoder and
 set the position for its next frame, or attach a motor and apply its control
-configuration and physical SD routes. The FOC example produces 16 kHz PWM at
+configuration and physical SD routes. The SSI form's Preset list (filled from
+the server's device discovery) offers the twelve frames in the
+[SSI model](ssi_device_model.md) plus Custom; choosing one fills the
+resolution, error bits and encoding, which you can still edit. An encoder with
+error bits also shows a "Set next error" field, applied like the position to
+the next frame, and its frame events list the decoded error. The page sends
+numbers, so position and error values are limited to 2^53 - 1; use the MCP
+tools for wider values. The Devices view does not write the SSI reader's
+shared-memory config block; load and configure the reader firmware yourself.
+The FOC example produces 16 kHz PWM at
 the default 200 MHz IEP clock; the PRU default remains 250 MHz. See
 [SSI](ssi_device_model.md) for the explicit manual 300 MHz option and
 [FOC](foc_open_loop.md) for the firmware and ABI.

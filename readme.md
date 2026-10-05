@@ -197,7 +197,7 @@ v0.3.2 — hover over **PRU SIM** in the dashboard header to confirm.
 
 **v0.3.2**
 - **Dashboard workspace views** — the toolbar switches between **Simulator** (source, editor, registers, memory, GPIO and graph panels), **Devices** and **Events** without resetting or stopping execution. Panels can be hidden from the Panels buttons, and visibility and layout are remembered separately for single-core and multicore modes. Reset Layout restores the defaults. View, panel visibility and the new Dark/High-contrast themes are stored as local browser preferences. See [docs/simulator_dashboard.md](docs/simulator_dashboard.md).
-- **Devices view** — attaches the generic SSI encoder (any core) and FOC motor (PRU0) profiles, sets the encoder position, and applies the FOC control config and SD routes. It uses the same device API as MCP; there are no protocol-specific run shortcuts.
+- **Devices view** — attaches the generic SSI encoder (any core) and FOC motor (PRU0) profiles, selects an SSI preset (up to 64-bit frames with an error field), sets the encoder position and error for the next frame, and applies the FOC control config and SD routes. It uses the same device API as MCP; there are no protocol-specific run shortcuts.
 - **Events view** — device frame/fault events, bus contention and core memory faults from the live simulator state, so it stays consistent across reset and step-back. Shows up to 500 events and 100 faults.
 - **RTU1 selectable** — single-core mode can show PRU0, PRU1, RTU0 or RTU1, and multicore mode pairs PRU0 with any of the other three.
 - **MCP over SDK stdio** — tests load the SSI reader and FOC firmware through the SDK stdio transport and verify SSI frames and FOC PWM end to end.
