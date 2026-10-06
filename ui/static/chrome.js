@@ -4,12 +4,22 @@
 // badge). The pure ones take plain values so tests/ui_chrome.test.js can run
 // them without a browser.
 (root => {
-  // Toolbar buttons wrap their label as .text-container > .text so the hover
-  // wipe can animate it; writing button.textContent would destroy the spans.
+  // Wipe buttons (.btn-17) wrap their label as .text-container > .text so the
+  // hover wipe can animate it; writing button.textContent would destroy the
+  // spans. A .btn-17 button created in script gets the spans on its first label.
   function setButtonLabel(button, label) {
-    const text = button && button.querySelector('.text');
+    if (!button) return;
+    let text = button.querySelector('.text');
+    if (!text && button.classList?.contains('btn-17')) {
+      const box = button.ownerDocument.createElement('span');
+      text = button.ownerDocument.createElement('span');
+      box.className = 'text-container';
+      text.className = 'text';
+      box.appendChild(text);
+      button.replaceChildren(box);
+    }
     if (text) text.textContent = label;
-    else if (button) button.textContent = label;
+    else button.textContent = label;
   }
 
   // WAI-ARIA tabs keyboard model: index to focus for a key, or -1 to ignore it.

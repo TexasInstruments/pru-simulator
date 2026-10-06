@@ -1502,29 +1502,28 @@
     .motor-swatch.rotor { background: #70d6b4; }
     .motor-swatch.command { background: #da8ee6; }
 
-    /* ---- Toolbar buttons: skewed wipe on hover -----------------------------------
+    /* ---- Text buttons: skewed wipe on hover --------------------------------------
        Neutral buttons: two skewed --wipe parallelograms sweep across the pill
        and the label (blend-mode: difference) inverts where they pass, ending
        as dark text on --wipe. Filled and danger buttons (Run, Reset, HW Reset,
        Stop) keep a plain colour swap, because a difference blend would turn
-       their white label cyan. Labels live in .text-container > .text; write
+       their white label cyan, so primary buttons carry .btn-run. The toolbar pill
+       shape is scoped to #controls; panel buttons keep their own size. Labels live in .text-container > .text; write
        them with setButtonLabel(), never button.textContent. Hover only on
        devices that can hover; reduced motion gets a border change only. */
+    .btn-17 { position: relative; isolation: isolate; overflow: hidden; }
     #controls .btn-17 {
-      position: relative;
-      isolation: isolate;
-      overflow: hidden;
       flex: 0 0 auto;
       border-radius: 99rem;
       padding: 4px 11px;
       line-height: 1.5;
     }
-    #controls .btn-17 .text-container { display: block; position: relative; overflow: hidden; }
-    #controls .btn-17 .text { display: block; position: relative; }
-    #controls .btn-17:not(.btn-run):not(.btn-reset) { color: var(--wipe); }
-    #controls .btn-17:not(.btn-run):not(.btn-reset) .text-container { mix-blend-mode: difference; }
-    #controls .btn-17:not(.btn-run):not(.btn-reset)::before,
-    #controls .btn-17:not(.btn-run):not(.btn-reset)::after {
+    .btn-17 .text-container { display: block; position: relative; overflow: hidden; }
+    .btn-17 .text { display: block; position: relative; }
+    .btn-17:not(.btn-run):not(.btn-reset) { color: var(--wipe); }
+    .btn-17:not(.btn-run):not(.btn-reset) .text-container { mix-blend-mode: difference; }
+    .btn-17:not(.btn-run):not(.btn-reset)::before,
+    .btn-17:not(.btn-run):not(.btn-reset)::after {
       --skew: 0.2;
       --progress: 0%;
       content: "";
@@ -1539,11 +1538,11 @@
       transition: transform 200ms cubic-bezier(0.23, 1, 0.32, 1);
       pointer-events: none;
     }
-    #controls .btn-17:not(.btn-run):not(.btn-reset)::after { left: calc(50% + 50% * var(--skew)); top: 100%; z-index: -1; }
+    .btn-17:not(.btn-run):not(.btn-reset)::after { left: calc(50% + 50% * var(--skew)); top: 100%; z-index: -1; }
     @media (hover: hover) and (pointer: fine) {
-      #controls .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled)::before { --progress: 100%; }
-      #controls .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled)::after { --progress: -102%; }
-      #controls .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled) .text { animation: btn-label-roll 0.3s forwards; }
+      .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled)::before { --progress: 100%; }
+      .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled)::after { --progress: -102%; }
+      .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled) .text { animation: btn-label-roll 0.3s forwards; }
     }
     @keyframes btn-label-roll {
       0% { transform: translateY(0); }
@@ -1551,25 +1550,27 @@
       51% { transform: translateY(-80%); }
       to { transform: translateY(0); }
     }
-    /* Filled and danger: plain colour swap (Run, Reset, HW Reset, Stop). */
+    /* Filled and danger: plain colour swap (Run, Reset, HW Reset, Stop, primary). */
+    .btn-17.btn-run:hover:not(:disabled),
+    .btn-17.btn-reset:hover:not(:disabled),
     #controls .btn-17.btn-run:hover:not(:disabled),
     #controls .btn-17.btn-reset:hover:not(:disabled) { background: var(--on-brand); color: var(--brand-red); }
-    #controls .btn-17:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-    #controls .btn-17:disabled { opacity: 0.4; cursor: default; }
+    .btn-17:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    .btn-17:disabled { opacity: 0.4; cursor: default; }
     @media (prefers-reduced-motion: reduce) {
-      #controls .btn-17, #controls .btn-17::before, #controls .btn-17::after, #controls .btn-17 .text {
+      .btn-17, .btn-17::before, .btn-17::after, .btn-17 .text {
         animation: none !important; transition: none !important;
       }
-      #controls .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled)::before,
-      #controls .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled)::after { --progress: 0%; }
-      #controls .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled) { color: var(--text); }
-      #controls .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled) .text-container { mix-blend-mode: normal; }
+      .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled)::before,
+      .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled)::after { --progress: 0%; }
+      .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled) { color: var(--text); }
+      .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled) .text-container { mix-blend-mode: normal; }
     }
     @media (forced-colors: active) {
       /* The difference blend inverts the forced text backplate (black boxes). */
-      #controls .btn-17:not(.btn-run):not(.btn-reset) .text-container { mix-blend-mode: normal; }
-      #controls .btn-17:not(.btn-run):not(.btn-reset)::before,
-      #controls .btn-17:not(.btn-run):not(.btn-reset)::after { display: none; }
+      .btn-17:not(.btn-run):not(.btn-reset) .text-container { mix-blend-mode: normal; }
+      .btn-17:not(.btn-run):not(.btn-reset)::before,
+      .btn-17:not(.btn-run):not(.btn-reset)::after { display: none; }
     }
 
     /* ---- Responsive -------------------------------------------------------------------------------------------- */
@@ -1750,8 +1751,8 @@
           <span class="bp-bar-label">Breakpoints:</span>
           <span class="bp-chip-list" id="bp-chip-list"></span>
           <input type="text" id="bp-addr-input" placeholder="addr" title="Set a breakpoint at an address (hex 0x.. or decimal)">
-          <button class="bp-action" id="bp-add-btn" title="Set breakpoint at address">Set</button>
-          <button class="bp-action" id="bp-clear-btn" title="Clear all breakpoints on this core">Clear all</button>
+          <button class="bp-action btn-17" id="bp-add-btn" title="Set breakpoint at address"><span class="text-container"><span class="text">Set</span></span></button>
+          <button class="bp-action btn-17" id="bp-clear-btn" title="Clear all breakpoints on this core"><span class="text-container"><span class="text">Clear all</span></span></button>
         </div>
         <div class="panel-body">
           <ul id="source-list"></ul>
@@ -1769,10 +1770,10 @@
             <option value="rtu1">→ RTU1</option>
           </select>
           <input type="file" id="file-input" accept=".asm,.inc,.s,.out" style="display:none" />
-          <button id="btn-file" class="btn-load">Open</button>
-          <button id="btn-open-project" class="btn-load">Project</button>
-          <button id="btn-save-asm" class="btn-load">Save</button>
-          <button id="btn-load" class="btn-load">Load &amp; Assemble</button>
+          <button id="btn-file" class="btn-load btn-17"><span class="text-container"><span class="text">Open</span></span></button>
+          <button id="btn-open-project" class="btn-load btn-17"><span class="text-container"><span class="text">Project</span></span></button>
+          <button id="btn-save-asm" class="btn-load btn-17"><span class="text-container"><span class="text">Save</span></span></button>
+          <button id="btn-load" class="btn-load btn-17"><span class="text-container"><span class="text">Load &amp; Assemble</span></span></button>
         </div>
         <div id="editor-tab-bar"></div>
         <textarea id="asm-source" spellcheck="false" placeholder="Enter PRU assembly here...
@@ -1787,7 +1788,7 @@ Example:
       <div class="panel" id="registers-panel">
         <div class="panel-title" data-panel-id="registers" style="display:flex;align-items:center;gap:4px;">
           <span>Registers</span>
-          <button id="ctable-toggle" title="Show/hide PRU constant table (C0–C31)">C-Table</button>
+          <button id="ctable-toggle" title="Show/hide PRU constant table (C0–C31)" class="btn-17"><span class="text-container"><span class="text">C-Table</span></span></button>
           <span style="margin-left:6px;font-size:10px;color:var(--text-dim);">SPAD:</span>
           <button class="spad-btn" data-bank="bank0" title="Toggle SPAD Bank 0 (device 10)">B0</button>
           <button class="spad-btn" data-bank="bank1" title="Toggle SPAD Bank 1 (device 11)">B1</button>
@@ -1818,11 +1819,11 @@ Example:
           <datalist id="mem-region-list"></datalist>
           <label>Bytes:</label>
           <input type="text" id="mem-len-input" value="1024" style="width:60px" />
-          <button id="btn-mem-refresh">Refresh</button>
+          <button id="btn-mem-refresh" class="btn-17"><span class="text-container"><span class="text">Refresh</span></span></button>
           <label title="Keep re-reading this window automatically: on every simulation step/run tick, and at least once per second">
             <input type="checkbox" id="mem-auto-refresh" /> Auto
           </label>
-          <button id="btn-mem-fill">Fill</button>
+          <button id="btn-mem-fill" class="btn-17"><span class="text-container"><span class="text">Fill</span></span></button>
           <div class="mem-btn-group" id="mem-fmt-group">
             <button data-fmt="bin">Bin</button>
             <button data-fmt="byte">Byte</button>
@@ -1846,11 +1847,11 @@ Example:
           <datalist id="mem-region-list-2"></datalist>
           <label>Bytes:</label>
           <input type="text" id="mem-len-input-2" value="1024" style="width:60px" />
-          <button id="btn-mem-refresh-2">Refresh</button>
+          <button id="btn-mem-refresh-2" class="btn-17"><span class="text-container"><span class="text">Refresh</span></span></button>
           <label title="Keep re-reading this window automatically: on every simulation step/run tick, and at least once per second">
             <input type="checkbox" id="mem-auto-refresh-2" /> Auto
           </label>
-          <button id="btn-mem-fill-2">Fill</button>
+          <button id="btn-mem-fill-2" class="btn-17"><span class="text-container"><span class="text">Fill</span></span></button>
           <div class="mem-btn-group" id="mem-fmt-group-2">
             <button data-fmt="bin">Bin</button>
             <button data-fmt="byte">Byte</button>
@@ -1915,7 +1916,7 @@ Example:
               <option value="8192">8192</option>
             </select>
             <button id="graph-rec-btn" class="graph-btn">● REC</button>
-            <button id="graph-clear-btn" class="graph-btn">Clear</button>
+            <button id="graph-clear-btn" class="graph-btn btn-17"><span class="text-container"><span class="text">Clear</span></span></button>
             <button id="graph-taller-btn" class="graph-btn" title="Taller">▲</button>
             <button id="graph-shorter-btn" class="graph-btn" title="Shorter">▼</button>
           </div>
@@ -1927,7 +1928,7 @@ Example:
           </div>
           <div class="graph-legend" id="graph-legend"></div>
           <div class="graph-export-row" id="graph-export-row" style="display:none">
-            <button id="graph-export-btn" class="graph-btn export-csv">↓ Export CSV</button>
+            <button id="graph-export-btn" class="graph-btn export-csv btn-17"><span class="text-container"><span class="text">↓ Export CSV</span></span></button>
             <span class="graph-sample-count" id="graph-sample-count"></span>
           </div>
         </div>
@@ -1965,8 +1966,8 @@ Example:
           <span class="bp-bar-label">Breakpoints:</span>
           <span class="bp-chip-list" id="mc-pru0-bp-chip-list"></span>
           <input type="text" id="mc-pru0-bp-addr-input" placeholder="addr" title="Set a breakpoint at an address (hex 0x.. or decimal)">
-          <button class="bp-action" id="mc-pru0-bp-add-btn" title="Set breakpoint at address">Set</button>
-          <button class="bp-action" id="mc-pru0-bp-clear-btn" title="Clear all breakpoints on this core">Clear all</button>
+          <button class="bp-action btn-17" id="mc-pru0-bp-add-btn" title="Set breakpoint at address"><span class="text-container"><span class="text">Set</span></span></button>
+          <button class="bp-action btn-17" id="mc-pru0-bp-clear-btn" title="Clear all breakpoints on this core"><span class="text-container"><span class="text">Clear all</span></span></button>
         </div>
         <div class="panel-body">
           <ul class="source-list" id="mc-pru0-source-list"></ul>
@@ -2000,8 +2001,8 @@ Example:
           <span class="bp-bar-label">Breakpoints:</span>
           <span class="bp-chip-list" id="mc-rtu0-bp-chip-list"></span>
           <input type="text" id="mc-rtu0-bp-addr-input" placeholder="addr" title="Set a breakpoint at an address (hex 0x.. or decimal)">
-          <button class="bp-action" id="mc-rtu0-bp-add-btn" title="Set breakpoint at address">Set</button>
-          <button class="bp-action" id="mc-rtu0-bp-clear-btn" title="Clear all breakpoints on this core">Clear all</button>
+          <button class="bp-action btn-17" id="mc-rtu0-bp-add-btn" title="Set breakpoint at address"><span class="text-container"><span class="text">Set</span></span></button>
+          <button class="bp-action btn-17" id="mc-rtu0-bp-clear-btn" title="Clear all breakpoints on this core"><span class="text-container"><span class="text">Clear all</span></span></button>
         </div>
         <div class="panel-body">
           <ul class="source-list" id="mc-rtu0-source-list"></ul>
@@ -2034,8 +2035,8 @@ Example:
       <textarea id="config-textarea" spellcheck="false" aria-label="memory.cfg content"></textarea>
       <div id="config-error"></div>
       <div id="config-buttons">
-        <button id="btn-config-save">Save &amp; Reload</button>
-        <button id="btn-config-cancel">Cancel</button>
+        <button id="btn-config-save" class="btn-17"><span class="text-container"><span class="text">Save &amp; Reload</span></span></button>
+        <button id="btn-config-cancel" class="btn-17"><span class="text-container"><span class="text">Cancel</span></span></button>
       </div>
     </div>
   </div>
@@ -2107,8 +2108,8 @@ Example:
       </div>
       <div id="fill-error"></div>
       <div id="fill-buttons">
-        <button id="btn-fill-apply" class="btn-load">Fill</button>
-        <button id="btn-fill-cancel">Cancel</button>
+        <button id="btn-fill-apply" class="btn-load btn-17"><span class="text-container"><span class="text">Fill</span></span></button>
+        <button id="btn-fill-cancel" class="btn-17"><span class="text-container"><span class="text">Cancel</span></span></button>
       </div>
     </div>
   </div>
@@ -2272,7 +2273,7 @@ Example:
             </label>
           </div>
           <div class="runtime-device-actions">
-            <button class="runtime-device-button primary" id="ssi-attach-button" type="button">Attach encoder</button>
+            <button class="runtime-device-button primary btn-17 btn-run" id="ssi-attach-button" type="button"><span class="text-container"><span class="text">Attach encoder</span></span></button>
           </div>
         </section>
         <section class="runtime-device" aria-labelledby="tca-runtime-title">
@@ -2295,8 +2296,8 @@ Example:
             </label>
           </div>
           <div class="runtime-device-actions">
-            <button class="runtime-device-button primary" id="tca-attach-button" type="button">Attach expander</button>
-            <button class="runtime-device-button" id="tca-detach-button" type="button" hidden>Detach</button>
+            <button class="runtime-device-button primary btn-17 btn-run" id="tca-attach-button" type="button"><span class="text-container"><span class="text">Attach expander</span></span></button>
+            <button class="runtime-device-button btn-17" id="tca-detach-button" type="button" hidden><span class="text-container"><span class="text">Detach</span></span></button>
           </div>
           <div class="tca-state" id="tca-state" hidden>
             <div class="i2c-leds" id="tca-leds" role="group" aria-label="TCA9538 output pins P7 to P0"></div>
@@ -2314,8 +2315,8 @@ Example:
             <div class="uart-controls">
               <span class="uart-label">Pin: <span class="uart-pin">GPO0</span></span>
               <span class="uart-label">Format: <span class="uart-pin">8N1</span></span>
-              <button id="uart-decode-btn" class="graph-btn" style="color:var(--accent);border-color:#3a5a8a;">&#9654; Decode</button>
-              <button id="uart-clear-btn"  class="graph-btn">Clear</button>
+              <button id="uart-decode-btn" class="graph-btn btn-17" style="color:var(--accent);border-color:#3a5a8a;"><span class="text-container"><span class="text">&#9654; Decode</span></span></button>
+              <button id="uart-clear-btn"  class="graph-btn btn-17"><span class="text-container"><span class="text">Clear</span></span></button>
             </div>
             <div id="uart-status" class="uart-status" style="display:none;"></div>
             <div id="uart-output" class="uart-output" style="display:none;"></div>
@@ -2346,7 +2347,7 @@ Example:
               <span class="uart-label" style="color:#666;">Mb</span>
               <span class="uart-label">Frames:</span>
               <input type="text" id="uart-inj-frames" class="uart-inj-num" style="width:28px;text-align:center;" value="1" />
-              <button id="uart-inj-btn" class="graph-btn" style="color:var(--accent);border-color:#3a5a8a;margin-left:auto;">&#9654; Inject</button>
+              <button id="uart-inj-btn" class="graph-btn btn-17" style="color:var(--accent);border-color:#3a5a8a;margin-left:auto;"><span class="text-container"><span class="text">&#9654; Inject</span></span></button>
             </div>
             <!-- Status line -->
             <div id="uart-inj-status" class="uart-hint" style="display:none;"></div>
@@ -2428,8 +2429,8 @@ Example:
         <section class="motor-card" aria-labelledby="motor-setup-title">
           <h2 id="motor-setup-title">Setup</h2>
           <div class="motor-actions">
-            <button type="button" id="motor-load" class="motor-button primary">Load firmware</button>
-            <button type="button" id="motor-detach" class="motor-button" disabled>Detach motor</button>
+            <button type="button" id="motor-load" class="motor-button primary btn-17 btn-run"><span class="text-container"><span class="text">Load firmware</span></span></button>
+            <button type="button" id="motor-detach" class="motor-button btn-17" disabled><span class="text-container"><span class="text">Detach motor</span></span></button>
           </div>
           <p class="motor-help">Attaches the <code>foc_motor</code> profile on PRU0 if needed and loads <code>source/foc_open_loop.asm</code>. Use Start to run it.</p>
           <div class="motor-fields">
@@ -2441,7 +2442,7 @@ Example:
             </label>
           </div>
           <div class="motor-actions">
-            <button type="button" id="motor-routes-apply" class="motor-button" disabled>Apply SD routes</button>
+            <button type="button" id="motor-routes-apply" class="motor-button btn-17" disabled><span class="text-container"><span class="text">Apply SD routes</span></span></button>
           </div>
         </section>
 
@@ -2462,9 +2463,9 @@ Example:
             </label>
           </div>
           <div class="motor-actions">
-            <button type="submit" id="motor-apply" class="motor-button" disabled>Apply</button>
-            <button type="button" id="motor-start" class="motor-button primary" disabled>Start</button>
-            <button type="button" id="motor-stop" class="motor-button" disabled>Stop</button>
+            <button type="submit" id="motor-apply" class="motor-button btn-17" disabled><span class="text-container"><span class="text">Apply</span></span></button>
+            <button type="button" id="motor-start" class="motor-button primary btn-17 btn-run" disabled><span class="text-container"><span class="text">Start</span></span></button>
+            <button type="button" id="motor-stop" class="motor-button btn-17" disabled><span class="text-container"><span class="text">Stop</span></span></button>
           </div>
           <p class="motor-help">Voltages are per unit of the DC bus; the linear limit is 0.577. Apply changes take effect at the next control update of a running firmware.</p>
         </form>
@@ -2498,8 +2499,8 @@ Example:
             </label>
           </div>
           <div class="motor-actions">
-            <button type="submit" id="motor-physics-apply" class="motor-button" disabled>Apply</button>
-            <button type="button" id="motor-physics-defaults" class="motor-button" disabled>Defaults</button>
+            <button type="submit" id="motor-physics-apply" class="motor-button btn-17" disabled><span class="text-container"><span class="text">Apply</span></span></button>
+            <button type="button" id="motor-physics-defaults" class="motor-button btn-17" disabled><span class="text-container"><span class="text">Defaults</span></span></button>
           </div>
           <p class="motor-help">Applied live to the plant from its next step. Flux 0 makes it a plain three-phase RL load. Invalid values change nothing.</p>
         </form>

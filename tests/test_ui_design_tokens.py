@@ -138,16 +138,25 @@ def test_wipe_label_is_readable_before_and_after_the_animation(theme):
     assert contrast(end_label, wipe) >= 4.5, f"{theme}: label at the end of the wipe {end_label}"
 
 
+@pytest.mark.parametrize("theme", sorted(THEMES))
+def test_panel_wipe_label_is_readable_on_the_default_fill(theme):
+    """Panel buttons wipe too: their resting label is the difference blend over --btn.
+    (--btn-hover only shows for the 200 ms the wipe takes to cover it.)"""
+    tokens = THEMES[theme]
+    label = _difference(tokens["--wipe"], tokens["--btn"])
+    assert contrast(label, tokens["--btn"]) >= 4.5, f"{theme}: label {label} on --btn"
+
+
 def test_neutral_buttons_wipe_but_filled_and_danger_buttons_swap_colours():
     """difference would turn Run's white label cyan: the wipe is for neutral buttons only."""
     assert ".btn-17:not(.btn-run):not(.btn-reset)::before" in STYLE
     assert "mix-blend-mode: difference" in STYLE
     blend = re.findall(r"([^{}]*)\{[^{}]*mix-blend-mode: difference", STYLE)
     assert blend and all(":not(.btn-run):not(.btn-reset)" in selector for selector in blend)
-    assert re.search(r"\.btn-17\.btn-run:hover:not\(:disabled\),\s*#controls \.btn-17\.btn-reset:hover", STYLE)
+    assert re.search(r"\.btn-17\.btn-run:hover:not\(:disabled\),\s*\.btn-17\.btn-reset:hover", STYLE)
 
 
 def test_wipe_respects_reduced_motion_and_hover_capability():
     assert "@media (hover: hover) and (pointer: fine)" in STYLE
-    reduced = STYLE[STYLE.index("#controls .btn-17, #controls .btn-17::before"):]
+    reduced = STYLE[STYLE.index(".btn-17, .btn-17::before"):]
     assert "animation: none !important" in reduced and "--progress: 0%" in reduced

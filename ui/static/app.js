@@ -1160,9 +1160,9 @@ function updateDevicePanel(io, core) {
         actions.className = 'runtime-device-actions';
         for (const [action, label] of [['set-position', 'Set position'], ['set-error', 'Set error'], ['detach', 'Detach']]) {
           const button = document.createElement('button');
-          button.className = 'runtime-device-button';
+          button.className = 'runtime-device-button btn-17';
           button.type = 'button';
-          button.textContent = label;
+          setButtonLabel(button, label);
           button.dataset.deviceAction = action;
           actions.appendChild(button);
         }
@@ -1269,9 +1269,9 @@ function updateGenericDeviceRow(row, device, faults) {
     actions.replaceChildren();
     for (const action of wanted) {
       const button = document.createElement('button');
-      button.className = 'runtime-device-button';
+      button.className = 'runtime-device-button btn-17';
       button.type = 'button';
-      button.textContent = action === 'detach' ? 'Detach' : 'Open Motor control';
+      setButtonLabel(button, action === 'detach' ? 'Detach' : 'Open Motor control');
       button.dataset.deviceAction = action;
       actions.appendChild(button);
     }
@@ -2429,7 +2429,7 @@ configModal.addEventListener("click", (e) => {
 btnConfigSave.addEventListener("click", async () => {
   configError.textContent      = "";
   btnConfigSave.disabled       = true;
-  btnConfigSave.textContent    = "Saving...";
+  setButtonLabel(btnConfigSave, "Saving...");
   try {
     const res  = await fetch("/config", { method: "PUT", body: configTextarea.value });
     const data = await res.json();
@@ -2446,7 +2446,7 @@ btnConfigSave.addEventListener("click", async () => {
     configError.textContent = String(e);
   } finally {
     btnConfigSave.disabled    = false;
-    btnConfigSave.textContent = "Save \u0026 Reload";
+    setButtonLabel(btnConfigSave, "Save \u0026 Reload");
   }
 });
 
@@ -3429,7 +3429,7 @@ const ctableDivider   = document.getElementById("ctable-divider");
 
 btnCtableToggle.addEventListener("click", () => {
   const open = ctableSection.classList.toggle("open");
-  btnCtableToggle.textContent = open ? "C-Table ▲" : "C-Table";
+  setButtonLabel(btnCtableToggle, open ? "C-Table ▲" : "C-Table");
   ctableDivider.style.display = open ? "" : "none";
   if (open && !document.getElementById("ctable-tbody").hasChildNodes()) {
     buildCtable();

@@ -18,6 +18,25 @@ const bare = { querySelector: () => null, textContent: 'Run' };
 C.setButtonLabel(bare, 'Stop SIM');
 assert.equal(bare.textContent, 'Stop SIM');
 assert.doesNotThrow(() => C.setButtonLabel(null, 'x'));
+// A .btn-17 button built in script gets the spans on its first label, then reuses them.
+class Span {
+  constructor() { this.children = []; this.className = ''; this.textContent = ''; }
+  appendChild(child) { this.children.push(child); }
+  replaceChildren(...kids) { this.children = kids; }
+  querySelector(selector) {
+    const walk = node => node.children.flatMap(child => [child, ...walk(child)]);
+    return walk(this).find(n => '.' + n.className === selector) || null;
+  }
+}
+const made = new Span();
+made.ownerDocument = { createElement: () => new Span() };
+made.classList = { contains: name => name === 'btn-17' };
+C.setButtonLabel(made, 'Detach');
+assert.equal(made.children[0].className, 'text-container');
+assert.equal(made.querySelector('.text').textContent, 'Detach');
+C.setButtonLabel(made, 'Open');
+assert.equal(made.children.length, 1, 'labels are rewritten in place');
+assert.equal(made.querySelector('.text').textContent, 'Open');
 assert.equal(context.setButtonLabel, C.setButtonLabel, 'app.js calls it as a global');
 
 // Tabs keyboard model.
@@ -99,6 +118,15 @@ for (const id of ['btn-multicore', 'btn-step', 'btn-run', 'btn-sim', 'btn-reset'
   'btn-config', 'btn-reset-layout', 'btn-help'])
   assert.match(html, new RegExp(`<button id="${id}" class="btn-17[^"]*"[^>]*><span class="text-container"><span class="text">`),
     `${id} wraps its label for the wipe`);
+
+// Every wipe button wraps its label; panel and device buttons share the mechanism.
+for (const [, attrs, inner] of html.matchAll(/<button\b([^>]*\bbtn-17\b[^>]*)>([\s\S]*?)<\/button>/g))
+  assert.match(inner, /^<span class="text-container"><span class="text">/, `wipe button ${attrs.trim()} wraps its label`);
+for (const id of ['btn-file', 'btn-load', 'bp-add-btn', 'btn-mem-fill', 'btn-config-save', 'btn-fill-apply',
+  'tca-attach-button', 'uart-inj-btn', 'motor-start', 'motor-physics-defaults'])
+  assert.match(html, new RegExp(`<button [^>]*id="${id}"[^>]*class="[^"]*btn-17|<button [^>]*class="[^"]*btn-17[^"]*"[^>]*id="${id}"`), `${id} wipes on hover`);
+for (const id of ['spad', 'loopback', 'mem-btn', 'panel-toggle'])
+  assert.ok(!new RegExp(`<button[^>]*(id|class)="[^"]*${id}[^"]*btn-17`).test(html), `${id} toggles keep their own hover`);
 
 // Nothing writes textContent on a wipe button (it would destroy the label spans).
 const app = readFileSync(new URL('../ui/static/app.js', import.meta.url), 'utf8');

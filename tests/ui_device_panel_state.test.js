@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import vm from 'node:vm';
 
 const appPath = fileURLToPath(new URL('../ui/static/app.js', import.meta.url));
 const app = readFileSync(appPath, 'utf8');
@@ -40,13 +41,16 @@ const document = {
   getElementById: id => nodes.get(id) || null,
   createElement: () => new Node(),
 };
-const harness = new Function('document', `
+// app.js reads setButtonLabel from chrome.js as a global.
+const chrome = vm.createContext({});
+vm.runInContext(readFileSync(new URL('../ui/static/chrome.js', import.meta.url), 'utf8'), chrome);
+const harness = new Function('document', 'setButtonLabel', `
   let currentCore = 'pru0';
   let devicePanelCore = 'pru0';
   let multiCoreMode = false;
   ${app.slice(start, end)}
   return { updateDevicePanel, ssiFieldMax, syncSsiSetter, parseI2CAddress };
-`)(document);
+`)(document, chrome.setButtonLabel);
 
 // The FOC motor is controlled from the Motor control view; the device panel
 // must tolerate a motor in the bus state without touching any FOC element.
