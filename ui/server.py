@@ -56,6 +56,28 @@ _device_api = PRUSimulatorMCP(config_path=config_path, simulator=sim)
 _config_lock = asyncio.Lock()
 
 
+def _reject_legacy_i2c_conflict(core: str) -> None:
+    """The legacy I2C slot owns R30/R31 bits 0/1; refuse it next to a device on them."""
+    for device in sim.device_bus.devices:
+        if (sim.device_bus.core_for_device(device) == core
+                and {0, 1} & set(device.nets)):
+            raise ValueError(
+                f"legacy I2C attach uses {core} pins 0 and 1, which device "
+                f"{device.name!r} already uses; detach it first")
+
+
+def _reject_i2c_pin_conflict(core: str, profile: object, config: object) -> None:
+    """Refuse a tca9538 device on pins the legacy I2C attach already owns."""
+    if profile != "tca9538" or sim.cores[core].io_port.i2c_device is None:
+        return
+    defaults = discover_device_profiles()["tca9538"]["defaults"]
+    values = {**defaults, **(config if isinstance(config, dict) else {})}
+    if {values["scl_pin"], values["sda_pin"]} & {0, 1}:
+        raise ValueError(
+            f"the legacy I2C attach already owns {core} pins 0 and 1; "
+            "detach it before attaching a tca9538 device on those pins")
+
+
 def _device_api_for_current_sim() -> PRUSimulatorMCP:
     global _device_api
     if _device_api.sim is not sim:
@@ -677,10 +699,20 @@ async def websocket_endpoint(websocket: WebSocket):
                 }))
                 await _send_state(websocket, core)
             elif action == "i2c_attach":
-                sim.i2c_attach(core, bool(msg.get("enabled", False)), int(msg.get("address", 0x23)))
+                # Deprecated: the dashboard attaches a TCA9538 through the
+                # generic device_attach (profile "tca9538"). Kept for old clients.
+                enabled = bool(msg.get("enabled", False))
+                try:
+                    if enabled:
+                        _reject_legacy_i2c_conflict(core)
+                    sim.i2c_attach(core, enabled, int(msg.get("address", 0x23)))
+                except (TypeError, ValueError) as exc:
+                    await websocket.send_json({"type": "error", "tag": "device",
+                                               "errors": [str(exc)]})
                 await _send_state(websocket, core)
             elif action == "device_attach":
                 try:
+                    _reject_i2c_pin_conflict(core, msg.get("profile", ""), msg.get("config"))
                     _device_api_for_current_sim().pru_device_attach(
                         profile=msg.get("profile", ""), core=core,
                         config=msg.get("config"),
