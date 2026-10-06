@@ -46,6 +46,11 @@ _PROFILE_DEFAULTS = {
         "core_clock_hz": 250_000_000,
         "current_a_clock_hz": 20_000_000,
         "current_b_clock_hz": 20_000_000,
+        "flux_linkage_vs": 0.05,
+        "pole_pairs": 4,
+        "inertia_kg_m2": 0.0005,
+        "damping_nm_s": 0.003,
+        "load_torque_nm": 0.0,
         "name": "foc_motor",
     },
 }

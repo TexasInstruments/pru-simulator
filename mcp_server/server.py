@@ -478,6 +478,12 @@ class PRUSimulatorMCP:
                 self.sim.set_gpio_drive_mask(core, previous_mask)
         return {"success": True, "device": device_name}
 
+    def pru_device_configure(self, device_name: str, parameters: dict) -> dict:
+        """Change an attached device's run-time parameters (all or nothing)."""
+        device = self._get_device(device_name)
+        applied = device.configure(parameters)
+        return {"success": True, "device": device_name, "parameters": applied}
+
     def pru_device_state(self) -> dict:
         """Return attached device state, bus levels, events, and faults."""
         return self.sim.device_state()
