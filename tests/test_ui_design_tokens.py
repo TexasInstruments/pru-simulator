@@ -174,5 +174,8 @@ def test_wipe_buttons_do_not_set_their_own_label_colour():
         assert not (style and re.search(r"(^|;)\s*color\s*:", style.group(1))), attrs
         ident = re.search(r'\bid="([^"]+)"', attrs)
         if ident:
-            rules = re.findall(r"#" + re.escape(ident.group(1)) + r"\s*\{([^}]*)\}", page)
+            # `#id {`, `#id:hover {` and grouped selectors (`#a, #id {`); state
+            # classes such as `#btn-multicore.mc-active` are toggles and exempt.
+            sel = r"#" + re.escape(ident.group(1)) + r"(?::hover)?(?![\w.:-])"
+            rules = re.findall(r"(?:^|[},;>])\s*(?:[^{}]*,\s*)?" + sel + r"\s*(?:,[^{}]*)?\{([^}]*)\}", page)
             assert not any(re.search(r"(^|;)\s*color\s*:", rule) for rule in rules), ident.group(1)

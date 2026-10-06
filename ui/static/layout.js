@@ -651,11 +651,13 @@ function initLayout(mode) {
   for (const mode of ["sc", "mc", "mc3", "mc4"]) modePanelIds[mode] = getLeafIds(defaultTree(mode));
 
   // Invalidate saved layouts when panel set changes
-  const LAYOUT_VERSION = 3;
+  const LAYOUT_VERSION = 4;
   const storedVer = parseInt(localStorage.getItem('pru-layout-ver') || '0', 10);
   if (storedVer < LAYOUT_VERSION) {
     localStorage.removeItem('pru-layout-sc');
     localStorage.removeItem('pru-layout-mc');
+    localStorage.removeItem('pru-layout-mc3');
+    localStorage.removeItem('pru-layout-mc4');
     localStorage.setItem('pru-layout-ver', String(LAYOUT_VERSION));
   }
 

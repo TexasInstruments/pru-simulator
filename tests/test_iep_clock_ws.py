@@ -35,10 +35,10 @@ def test_state_reports_the_default_iep_clock(fresh_sim):
     with client.websocket_connect("/ws") as ws:
         state = _send(ws, action="get_state")[-1]
     assert state["iep"] == {"clock_mhz": 200.0, "external_mhz": 200.0, "core_clock": False,
-                            "choices_mhz": [200, 250, 300]}
+                            "choices_mhz": [200, 225, 250, 300, 333]}
 
 
-@pytest.mark.parametrize("mhz", [250, 300])
+@pytest.mark.parametrize("mhz", [225, 250, 300, 333])
 def test_set_iep_clock_changes_the_counter_rate_without_losing_time(fresh_sim, mhz):
     iep = fresh_sim.iep
     iep.global_cfg = CNT_ENABLE_INC1
@@ -54,7 +54,7 @@ def test_set_iep_clock_changes_the_counter_rate_without_losing_time(fresh_sim, m
     assert iep.count - before == round(2000 * mhz * 1e6 / core_hz)
 
 
-@pytest.mark.parametrize("bad", [0, 225, "300", None, True, -1])
+@pytest.mark.parametrize("bad", [0, 275, "300", None, True, -1])
 def test_set_iep_clock_rejects_other_values(fresh_sim, bad):
     with client.websocket_connect("/ws") as ws:
         messages = _send(ws, action="set_iep_clock", mhz=bad)
@@ -100,3 +100,10 @@ def test_step_back_restore_keeps_the_chosen_clock(fresh_sim):
         _send(ws, action="set_iep_clock", mhz=250)
     srv._restore("pru0", snapshot)
     assert fresh_sim.iep.active_clock_mhz == 250
+
+
+def test_iep_333_mhz_is_exact_and_reported(fresh_sim):
+    with client.websocket_connect("/ws") as ws:
+        state = _send(ws, action="set_iep_clock", mhz=333)[-1]
+    assert state["iep"]["clock_mhz"] == 333.0
+    assert fresh_sim.iep.external_clock_hz == 333_000_000

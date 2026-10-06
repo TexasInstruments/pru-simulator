@@ -76,7 +76,8 @@ def test_step_and_reset_address_each_core_separately(loaded):
         assert [loaded.cores[core].pc for core in CORES] == [0, 0, 0, 0]
 
 
-@pytest.mark.parametrize("partners", [["nope"], ["pru0"], "rtu0", ["rtu0", "x"]])
+@pytest.mark.parametrize("partners", [["nope"], ["pru0"], "rtu0", ["rtu0", "x"],
+                                      [["rtu0"]], [1], [{}], ["rtu0", "rtu0"]])
 def test_run_multicore_rejects_bad_partners_without_dropping_the_socket(loaded, partners):
     with client.websocket_connect("/ws") as ws:
         ws.send_json({"action": "run_multicore", "core": "pru0", "partners": partners})

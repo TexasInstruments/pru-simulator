@@ -349,7 +349,7 @@ ALLOWED_CLOCK_MHZ = {200, 225, 250, 300, 333}
 
 # IEP counter clock chosen in the dashboard. Runtime only: memory.cfg's
 # iep_clock_mhz is never written. None means "the configured default".
-IEP_CLOCK_CHOICES_MHZ = (200, 250, 300)
+IEP_CLOCK_CHOICES_MHZ = (200, 225, 250, 300, 333)
 _iep_clock_override = None
 
 
@@ -669,7 +669,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 # "partners" runs three or four cores together; "partner" is the
                 # original single follower.
                 partners = msg.get("partners") or [msg.get("partner", "pru1")]
-                if (not isinstance(partners, list) or core in partners
+                if (not isinstance(partners, list)
+                        or not all(isinstance(name, str) for name in partners)
+                        or len(set(partners)) != len(partners) or core in partners
                         or any(name not in sim.cores for name in partners)):
                     await websocket.send_json({"type": "error", "errors": [
                         f"partners must be other cores of {list(sim.cores)}, got {partners!r}"]})

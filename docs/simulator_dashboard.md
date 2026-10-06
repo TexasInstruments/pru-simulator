@@ -46,7 +46,7 @@ selector offers PRU0 and the partner only. With no extra core toggled the view
 is the original two-core one.
 
 **IEP counter clock.** The header selector next to the core clock sets the
-external IEP clock (200, 250 or 300 MHz) of the running simulator through the
+external IEP clock (200, 225, 250, 300 or 333 MHz) of the running simulator through the
 `set_iep_clock` WebSocket action. It is runtime only: `memory.cfg` is not
 written, a restart returns to its `iep_clock_mhz`, saving the config resets
 it, and changing the core clock keeps it. It keeps the counter value (a sub-tick

@@ -2467,7 +2467,7 @@ function showIepClock(iep) {
   if (known) iepClockSelect.value = String(iep.external_mhz);
   else iepClockSelect.selectedIndex = -1;   // e.g. iep_clock_mhz in memory.cfg is not a choice
   iepClockSelect.title = !known
-    ? "IEP counter clock is " + iep.external_mhz + " MHz (from memory.cfg); pick 200, 250 or 300 MHz for this session"
+    ? "IEP counter clock is " + iep.external_mhz + " MHz (from memory.cfg); pick 200, 225, 250, 300 or 333 MHz for this session"
     : iep.core_clock
     ? "Firmware selected the core clock through IEPCLK; the counter runs at " + iep.clock_mhz + " MHz. This choice applies when it selects the external clock."
     : "IEP counter clock (this session only; memory.cfg is not changed)";

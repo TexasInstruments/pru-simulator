@@ -160,7 +160,7 @@ assert.deepEqual([...html.matchAll(/data-mc-extra="(\w+)"/g)].map(m => m[1]), ['
 
 // IEP clock selector: runtime-only choice sent over the WebSocket, shown from state.
 const iepSelect = html.match(/<select id="iep-clock-select"[\s\S]*?<\/select>/)[0];
-assert.deepEqual([...iepSelect.matchAll(/<option value="(\d+)"/g)].map(m => m[1]), ['200', '250', '300']);
+assert.deepEqual([...iepSelect.matchAll(/<option value="(\d+)"/g)].map(m => m[1]), ['200', '225', '250', '300', '333']);
 {
   const section = app.slice(app.indexOf('// ---- IEP counter clock selector'), app.indexOf('// ---- end IEP counter clock selector'));
   assert.ok(section.length > 0 && !/fetch\(|config/.test(section.replace(/memory\.cfg/g, '')), 'no REST or config write');
