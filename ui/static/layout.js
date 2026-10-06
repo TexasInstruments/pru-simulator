@@ -17,7 +17,7 @@ const SC_DEFAULT_TREE = {
       ]
     },
     {
-      type: 'split', dir: 'v', sizes: [40, 20, 40],
+      type: 'split', dir: 'v', sizes: [30, 45, 25],
       children: [
         { type: 'leaf', panelId: 'registers' },
         { type: 'leaf', panelId: 'io' },
