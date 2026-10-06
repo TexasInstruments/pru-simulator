@@ -1,41 +1,116 @@
 # Simulator dashboard
 
-The dashboard keeps firmware inspection and external devices in separate views
-while using the same simulator session. Open the **Simulator**, **Devices**,
-**Motor control** or **Events** view from the workspace toolbar. Switching views does not reset or
-stop execution.
+The dashboard keeps firmware inspection, the things wired to the pins and the
+motor example in separate views while using the same simulator session. The
+workspace toolbar has three tabs: **Simulator**, **I/O & Devices** and **Motor
+control**. Switching views does not reset or stop execution. A glider slides
+under the active tab (see [Motion](#motion)).
 
-The Simulator view retains the source, editor, register, memory, GPIO and graph
-panels. Use the Panels buttons to hide panels you do not need; remaining panels
-reclaim the space. Drag the panel headers to rearrange them and the dividers to
-resize them. Visibility and layout are remembered separately for single-core
-and multicore modes. At least one panel stays visible. Reset Layout restores
-the current mode's panels and default sizes.
+## Simulator
+
+The Simulator view is generic debugging and holds the source and disassembly,
+the assembly editor, registers, memory panels, the memory and signal graphs
+and an **I/O Pins** panel. I/O Pins is reduced to what every core has: the
+GP-mux selector (GPCFG `PRU_GP_MUX_SEL`), the R30 output grid, the R31 input
+grid and the GPIO loopback strip. The R30/R31 grids stay visible in every mux
+mode; in SD or Peripheral Interface mode a note next to the selector points to
+**I/O & Devices > Peripherals** for the controls of that block.
+
+A core memory fault (for example an access to an unmapped address, which halts the core) is
+shown in a red **Core fault** band above the panels, with the core, opcode,
+address and message; the same fault is listed in **I/O & Devices > Events**.
+
+Use the Panels buttons to hide panels you do not need; remaining panels
+reclaim the space. The row wraps onto more lines instead of scrolling, and the
+Telemetry strip wraps too, so nothing is clipped at 1700, 1280 or 900 px.
+Drag the panel headers to rearrange them and the dividers to resize them.
+Visibility and layout are remembered separately for single-core and multicore
+modes. At least one panel stays visible. Reset Layout restores the current
+mode's panels and default sizes. The panel ids and the layout version did not
+change, so layouts saved before the reorganisation load as they were.
 
 Choose PRU0, PRU1, RTU0 or RTU1 in single-core mode. Multicore mode displays PRU0
-and a selected partner. The Devices view follows the selected core, with an
-explicit device-core selector in multicore mode. SSI models may attach to that
-core; the FOC motor remains restricted to PRU0.
+and a selected partner. The I/O & Devices view follows the selected core, with
+an explicit device-core selector in multicore mode.
 
-Devices contains the generic SSI runtime panel; the FOC motor is controlled from
-Motor control (below). Attach an encoder and set the position for its next
-frame. The SSI form's Preset list (filled from
-the server's device discovery) offers the twelve frames in the
-[SSI model](ssi_device_model.md) plus Custom; choosing one fills the
-resolution, error bits and encoding, which you can still edit. An encoder with
-error bits also shows a "Set next error" field, applied like the position to
-the next frame, and its frame events list the decoded error. The page sends
-numbers, so position and error values are limited to 2^53 - 1; use the MCP
-tools for wider values. The Devices view does not write the SSI reader's
-shared-memory config block; load and configure the reader firmware yourself.
-The FOC example produces 16 kHz PWM at
-the default 200 MHz IEP clock; the PRU default remains 250 MHz. See
-[SSI](ssi_device_model.md) for the explicit manual 300 MHz option and
-[FOC](foc_open_loop.md) for the firmware and ABI.
+## I/O & Devices
+
+"I/O & Devices" is only a container: it has no content of its own and opens on
+its **Devices** sub-tab. The sub-tabs follow the WAI-ARIA tabs pattern (Left,
+Right, Home and End move between them; the selected one is in the tab order).
+The chosen view and sub-tab are remembered in the browser; views saved before
+this layout (`devices`, `events`) open the matching sub-tab.
+
+A badge on the tab counts **new faults**: device protocol faults, bus
+contention and core memory faults you have not yet seen. It carries the text
+"N new faults" for assistive technology (it is not colour only) and clears when
+you open Events. Ordinary events never count.
+
+### Devices: things plugged on the pins
+
+Cards use the protocol names. Each attaches through the generic
+`device_attach` action (the same profiles as the MCP device API).
+
+- **SSI encoder.** Attach an encoder and set the position for its next
+  frame. The Preset list (filled from the server's device discovery) offers the
+  twelve frames in the [SSI model](ssi_device_model.md) plus Custom; choosing
+  one fills the resolution, error bits and encoding, which you can still edit.
+  An encoder with error bits also shows a "Set next error" field, applied like
+  the position to the next frame, and its frame events list the decoded error.
+  The page sends numbers, so position and error values are limited to 2^53 - 1;
+  use the MCP tools for wider values. The panel does not write the SSI reader's
+  shared-memory config block; load and configure the reader firmware yourself.
+  The FOC example produces 16 kHz PWM at the default 200 MHz IEP clock; the PRU
+  default remains 250 MHz. See [SSI](ssi_device_model.md) for the explicit
+  manual 300 MHz option and [FOC](foc_open_loop.md) for the firmware and ABI.
+- **I2C expander (TCA9538).** Name, 7-bit address (`0x23` or `35`), SCL and SDA
+  pins (both open-drain; defaults 0 and 1), Attach and Detach. The card shows
+  the eight output pins as boxes with a 0/1 digit (an input-configured pin
+  reads 0, since the model is write-only and has no Input Port register), the
+  OUTPUT, POLARITY and CONFIG registers, the number of bus events and faults,
+  the protocol state and the last transaction. It is a `tca9538` profile device,
+  so its faults also reach the badge and Events.
+- **UART.** The decoder and the RX inject controls, moved here unchanged. The
+  decoder works on the GPO0 trace recorded by the Signal Graph, so capture with
+  the Signal Graph REC button in the Simulator view first; inject sends frames
+  onto GPI0-3 with the same `uart_inject` action as before.
+
+Below the cards **Attached devices** lists every device on the selected core,
+not only SSI encoders: name, core, model or profile, wiring and the latest
+fault, with Detach. SSI rows keep the position and error setters; the FOC motor
+row has an "Open Motor control" button. A refused attach (a bad address, a
+duplicate name, or a pin conflict, see below) is shown in the card's alert.
+
+**Legacy I2C attach.** The old *Attach TCA9538* button of the I/O Pins panel is
+gone. The `i2c_attach` WebSocket action and the `pru_i2c_attach` MCP tool still
+work but are **deprecated**: they attach a separate legacy model on pins 0/1
+that is not part of the device bus. Use the TCA9538 card, `device_attach` with
+profile `tca9538`, or `pru_device_attach`. If the legacy slot is attached (for
+example from MCP) and a START was seen, its LEDs are still drawn in a "legacy
+attach" block under the cards. The two paths cannot share pins 0 and 1: a
+`tca9538` device on those pins is refused while the legacy slot is attached,
+and the legacy attach is refused while a device uses pin 0 or 1, each with an
+error message.
+
+### Peripherals: blocks inside the chip
+
+The **Sigma-delta (SD) filter** and **Peripheral Interface** cards moved here
+from the I/O Pins panel. Each is live only when the GP mux selects it. Otherwise
+the card stays visible with an "Inactive in this mux mode" notice and a link
+that writes the GPCFG mux (the same action as the selector in I/O Pins).
+
+### Events
+
+Device frame/fault events, bus contention messages and the memory faults of the
+visible cores. Event cycles belong to the named device's core, so unequal-clock
+cores do not share a cycle scale. The view reflects current simulator state,
+including reset and step-back, rather than retaining a separate history that
+could disagree with it. The display includes up to 500 events and 100 fault
+messages.
 
 ## Motor control
 
-The Motor control button is always in the toolbar (a dot marks that a motor is
+The Motor control tab is always in the toolbar (a dot marks that a motor is
 attached). The view drives the open-loop V/f example described in
 [FOC](foc_open_loop.md); it has no execution loop of its own.
 
@@ -82,21 +157,15 @@ it runs about 40,000 PRU cycles per second (a 16 kHz period is 15,625 cycles),
 so tens of milliseconds of motor time take minutes of wall time. The plots fill
 at that pace.
 
-Events shows the attached devices' frame/fault events and bus contention
-messages, plus memory faults from the current core state. Event cycles belong
-to the named device's core, so unequal-clock cores do not share a cycle scale.
-The view reflects current simulator state, including reset and step-back,
-rather than retaining a separate history that could disagree with it. The
-display includes up to 500 events and 100 fault messages.
-
 ## Look and themes
 
 The default **Dark** theme is the red-brand operator workbench: raised and inset
 surfaces, a red accent (`--accent`, `--brand-red`), outlined uppercase toolbar
 buttons with a filled red **Run**, and panels with a red bar before an uppercase
 title. The header is split into labelled groups (Target, Execute, Session,
-Status, Theme), a segmented view switcher (Simulator, Devices, Motor control,
-Events), a **Panels** row of icon toggle buttons, and a Telemetry strip. UI text
+Status, Theme), a segmented view switcher (Simulator, I/O & Devices, Motor
+control), a **Panels** row of icon toggle buttons, and a Telemetry strip. Below
+about 1760 px the groups flow and wrap instead of sharing fixed columns. UI text
 uses the `Segoe UI Variable` / `Inter` / system sans stack and code, registers
 and memory use `Cascadia Code` / `Consolas`; no web fonts are loaded, so the page
 works offline.
@@ -110,11 +179,39 @@ The signal graph, memory graph, memory-fill preview and Motor control plots read
 their colours from the `--graph-*` tokens when they draw and redraw when the
 theme changes.
 
-Dark and High contrast themes, view selection and panel visibility are local
-browser preferences. Navigation and panel toggles are keyboard-accessible
-buttons with visible focus and pressed state. On narrow screens, the simulator
+Dark and High contrast themes, view selection, the I/O & Devices sub-tab and
+panel visibility are local browser preferences. Navigation and panel toggles
+are keyboard-accessible buttons with visible focus and pressed state. On narrow screens, the simulator
 columns stack and the device forms flow into one column.
 
 This dashboard implements general navigation, panel controls and device event
 inspection on the new generic runtime surface. It does not revive the original
 branch's protocol-specific run shortcuts or mailbox-coupled model controls.
+
+## Motion
+
+Two small animations are CSS only (no JavaScript animation loops, no layout
+shift) and are switched off when the browser asks for reduced motion.
+
+- **Tab glider.** One highlight slides under the active tab of the top
+  workspace tabs and of the I/O & Devices sub-tabs. A small script reads the
+  active tab's offset and width and sets `--glider-x` and `--glider-w`, so it
+  works for any number of tabs and for the wider tab that carries the fault
+  badge. It does not animate on first paint (the transition is armed after the
+  first frame, and a hidden strip is measured when it is first shown), and
+  reduced motion moves it instantly. In forced-colours (Windows high contrast)
+  mode the active tab is marked by an outline and underline instead of shadows.
+- **Button wipe.** Hovering a neutral toolbar button (Multi-core, Step, SIM,
+  Config, Reset Layout, Help) sweeps two skewed `--wipe` coloured shapes across
+  the pill while the label inverts (`mix-blend-mode: difference`) and rolls
+  once; the label ends as dark text on `--wipe`. The filled and danger buttons
+  (Run/Stop, Reset, HW Reset, Stop SIM) use a plain colour swap (red text on
+  white) because the blend would turn their white label cyan. The wipe runs only
+  where hover is available (`(hover: hover) and (pointer: fine)`), never on
+  disabled buttons, and not at all under reduced motion, where hover only
+  changes the border. Toolbar labels sit in `.text-container > .text`; code that
+  changes a button's text must use `setButtonLabel(button, text)`
+  (`ui/static/chrome.js`), never `button.textContent`, which would remove the
+  label wrapper. `--wipe` is defined in both themes, and
+  `tests/test_ui_design_tokens.py` checks the label's contrast before and at the
+  end of the wipe.
