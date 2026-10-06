@@ -71,7 +71,7 @@ async def _exercise_stdio_tools():
             attached_foc = _payload(await session.call_tool(
                 "pru_device_attach", {"profile": "foc_motor"}))
             assert attached_foc["success"] is True
-            assert attached_foc["device"]["model"] == "three_phase_rl"
+            assert attached_foc["device"]["model"] == "pmsm"
             routed = _payload(await session.call_tool(
                 "pru_sd_route_input", {"channel": 0, "pin": 3}))
             assert routed == {"channel": 0, "pin": 3}

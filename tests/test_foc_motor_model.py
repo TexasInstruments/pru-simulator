@@ -1,3 +1,5 @@
+import math
+
 import pytest
 
 from pru_io.device_model import PUSH_PULL
@@ -95,7 +97,8 @@ def test_foc_current_pdm_is_sampled_at_the_sd_clock(
         core_clock_hz=core_clock_hz,
         current_a_clock_hz=sample_clock_hz,
     )
-    model.phase_currents_a[0] = phase_current_a
+    # A floating-neutral motor carries a balanced set: ia + ib + ic = 0.
+    model.phase_currents_a = [phase_current_a, -phase_current_a / 2, -phase_current_a / 2]
     sim.attach_device("pru0", model)
     sim.set_gpio_drive_mask("pru0", 0x7)
 
@@ -159,3 +162,105 @@ def test_unrouted_explicit_current_clock_is_preserved():
     mcp = PRUSimulatorMCP()
     mcp.pru_device_attach("foc_motor", config={"current_b_clock_hz": 10_000_000})
     assert mcp.sim.device_bus.devices[0].current_b_clock_hz == 10_000_000
+
+
+def test_foc_profile_exposes_and_validates_physics_options():
+    defaults = discover_device_profiles()["foc_motor"]["defaults"]
+    assert {key: defaults[key] for key in (
+        "resistance_ohm", "inductance_h", "flux_linkage_vs", "pole_pairs",
+        "inertia_kg_m2", "damping_nm_s", "load_torque_nm", "dc_bus_v")} == {
+        "resistance_ohm": 0.5, "inductance_h": 0.001, "flux_linkage_vs": 0.05,
+        "pole_pairs": 4, "inertia_kg_m2": 0.0005, "damping_nm_s": 0.003,
+        "load_torque_nm": 0.0, "dc_bus_v": 48.0}
+    model = create_device("foc_motor", {"pole_pairs": 2, "flux_linkage_vs": 0.0,
+                                        "load_torque_nm": 0.2, "dc_bus_v": 24})
+    assert model.get_state()["parameters"]["pole_pairs"] == 2
+    assert model.get_state()["model"] == "pmsm"
+    for bad in ({"pole_pairs": 0}, {"inertia_kg_m2": 0}, {"dc_bus_v": -1},
+                {"load_torque_nm": "heavy"}, {"flux_linkage_vs": -0.1}):
+        with pytest.raises(ValueError):
+            create_device("foc_motor", bad)
+
+
+def test_mcp_attach_with_physics_state_fields_and_runtime_configure():
+    from mcp_server.server import PRUSimulatorMCP
+    mcp = PRUSimulatorMCP()
+    attached = mcp.pru_device_attach("foc_motor", config={
+        "pole_pairs": 2, "flux_linkage_vs": 0.08, "load_torque_nm": 0.1,
+        "dc_bus_v": 24.0, "inertia_kg_m2": 0.001})
+    assert attached["device"]["parameters"] == {
+        "resistance_ohm": 0.5, "inductance_h": 0.001, "flux_linkage_vs": 0.08,
+        "pole_pairs": 2, "inertia_kg_m2": 0.001, "damping_nm_s": 0.003,
+        "load_torque_nm": 0.1, "dc_bus_v": 24.0, "reference_angle_rad": math.pi / 2}
+    device = mcp.pru_device_state()["devices"][0]
+    for key in ("rotor_angle_rad", "commanded_angle_rad", "angle_error_rad",
+                "rotor_speed_rpm", "commanded_speed_rpm", "phase_currents_a",
+                "id_a", "iq_a", "duty_cycles", "alpha_beta_v", "pwm_periods",
+                "pwm_frequency_hz", "sample_index", "time_s"):
+        assert key in device
+
+    result = mcp.pru_device_configure("foc_motor", {"load_torque_nm": 0.25, "pole_pairs": 3})
+    assert result["success"] and result["parameters"]["load_torque_nm"] == 0.25
+    assert mcp.pru_device_state()["devices"][0]["parameters"]["pole_pairs"] == 3
+
+    with pytest.raises(ValueError):
+        mcp.pru_device_configure("foc_motor", {"load_torque_nm": 1.0, "pole_pairs": 0})
+    assert mcp.pru_device_state()["devices"][0]["parameters"]["load_torque_nm"] == 0.25
+    with pytest.raises(KeyError):
+        mcp.pru_device_configure("missing", {"pole_pairs": 1})
+
+
+def test_configure_is_rejected_by_devices_without_runtime_parameters():
+    from mcp_server.server import PRUSimulatorMCP
+    mcp = PRUSimulatorMCP()
+    mcp.pru_device_attach("tca9538", core="pru1")
+    with pytest.raises(ValueError, match="no run-time parameters"):
+        mcp.pru_device_configure("tca9538", {"address": 1})
+
+
+def ref_duties(theta_turns, vd, vq):
+    from tests import foc_reference as ref
+    return ref.svgen_duties(*ref.inverse_park(theta_turns, vd, vq))
+
+
+def _firmware_system(garble_shared_ram=False):
+    from pathlib import Path
+    from mcp_server.server import PRUSimulatorMCP
+    from pru_io import foc_control_abi as abi
+
+    root = Path(__file__).parents[1]
+    mcp = PRUSimulatorMCP(config_path=str(root / "memory.cfg"))
+    mcp.pru_device_attach("foc_motor")
+    mcp.sim.memory.write(abi.CONTROL_ADDRESS, abi.pack_config(
+        enable=1, requested_generation=1, vq_ref_q15=6554,
+        initial_phase_q32=round(0.3 * 2**32)))
+    source = (root / "source" / "foc_open_loop.asm").read_text(encoding="utf-8")
+    assert mcp.pru_load(source, include_paths=[str(root / "source")])["success"]
+    if garble_shared_ram:
+        control_end = abi.CONTROL_ADDRESS + abi.CONFIG_SIZE
+        noise = bytes((index * 73 + 41) & 0xFF for index in range(0x10000))
+        mcp.sim.memory.write(abi.SHARED_BASE, noise[:abi.CONTROL_OFFSET])
+        mcp.sim.memory.write(control_end, noise[:abi.SHARED_BASE + 0x10000 - control_end])
+    # Table generation (~24.6k cycles) plus four PWM periods.
+    mcp.pru_step(count=23_600 + 4 * 11_000)
+    return mcp, mcp.sim.device_bus.devices[0]
+
+
+def test_firmware_pins_drive_the_plant_and_the_plant_reads_no_shared_memory():
+    mcp, motor = _firmware_system()
+    state = motor.get_state()
+    assert state["pwm_periods"] >= 3
+    assert state["pwm_frequency_hz"] == pytest.approx(16_000, rel=0.001)
+    # Vq = 0.2 pu at 0.3 turns: duties and the commanded angle come from pins.
+    expected = ref_duties(0.3, 0.0, 6554 / 32768)
+    assert state["duty_cycles"] == pytest.approx(expected, abs=0.002)
+    assert state["commanded_angle_rad"] == pytest.approx(2 * math.pi * 0.3, abs=0.01)
+    assert math.remainder(state["rotor_angle_rad"], 2 * math.pi) == pytest.approx(0.0, abs=0.01)
+    assert state["angle_error_rad"] == pytest.approx(2 * math.pi * 0.3, abs=0.01)
+    assert any(abs(current) > 0.1 for current in state["phase_currents_a"])
+    samples = motor.samples_since(0)
+    assert [sample[0] for sample in samples["samples"]] == list(range(len(samples["samples"])))
+
+    garbled_mcp, garbled = _firmware_system(garble_shared_ram=True)
+    assert garbled.snapshot() == motor.snapshot()
+    assert garbled_mcp.sim.cores["pru0"].registers.regs == mcp.sim.cores["pru0"].registers.regs

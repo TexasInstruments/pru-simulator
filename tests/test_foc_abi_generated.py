@@ -13,23 +13,42 @@ def test_generated_foc_abi_matches_schema_and_has_no_feedback_block():
     fields = load_schema()["fields"]
     assert all("feedback" not in field["name"] for field in fields)
     assert all("mailbox" not in field["name"] for field in fields)
+    assert [f["name"] for f in fields if f.get("owner") == "pru"] == [
+        "ack_generation", "status"]
 
 
-def test_foc_config_round_trip_uses_schema_defaults_and_signed_q15():
-    packed = abi.pack_config(alpha_q15=-8192, beta_q15=14189,
-                             phase_increment_q32=0x00CCCCCD)
+def test_foc_config_round_trip_uses_schema_defaults_and_signed_values():
+    packed = abi.pack_config(enable=1, requested_generation=7,
+                             speed_ref_q28=-2**28, ramp_rate_q28=1000,
+                             vd_ref_q15=-8192, vq_ref_q15=14189,
+                             initial_phase_q32=0x00CCCCCD)
 
-    assert len(packed) == abi.CONFIG_SIZE == 32
+    assert len(packed) == abi.CONFIG_SIZE == 48
     assert abi.unpack_config(packed) == {
-        "abi_version": 1,
+        "abi_version": 2,
         "control_period_ticks": 12500,
         "pwm_period_ticks": 12500,
-        "phase_increment_q32": 0x00CCCCCD,
-        "modulation_q15": 16384,
-        "alpha_q15": -8192,
-        "beta_q15": 14189,
-        "initial_phase_q32": 0,
+        "enable": 1,
+        "requested_generation": 7,
+        "speed_ref_q28": -2**28,
+        "ramp_rate_q28": 1000,
+        "vd_ref_q15": -8192,
+        "vq_ref_q15": 14189,
+        "initial_phase_q32": 0x00CCCCCD,
+        "ack_generation": 0,
+        "status": 0,
     }
+    assert abi.unpack_config(abi.pack_config())["ramp_rate_q28"] == abi.SPEED_Q28_ONE
+
+
+def test_pru_owned_words_are_not_host_arguments_and_constants_are_generated():
+    with pytest.raises(TypeError):
+        abi.pack_config(ack_generation=1)
+    assert abi.ACK_GENERATION_OFFSET == 0x28 and abi.STATUS_OFFSET == 0x2C
+    assert (abi.STATUS_RUNNING, abi.STATUS_INVALID_CONFIG, abi.STATUS_SATURATED) == (1, 2, 4)
+    inc = (ROOT / "source" / "foc_control_abi.inc").read_text()
+    assert "FOC_STATUS_SATURATED .set 0x00000004" in inc
+    assert "FOC_ACK_GENERATION_OFFSET .set 0x00000028" in inc
 
 
 @pytest.mark.parametrize(
@@ -37,10 +56,14 @@ def test_foc_config_round_trip_uses_schema_defaults_and_signed_q15():
     [
         {"control_period_ticks": 0},
         {"pwm_period_ticks": -1},
-        {"phase_increment_q32": -1},
-        {"modulation_q15": 32769},
-        {"alpha_q15": 0x80000000},
-        {"beta_q15": True},
+        {"enable": 2},
+        {"requested_generation": -1},
+        {"speed_ref_q28": 2**28 + 1},
+        {"speed_ref_q28": -2**28 - 1},
+        {"ramp_rate_q28": 2**28 + 1},
+        {"vd_ref_q15": 32768},
+        {"vq_ref_q15": -32769},
+        {"vq_ref_q15": True},
     ],
 )
 def test_foc_config_rejects_values_outside_schema_ranges(kwargs):
