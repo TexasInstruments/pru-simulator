@@ -668,25 +668,29 @@ function updatePins(io) {
 const _ACC_SEL_NAMES = ['sinc3', 'sinc2', 'sinc1'];
 const _CLK_SEL_NAMES = ['r31[16]', 'own', 'shared', 'rsvd'];
 
+function setPeripheralActive(cardId, active, muxName) {
+  const card = document.getElementById(cardId);
+  if (!card) return;
+  card.dataset.active = String(active);
+  const name = card.querySelector('.periph-mux-name');
+  if (name) name.textContent = muxName;
+}
+
+const _MUX_NAMES = { gpio: 'GPIO', perif: 'Peripheral Interface', sd: 'SD (Sigma-Delta)' };
+
 function updateSDPanel(io) {
   const sdSection = document.getElementById('sd-interface');
   if (!sdSection) return;
 
-  const gpioSections = document.querySelectorAll(
-    '#io-panel .io-section:not(.sd-interface):not(.perif-interface):not(.io-mux-row):not(.i2c-interface):not(.device-runtime)'
-  );
-
-  if (!io || io.mode !== 'sd') {
+  // The R30/R31 grids stay in every mux mode; this card only shows its
+  // controls when the GP mux selects SD, otherwise an "inactive" notice.
+  const active = !!io && io.mode === 'sd';
+  setPeripheralActive('periph-sd-card', active, _MUX_NAMES[io && io.mode] || 'GPIO');
+  if (!active) {
     sdSection.style.display = 'none';
-    // GPIO sections visible only in GPIO mode; in perif mode the perif panel owns the view.
-    const showGpio = !io || io.mode === 'gpio';
-    gpioSections.forEach(s => { s.style.display = showGpio ? '' : 'none'; });
     return;
   }
-
-  // Switch to SD view
   sdSection.style.display = '';
-  gpioSections.forEach(s => { s.style.display = 'none'; });
 
   const sd = io.sd;
   if (!sd) return;
@@ -811,16 +815,6 @@ function updateSDPanel(io) {
       chipsEl.appendChild(btn);
     });
   }
-
-  // GPIO switch link
-  const switchEl = document.getElementById('sd-switch-gpio');
-  if (switchEl) {
-    switchEl.onclick = (e) => {
-      e.preventDefault();
-      sdSection.style.display = 'none';
-      gpioSections.forEach(s => { s.style.display = ''; });
-    };
-  }
 }
 
 // ---- Peripheral Interface (3-channel) panel --------------------------------
@@ -844,9 +838,14 @@ function updatePerifPanel(io) {
   if (muxSel && document.activeElement !== muxSel) {
     muxSel.value = (io && io.mux_sel != null) ? String(io.mux_sel) : '0';
   }
-  if (muxNote) muxNote.textContent = io ? ('mode: ' + io.mode) : '';
+  if (muxNote) {
+    muxNote.textContent = !io ? '' : (io.mode === 'gpio' ? 'mode: gpio'
+      : `mode: ${io.mode} (controls in I/O & Devices \u203a Peripherals)`);
+  }
 
-  if (!io || io.mode !== 'perif') { sec.style.display = 'none'; return; }
+  const active = !!io && io.mode === 'perif';
+  setPeripheralActive('periph-pi-card', active, _MUX_NAMES[io && io.mode] || 'GPIO');
+  if (!active) { sec.style.display = 'none'; return; }
   sec.style.display = '';
 
   const p = io.perif;
@@ -975,13 +974,42 @@ function updatePerifPanel(io) {
   }
 }
 
-// ---- TCA9538 I2C IO expander panel -----------------------------------------
+// ---- TCA9538 I2C IO expander ------------------------------------------------
 
+const _hex2 = v => `0x${v.toString(16).toUpperCase().padStart(2, '0')}`;
+
+// Parse "0x23" / "35" into a 7-bit I2C address, or null when it is not one.
+function parseI2CAddress(text) {
+  const match = /^(?:0[xX]([0-9a-fA-F]{1,2})|([0-9]{1,3}))$/.exec(String(text).trim());
+  if (!match) return null;
+  const value = match[1] !== undefined ? parseInt(match[1], 16) : parseInt(match[2], 10);
+  return value <= 0x7F ? value : null;
+}
+
+// Eight pin boxes, P0 first, each showing its level as a digit (not colour only).
+function renderI2CLeds(container, levels) {
+  container.replaceChildren();
+  levels.forEach((level, i) => {
+    const led = document.createElement('div');
+    led.className = 'i2c-led' + (level ? ' on' : '');
+    led.setAttribute('role', 'img');
+    led.setAttribute('aria-label', `P${i} ${level ? 'high' : 'low or not driven'}`);
+    led.title = `P${i}`;
+    led.textContent = level ? '1' : '0';
+    container.appendChild(led);
+  });
+}
+
+function i2cTransactionText(t) {
+  const regStr = t.reg === null || t.reg === undefined ? '--' : _hex2(t.reg);
+  const dataStr = t.data === null || t.data === undefined ? '--' : _hex2(t.data);
+  return `addr=0x${t.address.toString(16).toUpperCase()} reg=${regStr} data=${dataStr} ${t.ack ? 'ACK' : 'NACK'}`;
+}
+
+// Legacy attach (i2c_attach / pru_i2c_attach, deprecated): state.io.i2c.
 function updateI2CPanel(io) {
   const section = document.getElementById('i2c-interface');
   if (!section) return;
-
-  document.getElementById('i2c-attach-btn')?.classList.toggle('active', !!(io && io.i2c));
 
   const i2c = io && io.i2c;
   if (!i2c || !i2c.saw_start) {
@@ -993,28 +1021,46 @@ function updateI2CPanel(io) {
   const infoEl = document.getElementById('i2c-mode-info');
   if (infoEl) {
     infoEl.textContent = `addr=0x${i2c.address.toString(16).toUpperCase()} ` +
-      `CONFIG=0x${i2c.config_reg.toString(16).toUpperCase().padStart(2, '0')}`;
+      `CONFIG=${_hex2(i2c.config_reg)}`;
   }
 
   const ledContainer = document.getElementById('i2c-leds');
   if (ledContainer) {
-    ledContainer.innerHTML = '';
     const driven = i2c.output_reg & (~i2c.config_reg & 0xFF);
-    for (let i = 0; i < 8; i++) {
-      const led = document.createElement('div');
-      led.className = 'i2c-led' + (((driven >> i) & 1) ? ' on' : '');
-      led.title = `P${i}`;
-      ledContainer.appendChild(led);
-    }
+    renderI2CLeds(ledContainer, Array.from({ length: 8 }, (_, i) => (driven >> i) & 1));
   }
 
   const logEl = document.getElementById('i2c-log');
-  if (logEl && i2c.last_transaction) {
-    const t = i2c.last_transaction;
-    const regStr = t.reg === null || t.reg === undefined ? '--' : `0x${t.reg.toString(16).toUpperCase().padStart(2, '0')}`;
-    const dataStr = t.data === null || t.data === undefined ? '--' : `0x${t.data.toString(16).toUpperCase().padStart(2, '0')}`;
-    logEl.textContent = `addr=0x${t.address.toString(16).toUpperCase()} reg=${regStr} data=${dataStr} ${t.ack ? 'ACK' : 'NACK'}`;
+  if (logEl && i2c.last_transaction) logEl.textContent = i2cTransactionText(i2c.last_transaction);
+}
+
+// TCA9538 card in Devices: the first expander attached to the selected core.
+function updateTcaCard(tcaDevices, core) {
+  const empty = document.getElementById('tca-empty-state');
+  const state = document.getElementById('tca-state');
+  const detachButton = document.getElementById('tca-detach-button');
+  if (!empty || !state) return;
+  const device = tcaDevices[0];
+  empty.textContent = device
+    ? `${device.name} attached to ${core} at 0x${device.address.toString(16).toUpperCase()} ` +
+      `(SCL pin ${device.scl_pin}, SDA pin ${device.sda_pin}).`
+    : `No TCA9538 attached to ${core}.`;
+  if (detachButton) {
+    detachButton.hidden = !device;
+    detachButton.dataset.name = device ? device.name : '';
   }
+  state.hidden = !device;
+  if (!device) return;
+  renderI2CLeds(document.getElementById('tca-leds'), device.levels || []);
+  const driven = (device.driven_mask || 0) === 0
+    ? 'all pins are inputs (CONFIG 0xFF), none driven' : `driven pins mask ${_hex2(device.driven_mask)}`;
+  document.getElementById('tca-registers').textContent =
+    `OUTPUT=${_hex2(device.output_reg)}  POLARITY=${_hex2(device.polarity_reg)}  ` +
+    `CONFIG=${_hex2(device.config_reg)}  \u00b7 ${driven}\n` +
+    `${device.events || 0} bus event${device.events === 1 ? '' : 's'} \u00b7 ` +
+    `${device.faults || 0} fault${device.faults === 1 ? '' : 's'} \u00b7 state ${device.protocol_state}`;
+  document.getElementById('tca-log').textContent = device.last_transaction
+    ? i2cTransactionText(device.last_transaction) : 'No transaction yet.';
 }
 
 function showDeviceError(errors) {
@@ -1047,9 +1093,10 @@ function updateDevicePanel(io, core) {
   const faults = Array.isArray(bus.faults) ? bus.faults : [];
   const list = document.getElementById('ssi-device-list');
 
-  const ssiDevices = devices.filter(device =>
-    device.core === devicePanelCore && Number.isInteger(device.clock_pin) &&
-    Number.isInteger(device.data_pin));
+  const coreDevices = devices.filter(device => device.core === devicePanelCore);
+  const isSsiDevice = device => Number.isInteger(device.clock_pin) && Number.isInteger(device.data_pin);
+  const ssiDevices = coreDevices.filter(isSsiDevice);
+  updateTcaCard(coreDevices.filter(device => device.model === 'tca9538'), devicePanelCore);
   const empty = document.getElementById('ssi-empty-state');
   if (empty) {
     empty.textContent = ssiDevices.length
@@ -1061,14 +1108,25 @@ function updateDevicePanel(io, core) {
       Array.from(list.children, row => [row.dataset.deviceName, row])
     );
     const nextRows = [];
-    for (const device of ssiDevices) {
+    for (const device of coreDevices) {
       let row = existingRows.get(device.name);
+      if (row && row.dataset.kind !== (isSsiDevice(device) ? 'ssi' : 'generic')) {
+        row.remove();
+        row = undefined;
+        existingRows.delete(device.name);
+      }
+      if (!isSsiDevice(device)) {
+        if (row) existingRows.delete(device.name);
+        nextRows.push(updateGenericDeviceRow(row, device, faults));
+        continue;
+      }
       if (row) {
         existingRows.delete(device.name);
       } else {
         row = document.createElement('div');
         row.className = 'runtime-device-row';
         row.dataset.deviceName = device.name;
+        row.dataset.kind = 'ssi';
 
         const title = document.createElement('div');
         title.className = 'runtime-device-row-title';
@@ -1168,6 +1226,58 @@ function updateDevicePanel(io, core) {
       if (current !== row) list.insertBefore(row, current || null);
     });
   }
+}
+
+// One row for any attached device that is not an SSI encoder (TCA9538, FOC motor, ...).
+function updateGenericDeviceRow(row, device, faults) {
+  if (!row) {
+    row = document.createElement('div');
+    row.className = 'runtime-device-row';
+    row.dataset.deviceName = device.name;
+    row.dataset.kind = 'generic';
+    const title = document.createElement('div');
+    title.className = 'runtime-device-row-title';
+    row.appendChild(title);
+    const detail = document.createElement('div');
+    detail.className = 'runtime-device-row-detail';
+    detail.dataset.role = 'detail';
+    row.appendChild(detail);
+    const fault = document.createElement('div');
+    fault.className = 'runtime-device-error';
+    fault.dataset.role = 'fault';
+    row.appendChild(fault);
+    const actions = document.createElement('div');
+    actions.className = 'runtime-device-actions';
+    row.appendChild(actions);
+  }
+  const isTca = device.model === 'tca9538';
+  const isMotor = device.model === 'pmsm';
+  row.querySelector('.runtime-device-row-title').textContent = device.name;
+  row.querySelector('[data-role="detail"]').textContent = isTca
+    ? `I2C expander (tca9538) \u00b7 ${device.core} \u00b7 address 0x${device.address.toString(16).toUpperCase()} \u00b7 ` +
+      `SCL pin ${device.scl_pin} \u00b7 SDA pin ${device.sda_pin} \u00b7 OUTPUT=${_hex2(device.output_reg)} ` +
+      `CONFIG=${_hex2(device.config_reg)}`
+    : `${isMotor ? 'PMSM motor model (foc_motor)' : (device.model || 'device')} \u00b7 ${device.core}` +
+      `${isMotor ? ' \u00b7 configure it in Motor control' : ''}`;
+  const lastFault = faults.slice().reverse().find(message => message.startsWith(`${device.name}:`));
+  const fault = row.querySelector('[data-role="fault"]');
+  fault.hidden = !lastFault;
+  fault.textContent = lastFault ? `Latest fault (${device.faults} total): ${lastFault.slice(device.name.length + 1).trim()}` : '';
+  const actions = row.querySelector('.runtime-device-actions');
+  const wanted = isMotor ? ['open-motor', 'detach'] : ['detach'];
+  if (actions.children.length !== wanted.length) {
+    actions.replaceChildren();
+    for (const action of wanted) {
+      const button = document.createElement('button');
+      button.className = 'runtime-device-button';
+      button.type = 'button';
+      button.textContent = action === 'detach' ? 'Detach' : 'Open Motor control';
+      button.dataset.deviceAction = action;
+      actions.appendChild(button);
+    }
+  }
+  for (const button of actions.children) button.dataset.name = device.name;
+  return row;
 }
 
 // The UI sends numbers, so wide fields are limited to 2^53 - 1.
@@ -1844,8 +1954,8 @@ coreSelect.addEventListener("change", () => {
     sendAction({ action: 'set_loopback', core: currentCore, group: g, enabled: false });
   }
   // Detach any I2C device left attached on the core we're leaving
+  // (legacy i2c_attach; the dashboard itself attaches a tca9538 device model)
   sendAction({ action: 'i2c_attach', core: currentCore, enabled: false });
-  document.getElementById('i2c-attach-btn')?.classList.remove('active');
   currentCore = coreSelect.value;
   devicePanelCore = currentCore;
   prevRegisters = new Array(32).fill("0x00000000");
@@ -2489,23 +2599,6 @@ document.querySelectorAll('#loopback-strip .lb-btn').forEach(btn => {
   btn.addEventListener('click', () => onLoopbackToggle(btn));
 });
 
-// ---- I2C attach toggle (TCA9538) -------------------------------------------
-
-function onI2CAttachToggle(btn) {
-  const enabled = !btn.classList.contains('active');
-  btn.classList.toggle('active', enabled);
-  sendAction({ action: 'i2c_attach', core: currentCore, enabled, address: 0x23 });
-  if (!enabled) {
-    const section = document.getElementById('i2c-interface');
-    if (section) section.style.display = 'none';
-  }
-}
-
-const _i2cAttachBtn = document.getElementById('i2c-attach-btn');
-if (_i2cAttachBtn) {
-  _i2cAttachBtn.addEventListener('click', () => onI2CAttachToggle(_i2cAttachBtn));
-}
-
 function sendDeviceAction(action) {
   clearDeviceError();
   sendAction(action);
@@ -2596,10 +2689,37 @@ document.getElementById('ssi-attach-button')?.addEventListener('click', () => {
   });
 });
 
+document.getElementById('tca-attach-button')?.addEventListener('click', () => {
+  const nameInput = document.getElementById('tca-device-name');
+  const addressInput = document.getElementById('tca-address');
+  const address = parseI2CAddress(addressInput.value);
+  addressInput.setCustomValidity(address === null ? 'Enter a 7-bit address such as 0x23 (0-127).' : '');
+  if (!nameInput.checkValidity()) { nameInput.reportValidity(); return; }
+  if (address === null) { addressInput.reportValidity(); return; }
+  const sclPin = deviceNumberValue('tca-scl-pin');
+  const sdaPin = deviceNumberValue('tca-sda-pin');
+  if (sclPin === null || sdaPin === null) return;
+  sendDeviceAction({
+    action: 'device_attach',
+    core: devicePanelCore,
+    profile: 'tca9538',
+    config: { name: nameInput.value.trim(), address, scl_pin: sclPin, sda_pin: sdaPin },
+  });
+});
+
+document.getElementById('tca-detach-button')?.addEventListener('click', event => {
+  const name = event.currentTarget.dataset.name;
+  if (name) sendDeviceAction({ action: 'device_detach', core: devicePanelCore, name });
+});
+
 document.getElementById('ssi-device-list')?.addEventListener('click', event => {
   const button = event.target.closest('button[data-device-action]');
   if (!button) return;
   const name = button.dataset.name;
+  if (button.dataset.deviceAction === 'open-motor') {
+    document.getElementById('motor-nav-button')?.click();
+    return;
+  }
   if (button.dataset.deviceAction === 'detach') {
     sendDeviceAction({ action: 'device_detach', core: devicePanelCore, name });
     return;
@@ -4116,4 +4236,11 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     const mux = parseInt(sel.value, 10) || 0;
     sendAction({ action: "gpcfg_write", core: currentCore, mux_sel: mux });
   });
+  // Peripherals-tab links: switch the GP mux (the selector follows the next state).
+  for (const [id, mux] of [["sd-switch-gpio", 0], ["sd-switch-sd", 3], ["pi-switch-pi", 1]]) {
+    document.getElementById(id)?.addEventListener("click", (e) => {
+      e.preventDefault();
+      sendAction({ action: "gpcfg_write", core: currentCore, mux_sel: mux });
+    });
+  }
 })();

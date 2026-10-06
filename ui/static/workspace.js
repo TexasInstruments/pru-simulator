@@ -2,25 +2,93 @@
 
 // General workspace controls share the existing simulator and device state.
 (() => {
+  const Chrome = globalThis.PruChrome;
   const buttons = Array.from(document.querySelectorAll('[data-workspace-view]'));
+  const subtabs = Array.from(document.querySelectorAll('[data-io-tab]'));
   const views = { simulator: document.getElementById('main'),
-    devices: document.getElementById('devices-view'),
-    motor: document.getElementById('motor-view'), events: document.getElementById('events-view') };
+    io: document.getElementById('io-view'), motor: document.getElementById('motor-view') };
+  const panes = { devices: document.getElementById('devices-view'),
+    peripherals: document.getElementById('peripherals-view'),
+    events: document.getElementById('events-view') };
   const panelBar = document.getElementById('panel-visibility');
   const panelButtons = document.getElementById('panel-visibility-buttons');
-  views.devices.appendChild(document.getElementById('device-runtime-panel'));
+  const viewSwitch = document.querySelector('.view-switch');
+  const subtabStrip = document.getElementById('io-subtabs');
+  const faultBanner = document.getElementById('core-fault-banner');
+  const faultBadge = document.getElementById('io-fault-badge');
+  // Views saved before the I/O & Devices tab existed.
+  const LEGACY_VIEWS = { devices: ['io', 'devices'], events: ['io', 'events'] };
+  let currentView = 'simulator';
+  let currentTab = 'devices';
+  let faultTotal = 0;
+  let faultsSeen = 0;
+  let bannerText = '';
 
-  function showView(name) {
+  function placeGliders() {
+    const on = (list, attr) => list.find(item => item.getAttribute(attr) === 'true');
+    if (viewSwitch) Chrome.placeGlider(viewSwitch, on(buttons, 'aria-pressed'));
+    if (subtabStrip) Chrome.placeGlider(subtabStrip, on(subtabs, 'aria-selected'));
+  }
+
+  function renderFaultBadge() {
+    const count = currentView === 'io' && currentTab === 'events' ? 0 : Chrome.newFaultCount(faultTotal, faultsSeen);
+    faultBadge.hidden = count === 0;
+    faultBadge.children[0].textContent = String(count);
+    faultBadge.children[1].textContent = Chrome.badgeLabel(count);
+    placeGliders();   // the badge changes the width of its tab
+  }
+
+  function renderFaultBanner() {
+    faultBanner.textContent = bannerText;
+    faultBanner.hidden = !bannerText || currentView !== 'simulator';
+  }
+
+  function showIoTab(name, focus) {
+    if (!panes[name]) name = 'devices';
+    currentTab = name;
+    for (const [key, pane] of Object.entries(panes)) pane.hidden = key !== name;
+    subtabs.forEach(tab => {
+      const active = tab.dataset.ioTab === name;
+      tab.setAttribute('aria-selected', String(active));
+      tab.setAttribute('tabindex', active ? '0' : '-1');
+      if (active && focus) tab.focus?.();
+    });
+    if (name === 'events' && currentView === 'io') faultsSeen = faultTotal;
+    try { localStorage.setItem('pru-io-tab', name); } catch (_) {}
+    renderFaultBadge();
+    document.dispatchEvent(new CustomEvent('pru-workspace-view-changed',
+      { detail: { view: currentView, tab: currentTab } }));
+  }
+
+  function showView(name, tab) {
+    if (LEGACY_VIEWS[name]) [name, tab] = LEGACY_VIEWS[name];
     if (!views[name]) name = 'simulator';
+    currentView = name;
     for (const [key, view] of Object.entries(views)) view.hidden = key !== name;
     for (const button of buttons) button.setAttribute('aria-pressed', String(button.dataset.workspaceView === name));
     panelBar.hidden = name !== 'simulator';
     try { localStorage.setItem('pru-workspace-view', name); } catch (_) {}
-    document.dispatchEvent(new CustomEvent('pru-workspace-view-changed', { detail: { view: name } }));
+    renderFaultBanner();
+    showIoTab(tab || currentTab);
   }
   for (const button of buttons) button.addEventListener('click', () => showView(button.dataset.workspaceView));
+  for (const tab of subtabs) {
+    tab.addEventListener('click', () => showIoTab(tab.dataset.ioTab));
+    tab.addEventListener('keydown', event => {
+      const next = Chrome.nextTabIndex(event.key, subtabs.indexOf(tab), subtabs.length);
+      if (next < 0) return;
+      event.preventDefault?.();
+      showIoTab(subtabs[next].dataset.ioTab, true);
+    });
+  }
+  window.addEventListener('resize', placeGliders);
   let savedView = 'simulator';
-  try { savedView = localStorage.getItem('pru-workspace-view') || savedView; } catch (_) {}
+  let savedTab = 'devices';
+  try {
+    savedView = localStorage.getItem('pru-workspace-view') || savedView;
+    savedTab = localStorage.getItem('pru-io-tab') || savedTab;
+  } catch (_) {}
+  currentTab = savedTab;
   showView(savedView);
 
   const theme = document.getElementById('workspace-theme');
@@ -80,12 +148,18 @@
       `${owners.get(event.device) || 'device'} · cycle ${event.cycle} · ${event.device} · ${event.kind}: ` +
       (event.message || JSON.stringify(event)));
     lines.push(...(bus.faults || []).slice(-100).map(fault => `FAULT · ${fault}`));
-    const faults = state.core_faults || (state.fault ? { [state.core]: state.fault } : {});
-    for (const core of visibleCores) {
-      const fault = faults[core];
-      if (fault) lines.push(`${core} · ${fault.opcode} at ${fault.address}: ${fault.error}`);
-    }
+    const coreFaults = Chrome.coreFaultLines(state, visibleCores);
+    lines.push(...coreFaults);
     document.getElementById('device-event-log').textContent = lines.join('\n') ||
       'No device events. Attach a model and execute firmware to inspect its activity.';
+
+    // Core memory faults also show in the Simulator view; the badge counts
+    // every fault the user has not yet looked at in Events.
+    bannerText = coreFaults.length ? `Core fault \u00b7 ${coreFaults.join('  |  ')}` : '';
+    renderFaultBanner();
+    faultTotal = Chrome.faultTotal(state);
+    faultsSeen = Math.min(faultsSeen, faultTotal);
+    if (currentView === 'io' && currentTab === 'events') faultsSeen = faultTotal;
+    renderFaultBadge();
   };
 })();

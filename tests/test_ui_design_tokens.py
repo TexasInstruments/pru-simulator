@@ -22,13 +22,17 @@ CONTRAST = _block(':root[data-theme="contrast"]')
 THEMES = {"dark": DARK, "contrast": {**DARK, **CONTRAST}}
 
 
+# Component-local geometry variables set by the tab glider script, not theme tokens.
+LOCAL_PROPERTIES = {"--glider-x", "--glider-w"}
+
+
 def _used_tokens() -> set:
     used = set(re.findall(r"var\((--[\w-]+)", HTML))
     for script in STATIC.glob("*.js"):
         source = script.read_text(encoding="utf-8")
         used |= set(re.findall(r"var\((--[\w-]+)", source))
         used |= set(re.findall(r"(?:ThemeColor|themeColor)\(\s*['\"](--[\w-]+)", source))
-    return used
+    return used - LOCAL_PROPERTIES
 
 
 def _luminance(color: str) -> float:

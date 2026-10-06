@@ -298,7 +298,8 @@
       border: 1px solid var(--border);
       border-radius: 5px;
     }
-    .view-switch {
+    .view-switch, .subtabs {
+      position: relative;
       display: grid;
       grid-auto-flow: column;
       grid-auto-columns: minmax(0, 1fr);
@@ -310,7 +311,9 @@
       border-radius: 8px;
       box-shadow: inset 1px 1px 3px rgba(255, 255, 255, 0.06), inset -1px -1px 4px rgba(0, 0, 0, 0.3);
     }
-    .view-switch button {
+    .view-switch button, .subtabs button {
+      position: relative;
+      z-index: 1;
       min-height: 28px;
       padding: 4px 10px;
       background: transparent;
@@ -321,12 +324,72 @@
       font-weight: 700;
       white-space: nowrap;
     }
-    .view-switch button:hover:not(:disabled) { background: var(--btn-hover); color: var(--text); }
-    .view-switch button[aria-pressed="true"] {
+    .view-switch button:hover:not(:disabled), .subtabs button:hover:not(:disabled) { background: var(--btn-hover); color: var(--text); }
+    .view-switch button[aria-pressed="true"], .subtabs button[aria-selected="true"] {
       background: var(--panel-raised);
       border-color: var(--border-strong);
       box-shadow: inset 0 -2px 0 var(--brand-red), 0 2px 5px var(--shadow);
       color: var(--text);
+    }
+    /* Animated glider: one element slides under the active tab. It takes its
+       offset and width from that tab (set by chrome.js), so it works for any
+       number of tabs. Without JS the pressed style above still marks the tab. */
+    .view-glider {
+      position: absolute;
+      z-index: 0;
+      top: 3px;
+      bottom: 3px;
+      left: 0;
+      width: var(--glider-w, 0);
+      transform: translateX(var(--glider-x, 0));
+      background: var(--panel-raised);
+      border: 1px solid var(--border-strong);
+      border-radius: 5px;
+      box-shadow: inset 0 -2px 0 var(--brand-red), 0 2px 5px var(--shadow);
+      opacity: 0;
+      pointer-events: none;
+    }
+    .has-glider > .view-glider { opacity: 1; }
+    .has-glider[data-ready] > .view-glider {
+      transition: transform 220ms cubic-bezier(0.23, 1, 0.32, 1), width 220ms cubic-bezier(0.23, 1, 0.32, 1);
+    }
+    .has-glider button[aria-pressed="true"], .has-glider button[aria-selected="true"] {
+      background: transparent;
+      border-color: transparent;
+      box-shadow: none;
+    }
+    .has-glider button[aria-pressed="true"]:hover:not(:disabled),
+    .has-glider button[aria-selected="true"]:hover:not(:disabled) { background: transparent; }
+    @media (prefers-reduced-motion: reduce) {
+      .has-glider[data-ready] > .view-glider { transition: none; }
+    }
+    @media (forced-colors: active) {
+      /* Shadows and fills are dropped in forced colours: mark the tab by outline. */
+      .view-glider { border-color: Highlight; box-shadow: none; }
+      .view-switch button[aria-pressed="true"], .subtabs button[aria-selected="true"] {
+        outline: 2px solid Highlight; outline-offset: -2px; text-decoration: underline;
+      }
+    }
+    .tab-badge {
+      display: inline-flex;
+      align-items: center;
+      margin-left: 6px;
+      padding: 0 6px;
+      min-width: 18px;
+      height: 16px;
+      justify-content: center;
+      background: var(--brand-red);
+      border: 1px solid var(--brand-red-bright);
+      border-radius: 8px;
+      color: var(--on-brand);
+      font-size: 10px;
+      font-weight: 800;
+      line-height: 1;
+    }
+    .tab-badge::before { content: "\26A0\FE0E"; margin-right: 3px; font-size: 9px; }
+    .visually-hidden {
+      position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+      overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
     }
     #motor-nav-button.has-motor::after { content: ' \25CF'; color: var(--accent); }
 
@@ -1291,8 +1354,12 @@
 
     /* TCA9538 I2C IO expander */
     .i2c-leds { display: flex; gap: 6px; margin: 6px 0; }
-    .i2c-led { width: 18px; height: 18px; border-radius: 4px; background: var(--panel-inset); border: 1px solid var(--border-strong); }
-    .i2c-led.on { background: var(--brand-red); border-color: var(--brand-red-bright); }
+    .i2c-led {
+      display: grid; place-items: center; width: 22px; height: 22px; border-radius: 4px;
+      background: var(--panel-inset); border: 1px solid var(--border-strong);
+      color: var(--text-dim); font: 700 10px var(--font-mono);
+    }
+    .i2c-led.on { background: var(--brand-red); border-color: var(--brand-red-bright); color: var(--on-brand); }
     .i2c-log { font-size: 11px; color: var(--text-dim); white-space: pre-wrap; }
 
     /* ---- Runtime device models (SSI) -------------------------------------------------------------------- */
@@ -1349,6 +1416,40 @@
     .workspace-header p:not(.workspace-kicker) { color: var(--text-dim); line-height: 1.5; max-width: 70ch; font-size: 12px; }
     #devices-view .device-runtime { max-width: 1100px; }
     #devices-view .runtime-device-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); }
+    .runtime-device-wide { grid-column: 1 / -1; }
+    .runtime-device-list-title {
+      margin-top: 14px; color: var(--text); font-size: 11px; font-weight: 700;
+      letter-spacing: 0.09em; text-transform: uppercase;
+    }
+    .runtime-device-list:empty::before {
+      content: "No devices attached to this core."; color: var(--text-dim); font-size: 11px;
+    }
+    .runtime-device-list .runtime-device-row .i2c-leds { margin: 4px 0; }
+    .tca-state { margin-top: 8px; }
+    .tca-state .runtime-device-row-detail { font-family: var(--font-mono); white-space: pre-line; }
+    .subtabs { width: max-content; max-width: 100%; margin: 0 0 14px; }
+    .io-pane { min-width: 0; }
+    .io-pane[hidden] { display: none; }
+    .io-pane-intro { margin: 0 0 12px; max-width: 70ch; color: var(--text-dim); font-size: 12px; line-height: 1.5; }
+    .periph-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 12px; align-items: start; }
+    .periph-card {
+      min-width: 0; padding: 12px; background: var(--panel); border: 1px solid var(--border);
+      border-radius: 9px; box-shadow: inset 0 2px 0 var(--brand-red); color: var(--text);
+    }
+    .periph-card-title {
+      margin-bottom: 8px; font: 700 10px var(--font-ui); letter-spacing: 0.1em; text-transform: uppercase;
+    }
+    .periph-inactive {
+      margin: 0; padding: 10px 12px; border: 1px dashed var(--border-strong); border-radius: 6px;
+      background: var(--panel-inset); color: var(--text-dim); font-size: 12px; line-height: 1.5;
+    }
+    .periph-card[data-active="true"] .periph-inactive { display: none; }
+    .periph-inactive .sd-mode-switch { margin-left: 4px; }
+    #core-fault-banner {
+      flex-shrink: 0; padding: 6px 14px; background: var(--highlight); border-bottom: 1px solid var(--halted);
+      color: var(--halted); font: 700 12px var(--font-mono); overflow-wrap: anywhere;
+    }
+    #core-fault-banner::before { content: "\26A0\FE0E"; margin-right: 6px; }
     #device-event-log {
       min-height: 120px; padding: 12px 14px; background: var(--panel-inset);
       border: 1px solid var(--border); border-radius: 7px; color: var(--text);
@@ -1525,9 +1626,9 @@
     <div id="workspace-tools" role="group" aria-label="Workspace controls">
       <nav class="view-switch" aria-label="Workspace views">
         <button type="button" data-workspace-view="simulator" aria-controls="main" aria-pressed="true">Simulator</button>
-        <button type="button" data-workspace-view="devices" aria-controls="devices-view" aria-pressed="false">Devices</button>
+        <button type="button" data-workspace-view="io" aria-controls="io-view" aria-pressed="false" id="io-nav-button">I/O &amp; Devices<span class="tab-badge" id="io-fault-badge" hidden><span aria-hidden="true"></span><span class="visually-hidden"></span></span></button>
         <button type="button" data-workspace-view="motor" aria-controls="motor-view" aria-pressed="false" id="motor-nav-button">Motor control</button>
-        <button type="button" data-workspace-view="events" aria-controls="events-view" aria-pressed="false">Events</button>
+        <span class="view-glider" aria-hidden="true"></span>
       </nav>
       <div id="workspace-secondary">
         <div id="panel-visibility"><span class="workspace-control-label">Panels</span><div id="panel-visibility-buttons" role="group" aria-label="Show or hide simulator panels"></div></div>
@@ -1553,6 +1654,9 @@
 
   <!-- Global error band (shown above main for both SC and MC modes) -->
   <div id="error-band" style="display:none;"></div>
+
+  <!-- Core memory fault (Simulator view): the same fault is listed in I/O & Devices > Events -->
+  <div id="core-fault-banner" role="alert" hidden></div>
 
   <!-- Main layout -->
   <div id="main">
@@ -1708,159 +1812,9 @@ Example:
             <button class="lb-btn" data-group="3">15:12</button>
             <button class="lb-btn" data-group="4">19:16</button>
           </div>
-          <div class="lb-strip" id="i2c-attach-strip">
-            <span class="lb-label">I2C</span>
-            <button class="lb-btn" id="i2c-attach-btn">Attach TCA9538 @ 0x23 (SCL=bit0, SDA=bit1)</button>
-          </div>
           <div class="io-section">
             <div class="io-section-title">GPI (R31) — Input (click to toggle)</div>
             <div class="pin-grid" id="gpi-grid"></div>
-          </div>
-
-          <!-- SD Interface (shown when SD mode active, hidden in GPIO mode) -->
-          <div class="io-section sd-interface" id="sd-interface" style="display:none;">
-            <div class="sd-mode-bar">
-              <span class="sd-mode-badge">SD MODE</span>
-              <span class="sd-mode-info" id="sd-mode-info"></span>
-              <a class="sd-mode-switch" id="sd-switch-gpio" href="#">Switch to GPIO →</a>
-            </div>
-            <div class="sd-r30-decode" id="sd-r30-decode"></div>
-            <div class="sd-channels" id="sd-channels"></div>
-            <div class="sd-section-title">Pattern Generator</div>
-            <div class="sd-pattern-gen" id="sd-pattern-gen"></div>
-            <div class="sd-config-bar">
-              <span id="sd-config-label">Config Registers (click to edit → writes to MMR)</span>
-              <div class="sd-config-chips" id="sd-config-chips"></div>
-            </div>
-          </div>
-
-          <!-- Peripheral Interface (shown when GP_MUX_SEL == 1) -->
-          <div class="io-section perif-interface" id="perif-interface" style="display:none;">
-            <div class="perif-mode-bar">
-              <span class="perif-mode-badge">PERIPHERAL</span>
-              <span class="perif-mode-info" id="perif-mode-info"></span>
-            </div>
-            <div class="perif-cfg-regs" id="perif-cfg-regs"></div>
-            <div class="perif-r30-decode" id="perif-r30-decode"></div>
-            <div class="perif-channels" id="perif-channels"></div>
-            <div class="perif-section-title">Loopback → PRU1 RX (jitter / latency / drift)</div>
-            <div class="perif-lb-card" id="perif-loopback"></div>
-            <div class="perif-lb-status" id="perif-lb-status"></div>
-          </div>
-
-          <!-- TCA9538 I2C IO expander (shown once a valid START is seen; coexists with plain GPIO since SCL/SDA are just bits 0/1) -->
-          <div class="io-section i2c-interface" id="i2c-interface" style="display:none;">
-            <div class="i2c-mode-bar">
-              <span class="i2c-mode-badge">I2C · TCA9538</span>
-              <span class="i2c-mode-info" id="i2c-mode-info"></span>
-            </div>
-            <div class="i2c-leds" id="i2c-leds"></div>
-            <div class="i2c-log" id="i2c-log"></div>
-          </div>
-
-          <div class="io-section device-runtime" id="device-runtime-panel">
-            <div class="io-section-title device-runtime-title">
-              <span>SSI Devices</span>
-              <label class="device-core-select" id="device-core-select-wrap" hidden>Core
-                <select id="device-core-select" aria-label="Device panel core">
-                  <option value="pru0">PRU0</option>
-                  <option value="rtu0">RTU0</option>
-                </select>
-              </label>
-            </div>
-            <div class="runtime-device-error" id="device-error" role="alert" aria-live="assertive" hidden></div>
-            <div class="runtime-device-grid">
-              <section class="runtime-device" aria-labelledby="ssi-runtime-title">
-                <div class="runtime-device-heading">
-                  <strong id="ssi-runtime-title">SSI encoder</strong>
-                </div>
-                <p class="runtime-device-status" id="ssi-empty-state" role="status">No SSI encoder attached to this core.</p>
-                <div class="runtime-device-fields" id="ssi-attach-fields">
-                  <label class="runtime-device-field" for="ssi-device-name">Device name
-                    <input id="ssi-device-name" type="text" value="ssi_encoder" maxlength="48" autocomplete="off" required>
-                  </label>
-                  <label class="runtime-device-field" for="ssi-clock-pin">Clock GPO pin
-                    <input id="ssi-clock-pin" type="number" value="0" min="0" max="19" step="1" required>
-                  </label>
-                  <label class="runtime-device-field" for="ssi-data-pin">Data GPI pin
-                    <input id="ssi-data-pin" type="number" value="8" min="0" max="19" step="1" required>
-                  </label>
-                  <label class="runtime-device-field" for="ssi-preset">Preset
-                    <select id="ssi-preset">
-                      <option value="">Custom</option>
-                    </select>
-                  </label>
-                  <label class="runtime-device-field" for="ssi-position">Position
-                    <input id="ssi-position" type="number" value="0" min="0" max="9007199254740991" step="1" required>
-                  </label>
-                  <label class="runtime-device-field" for="ssi-resolution">Resolution (bits)
-                    <input id="ssi-resolution" type="number" value="12" min="1" max="64" step="1" required>
-                  </label>
-                  <label class="runtime-device-field" for="ssi-error-bits">Error bits
-                    <input id="ssi-error-bits" type="number" value="0" min="0" max="63" step="1" required>
-                  </label>
-                  <label class="runtime-device-field" for="ssi-error-value">Error value
-                    <input id="ssi-error-value" type="number" value="0" min="0" step="1" required>
-                  </label>
-                  <label class="runtime-device-field" for="ssi-encoding">Encoding
-                    <select id="ssi-encoding">
-                      <option value="binary">Binary</option>
-                      <option value="gray">Gray code</option>
-                    </select>
-                  </label>
-                </div>
-                <div class="runtime-device-actions">
-                  <button class="runtime-device-button primary" id="ssi-attach-button" type="button">Attach encoder</button>
-                </div>
-                <div class="runtime-device-list" id="ssi-device-list"></div>
-              </section>
-            </div>
-          </div>
-
-          <hr class="uart-divider" />
-          <div class="io-section" id="uart-decoder">
-            <div class="io-section-title">UART Decoder</div>
-            <div class="uart-controls">
-              <span class="uart-label">Pin: <span class="uart-pin">GPO0</span></span>
-              <span class="uart-label">Format: <span class="uart-pin">8N1</span></span>
-              <button id="uart-decode-btn" class="graph-btn" style="color:var(--accent);border-color:#3a5a8a;">&#9654; Decode</button>
-              <button id="uart-clear-btn"  class="graph-btn">Clear</button>
-            </div>
-            <div id="uart-status" class="uart-status" style="display:none;"></div>
-            <div id="uart-output" class="uart-output" style="display:none;"></div>
-            <div id="uart-hint"   class="uart-hint">Use Signal Graph &#9679; REC to capture GPO0 first</div>
-          </div>
-
-          <hr class="uart-divider" />
-          <div class="io-section" id="uart-rx-inject">
-            <div class="io-section-title">UART RX Inject</div>
-            <!-- Row 1: Mode toggle + payload input -->
-            <div class="uart-controls" style="margin-bottom:5px;">
-              <div class="uart-inject-mode-toggle">
-                <button id="uart-inj-mode-hex" class="uart-inj-mode active">Hex</button>
-                <button id="uart-inj-mode-ascii" class="uart-inj-mode">ASCII</button>
-              </div>
-              <input type="text" id="uart-inj-payload" class="uart-inj-input" value="48 65 6C 6C 6F 57 6F 72 6C 64 21" spellcheck="false" />
-              <span id="uart-inj-byte-count" class="uart-label" style="display:none;"></span>
-            </div>
-            <!-- Row 2: Pin, Baud, Frames, Inject button -->
-            <div class="uart-controls">
-              <span class="uart-label">Pin:</span>
-              <select id="uart-inj-pin" class="uart-inj-select">
-                <option value="0">GPI0</option>
-                <option value="1">GPI1</option>
-                <option value="2">GPI2</option>
-                <option value="3">GPI3</option>
-              </select>
-              <span class="uart-label">Baud:</span>
-              <input type="text" id="uart-inj-baud" class="uart-inj-num" value="4.00" />
-              <span class="uart-label" style="color:#666;">Mb</span>
-              <span class="uart-label">Frames:</span>
-              <input type="text" id="uart-inj-frames" class="uart-inj-num" style="width:28px;text-align:center;" value="1" />
-              <button id="uart-inj-btn" class="graph-btn" style="color:var(--accent);border-color:#3a5a8a;margin-left:auto;">&#9654; Inject</button>
-            </div>
-            <!-- Status line -->
-            <div id="uart-inj-status" class="uart-hint" style="display:none;"></div>
           </div>
 
         </div>
@@ -2172,14 +2126,213 @@ Example:
     </div>
   </div>
 
-  <section id="devices-view" class="workspace-view" aria-labelledby="devices-view-title" hidden>
+  <section id="io-view" class="workspace-view" aria-labelledby="io-view-title" hidden>
     <header class="workspace-header">
       <div>
-        <p class="workspace-kicker">GPIO device models</p>
-        <h1 id="devices-view-title">External devices</h1>
-        <p>Attach models to the selected core’s GPIO pins. SSI faults follow ordinary firmware execution; the FOC motor is controlled from Motor control.</p>
+        <p class="workspace-kicker">Everything wired to the pins</p>
+        <h1 id="io-view-title">I/O &amp; Devices</h1>
+        <p>Devices plugged on the selected core&#8217;s pins, the peripheral blocks inside the chip, and the events and faults they produce. The Simulator view keeps the generic pin controls.</p>
       </div>
     </header>
+    <nav id="io-subtabs" class="subtabs" role="tablist" aria-label="I/O and devices sections">
+      <button type="button" role="tab" id="io-subtab-devices" data-io-tab="devices" aria-controls="devices-view" aria-selected="true" tabindex="0">Devices</button>
+      <button type="button" role="tab" id="io-subtab-peripherals" data-io-tab="peripherals" aria-controls="peripherals-view" aria-selected="false" tabindex="-1">Peripherals</button>
+      <button type="button" role="tab" id="io-subtab-events" data-io-tab="events" aria-controls="events-view" aria-selected="false" tabindex="-1">Events</button>
+      <span class="view-glider" aria-hidden="true"></span>
+    </nav>
+    <section id="devices-view" class="io-pane" role="tabpanel" aria-labelledby="io-subtab-devices">
+    <div class="io-section device-runtime" id="device-runtime-panel">
+      <div class="io-section-title device-runtime-title">
+        <span>Devices</span>
+        <label class="device-core-select" id="device-core-select-wrap" hidden>Core
+          <select id="device-core-select" aria-label="Device panel core">
+            <option value="pru0">PRU0</option>
+            <option value="rtu0">RTU0</option>
+          </select>
+        </label>
+      </div>
+      <div class="runtime-device-error" id="device-error" role="alert" aria-live="assertive" hidden></div>
+      <div class="runtime-device-grid">
+        <section class="runtime-device" aria-labelledby="ssi-runtime-title">
+          <div class="runtime-device-heading">
+            <strong id="ssi-runtime-title">SSI encoder</strong>
+          </div>
+          <p class="runtime-device-status" id="ssi-empty-state" role="status">No SSI encoder attached to this core.</p>
+          <div class="runtime-device-fields" id="ssi-attach-fields">
+            <label class="runtime-device-field" for="ssi-device-name">Device name
+              <input id="ssi-device-name" type="text" value="ssi_encoder" maxlength="48" autocomplete="off" required>
+            </label>
+            <label class="runtime-device-field" for="ssi-clock-pin">Clock GPO pin
+              <input id="ssi-clock-pin" type="number" value="0" min="0" max="19" step="1" required>
+            </label>
+            <label class="runtime-device-field" for="ssi-data-pin">Data GPI pin
+              <input id="ssi-data-pin" type="number" value="8" min="0" max="19" step="1" required>
+            </label>
+            <label class="runtime-device-field" for="ssi-preset">Preset
+              <select id="ssi-preset">
+                <option value="">Custom</option>
+              </select>
+            </label>
+            <label class="runtime-device-field" for="ssi-position">Position
+              <input id="ssi-position" type="number" value="0" min="0" max="9007199254740991" step="1" required>
+            </label>
+            <label class="runtime-device-field" for="ssi-resolution">Resolution (bits)
+              <input id="ssi-resolution" type="number" value="12" min="1" max="64" step="1" required>
+            </label>
+            <label class="runtime-device-field" for="ssi-error-bits">Error bits
+              <input id="ssi-error-bits" type="number" value="0" min="0" max="63" step="1" required>
+            </label>
+            <label class="runtime-device-field" for="ssi-error-value">Error value
+              <input id="ssi-error-value" type="number" value="0" min="0" step="1" required>
+            </label>
+            <label class="runtime-device-field" for="ssi-encoding">Encoding
+              <select id="ssi-encoding">
+                <option value="binary">Binary</option>
+                <option value="gray">Gray code</option>
+              </select>
+            </label>
+          </div>
+          <div class="runtime-device-actions">
+            <button class="runtime-device-button primary" id="ssi-attach-button" type="button">Attach encoder</button>
+          </div>
+        </section>
+        <section class="runtime-device" aria-labelledby="tca-runtime-title">
+          <div class="runtime-device-heading">
+            <strong id="tca-runtime-title">I2C expander (TCA9538)</strong>
+          </div>
+          <p class="runtime-device-status" id="tca-empty-state" role="status">No TCA9538 attached to this core.</p>
+          <div class="runtime-device-fields" id="tca-attach-fields">
+            <label class="runtime-device-field" for="tca-device-name">Device name
+              <input id="tca-device-name" type="text" value="tca9538" maxlength="48" autocomplete="off" required>
+            </label>
+            <label class="runtime-device-field" for="tca-address">I2C address (7-bit)
+              <input id="tca-address" type="text" value="0x23" inputmode="text" spellcheck="false" autocomplete="off" pattern="(0[xX][0-9a-fA-F]{1,2}|[0-9]{1,3})" required>
+            </label>
+            <label class="runtime-device-field" for="tca-scl-pin">SCL pin
+              <input id="tca-scl-pin" type="number" value="0" min="0" max="19" step="1" required>
+            </label>
+            <label class="runtime-device-field" for="tca-sda-pin">SDA pin
+              <input id="tca-sda-pin" type="number" value="1" min="0" max="19" step="1" required>
+            </label>
+          </div>
+          <div class="runtime-device-actions">
+            <button class="runtime-device-button primary" id="tca-attach-button" type="button">Attach expander</button>
+            <button class="runtime-device-button" id="tca-detach-button" type="button" hidden>Detach</button>
+          </div>
+          <div class="tca-state" id="tca-state" hidden>
+            <div class="i2c-leds" id="tca-leds" role="group" aria-label="TCA9538 output pins P7 to P0"></div>
+            <div class="runtime-device-row-detail" id="tca-registers"></div>
+            <div class="i2c-log" id="tca-log"></div>
+          </div>
+        </section>
+        <section class="runtime-device runtime-device-wide" aria-labelledby="uart-runtime-title">
+          <div class="runtime-device-heading">
+            <strong id="uart-runtime-title">UART</strong>
+          </div>
+          <p class="runtime-device-help">Protocol tools: the decoder reads the GPO0 trace recorded in the Simulator view; inject drives frames onto GPI0-3.</p>
+          <div class="io-section" id="uart-decoder">
+            <div class="io-section-title">UART Decoder</div>
+            <div class="uart-controls">
+              <span class="uart-label">Pin: <span class="uart-pin">GPO0</span></span>
+              <span class="uart-label">Format: <span class="uart-pin">8N1</span></span>
+              <button id="uart-decode-btn" class="graph-btn" style="color:var(--accent);border-color:#3a5a8a;">&#9654; Decode</button>
+              <button id="uart-clear-btn"  class="graph-btn">Clear</button>
+            </div>
+            <div id="uart-status" class="uart-status" style="display:none;"></div>
+            <div id="uart-output" class="uart-output" style="display:none;"></div>
+            <div id="uart-hint"   class="uart-hint">Capture GPO0 with Signal Graph &#9679; REC in the Simulator view first</div>
+          </div>
+          <div class="io-section" id="uart-rx-inject">
+            <div class="io-section-title">UART RX Inject</div>
+            <!-- Row 1: Mode toggle + payload input -->
+            <div class="uart-controls" style="margin-bottom:5px;">
+              <div class="uart-inject-mode-toggle">
+                <button id="uart-inj-mode-hex" class="uart-inj-mode active">Hex</button>
+                <button id="uart-inj-mode-ascii" class="uart-inj-mode">ASCII</button>
+              </div>
+              <input type="text" id="uart-inj-payload" class="uart-inj-input" value="48 65 6C 6C 6F 57 6F 72 6C 64 21" spellcheck="false" />
+              <span id="uart-inj-byte-count" class="uart-label" style="display:none;"></span>
+            </div>
+            <!-- Row 2: Pin, Baud, Frames, Inject button -->
+            <div class="uart-controls">
+              <span class="uart-label">Pin:</span>
+              <select id="uart-inj-pin" class="uart-inj-select">
+                <option value="0">GPI0</option>
+                <option value="1">GPI1</option>
+                <option value="2">GPI2</option>
+                <option value="3">GPI3</option>
+              </select>
+              <span class="uart-label">Baud:</span>
+              <input type="text" id="uart-inj-baud" class="uart-inj-num" value="4.00" />
+              <span class="uart-label" style="color:#666;">Mb</span>
+              <span class="uart-label">Frames:</span>
+              <input type="text" id="uart-inj-frames" class="uart-inj-num" style="width:28px;text-align:center;" value="1" />
+              <button id="uart-inj-btn" class="graph-btn" style="color:var(--accent);border-color:#3a5a8a;margin-left:auto;">&#9654; Inject</button>
+            </div>
+            <!-- Status line -->
+            <div id="uart-inj-status" class="uart-hint" style="display:none;"></div>
+          </div>
+        </section>
+      </div>
+      <div class="runtime-device-list-title" id="device-list-title">Attached devices</div>
+      <div class="runtime-device-list" id="ssi-device-list" aria-labelledby="device-list-title"></div>
+    </div>
+    <!-- Legacy TCA9538 (i2c_attach / pru_i2c_attach, deprecated): shown only when attached that way and a START was seen -->
+    <div class="io-section i2c-interface" id="i2c-interface" style="display:none;">
+      <div class="i2c-mode-bar">
+        <span class="i2c-mode-badge">I2C · TCA9538 (legacy attach)</span>
+        <span class="i2c-mode-info" id="i2c-mode-info"></span>
+      </div>
+      <div class="i2c-leds" id="i2c-leds"></div>
+      <div class="i2c-log" id="i2c-log"></div>
+    </div>
+    </section>
+    <section id="peripherals-view" class="io-pane" role="tabpanel" aria-labelledby="io-subtab-peripherals" hidden>
+      <p class="io-pane-intro">Blocks inside the chip that share the GP pins. Each card is live only when the GP mux selects it; change the mux in the Simulator view&#8217;s I/O Pins panel or with the switch links.</p>
+      <div class="periph-grid">
+    <section class="periph-card" id="periph-sd-card" data-active="false" aria-labelledby="periph-sd-card-title">
+      <h2 class="periph-card-title" id="periph-sd-card-title">Sigma-delta (SD) filter</h2>
+      <p class="periph-inactive" id="periph-sd-card-inactive" role="status">Inactive in this mux mode: GP mux is <b class="periph-mux-name">GPIO</b>. <a href="#" class="sd-mode-switch" id="sd-switch-sd">Switch GP mux to SD</a></p>
+      <!-- SD Interface (shown when SD mode active, hidden in GPIO mode) -->
+      <div class="io-section sd-interface" id="sd-interface" style="display:none;">
+        <div class="sd-mode-bar">
+          <span class="sd-mode-badge">SD MODE</span>
+          <span class="sd-mode-info" id="sd-mode-info"></span>
+          <a class="sd-mode-switch" id="sd-switch-gpio" href="#">Switch to GPIO →</a>
+        </div>
+        <div class="sd-r30-decode" id="sd-r30-decode"></div>
+        <div class="sd-channels" id="sd-channels"></div>
+        <div class="sd-section-title">Pattern Generator</div>
+        <div class="sd-pattern-gen" id="sd-pattern-gen"></div>
+        <div class="sd-config-bar">
+          <span id="sd-config-label">Config Registers (click to edit → writes to MMR)</span>
+          <div class="sd-config-chips" id="sd-config-chips"></div>
+        </div>
+      </div>
+    </section>
+    <section class="periph-card" id="periph-pi-card" data-active="false" aria-labelledby="periph-pi-card-title">
+      <h2 class="periph-card-title" id="periph-pi-card-title">Peripheral Interface</h2>
+      <p class="periph-inactive" id="periph-pi-card-inactive" role="status">Inactive in this mux mode: GP mux is <b class="periph-mux-name">GPIO</b>. <a href="#" class="sd-mode-switch" id="pi-switch-pi">Switch GP mux to Peripheral Interface</a></p>
+      <!-- Peripheral Interface (shown when GP_MUX_SEL == 1) -->
+      <div class="io-section perif-interface" id="perif-interface" style="display:none;">
+        <div class="perif-mode-bar">
+          <span class="perif-mode-badge">PERIPHERAL</span>
+          <span class="perif-mode-info" id="perif-mode-info"></span>
+        </div>
+        <div class="perif-cfg-regs" id="perif-cfg-regs"></div>
+        <div class="perif-r30-decode" id="perif-r30-decode"></div>
+        <div class="perif-channels" id="perif-channels"></div>
+        <div class="perif-section-title">Loopback → PRU1 RX (jitter / latency / drift)</div>
+        <div class="perif-lb-card" id="perif-loopback"></div>
+        <div class="perif-lb-status" id="perif-lb-status"></div>
+      </div>
+    </section>
+      </div>
+    </section>
+    <section id="events-view" class="io-pane" role="tabpanel" aria-labelledby="io-subtab-events" hidden>
+      <p class="io-pane-intro">Events use the attached device&#8217;s core cycle counter. Faults include electrical contention, protocol violations and core memory faults.</p>
+      <pre id="device-event-log" aria-label="Current device events">No device events. Attach a model and execute firmware to inspect its activity.</pre>
+    </section>
   </section>
   <section id="motor-view" class="workspace-view" aria-labelledby="motor-view-title" hidden>
     <header class="workspace-header motor-header">
@@ -2321,16 +2474,7 @@ Example:
       </div>
     </div>
   </section>
-  <section id="events-view" class="workspace-view" aria-labelledby="events-view-title" hidden>
-    <header class="workspace-header">
-      <div>
-        <p class="workspace-kicker">Device activity</p>
-        <h1 id="events-view-title">Device events and faults</h1>
-        <p>Events use the attached device’s core cycle counter. Faults include electrical contention and protocol violations.</p>
-      </div>
-    </header>
-    <pre id="device-event-log" aria-label="Current device events">No device events. Attach a model and execute firmware to inspect its activity.</pre>
-  </section>
+  <script src="/static/chrome.js"></script>
   <script src="/static/layout.js"></script>
   <script src="/static/app.js?v=20260729"></script>
   <script src="/static/workspace.js"></script>
