@@ -275,6 +275,7 @@ The MCP surface stays protocol-generic:
 | `pru_device_attach` | Attach `ssi_encoder` or `tca9538` using an object config |
 | `pru_device_detach` | Detach by unique device name |
 | `pru_device_state` | Read devices, bus levels, events, and faults |
+| `pru_device_configure` | Change an attached device's run-time parameters (devices that have none, such as the SSI encoder, reject it) |
 | `pru_device_events` | Read all device events or filter by name |
 | `pru_device_faults` | Read all bus/device faults or filter by name |
 | `pru_sd_route_input` | Route an SD channel to a physical GPI pin, or pass `-1` to restore its internal modulator |
