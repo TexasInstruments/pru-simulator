@@ -53,12 +53,11 @@ def read_control(memory) -> dict:
     return abi.unpack_config(memory.read(abi.CONTROL_ADDRESS, abi.CONFIG_SIZE)[0])
 
 
-def stage_control(memory, **updates) -> dict:
-    """Apply ``updates`` to the host-owned ABI fields and publish a new generation.
+def build_control(memory, **updates) -> bytes:
+    """Validate ``updates`` and return the host-owned words of the next block.
 
-    Validation happens in ``pack_config`` before anything is written, so a
-    rejected update leaves the block untouched. PRU-owned words (ack, status)
-    are never written.
+    Nothing is written. PRU-owned words (ack, status) are not part of the
+    result; ``requested_generation`` is the current one plus one.
     """
     current = read_control(memory)
     fields = {name: current[name] for name in (
@@ -69,6 +68,14 @@ def stage_control(memory, **updates) -> dict:
         raise ValueError(f"unknown FOC control fields: {sorted(unknown)}")
     fields.update(updates)
     fields["requested_generation"] = (current["requested_generation"] + 1) & 0xFFFFFFFF
-    packed = abi.pack_config(**fields)
-    memory.write(abi.CONTROL_ADDRESS, packed[:_HOST_BYTES])
+    return abi.pack_config(**fields)[:_HOST_BYTES]
+
+
+def stage_control(memory, **updates) -> dict:
+    """Apply ``updates`` to the host-owned ABI fields and publish a new generation.
+
+    A rejected update leaves the block untouched; the firmware adopts the
+    whole block at its next control update.
+    """
+    memory.write(abi.CONTROL_ADDRESS, build_control(memory, **updates))
     return read_control(memory)

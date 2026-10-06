@@ -320,29 +320,31 @@ def test_websocket_foc_apply_writes_control_abi_and_sd_routes(fresh_sim):
     sent = _run_websocket_actions([
         {"action": "device_attach", "core": "pru0", "profile": "foc_motor"},
         {"action": "foc_apply", "core": "pru0",
-         "config": {"alpha_q15": -4096, "beta_q15": 2048,
-                    "phase_increment_q32": 0x10000000,
-                    "modulation_q15": 12000, "initial_phase_q32": 0x20000000},
+         "config": {"enable": 1, "vd_ref_q15": -4096, "vq_ref_q15": 2048,
+                    "speed_ref_q28": 0x10000000, "ramp_rate_q28": 12000,
+                    "initial_phase_q32": 0x20000000},
          "routes": [3, 4]},
     ])
 
     config = foc_abi.unpack_config(
         fresh_sim.memory_read(foc_abi.CONTROL_ADDRESS, foc_abi.CONFIG_SIZE)
     )
-    assert config["alpha_q15"] == -4096
-    assert config["beta_q15"] == 2048
-    assert config["phase_increment_q32"] == 0x10000000
-    assert config["modulation_q15"] == 12000
+    assert config["enable"] == 1
+    assert config["vd_ref_q15"] == -4096
+    assert config["vq_ref_q15"] == 2048
+    assert config["speed_ref_q28"] == 0x10000000
+    assert config["ramp_rate_q28"] == 12000
     assert config["initial_phase_q32"] == 0x20000000
+    assert config["requested_generation"] == 1
     assert fresh_sim.cores["pru0"].io_port.sd_filter.input_routes[:2] == [3, 4]
 
     state = [message for message in sent if message.get("type") == "state"][-1]
-    assert state["io"]["foc_config"]["alpha_q15"] == -4096
-    assert state["io"]["device_bus"]["devices"][0]["model"] == "three_phase_rl"
+    assert state["io"]["foc_config"]["vd_ref_q15"] == -4096
+    assert state["io"]["device_bus"]["devices"][0]["model"] == "pmsm"
 
 
 def test_websocket_rejects_invalid_foc_route_without_partial_update(fresh_sim):
-    original_config = foc_abi.pack_config(alpha_q15=321, beta_q15=-654)
+    original_config = foc_abi.pack_config(vd_ref_q15=321, vq_ref_q15=-654)
     fresh_sim.memory.write(foc_abi.CONTROL_ADDRESS, original_config)
     sd = fresh_sim.cores["pru0"].io_port.sd_filter
     sd.route_input(0, 7)
@@ -351,7 +353,7 @@ def test_websocket_rejects_invalid_foc_route_without_partial_update(fresh_sim):
     sent = _run_websocket_actions([
         {"action": "device_attach", "core": "pru0", "profile": "foc_motor"},
         {"action": "foc_apply", "core": "pru0",
-         "config": {"alpha_q15": 1000, "beta_q15": 2000},
+         "config": {"vd_ref_q15": 1000, "vq_ref_q15": 2000},
          "routes": [9, 20]},
     ])
 
@@ -377,7 +379,7 @@ def test_websocket_swaps_foc_routes_with_unequal_clocks_atomically(fresh_sim):
 
 
 def test_websocket_rejects_conflicting_foc_clocks_and_keeps_session(fresh_sim):
-    original_config = foc_abi.pack_config(alpha_q15=321)
+    original_config = foc_abi.pack_config(vd_ref_q15=321)
     fresh_sim.memory.write(foc_abi.CONTROL_ADDRESS, original_config)
     fresh_sim.set_sd_modulator("pru0", 0, sd_clock_mhz=10)
     sd = fresh_sim.cores["pru0"].io_port.sd_filter
@@ -396,7 +398,97 @@ def test_websocket_rejects_conflicting_foc_clocks_and_keeps_session(fresh_sim):
     assert all("different clocks" in error["errors"][0] for error in errors)
     error_index = sent.index(errors[0])
     unchanged = sent[error_index + 1]
-    assert unchanged["io"]["foc_config"]["alpha_q15"] == 321
+    assert unchanged["io"]["foc_config"]["vd_ref_q15"] == 321
     assert sd.input_routes == [3, 4, 4]
     assert sd.modulators[2].sd_clock_mhz == 20
     assert sd.modulators[0].sd_clock_mhz == 15
+
+
+# ---- Motor control actions -----------------------------------------------
+
+def _foc_block(sim):
+    return foc_abi.unpack_config(sim.memory_read(foc_abi.CONTROL_ADDRESS, foc_abi.CONFIG_SIZE))
+
+
+def test_websocket_foc_reference_converts_units_and_sets_the_display_angle(fresh_sim):
+    import math
+    import ui.server as srv
+
+    srv._history_order.append(("pru0", {"stale": True}))
+    sent = _run_websocket_actions([
+        {"action": "device_attach", "core": "pru0", "profile": "foc_motor",
+         "config": {"pole_pairs": 2}},
+        {"action": "foc_set_reference", "core": "pru0", "speed_rpm": 600,
+         "vd_pu": 0.25, "vq_pu": 0.25, "accel_rpm_s": 1200, "enable": True},
+    ])
+    assert not any(message.get("type") == "error" for message in sent)
+    block = _foc_block(fresh_sim)
+    # 600 rpm * 2 pole pairs / 60 = 20 Hz electrical = 0.02 pu of the 1 kHz base.
+    assert block["speed_ref_q28"] == round(0.02 * 2**28)
+    assert block["ramp_rate_q28"] == round(0.04 / 16000 * 2**28)
+    assert (block["vd_ref_q15"], block["vq_ref_q15"]) == (8192, 8192)
+    assert (block["enable"], block["requested_generation"]) == (1, 1)
+    motor = fresh_sim.device_bus.get_device("foc_motor")
+    assert motor.parameters()["reference_angle_rad"] == pytest.approx(math.pi / 4)
+    assert srv._history_order == []
+    state = [message for message in sent if message.get("type") == "state"][-1]
+    assert state["io"]["foc_config"]["requested_generation"] == 1
+    assert state["io"]["foc_clocks"] == {"pru_hz": 250e6, "iep_hz": 200e6}
+
+
+def test_websocket_foc_actions_reject_bad_input_without_changing_anything(fresh_sim):
+    sent = _run_websocket_actions([
+        {"action": "foc_set_reference", "core": "pru0", "speed_rpm": 100},
+        {"action": "device_attach", "core": "pru0", "profile": "foc_motor"},
+        {"action": "foc_set_reference", "core": "pru0", "speed_rpm": 100, "vq_pu": 0.1},
+        {"action": "foc_set_reference", "core": "pru0", "speed_rpm": 1e9},
+        {"action": "foc_set_reference", "core": "pru0", "vq_pu": 2},
+        {"action": "foc_set_reference", "core": "pru0", "accel_rpm_s": -1},
+        {"action": "foc_set_reference", "core": "pru0", "speed_rpm": "fast"},
+        {"action": "foc_set_reference", "core": "pru0", "enable": "yes"},
+        {"action": "foc_enable", "core": "pru0", "enable": 1},
+        {"action": "foc_set_motor", "core": "pru0", "parameters": {"resistance_ohm": 0}},
+        {"action": "foc_set_motor", "core": "pru0", "parameters": []},
+        {"action": "foc_set_motor", "core": "pru0", "parameters": {"bogus": 1}},
+        {"action": "foc_state", "core": "pru0", "since": -1},
+    ])
+    errors = [message for message in sent if message.get("type") == "error"]
+    assert len(errors) == 11
+    assert all(error["tag"] == "motor" for error in errors)
+    assert "Attach a FOC motor" in errors[0]["errors"][0]
+    block = _foc_block(fresh_sim)
+    assert (block["speed_ref_q28"], block["requested_generation"]) == (
+        round(100 * 4 / 60 / 1000 * 2**28), 1), "only the one valid update was staged"
+    assert fresh_sim.device_bus.get_device("foc_motor").parameters()["resistance_ohm"] == 0.5
+
+
+def test_websocket_foc_set_motor_enable_and_state(fresh_sim):
+    import ui.server as srv
+
+    srv._history_order.append(("pru0", {"stale": True}))
+    sent = _run_websocket_actions([
+        {"action": "device_attach", "core": "pru0", "profile": "foc_motor"},
+        {"action": "foc_set_motor", "core": "pru0",
+         "parameters": {"load_torque_nm": 0.2, "pole_pairs": 3}},
+        {"action": "foc_enable", "core": "pru0", "enable": True},
+        {"action": "foc_state", "core": "pru0", "since": 0},
+    ])
+    assert not any(message.get("type") == "error" for message in sent)
+    motor = fresh_sim.device_bus.get_device("foc_motor")
+    assert (motor.load_torque_nm, motor.pole_pairs) == (0.2, 3)
+    assert _foc_block(fresh_sim)["enable"] == 1
+    samples = sent[-1]
+    assert samples["type"] == "foc_samples"
+    assert samples["fields"][:2] == ["index", "time_s"]
+    assert samples["samples"] == [] and samples["next_index"] == 0
+    assert srv._history_order == []
+
+
+def test_websocket_foc_apply_with_empty_config_only_changes_routes(fresh_sim):
+    fresh_sim.memory.write(foc_abi.CONTROL_ADDRESS, foc_abi.pack_config(vd_ref_q15=77))
+    _run_websocket_actions([
+        {"action": "device_attach", "core": "pru0", "profile": "foc_motor"},
+        {"action": "foc_apply", "core": "pru0", "config": {}, "routes": [3, 4]},
+    ])
+    assert fresh_sim.cores["pru0"].io_port.sd_filter.input_routes[:2] == [3, 4]
+    assert _foc_block(fresh_sim)["vd_ref_q15"] == 77

@@ -104,12 +104,19 @@ async def _exercise_stdio_tools():
                     "include_paths": ["source"],
                 }))
                 assert loaded["success"] is True, loaded["errors"]
-                executed = _payload(await session.call_tool("pru_run_until", {
-                    "core": core, "condition": "halt", "max_steps": 1000,
-                }))
-                assert executed["condition_met"] is True
-                assert executed["reason"] == "halted"
-                assert executed["cycles"] > 0
+                if core == "pru0":
+                    # The FOC firmware builds its sine table, then runs forever
+                    # with a neutral output until a valid control block arrives.
+                    executed = _payload(await session.call_tool("pru_step", {
+                        "core": core, "count": 2000}))
+                    assert executed["halted"] is False
+                else:
+                    executed = _payload(await session.call_tool("pru_run_until", {
+                        "core": core, "condition": "halt", "max_steps": 1000,
+                    }))
+                    assert executed["condition_met"] is True
+                    assert executed["reason"] == "halted"
+                    assert executed["cycles"] > 0
                 reset = _payload(await session.call_tool(
                     "pru_reset", {"core": core}))
                 assert reset == {"ok": True}
@@ -158,11 +165,12 @@ async def _exercise_valid_firmware(tmp_path):
                 await call("pru_device_attach", profile="foc_motor")
                 for channel, pin in enumerate((3, 4)):
                     await call("pru_sd_route_input", channel=channel, pin=pin)
-                await configure(foc.CONTROL_ADDRESS, foc.pack_config())
+                await configure(foc.CONTROL_ADDRESS, foc.pack_config(
+                    enable=1, requested_generation=1, vd_ref_q15=16384))
                 assert (await call("pru_load", include_paths=["source"],
                     source=(ROOT / "source/foc_open_loop.asm").read_text()))["success"]
                 path = tmp_path / "sdk-foc.vcd"
-                await call("pru_vcd_export", path=str(path), max_steps=40000,
+                await call("pru_vcd_export", path=str(path), max_steps=60000,
                            pins="0-4", include_gpi=True)
                 # Read actual GPIO edge timestamps independently of firmware registers.
                 identifier, timestamp, previous = None, 0, 0

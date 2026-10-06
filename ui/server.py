@@ -21,7 +21,8 @@ from simulator import Simulator
 from mcp_server.server import PRUSimulatorMCP
 from core.branch import LoopState
 from perif.gpcfg import MUX_SD
-from pru_io import foc_control_abi
+from pru_io import foc_control, foc_control_abi
+from pru_io.foc_motor_model import FocMotorModel
 from pru_io.device_profiles import discover_device_profiles
 from pru_io.ssi_encoder_model import SSIEncoderModel
 from xfr.xfr_bus import SPAD_BANK0, SPAD_BANK1, SPAD_BANK2, IPC_SPAD
@@ -60,6 +61,45 @@ def _device_api_for_current_sim() -> PRUSimulatorMCP:
     if _device_api.sim is not sim:
         _device_api = PRUSimulatorMCP(config_path=config_path, simulator=sim)
     return _device_api
+
+
+def _foc_motor() -> FocMotorModel:
+    """The FOC motor attached to PRU0, or ValueError."""
+    for device in sim.device_bus.devices:
+        if isinstance(device, FocMotorModel) and sim.device_bus.core_for_device(device) == "pru0":
+            return device
+    raise ValueError("Attach a FOC motor on PRU0 before using the motor controls")
+
+
+def _foc_reference_angle(vd_q15: int, vq_q15: int, previous: float) -> float:
+    """Angle of the Vd/Vq reference, kept from before when the vector is zero."""
+    return math.atan2(vq_q15, vd_q15) if vd_q15 or vq_q15 else previous
+
+
+def _foc_set_reference(motor: FocMotorModel, msg: dict) -> None:
+    """Stage speed/Vd/Vq/acceleration (engineering units) for the firmware."""
+    pole_pairs = motor.pole_pairs
+    updates = {}
+    if "speed_rpm" in msg:
+        updates["speed_ref_q28"] = foc_control.speed_rpm_to_q28(msg["speed_rpm"], pole_pairs)
+    if "accel_rpm_s" in msg:
+        updates["ramp_rate_q28"] = foc_control.ramp_rpm_s_to_q28(msg["accel_rpm_s"], pole_pairs)
+    if "vd_pu" in msg:
+        updates["vd_ref_q15"] = foc_control.voltage_pu_to_q15(msg["vd_pu"])
+    if "vq_pu" in msg:
+        updates["vq_ref_q15"] = foc_control.voltage_pu_to_q15(msg["vq_pu"])
+    if "enable" in msg:
+        if not isinstance(msg["enable"], bool):
+            raise ValueError("enable must be true or false")
+        updates["enable"] = int(msg["enable"])
+    block = foc_control.build_control(sim.memory, **updates)
+    current = foc_control.read_control(sim.memory)
+    angle = _foc_reference_angle(updates.get("vd_ref_q15", current["vd_ref_q15"]),
+                                 updates.get("vq_ref_q15", current["vq_ref_q15"]),
+                                 motor.parameters()["reference_angle_rad"])
+    motor.configure({"reference_angle_rad": angle})
+    sim.memory.write(foc_control_abi.CONTROL_ADDRESS, block)
+
 
 # ---- Step history (for step-back) ----------------------------------------
 _MAX_HISTORY = 500
@@ -690,18 +730,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 try:
                     if core != "pru0":
                         raise ValueError("FOC controls are available on PRU0 only")
-                    motor = next(
-                        (device for device in sim.device_state()["devices"]
-                         if device.get("model") == "three_phase_rl"
-                         and device.get("core") == "pru0"),
-                        None,
-                    )
-                    if motor is None:
-                        raise ValueError("Attach a FOC motor on PRU0 before applying controls")
+                    _foc_motor()
                     config = msg.get("config")
                     if not isinstance(config, dict):
                         raise ValueError("FOC config must be an object")
-                    config_bytes = foc_control_abi.pack_config(**config)
+                    config_bytes = foc_control.build_control(sim.memory, **config) if config else None
                     routes = msg.get("routes")
                     if (not isinstance(routes, list) or len(routes) != 2
                             or any(isinstance(pin, bool) or not isinstance(pin, int)
@@ -710,12 +743,42 @@ async def websocket_endpoint(websocket: WebSocket):
                     sd = sim.cores["pru0"].io_port.sd_filter
                     sd.route_inputs([None if pin == -1 else pin for pin in routes]
                                     + sd.input_routes[2:])
-                    sim.memory.write(foc_control_abi.CONTROL_ADDRESS, config_bytes)
+                    if config_bytes is not None:
+                        sim.memory.write(foc_control_abi.CONTROL_ADDRESS, config_bytes)
                     _clear_history()
                 except (KeyError, TypeError, ValueError) as exc:
                     await websocket.send_json({"type": "error", "tag": "device",
                                                "errors": [str(exc)]})
                 await _send_state(websocket, core)
+            elif action in ("foc_set_reference", "foc_enable", "foc_set_motor"):
+                try:
+                    motor = _foc_motor()
+                    if action == "foc_set_motor":
+                        parameters = msg.get("parameters")
+                        if not isinstance(parameters, dict):
+                            raise ValueError("motor parameters must be an object")
+                        motor.configure(parameters)
+                    elif action == "foc_enable":
+                        enable = msg.get("enable")
+                        if not isinstance(enable, bool):
+                            raise ValueError("enable must be true or false")
+                        foc_control.stage_control(sim.memory, enable=int(enable))
+                    else:
+                        _foc_set_reference(motor, msg)
+                    _clear_history()
+                except (KeyError, TypeError, ValueError) as exc:
+                    await websocket.send_json({"type": "error", "tag": "motor",
+                                               "errors": [str(exc)]})
+                await _send_state(websocket, core)
+            elif action == "foc_state":
+                try:
+                    motor = _foc_motor()
+                    await websocket.send_json({
+                        "type": "foc_samples", "core": core,
+                        **motor.samples_since(msg.get("since", 0))})
+                except (KeyError, TypeError, ValueError) as exc:
+                    await websocket.send_json({"type": "error", "tag": "motor",
+                                               "errors": [str(exc)]})
             elif action == "uart_inject":
                 pin = int(msg.get("pin", 0))
                 payload = msg.get("payload", [])
@@ -881,9 +944,9 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False):
         device_state = sim.device_state()
         io_section["device_bus"] = device_state
         foc_device = next(
-            (device for device in device_state["devices"]
-             if device.get("model") == "three_phase_rl"
-             and device.get("core") == "pru0"),
+            (device for device in sim.device_bus.devices
+             if isinstance(device, FocMotorModel)
+             and sim.device_bus.core_for_device(device) == "pru0"),
             None,
         )
         if core == "pru0" and foc_device is not None:
@@ -896,6 +959,10 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False):
                     foc_control_abi.pack_config()
                 )
             io_section["foc_config"] = foc_config
+            io_section["foc_clocks"] = {
+                "pru_hz": float(sim.iep.core_clock_hz("pru0")),
+                "iep_hz": float(sim.iep.active_clock_hz),
+            }
     if sd_data is not None:
         io_section["sd"] = sd_data
     if perif_data is not None:

@@ -52,3 +52,15 @@ def test_rejected_stage_control_leaves_the_block_untouched():
     with pytest.raises(ValueError, match="unknown"):
         control.stage_control(sim.memory, bogus=1)
     assert sim.memory.read(abi.CONTROL_ADDRESS, abi.CONFIG_SIZE) == before
+
+
+def test_build_control_validates_without_writing():
+    sim = Simulator()
+    control.stage_control(sim.memory, enable=1, vq_ref_q15=5)
+    before = sim.memory.read(abi.CONTROL_ADDRESS, abi.CONFIG_SIZE)
+    block = control.build_control(sim.memory, vd_ref_q15=-3)
+    assert sim.memory.read(abi.CONTROL_ADDRESS, abi.CONFIG_SIZE) == before
+    assert len(block) == abi.ACK_GENERATION_OFFSET
+    sim.memory.write(abi.CONTROL_ADDRESS, block)
+    after = control.read_control(sim.memory)
+    assert (after["vd_ref_q15"], after["vq_ref_q15"], after["requested_generation"]) == (-3, 5, 2)
