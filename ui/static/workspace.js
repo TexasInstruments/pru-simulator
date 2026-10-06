@@ -30,11 +30,16 @@
     if (subtabStrip) Chrome.placeGlider(subtabStrip, on(subtabs, 'aria-selected'));
   }
 
-  function renderFaultBadge() {
+  let shownBadge = -1;
+  // A view or tab change always re-places the gliders; a state message only
+  // does when the badge itself changed (measuring layout every message is waste).
+  function renderFaultBadge(force) {
     const count = currentView === 'io' && currentTab === 'events' ? 0 : Chrome.newFaultCount(faultTotal, faultsSeen);
+    if (!force && count === shownBadge) return;
+    shownBadge = count;
     faultBadge.hidden = count === 0;
     faultBadge.children[0].textContent = String(count);
-    faultBadge.children[1].textContent = Chrome.badgeLabel(count);
+    faultBadge.children[1].textContent = ' ' + Chrome.badgeLabel(count);
     placeGliders();   // the badge changes the width of its tab
   }
 
@@ -56,7 +61,7 @@
     });
     if (name === 'events' && currentView === 'io') faultsSeen = faultTotal;
     try { localStorage.setItem('pru-io-tab', name); } catch (_) {}
-    renderFaultBadge();
+    renderFaultBadge(true);
     document.dispatchEvent(new CustomEvent('pru-workspace-view-changed',
       { detail: { view: currentView, tab: currentTab } }));
   }

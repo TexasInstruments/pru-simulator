@@ -159,7 +159,7 @@ const update = state => context.window.updateWorkspaceEvents({ core: 'pru0', ...
 update({ io: { device_bus: { faults: ['a: bad', 'bus contention'] } }, core_faults: {} });
 assert.equal(badge.hidden, false);
 assert.equal(badge.children[0].textContent, '2');
-assert.equal(badge.children[1].textContent, '2 new faults', 'text alternative, not colour only');
+assert.equal(badge.children[1].textContent, ' 2 new faults', 'text alternative, not colour only');
 update({ io: { device_bus: { faults: ['a: bad', 'bus contention', 'c: bad'] } }, core_faults: {} });
 assert.equal(badge.children[0].textContent, '3');
 buttons[1].listeners.click();
@@ -171,13 +171,24 @@ subtabs[0].listeners.click();
 update({ io: { device_bus: { faults: ['a: bad', 'bus contention', 'c: bad', 'd: bad'] } },
   core_faults: { pru0: { opcode: 'LBBO', address: 12, error: 'Unmapped memory' } } });
 assert.equal(badge.children[0].textContent, '1', 'a core memory fault is a new fault');
-assert.equal(badge.children[1].textContent, '1 new fault');
+assert.equal(badge.children[1].textContent, ' 1 new fault');
 update({ io: {}, core_faults: {} });
 assert.equal(badge.hidden, true, 'a reset that clears the faults clears the badge');
 update({ io: { device_bus: { faults: ['e: again'] } }, core_faults: {} });
 assert.equal(badge.children[0].textContent, '1', 'new faults after a reset re-arm it');
 update({ io: { device_bus: { events: [{ cycle: 1, device: 'x', kind: 'frame' }] } }, core_faults: {} });
 assert.equal(badge.hidden, true, 'ordinary events never count');
+
+// The gliders are measured when the badge changes, not on every state message.
+const activeButton = buttons.find(button => button.getAttribute('aria-pressed') === 'true');
+const measuredWidth = activeButton.box.width;
+activeButton.box = { left: activeButton.box.left, width: measuredWidth + 40 };
+update({ io: { device_bus: { events: [{ cycle: 2, device: 'x', kind: 'frame' }] } }, core_faults: {} });
+assert.equal(viewSwitch.props['--glider-w'], measuredWidth + 'px', 'unchanged badge: no re-measure');
+update({ io: { device_bus: { faults: ['f: new'] } }, core_faults: {} });
+assert.equal(viewSwitch.props['--glider-w'], (measuredWidth + 40) + 'px', 'changed badge: re-measure');
+activeButton.box = { left: activeButton.box.left, width: measuredWidth };
+update({ io: {}, core_faults: {} });
 
 // Simulator view shows the core memory fault; other views do not.
 buttons[0].listeners.click();
@@ -252,6 +263,9 @@ context.window.updateWorkspaceEvents({core: 'rtu1', core_faults: {pru0: fault}},
 assert.match(elements.get('device-event-log').textContent, /No device events/);
 context.window.updateWorkspaceEvents({core: 'pru0', core_faults: {}}, ['pru0', 'rtu1']);
 assert.match(elements.get('device-event-log').textContent, /No device events/);
+
+// Default Simulator layout: the I/O Pins tile is tall enough for R30 and R31.
+assert.equal(run("SC_DEFAULT_TREE.children[1].sizes.join(',')"), '30,45,25');
 
 // Resize correctly persists the pair when a hidden sibling sits between them.
 run(`hiddenPanelIds = new Set(['hidden']);
