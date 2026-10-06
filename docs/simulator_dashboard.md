@@ -33,6 +33,27 @@ Choose PRU0, PRU1, RTU0 or RTU1 in single-core mode. Multicore mode displays PRU
 and a selected partner. The I/O & Devices view follows the selected core, with
 an explicit device-core selector in multicore mode.
 
+**Three or four cores.** In multicore mode the **+RTU0 / +PRU1 / +RTU1** toggles
+next to the partner selector add a third and a fourth core (the partner's own
+toggle is pressed and locked). Each shown core gets a compact source panel
+(PC badge, breakpoints, double-click to toggle) and a register panel; three
+cores fill two rows (two over one), four cores a 2x2 grid, with their own saved
+layouts. Step, SIM, Reset, Run (`run_multicore` with a `partners` list, paced by
+core time) and the Space/Arrow shortcuts act on every shown core, and a
+breakpoint on any of them stops Run. Header counters, the I/O pins and the SPAD
+columns still follow PRU0 (and the counters the partner); the device-core
+selector offers PRU0 and the partner only. With no extra core toggled the view
+is the original two-core one.
+
+**IEP counter clock.** The header selector next to the core clock sets the
+external IEP clock (200, 250 or 300 MHz) of the running simulator through the
+`set_iep_clock` WebSocket action. It is runtime only: `memory.cfg` is not
+written, a restart returns to its `iep_clock_mhz`, saving the config resets
+it, and changing the core clock keeps it. It keeps the counter's elapsed
+time (the rational timebase is rebuilt for the new rate). The *core clock*
+source is the firmware's IEPCLK bit 0 and is not overridden: state messages
+report `iep.core_clock` and the actual `iep.clock_mhz`.
+
 ## I/O & Devices
 
 "I/O & Devices" is only a container: it has no content of its own and opens on
@@ -201,17 +222,21 @@ shift) and are switched off when the browser asks for reduced motion.
   first frame, and a hidden strip is measured when it is first shown), and
   reduced motion moves it instantly. In forced-colours (Windows high contrast)
   mode the active tab is marked by an outline and underline instead of shadows.
-- **Button wipe.** Hovering a neutral toolbar button (Multi-core, Step, SIM,
-  Config, Reset Layout, Help) sweeps two skewed `--wipe` coloured shapes across
+- **Button wipe.** Hovering a neutral text button (the toolbar's Multi-core, Step, SIM,
+  Config, Reset Layout, Help, and the panel, memory, breakpoint, device, motor
+  and dialog buttons) sweeps two skewed `--wipe` coloured shapes across
   the pill while the label inverts (`mix-blend-mode: difference`) and rolls
   once; the label ends as dark text on `--wipe`. The filled and danger buttons
-  (Run/Stop, Reset, HW Reset, Stop SIM) use a plain colour swap (red text on
+  (Run/Stop, Reset, HW Reset, Stop SIM, and `.primary` buttons, which also carry
+  `.btn-run`) use a plain colour swap (red text on
   white) because the blend would turn their white label cyan. The wipe runs only
   where hover is available (`(hover: hover) and (pointer: fine)`), never on
   disabled buttons, and not at all under reduced motion, where hover only
-  changes the border. Toolbar labels sit in `.text-container > .text`; code that
+  changes the border. Tabs, toggles (SPAD, memory format, loopback, pins, panel
+  toggles, REC) and icon-only buttons keep their own hover. Only the toolbar
+  buttons are pills; other buttons keep their size. Labels sit in `.text-container > .text`; code that
   changes a button's text must use `setButtonLabel(button, text)`
   (`ui/static/chrome.js`), never `button.textContent`, which would remove the
-  label wrapper. `--wipe` is defined in both themes, and
+  label wrapper; it also builds the wrapper for a `.btn-17` button created in script. `--wipe` is defined in both themes, and
   `tests/test_ui_design_tokens.py` checks the label's contrast before and at the
   end of the wipe.
