@@ -254,16 +254,15 @@
       align-self: stretch;
       min-width: 0;
       min-height: 36px;
-      gap: 10px;
+      gap: 2px 10px;
       padding: 3px 9px;
       background: var(--panel-raised);
       border: 1px solid var(--border);
       border-radius: 5px;
       font-size: 12px;
       color: var(--text-dim);
-      overflow-x: auto;
-      overflow-y: hidden;
-      scrollbar-width: thin;
+      flex-wrap: wrap;
+      row-gap: 2px;
     }
     #counters::before { content: "Telemetry"; color: var(--accent); }
     #counters span { white-space: nowrap; flex: 0 0 auto; }
@@ -294,7 +293,6 @@
       align-items: center;
       gap: 6px;
       min-width: 0;
-      overflow: hidden;
       padding: 4px 6px;
       background: var(--panel-raised);
       border: 1px solid var(--border);
@@ -422,11 +420,9 @@
     #panel-visibility-buttons {
       display: flex;
       flex: 1 1 auto;
+      flex-wrap: wrap;
       gap: 4px;
       min-width: 0;
-      overflow-x: auto;
-      padding-bottom: 2px;
-      scrollbar-width: thin;
     }
     .panel-toggle {
       display: inline-flex;
@@ -1571,6 +1567,16 @@
     }
 
     /* ---- Responsive -------------------------------------------------------------------------------------------- */
+    /* Below ~1760px the four-column grid cannot hold every group at its natural
+       width (Panels and Telemetry were clipped), so the groups flow and wrap. */
+    @media (max-width: 1760px) {
+      #controls { display: flex; flex-wrap: wrap; align-items: stretch; }
+      #controls > .toolbar-group, #controls > .toolbar-end { flex: 0 0 auto; }
+      #controls > .toolbar-actions { flex: 1 1 auto; }
+      #workspace-tools { order: 4; flex: 1 1 520px; }
+      #controls > .toolbar-end { order: 5; margin-left: auto; }
+      #counters { order: 6; flex: 1 1 100%; }
+    }
     @media (max-width: 1240px) {
       #controls {
         grid-template-columns: minmax(0, 1fr) max-content;
