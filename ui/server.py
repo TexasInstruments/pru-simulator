@@ -67,15 +67,17 @@ def _reject_legacy_i2c_conflict(core: str) -> None:
 
 
 def _reject_i2c_pin_conflict(core: str, profile: object, config: object) -> None:
-    """Refuse a tca9538 device on pins the legacy I2C attach already owns."""
-    if profile != "tca9538" or sim.cores[core].io_port.i2c_device is None:
+    """Refuse a device that drives pins the legacy I2C attach already owns."""
+    if sim.cores[core].io_port.i2c_device is None:
         return
-    defaults = discover_device_profiles()["tca9538"]["defaults"]
-    values = {**defaults, **(config if isinstance(config, dict) else {})}
-    if {values["scl_pin"], values["sda_pin"]} & {0, 1}:
+    spec = discover_device_profiles().get(profile)
+    if not isinstance(spec, dict):
+        return  # unknown profile: pru_device_attach reports it
+    values = {**spec["defaults"], **(config if isinstance(config, dict) else {})}
+    if {values.get(key) for key in spec.get("outputs", {})} & {0, 1}:
         raise ValueError(
             f"the legacy I2C attach already owns {core} pins 0 and 1; "
-            "detach it before attaching a tca9538 device on those pins")
+            f"detach it before attaching a {profile} device on those pins")
 
 
 def _device_api_for_current_sim() -> PRUSimulatorMCP:

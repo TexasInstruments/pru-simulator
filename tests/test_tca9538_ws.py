@@ -91,3 +91,20 @@ def test_tca9538_device_refused_next_to_legacy_i2c_on_the_same_pins(fresh_sim):
                          config={"scl_pin": 6, "sda_pin": 7})
         assert _errors(messages) == []
         assert len(_devices(messages)) == 1
+
+
+def test_any_device_driving_legacy_i2c_pins_is_refused(fresh_sim):
+    """The legacy slot drives R31 bits 0/1: an SSI encoder answering on bit 1
+    would contend with it, whatever the device profile."""
+    with client.websocket_connect("/ws") as ws:
+        _send(ws, action="i2c_attach", enabled=True)
+        messages = _send(ws, action="device_attach", profile="ssi_encoder",
+                         config={"clock_pin": 4, "data_pin": 1})
+        (error,) = _errors(messages)
+        assert "legacy I2C" in error["errors"][0]
+        assert _devices(messages) == []
+        # Its clock input on bit 0 is not driven by the device: no conflict.
+        messages = _send(ws, action="device_attach", profile="ssi_encoder",
+                         config={"clock_pin": 0, "data_pin": 8})
+        assert _errors(messages) == []
+        assert len(_devices(messages)) == 1
