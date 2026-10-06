@@ -186,6 +186,15 @@ assert.equal(banner.hidden, true);
 update({ io: {}, core_faults: { pru0: { opcode: 'LBBO', address: 12, error: 'Unmapped memory' } } });
 assert.equal(banner.hidden, false);
 assert.match(banner.textContent, /Core fault.*pru0.*LBBO at 12: Unmapped memory/);
+{
+  // role="alert": an unchanged fault must not be rewritten (re-announced) on every state.
+  let text = banner.textContent; let writes = 0;
+  Object.defineProperty(banner, 'textContent', { configurable: true,
+    get: () => text, set: value => { writes += 1; text = value; } });
+  update({ io: {}, core_faults: { pru0: { opcode: 'LBBO', address: 12, error: 'Unmapped memory' } } });
+  assert.equal(writes, 0, 'the same fault leaves the alert untouched');
+  delete banner.textContent; banner.textContent = text;
+}
 buttons[1].listeners.click();
 assert.equal(banner.hidden, true, 'the banner belongs to the Simulator view');
 buttons[0].listeners.click();

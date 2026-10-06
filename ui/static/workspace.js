@@ -39,7 +39,8 @@
   }
 
   function renderFaultBanner() {
-    faultBanner.textContent = bannerText;
+    // role="alert": rewrite only on change, or every state update re-announces it.
+    if (faultBanner.textContent !== bannerText) faultBanner.textContent = bannerText;
     faultBanner.hidden = !bannerText || currentView !== 'simulator';
   }
 
