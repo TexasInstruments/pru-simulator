@@ -28,18 +28,43 @@
   function applyTheme() {
     document.documentElement.dataset.theme = theme.value;
     try { localStorage.setItem('pru-workspace-theme', theme.value); } catch (_) {}
+    // Canvases read their colours from the theme tokens, so they redraw on a change.
+    document.dispatchEvent(new CustomEvent('pru-theme-changed', { detail: { theme: theme.value } }));
   }
   theme.addEventListener('change', applyTheme);
   applyTheme();
 
+  // Icon and short label for each panel toggle; the multi-core panels derive
+  // theirs from the partner core name shown in the panel title.
+  const PANEL_TOGGLES = {
+    source: ['\u25a4', 'Source / Disassembly'], registers: ['\u25a6', 'Registers'],
+    io: ['\u2194', 'I/O Pins'], 'signal-graph': ['\u223f', 'Signal Graph'],
+    'mem-graph': ['\u2336', 'Memory Graph'], memory1: ['M1', 'Memory 1'],
+    memory2: ['M2', 'Memory 2'], editor: ['\u270e', 'Assembly Editor'],
+  };
+  function panelToggleInfo(id) {
+    if (PANEL_TOGGLES[id]) return PANEL_TOGGLES[id];
+    const title = PANEL_REGISTRY[id]?.querySelector('[data-panel-id] span');
+    return [id.endsWith('registers') ? '\u25a6' : '\u25a4', title?.textContent.trim() || id];
+  }
+
   function updatePanels() {
     panelButtons.replaceChildren();
-    for (const id of modePanelIds[currentMode]) {
+    const order = id => { const at = Object.keys(PANEL_TOGGLES).indexOf(id); return at >= 0 ? at : (id.startsWith('mc-') ? -1 : 99); };
+    for (const id of [...modePanelIds[currentMode]].sort((a, b) => order(a) - order(b))) {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'panel-toggle';
-      const title = PANEL_REGISTRY[id]?.querySelector('[data-panel-id]');
-      button.textContent = title?.textContent.replace(/[−+]$/, '').trim() || id;
+      const [glyph, name] = panelToggleInfo(id);
+      const icon = document.createElement('span');
+      icon.className = 'panel-toggle-icon';
+      icon.setAttribute('aria-hidden', 'true');
+      icon.textContent = glyph;
+      const label = document.createElement('span');
+      label.className = 'panel-toggle-label';
+      label.textContent = name;
+      button.appendChild(icon);
+      button.appendChild(label);
       button.setAttribute('aria-pressed', String(getPanelVisibility(id)));
       button.addEventListener('click', () => setPanelsVisibility([id], !getPanelVisibility(id)));
       panelButtons.appendChild(button);
