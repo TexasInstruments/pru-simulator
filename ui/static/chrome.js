@@ -4,6 +4,14 @@
 // badge). The pure ones take plain values so tests/ui_chrome.test.js can run
 // them without a browser.
 (root => {
+  // Toolbar buttons wrap their label as .text-container > .text so the hover
+  // wipe can animate it; writing button.textContent would destroy the spans.
+  function setButtonLabel(button, label) {
+    const text = button && button.querySelector('.text');
+    if (text) text.textContent = label;
+    else if (button) button.textContent = label;
+  }
+
   // WAI-ARIA tabs keyboard model: index to focus for a key, or -1 to ignore it.
   function nextTabIndex(key, current, count) {
     if (!count) return -1;
@@ -66,6 +74,7 @@
       .map(core => `${core} · ${faults[core].opcode} at ${faults[core].address}: ${faults[core].error}`);
   }
 
-  root.PruChrome = { nextTabIndex, gliderBox, gliderStyle, placeGlider,
+  root.setButtonLabel = setButtonLabel;
+  root.PruChrome = { setButtonLabel, nextTabIndex, gliderBox, gliderStyle, placeGlider,
     faultTotal, newFaultCount, badgeLabel, coreFaultLines };
 })(globalThis);

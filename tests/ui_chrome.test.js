@@ -8,6 +8,18 @@ vm.runInContext(readFileSync(new URL('../ui/static/chrome.js', import.meta.url),
 const C = context.PruChrome;
 const plain = value => JSON.parse(JSON.stringify(value));
 
+// setButtonLabel keeps the wipe's inner spans; plain buttons just get the text.
+const text = { textContent: 'Run' };
+const wrapped = { querySelector: selector => (selector === '.text' ? text : null), textContent: 'Run' };
+C.setButtonLabel(wrapped, 'Stop');
+assert.equal(text.textContent, 'Stop');
+assert.equal(wrapped.textContent, 'Run', 'the wrapper is untouched');
+const bare = { querySelector: () => null, textContent: 'Run' };
+C.setButtonLabel(bare, 'Stop SIM');
+assert.equal(bare.textContent, 'Stop SIM');
+assert.doesNotThrow(() => C.setButtonLabel(null, 'x'));
+assert.equal(context.setButtonLabel, C.setButtonLabel, 'app.js calls it as a global');
+
 // Tabs keyboard model.
 assert.equal(C.nextTabIndex('ArrowRight', 0, 3), 1);
 assert.equal(C.nextTabIndex('ArrowRight', 2, 3), 0);
@@ -83,6 +95,15 @@ assert.deepEqual([...nav.matchAll(/data-workspace-view="(\w+)"/g)].map(m => m[1]
 assert.match(nav, /I\/O &amp; Devices/);
 assert.deepEqual([...html.matchAll(/data-io-tab="(\w+)"/g)].map(m => m[1]), ['devices', 'peripherals', 'events']);
 assert.equal((html.match(/class="view-glider"/g) || []).length, 2, 'one glider per tab strip');
+for (const id of ['btn-multicore', 'btn-step', 'btn-run', 'btn-sim', 'btn-reset', 'btn-hard-reset',
+  'btn-config', 'btn-reset-layout', 'btn-help'])
+  assert.match(html, new RegExp(`<button id="${id}" class="btn-17[^"]*"[^>]*><span class="text-container"><span class="text">`),
+    `${id} wraps its label for the wipe`);
+
+// Nothing writes textContent on a wipe button (it would destroy the label spans).
+const app = readFileSync(new URL('../ui/static/app.js', import.meta.url), 'utf8');
+assert.ok(!/\bbtn(Run|Sim|Step|Reset|HardReset|Config|Help|Multicore)\.textContent\s*=/.test(app));
+
 // Every id the scripts look up exists (three are created at run time).
 const known = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map(m => m[1]));
 const dynamic = new Set(['_src-menu', '_proj-menu']);  // menus created on demand

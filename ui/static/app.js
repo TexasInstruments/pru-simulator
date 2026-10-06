@@ -2512,7 +2512,7 @@ document.addEventListener("keydown", (e) => {
 function startRun() {
   stopSim();
   running = true;
-  btnRun.textContent = "Stop";
+  setButtonLabel(btnRun, "Stop");
   btnRun.classList.add("btn-reset");
   btnRun.classList.remove("btn-run");
   runInterval = setInterval(() => {
@@ -2534,7 +2534,7 @@ function startRun() {
 function stopRun() {
   if (!running) return;
   running = false;
-  btnRun.textContent = "Run";
+  setButtonLabel(btnRun, "Run");
   btnRun.classList.add("btn-run");
   btnRun.classList.remove("btn-reset");
   if (runInterval !== null) {
@@ -2546,7 +2546,7 @@ function stopRun() {
 function startSim() {
   stopRun();
   simRunning = true;
-  btnSim.textContent = "Stop SIM";
+  setButtonLabel(btnSim, "Stop SIM");
   btnSim.classList.add("btn-reset");
   btnSim.classList.remove("btn-sim");
   const ms = Math.round((parseFloat(simIntervalInput.value) || 1.0) * 1000);
@@ -2563,7 +2563,7 @@ function startSim() {
 function stopSim() {
   if (!simRunning) return;
   simRunning = false;
-  btnSim.textContent = "SIM";
+  setButtonLabel(btnSim, "SIM");
   btnSim.classList.remove("btn-reset");
   btnSim.classList.add("btn-sim");
   if (simTimer !== null) {

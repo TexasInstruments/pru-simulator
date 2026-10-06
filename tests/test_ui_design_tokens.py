@@ -22,8 +22,9 @@ CONTRAST = _block(':root[data-theme="contrast"]')
 THEMES = {"dark": DARK, "contrast": {**DARK, **CONTRAST}}
 
 
-# Component-local geometry variables set by the tab glider script, not theme tokens.
-LOCAL_PROPERTIES = {"--glider-x", "--glider-w"}
+# Component-local geometry/animation variables (set by the glider script or by the
+# button wipe rule itself), not theme tokens.
+LOCAL_PROPERTIES = {"--glider-x", "--glider-w", "--skew", "--progress"}
 
 
 def _used_tokens() -> set:
@@ -86,6 +87,8 @@ TEXT_PAIRS = [
     ("--halted", "--panel"), ("--halted", "--panel-inset"), ("--halted", "--highlight"),
     ("--green", "--panel"), ("--green", "--panel-inset"), ("--green", "--panel-raised"),
     ("--on-brand", "--brand-red"), ("--on-brand", "--btn-active"),
+    # Filled/danger toolbar buttons swap colours on hover: red text on --on-brand.
+    ("--brand-red", "--on-brand"),
     ("--changed", "--highlight"), ("--changed", "--panel-inset"),
     ("--graph-label", "--graph-bg"), ("--graph-placeholder", "--graph-bg"),
     ("--graph-wave", "--graph-bg"),
@@ -116,3 +119,35 @@ def test_control_borders_are_visible(theme, border, surface):
         assert ratio >= 1.5  # decorative gridline, not an identifying border
     else:
         assert ratio >= 3.0, f"{theme}: {border} on {surface} is {ratio:.2f}:1"
+
+
+def _difference(a: str, b: str) -> str:
+    """mix-blend-mode: difference of two opaque colours."""
+    return "#" + "".join(f"{abs(int(a[i:i + 2], 16) - int(b[i:i + 2], 16)):02x}" for i in (1, 3, 5))
+
+
+@pytest.mark.parametrize("theme", sorted(THEMES))
+def test_wipe_label_is_readable_before_and_after_the_animation(theme):
+    """Neutral toolbar buttons blend their --wipe coloured label with `difference`
+    over the button fill, so the label colour changes while the wipe passes."""
+    tokens = THEMES[theme]
+    wipe, inset = tokens["--wipe"], tokens["--panel-inset"]
+    rest_label = _difference(wipe, inset)       # label over the dark button
+    end_label = _difference(wipe, wipe)         # label over the fully swept wipe
+    assert contrast(rest_label, inset) >= 4.5, f"{theme}: resting label {rest_label}"
+    assert contrast(end_label, wipe) >= 4.5, f"{theme}: label at the end of the wipe {end_label}"
+
+
+def test_neutral_buttons_wipe_but_filled_and_danger_buttons_swap_colours():
+    """difference would turn Run's white label cyan: the wipe is for neutral buttons only."""
+    assert ".btn-17:not(.btn-run):not(.btn-reset)::before" in STYLE
+    assert "mix-blend-mode: difference" in STYLE
+    blend = re.findall(r"([^{}]*)\{[^{}]*mix-blend-mode: difference", STYLE)
+    assert blend and all(":not(.btn-run):not(.btn-reset)" in selector for selector in blend)
+    assert re.search(r"\.btn-17\.btn-run:hover:not\(:disabled\),\s*#controls \.btn-17\.btn-reset:hover", STYLE)
+
+
+def test_wipe_respects_reduced_motion_and_hover_capability():
+    assert "@media (hover: hover) and (pointer: fine)" in STYLE
+    reduced = STYLE[STYLE.index("#controls .btn-17, #controls .btn-17::before"):]
+    assert "animation: none !important" in reduced and "--progress: 0%" in reduced

@@ -15,6 +15,7 @@
       --brand-red: #b5202c;
       --brand-red-bright: #ff7c84;
       --on-brand: #ffffff;
+      --wipe: #ffffff;
       --bg: #20262d;
       --panel: #2c333b;
       --panel-raised: #333b43;
@@ -55,6 +56,7 @@
       --brand-red: #c8102e;
       --brand-red-bright: #ffb3b8;
       --on-brand: #ffffff;
+      --wipe: #ffffff;
       --bg: #000000;
       --panel: #0b0b0b;
       --panel-raised: #1a1a1a;
@@ -1504,6 +1506,70 @@
     .motor-swatch.rotor { background: #70d6b4; }
     .motor-swatch.command { background: #da8ee6; }
 
+    /* ---- Toolbar buttons: skewed wipe on hover -----------------------------------
+       Neutral buttons: two skewed --wipe parallelograms sweep across the pill
+       and the label (blend-mode: difference) inverts where they pass, ending
+       as dark text on --wipe. Filled and danger buttons (Run, Reset, HW Reset,
+       Stop) keep a plain colour swap, because a difference blend would turn
+       their white label cyan. Labels live in .text-container > .text; write
+       them with setButtonLabel(), never button.textContent. Hover only on
+       devices that can hover; reduced motion gets a border change only. */
+    #controls .btn-17 {
+      position: relative;
+      isolation: isolate;
+      overflow: hidden;
+      flex: 0 0 auto;
+      border-radius: 99rem;
+      padding: 4px 11px;
+      line-height: 1.5;
+    }
+    #controls .btn-17 .text-container { display: block; position: relative; overflow: hidden; }
+    #controls .btn-17 .text { display: block; position: relative; }
+    #controls .btn-17:not(.btn-run):not(.btn-reset) { color: var(--wipe); }
+    #controls .btn-17:not(.btn-run):not(.btn-reset) .text-container { mix-blend-mode: difference; }
+    #controls .btn-17:not(.btn-run):not(.btn-reset)::before,
+    #controls .btn-17:not(.btn-run):not(.btn-reset)::after {
+      --skew: 0.2;
+      --progress: 0%;
+      content: "";
+      display: block;
+      position: absolute;
+      width: 100%;
+      height: 104%;
+      left: calc(-50% - 50% * var(--skew));
+      top: -104%;
+      background: var(--wipe);
+      transform: skew(calc(150deg * var(--skew))) translateY(var(--progress));
+      transition: transform 200ms cubic-bezier(0.23, 1, 0.32, 1);
+      pointer-events: none;
+    }
+    #controls .btn-17:not(.btn-run):not(.btn-reset)::after { left: calc(50% + 50% * var(--skew)); top: 100%; z-index: -1; }
+    @media (hover: hover) and (pointer: fine) {
+      #controls .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled)::before { --progress: 100%; }
+      #controls .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled)::after { --progress: -102%; }
+      #controls .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled) .text { animation: btn-label-roll 0.3s forwards; }
+    }
+    @keyframes btn-label-roll {
+      0% { transform: translateY(0); }
+      50% { transform: translateY(80%); }
+      51% { transform: translateY(-80%); }
+      to { transform: translateY(0); }
+    }
+    /* Filled and danger: plain colour swap (Run, Reset, HW Reset, Stop). */
+    #controls .btn-17.btn-run:hover:not(:disabled),
+    #controls .btn-17.btn-reset:hover:not(:disabled) { background: var(--on-brand); color: var(--brand-red); }
+    #controls .btn-17:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    #controls .btn-17:disabled { opacity: 0.4; cursor: default; }
+    @media (prefers-reduced-motion: reduce) {
+      #controls .btn-17, #controls .btn-17::before, #controls .btn-17::after, #controls .btn-17 .text {
+        animation: none !important; transition: none !important;
+      }
+      #controls .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled)::before,
+      #controls .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled)::after { --progress: 0%; }
+      #controls .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled) { color: var(--text); }
+      #controls .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled) .text-container { mix-blend-mode: normal; }
+    }
+
     /* ---- Responsive -------------------------------------------------------------------------------------------- */
     @media (max-width: 1240px) {
       #controls {
@@ -1590,26 +1656,26 @@
     </div>
 
     <div class="toolbar-group toolbar-execution" role="group" aria-label="Execution controls">
-      <button id="btn-multicore" title="Toggle dual-core debug view">Multi-core</button>
+      <button id="btn-multicore" class="btn-17" title="Toggle dual-core debug view"><span class="text-container"><span class="text">Multi-core</span></span></button>
       <select id="mc-partner-select" title="Second core in multi-core view" style="display:none;">
         <option value="rtu0">RTU0</option>
         <option value="pru1">PRU1</option>
         <option value="rtu1">RTU1</option>
       </select>
 
-      <button id="btn-step" class="btn-step">Step</button>
-      <button id="btn-run" class="btn-run">Run</button>
-      <button id="btn-sim" class="btn-sim">SIM</button>
+      <button id="btn-step" class="btn-17 btn-step"><span class="text-container"><span class="text">Step</span></span></button>
+      <button id="btn-run" class="btn-17 btn-run"><span class="text-container"><span class="text">Run</span></span></button>
+      <button id="btn-sim" class="btn-17 btn-sim"><span class="text-container"><span class="text">SIM</span></span></button>
       <input id="sim-interval" type="text" value="1.0" placeholder="1.0" title="SIM step interval in seconds (e.g. 0.01)" />
       <span style="font-size:11px;color:var(--text-dim)">s</span>
     </div>
 
     <div class="toolbar-group toolbar-actions" role="group" aria-label="Session actions">
-      <button id="btn-reset" class="btn-reset">Reset</button>
-      <button id="btn-hard-reset" class="btn-reset" title="Hardware reset: clears all SPAD banks, XFR config, all cores, and Peripheral Interface state (FIFOs, overrun/underrun, RX valid/overflow, busy) — perif config registers are kept">HW Reset</button>
-      <button id="btn-config">Config</button>
-      <button id="btn-reset-layout" title="Reset panel layout to default">⊞ Reset Layout</button>
-      <button id="btn-help" title="Keyboard shortcuts and feature reference">? Help</button>
+      <button id="btn-reset" class="btn-17 btn-reset"><span class="text-container"><span class="text">Reset</span></span></button>
+      <button id="btn-hard-reset" class="btn-17 btn-reset" title="Hardware reset: clears all SPAD banks, XFR config, all cores, and Peripheral Interface state (FIFOs, overrun/underrun, RX valid/overflow, busy) — perif config registers are kept"><span class="text-container"><span class="text">HW Reset</span></span></button>
+      <button id="btn-config" class="btn-17"><span class="text-container"><span class="text">Config</span></span></button>
+      <button id="btn-reset-layout" class="btn-17" title="Reset panel layout to default"><span class="text-container"><span class="text">⊞ Reset Layout</span></span></button>
+      <button id="btn-help" class="btn-17" title="Keyboard shortcuts and feature reference"><span class="text-container"><span class="text">? Help</span></span></button>
     </div>
 
     <div class="toolbar-end">
