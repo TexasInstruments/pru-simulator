@@ -56,6 +56,10 @@ def load_schema(path: Path = SCHEMA_PATH) -> dict:
         if name == "abi_version":
             if kind != "u32" or offset != 0:
                 raise ValueError("abi_version must be the first u32 control field")
+        elif field.get("owner") == "pru":
+            if kind != "u32" or "default" in field:
+                raise ValueError(f"control.{name} is PRU-owned: u32 without a default")
+            item["owner"] = "pru"
         else:
             if "default" not in field:
                 raise ValueError(f"control.{name} requires a schema default")
@@ -68,7 +72,7 @@ def load_schema(path: Path = SCHEMA_PATH) -> dict:
     if not fields or fields[0]["name"] != "abi_version":
         raise ValueError("abi_version must be the first control field")
     for field in fields:
-        if field["name"] == "abi_version":
+        if field["name"] == "abi_version" or field.get("owner") == "pru":
             continue
         low, high = ((0, 0xFFFFFFFF) if field["type"] == "u32"
                      else (-0x80000000, 0x7FFFFFFF))
@@ -79,9 +83,14 @@ def load_schema(path: Path = SCHEMA_PATH) -> dict:
             raise ValueError(f"control.{field['name']}.minimum is outside {field['type']}")
         if not low <= field.get("maximum", high) <= high:
             raise ValueError(f"control.{field['name']}.maximum is outside {field['type']}")
+    constants = raw.get("constants", {})
+    if not isinstance(constants, dict):
+        raise ValueError("constants must be an object")
+    constants = {name: _integer(value, f"constants.{name}")
+                 for name, value in constants.items()}
     return {"version": version, "shared_base": shared_base,
             "control_offset": group_offset, "fields": fields,
-            "control_size": expected_offset}
+            "control_size": expected_offset, "constants": constants}
 
 
 def _constants(schema: dict) -> list[tuple[str, int]]:
@@ -96,6 +105,7 @@ def _constants(schema: dict) -> list[tuple[str, int]]:
         values.append((f"FOC_{name}_OFFSET", field["offset"]))
         values.append((f"FOC_{name}_OFFSET_FROM_SHARED",
                        schema["control_offset"] + field["offset"]))
+    values.extend((f"FOC_{name}", value) for name, value in schema["constants"].items())
     return values
 
 
@@ -107,7 +117,7 @@ def _generate_assembly(schema: dict) -> str:
 
 def _generate_python(schema: dict) -> str:
     fields = schema["fields"]
-    configurable = fields[1:]
+    configurable = [field for field in fields[1:] if field.get("owner") != "pru"]
     signature = ", ".join(
         f"{field['name']}={field['default']!r}" for field in configurable)
     format_string = "".join("I" if field["type"] == "u32" else "i"
@@ -143,8 +153,9 @@ def _generate_python(schema: dict) -> str:
             lines.append(f"    if {name} > {field['maximum']!r}:")
             lines.append(f"        raise ValueError('{name} must be at most {field['maximum']}')")
     values = ["ABI_VERSION"]
-    values.extend(f"_{'u32' if f['type'] == 'u32' else 's32'}('{f['name']}', {f['name']})"
-                  for f in configurable)
+    values.extend("0" if f.get("owner") == "pru" else
+                  f"_{'u32' if f['type'] == 'u32' else 's32'}('{f['name']}', {f['name']})"
+                  for f in fields[1:])
     lines.append("    return _CONFIG_STRUCT.pack(" + ", ".join(values) + ")")
     names = ", ".join(repr(field["name"]) for field in fields)
     lines.extend([
