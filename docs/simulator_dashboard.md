@@ -89,6 +89,27 @@ The view reflects current simulator state, including reset and step-back,
 rather than retaining a separate history that could disagree with it. The
 display includes up to 500 events and 100 fault messages.
 
+## Look and themes
+
+The default **Dark** theme is the red-brand operator workbench: raised and inset
+surfaces, a red accent (`--accent`, `--brand-red`), outlined uppercase toolbar
+buttons with a filled red **Run**, and panels with a red bar before an uppercase
+title. The header is split into labelled groups (Target, Execute, Session,
+Status, Theme), a segmented view switcher (Simulator, Devices, Motor control,
+Events), a **Panels** row of icon toggle buttons, and a Telemetry strip. UI text
+uses the `Segoe UI Variable` / `Inter` / system sans stack and code, registers
+and memory use `Cascadia Code` / `Consolas`; no web fonts are loaded, so the page
+works offline.
+
+**High contrast** keeps the same layout on a black background with white text
+and brighter borders. Both themes are sets of CSS custom properties at the top
+of `ui/static/index.html` (`:root` for Dark, `:root[data-theme="contrast"]` for
+High contrast), and `tests/test_ui_design_tokens.py` checks that High contrast
+defines every token and that the main text/background pairs meet WCAG AA (4.5:1).
+The signal graph, memory graph, memory-fill preview and Motor control plots read
+their colours from the `--graph-*` tokens when they draw and redraw when the
+theme changes.
+
 Dark and High contrast themes, view selection and panel visibility are local
 browser preferences. Navigation and panel toggles are keyboard-accessible
 buttons with visible focus and pressed state. On narrow screens, the simulator
