@@ -8,29 +8,8 @@ const start = app.indexOf('function updateDevicePanel(');
 const end = app.indexOf('// ---- Signal graph', start);
 assert.ok(start >= 0 && end > start, 'updateDevicePanel should be present in app.js');
 
-const fields = [
-  ['foc-alpha-q15', 'alpha_q15'],
-  ['foc-beta-q15', 'beta_q15'],
-  ['foc-modulation-q15', 'modulation_q15'],
-  ['foc-phase-step', 'phase_increment_q32'],
-  ['foc-initial-phase', 'initial_phase_q32'],
-];
-const routeIds = ['foc-sd-route-0', 'foc-sd-route-1'];
-const initialConfig = {
-  alpha_q15: 1,
-  beta_q15: 2,
-  modulation_q15: 3,
-  phase_increment_q32: 4,
-  initial_phase_q32: 5,
-};
-const draftConfig = { ...initialConfig, alpha_q15: 10 };
 const nodes = new Map();
-for (const [id] of fields) nodes.set(id, { value: 'draft' });
-for (const id of routeIds) nodes.set(id, { options: [{}], value: 'draft' });
-for (const id of [
-  'device-runtime-panel', 'foc-device-status', 'foc-attach-button', 'foc-controls',
-  'foc-apply-button', 'foc-detach-button', 'foc-live-stats',
-]) nodes.set(id, {});
+for (const id of ['device-runtime-panel']) nodes.set(id, {});
 
 const document = {
   activeElement: null,
@@ -40,30 +19,15 @@ const document = {
 const harness = new Function('document', `
   let currentCore = 'pru0';
   let devicePanelCore = 'pru0';
-  let focMotorName = null;
   let multiCoreMode = false;
-  const focConfigFields = ${JSON.stringify(fields)};
-  const focRouteIds = ${JSON.stringify(routeIds)};
-  const focDirtyFields = new Set(${JSON.stringify(fields.map(([id]) => id).concat(routeIds))});
-  let focApplyDraft = { config: ${JSON.stringify(draftConfig)}, routes: [3, 4] };
   ${app.slice(start, end)}
-  return { updateDevicePanel, ssiFieldMax, syncSsiSetter, focDirtyFields, hasPendingApply: () => focApplyDraft !== null };
+  return { updateDevicePanel, ssiFieldMax, syncSsiSetter };
 `)(document);
 
-const motor = { model: 'three_phase_rl', name: 'foc_motor', phase_currents_a: [] };
-const state = config => ({
-  device_bus: { devices: [motor] },
-  foc_config: config,
-  sd: { input_routes: [3, 4, null] },
-});
-
-harness.updateDevicePanel(state(draftConfig), 'pru0');
-assert.equal(harness.hasPendingApply(), false, 'matching backend state acknowledges Apply');
-assert.equal(harness.focDirtyFields.size, 0, 'acknowledged fields become eligible for backend updates');
-
-const resetConfig = { ...initialConfig, alpha_q15: 999 };
-harness.updateDevicePanel(state(resetConfig), 'pru0');
-assert.equal(nodes.get('foc-alpha-q15').value, '999', 'later backend reset state replaces the applied value');
+// The FOC motor is controlled from the Motor control view; the device panel
+// must tolerate a motor in the bus state without touching any FOC element.
+harness.updateDevicePanel({ device_bus: { devices: [
+  { model: 'pmsm', name: 'foc_motor', core: 'pru0', phase_currents_a: [] }] } }, 'pru0');
 
 assert.equal(harness.ssiFieldMax(3), 7, 'SSI field limit follows the field width');
 assert.equal(harness.ssiFieldMax(64), Number.MAX_SAFE_INTEGER, 'wide SSI fields stay exact in JSON');
@@ -79,4 +43,4 @@ harness.syncSsiSetter(setter, 6, 7);
 assert.equal(setter.value, '6', 'an acknowledged SSI setter follows the backend again');
 assert.equal(setter.dataset.dirty, undefined);
 
-console.log('FOC device panel acknowledges Apply and follows later backend state');
+console.log('Device panel ignores the FOC motor and keeps SSI setters in sync with the backend');

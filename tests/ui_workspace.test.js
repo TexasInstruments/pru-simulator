@@ -25,10 +25,10 @@ class Element {
   addEventListener(event, fn) { this.listeners[event] = fn; }
   querySelector() { return null; }
 }
-const ids = ['main', 'devices-view', 'events-view', 'panel-visibility',
+const ids = ['main', 'devices-view', 'motor-view', 'events-view', 'panel-visibility',
   'panel-visibility-buttons', 'device-runtime-panel', 'workspace-theme', 'device-event-log'];
 const elements = new Map(ids.map(id => [id, new Element()]));
-const buttons = ['simulator', 'devices', 'events'].map(name => {
+const buttons = ['simulator', 'devices', 'motor', 'events'].map(name => {
   const button = new Element(); button.dataset.workspaceView = name; return button;
 });
 const listeners = {};
@@ -41,7 +41,7 @@ const document = {
   dispatchEvent: event => { listeners[event.type]?.(event); },
 };
 const context = vm.createContext({ document, window: {},
-  CustomEvent: class { constructor(type) { this.type = type; } },
+  CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init?.detail; } },
   localStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
 });
 const run = source => vm.runInContext(source, context);
@@ -66,6 +66,16 @@ assert.equal(elements.get('panel-visibility').hidden, true);
 assert.equal(storage.get('pru-workspace-view'), 'devices');
 assert.equal(buttons[1].attributes['aria-pressed'], 'true');
 assert.ok(elements.get('devices-view').children.includes(elements.get('device-runtime-panel')));
+const viewEvents = [];
+listeners['pru-workspace-view-changed'] = event => viewEvents.push(event.detail.view);
+buttons[2].listeners.click();
+assert.equal(elements.get('motor-view').hidden, false, 'Motor control view is reachable');
+assert.equal(elements.get('devices-view').hidden, true);
+assert.equal(elements.get('main').hidden, true);
+assert.equal(storage.get('pru-workspace-view'), 'motor');
+assert.deepEqual(viewEvents, ['motor'], 'view changes are announced so canvases can redraw');
+buttons[1].listeners.click();
+assert.equal(elements.get('motor-view').hidden, true);
 elements.get('workspace-theme').value = 'contrast';
 elements.get('workspace-theme').listeners.change();
 assert.equal(document.documentElement.dataset.theme, 'contrast');

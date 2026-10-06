@@ -4,7 +4,8 @@
 (() => {
   const buttons = Array.from(document.querySelectorAll('[data-workspace-view]'));
   const views = { simulator: document.getElementById('main'),
-    devices: document.getElementById('devices-view'), events: document.getElementById('events-view') };
+    devices: document.getElementById('devices-view'),
+    motor: document.getElementById('motor-view'), events: document.getElementById('events-view') };
   const panelBar = document.getElementById('panel-visibility');
   const panelButtons = document.getElementById('panel-visibility-buttons');
   views.devices.appendChild(document.getElementById('device-runtime-panel'));
@@ -15,6 +16,7 @@
     for (const button of buttons) button.setAttribute('aria-pressed', String(button.dataset.workspaceView === name));
     panelBar.hidden = name !== 'simulator';
     try { localStorage.setItem('pru-workspace-view', name); } catch (_) {}
+    document.dispatchEvent(new CustomEvent('pru-workspace-view-changed', { detail: { view: name } }));
   }
   for (const button of buttons) button.addEventListener('click', () => showView(button.dataset.workspaceView));
   let savedView = 'simulator';

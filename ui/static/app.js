@@ -9,18 +9,7 @@ let ws = null;
 let prevRegisters = new Array(32).fill("0x00000000");
 let currentCore = "pru0";
 let devicePanelCore = "pru0";
-let focMotorName = null;
 let ssiPresets = {};
-const focConfigFields = [
-  ['foc-alpha-q15', 'alpha_q15'],
-  ['foc-beta-q15', 'beta_q15'],
-  ['foc-modulation-q15', 'modulation_q15'],
-  ['foc-phase-step', 'phase_increment_q32'],
-  ['foc-initial-phase', 'initial_phase_q32'],
-];
-const focRouteIds = ['foc-sd-route-0', 'foc-sd-route-1'];
-const focDirtyFields = new Set();
-let focApplyDraft = null;
 let running = false;
 let runInterval = null;
 let simRunning = false;
@@ -350,6 +339,7 @@ function connect() {
       sendAction({ action: "get_state", core: currentCore });
     }
     sendAction({ action: "device_discover" });
+    window.MotorControl?.onConnect();
     refreshMemory();
     refreshMemory2();
     loadRegions();
@@ -372,6 +362,7 @@ function connect() {
     try {
       const msg = JSON.parse(event.data);
       if (msg.type === "state") {
+        window.MotorControl?.onState(msg);
         window.updateWorkspaceEvents?.(msg, multiCoreMode ? ['pru0', mcPartner] : [currentCore]);
         if (multiCoreMode) {
           updateMCUI(msg);
@@ -394,6 +385,8 @@ function connect() {
           st.style.color = "#6a9955";
           st.style.display = "";
         }
+      } else if (msg.type === "foc_samples") {
+        window.MotorControl?.onSamples(msg);
       } else if (msg.type === "device_profiles") {
         populateSsiPresets(msg.profiles);
       } else if (msg.type === "perif_ok") {
@@ -406,7 +399,11 @@ function connect() {
       } else if (msg.type === "error") {
         if (msg.tag && msg.tag.startsWith("graph-")) graphMarkChannelError(msg.tag);
         else if (msg.tag === "device") showDeviceError(msg.errors);
-        else showErrors(msg.errors);
+        else if (msg.tag === "motor") window.MotorControl?.onError(msg.errors);
+        else {
+          showErrors(msg.errors);
+          window.MotorControl?.onLoadError(msg.errors);
+        }
       }
     } catch (e) {
       console.error("Failed to parse message", e);
@@ -1050,22 +1047,6 @@ function updateDevicePanel(io, core) {
   const faults = Array.isArray(bus.faults) ? bus.faults : [];
   const list = document.getElementById('ssi-device-list');
 
-  for (let channel = 0; channel < 2; channel++) {
-    const select = document.getElementById(`foc-sd-route-${channel}`);
-    if (select && select.options.length === 0) {
-      const internal = document.createElement('option');
-      internal.value = '-1';
-      internal.textContent = 'Internal modulator';
-      select.appendChild(internal);
-      for (let pin = 0; pin < 20; pin++) {
-        const option = document.createElement('option');
-        option.value = String(pin);
-        option.textContent = `GPI ${pin}`;
-        select.appendChild(option);
-      }
-    }
-  }
-
   const ssiDevices = devices.filter(device =>
     device.core === devicePanelCore && Number.isInteger(device.clock_pin) &&
     Number.isInteger(device.data_pin));
@@ -1186,72 +1167,6 @@ function updateDevicePanel(io, core) {
       const current = list.children[index];
       if (current !== row) list.insertBefore(row, current || null);
     });
-  }
-
-  const focMotor = devices.find(device => device.model === 'three_phase_rl');
-  focMotorName = focMotor ? focMotor.name : null;
-  const focStatus = document.getElementById('foc-device-status');
-  const focAttach = document.getElementById('foc-attach-button');
-  const focControls = document.getElementById('foc-controls');
-  const focApply = document.getElementById('foc-apply-button');
-  const focDetach = document.getElementById('foc-detach-button');
-  const onFocCore = devicePanelCore === 'pru0';
-  if (onFocCore && !focMotor) {
-    focDirtyFields.clear();
-    focApplyDraft = null;
-  }
-  if (focStatus) {
-    focStatus.textContent = focMotor
-      ? `Attached as ${focMotor.name} on PRU0 · ${focMotor.pwm_periods || 0} PWM periods · ${focMotor.cycles || 0} model cycles.`
-      : 'No FOC motor attached. This profile runs on PRU0.';
-  }
-  if (focAttach) focAttach.disabled = !onFocCore || !!focMotor;
-  if (focControls) focControls.hidden = !focMotor || !onFocCore;
-  if (focApply) focApply.disabled = !focMotor || !onFocCore;
-  if (focDetach) focDetach.disabled = !focMotor || !onFocCore;
-
-  if (focMotor) {
-    const stats = document.getElementById('foc-live-stats');
-    if (stats) {
-      const currents = focMotor.phase_currents_a || [];
-      const currentText = currents.map(value => Number(value).toFixed(3)).join(' / ');
-      const pwmBits = ((bus.buses && bus.buses.pru0) || 0) & 0x7;
-      stats.textContent = `Phase currents A/B/C: ${currentText || '—'} A · ` +
-        `PWM periods: ${focMotor.pwm_periods || 0} · model cycles: ${focMotor.cycles || 0} · ` +
-        `GPO 2:0: ${pwmBits.toString(2).padStart(3, '0')} · bus contentions: ${bus.contentions || 0}`;
-    }
-  } else {
-    const stats = document.getElementById('foc-live-stats');
-    if (stats) stats.textContent = '';
-  }
-
-  const config = io && io.foc_config;
-  const routeValues = io && io.sd && Array.isArray(io.sd.input_routes)
-    ? io.sd.input_routes.slice(0, 2).map(pin => pin === null || pin === undefined ? -1 : pin)
-    : null;
-  if (focApplyDraft && onFocCore && config && routeValues &&
-      focConfigFields.every(([, key]) => Number(config[key]) === Number(focApplyDraft.config[key])) &&
-      routeValues.length === 2 && routeValues.every((pin, index) => pin === focApplyDraft.routes[index])) {
-    focConfigFields.forEach(([id]) => focDirtyFields.delete(id));
-    focRouteIds.forEach(id => focDirtyFields.delete(id));
-    focApplyDraft = null;
-  }
-  if (config && onFocCore) {
-    for (const [id, key] of focConfigFields) {
-      const input = document.getElementById(id);
-      if (input && document.activeElement !== input && !focDirtyFields.has(id)) {
-        input.value = String(config[key]);
-      }
-    }
-  }
-  if (onFocCore && routeValues) {
-    for (let channel = 0; channel < 2; channel++) {
-      const id = focRouteIds[channel];
-      const select = document.getElementById(id);
-      if (select && document.activeElement !== select && !focDirtyFields.has(id)) {
-        select.value = String(routeValues[channel]);
-      }
-    }
   }
 }
 
@@ -2584,18 +2499,6 @@ function sendDeviceAction(action) {
   sendAction(action);
 }
 
-function markFocDirty(id) {
-  focDirtyFields.add(id);
-  focApplyDraft = null;
-}
-
-focConfigFields.forEach(([id]) => {
-  document.getElementById(id)?.addEventListener('input', () => markFocDirty(id));
-});
-focRouteIds.forEach(id => {
-  document.getElementById(id)?.addEventListener('change', () => markFocDirty(id));
-});
-
 function deviceNumberValue(id) {
   const input = document.getElementById(id);
   if (!input || !input.checkValidity()) {
@@ -2704,41 +2607,6 @@ document.getElementById('ssi-device-list')?.addEventListener('click', event => {
   });
   input.dataset.pending = String(input.valueAsNumber);
   input.dataset.dirty = 'true';
-});
-
-document.getElementById('foc-attach-button')?.addEventListener('click', () => {
-  if (devicePanelCore !== 'pru0') return;
-  sendDeviceAction({ action: 'device_attach', core: 'pru0', profile: 'foc_motor' });
-});
-
-document.getElementById('foc-apply-button')?.addEventListener('click', () => {
-  if (devicePanelCore !== 'pru0') return;
-  const values = [
-    ['alpha_q15', 'foc-alpha-q15'],
-    ['beta_q15', 'foc-beta-q15'],
-    ['modulation_q15', 'foc-modulation-q15'],
-    ['phase_increment_q32', 'foc-phase-step'],
-    ['initial_phase_q32', 'foc-initial-phase'],
-  ];
-  const config = {};
-  for (const [key, id] of values) {
-    const value = deviceNumberValue(id);
-    if (value === null) return;
-    config[key] = value;
-  }
-  const routes = [0, 1].map(channel =>
-    Number.parseInt(document.getElementById(`foc-sd-route-${channel}`).value, 10));
-  focApplyDraft = { config: { ...config }, routes };
-  focConfigFields.forEach(([id]) => focDirtyFields.add(id));
-  focRouteIds.forEach(id => focDirtyFields.add(id));
-  sendDeviceAction({ action: 'foc_apply', core: 'pru0', config, routes });
-});
-
-document.getElementById('foc-detach-button')?.addEventListener('click', () => {
-  if (devicePanelCore !== 'pru0') return;
-  if (focMotorName) {
-    sendDeviceAction({ action: 'device_detach', core: 'pru0', name: focMotorName });
-  }
 });
 
 // ---- Memory panel ---------------------------------------------------------
