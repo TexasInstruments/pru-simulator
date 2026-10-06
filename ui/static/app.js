@@ -12,11 +12,13 @@ let devicePanelCore = "pru0";
 let ssiPresets = {};
 let running = false;
 let runInterval = null;
+let runSentAt = 0;   // when the in-flight run chunk was sent; 0 once its state reply arrived
 let simRunning = false;
 let simTimer = null;
 let _flashTimer = null;
 let clientBreakpoints = new Set();
 let _lastSourceKey = '';
+let captureStride = null;   // Signal Graph sample interval requested by the loaded example
 
 // ---- Multi-core state ------------------------------------------------------
 let multiCoreMode = false;
@@ -349,6 +351,7 @@ function connect() {
       sendAction({ action: "get_state", core: currentCore });
     }
     sendAction({ action: "device_discover" });
+    sendAction({ action: "scenario_list" });
     window.MotorControl?.onConnect();
     refreshMemory();
     refreshMemory2();
@@ -372,6 +375,7 @@ function connect() {
     try {
       const msg = JSON.parse(event.data);
       if (msg.type === "state") {
+        runSentAt = 0;
         if (msg.iep) showIepClock(msg.iep);
         window.MotorControl?.onState(msg);
         window.updateWorkspaceEvents?.(msg, multiCoreMode ? mcShown() : [currentCore]);
@@ -400,6 +404,10 @@ function connect() {
         window.MotorControl?.onSamples(msg);
       } else if (msg.type === "device_profiles") {
         populateSsiPresets(msg.profiles);
+      } else if (msg.type === "scenarios") {
+        populateScenarios(msg.scenarios);
+      } else if (msg.type === "scenario_loaded") {
+        applyScenario(msg);
       } else if (msg.type === "perif_ok") {
         const st = document.getElementById("perif-lb-status");
         if (st) {
@@ -1499,6 +1507,7 @@ function graphSample(state) {
  *
  * Wire format is packed ints, see _capture_sample() in ui/server.py:
  *   [step, r30(20 bits), gpi bits, perif out bits, out_en bits, clk bits]
+ * A multi-core run appends [r30, gpi bits] per name in msg.partners.
  */
 function graphHandleCapture(msg) {
   if (!signalGraph.recording) return;
@@ -1515,9 +1524,13 @@ function graphHandleCapture(msg) {
       break;
     }
     const [step, r30, gpiBits, outBits, oeBits, clkBits] = s;
+    const pins = bits => Array.from({ length: 20 }, (_, i) => (bits >> i) & 1);
     graphPushSample({
       step,
       mode,
+      core: msg.core,
+      peers: (msg.partners || []).map((name, k) => (
+        { name, gpo: pins(s[6 + 2 * k]), gpi: pins(s[7 + 2 * k]) })),
       gpo: Array.from({ length: 20 }, (_, i) => (r30 >> i) & 1),
       gpi: Array.from({ length: 20 }, (_, i) => (gpiBits >> i) & 1),
       perif: [0, 1, 2].map(i => (outBits >> i) & 1),
@@ -1618,16 +1631,29 @@ function drawDigitalGraph() {
   const activeDig = [];
   if (samples.length >= 2) {
     if (!perifMode) {
-      for (let i = 0; i < 20; i++) {
-        const vals = samples.map(s => s.gpo[i] || 0);
-        if (vals.some(v => v !== vals[0])) {
-          activeDig.push({ label: `GPO ${i}`, color: GRAPH_GPO_COLORS[i], data: vals });
-        }
+      // A multi-core capture plots every core's pins, prefixed by core name so
+      // PRU0 GPI 16 and PRU1 GPO 16 (two ends of one wire) read apart.
+      const last = samples[samples.length - 1];
+      const cores = [{ tag: "", of: s => s }];
+      if (last.peers && last.peers.length) {
+        cores[0].tag = `${last.core.toUpperCase()} `;
+        last.peers.forEach((p, k) => cores.push({
+          tag: `${p.name.toUpperCase()} `, of: s => (s.peers && s.peers[k]) || {} }));
       }
-      for (let i = 0; i < 20; i++) {
-        const vals = samples.map(s => s.gpi[i] || 0);
-        if (vals.some(v => v !== vals[0])) {
-          activeDig.push({ label: `GPI ${i}`, color: GRAPH_GPI_COLORS[i], data: vals });
+      for (const kind of ["gpo", "gpi"]) {
+        for (const c of cores) {
+          for (let i = 0; i < 20; i++) {
+            const data = samples.map(s => (c.of(s)[kind] || [])[i] || 0);
+            // Multi-core: a GPI that is sample-for-sample its own core's GPO
+            // is just the readback of a pin it drives; the GPO lane shows it.
+            // Any disagreement (contention, outside driver) keeps the lane.
+            const own = cores.length > 1 && kind === "gpi" &&
+              samples.every((s, j) => data[j] === ((c.of(s).gpo || [])[i] || 0));
+            if (!own && data.some(v => v !== data[0])) {
+              activeDig.push({ label: `${c.tag}${kind.toUpperCase()} ${i}`,
+                color: (kind === "gpo" ? GRAPH_GPO_COLORS : GRAPH_GPI_COLORS)[i], data });
+            }
+          }
         }
       }
     }
@@ -1676,7 +1702,7 @@ function drawDigitalGraph() {
           ctx.lineTo(xm, ch.data[i - 1] ? yHigh : yLow);
           ctx.lineTo(xm, y);
         }
-        ctx.lineTo(x, y);
+        if (v !== ch.data[i - 1] || i === N - 1) ctx.lineTo(x, y);   // flat runs add no vertex
       });
       ctx.stroke();
       ctx.fillStyle = ch.color;
@@ -2544,6 +2570,10 @@ function startRun() {
   btnRun.classList.add("btn-reset");
   btnRun.classList.remove("btn-run");
   runInterval = setInterval(() => {
+    // One chunk in flight at a time: queued chunks would delay Stop and every
+    // memory refresh by however long the backlog takes to execute.
+    if (runSentAt && Date.now() - runSentAt < 2000) return;
+    runSentAt = Date.now();
     // While recording, the server samples the graph inside its run loop and
     // ships the batch as a "capture" message (per instruction in perif mode,
     // 100:1 otherwise). The chunk size no longer sets the sample rate, so it
@@ -2552,9 +2582,9 @@ function startRun() {
     const max_steps = 1000;
     if (multiCoreMode) {
       sendAction({ action: "run_multicore", core: "pru0",
-                   partners: mcShown().slice(1), max_steps, capture });
+                   partners: mcShown().slice(1), max_steps, capture, stride: captureStride });
     } else {
-      sendAction({ action: "run", core: currentCore, max_steps, capture });
+      sendAction({ action: "run", core: currentCore, max_steps, capture, stride: captureStride });
     }
   }, 10);
 }
@@ -3785,6 +3815,70 @@ function toggleMultiCore() {
     switchLayoutMode("sc");
 
     sendAction({ action: "get_state", core: currentCore });
+  }
+}
+
+// ---- Examples (one-click scenarios) ------------------------------------------
+const scenarioButtons = document.querySelectorAll("[data-scenario]");
+
+function populateScenarios(scenarios) {
+  for (const button of scenarioButtons) {
+    const scenario = scenarios.find(item => item.name === button.dataset.scenario);
+    button.disabled = !scenario;
+    button.title = scenario ? scenario.description : "Example not offered by the server (restart it?)";
+  }
+}
+
+for (const button of scenarioButtons) {
+  button.addEventListener("click", () => {
+    stopRun(); stopSim();
+    sendAction({ action: "scenario_load", name: button.dataset.scenario });
+  });
+}
+
+// The server has already reset and set up the simulator; bring every view in line.
+async function applyScenario(scenario) {
+  stopRun(); stopSim();
+  const partner = scenario.cores.find(core => core !== scenario.lead);
+  if (scenario.multicore) {
+    if (mcPartner !== partner) {
+      mcPartnerSelect.value = partner;
+      mcPartnerSelect.dispatchEvent(new Event("change"));
+    }
+    if (!multiCoreMode) toggleMultiCore();
+  } else {
+    if (multiCoreMode) toggleMultiCore();
+    if (currentCore !== scenario.lead) {
+      coreSelect.value = scenario.lead;
+      coreSelect.dispatchEvent(new Event("change"));
+    }
+  }
+  for (const core of scenario.cores) sendAction({ action: "get_state", core });
+  const ui = scenario.ui || {};
+  captureStride = ui.capture_stride || null;
+  document.getElementById("graph-clear-btn").click();   // no samples from the previous example
+  if (ui.capture_stride) {
+    document.getElementById("graph-win-sel").value = String(ui.graph_window);
+    graphResizeWindow(ui.graph_window);
+    graphSetRecording(true);
+    drawGraph();
+  }
+  if (ui.memory_addr !== undefined) {
+    memAddrInput.value = "0x" + ui.memory_addr.toString(16).padStart(8, "0").toUpperCase();
+    memLenInput.value = String(ui.memory_length);
+    memAutoRefreshBox.checked = true;
+    memAutoRefresh = true;
+    refreshMemory();
+  }
+  window.MotorControl?.onConnect();
+  document.querySelector(`[data-workspace-view="${ui.view || "simulator"}"]`)?.click();
+  // Editor tabs: the lead's firmware last so it is the one on screen.
+  for (const core of [...scenario.cores].reverse()) {
+    const path = scenario.firmware[core];
+    try {
+      const res = await fetch(`/source/${path}`);
+      if (res.ok) openFileAsTab(path, await res.text());
+    } catch (_) { /* the disassembly panels still show the loaded program */ }
   }
 }
 

@@ -89,7 +89,7 @@
       };
       for (const [key, input] of Object.entries(referenceInputs)) {
         if (input.dataset.dirty || document.activeElement === input || values[key] === null) continue;
-        input.value = String(Number(values[key].toFixed(key === 'vdPu' || key === 'vqPu' ? 4 : 1)));
+        input.value = String(Number(values[key].toFixed(key === 'vdPu' || key === 'vqPu' ? 4 : 0)));
       }
     }
   }
@@ -301,6 +301,8 @@
   }
 
   function onConnect() {
+    referenceLocked = false;
+    for (const input of [...Object.values(referenceInputs), ...physicsInputs]) delete input.dataset.dirty;
     samplePending = false;
     history = H.createHistory();
     lastStateKey = '';
