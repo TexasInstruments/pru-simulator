@@ -21,15 +21,25 @@ let _lastSourceKey = '';
 // ---- Multi-core state ------------------------------------------------------
 let multiCoreMode = false;
 let mcPartner = "rtu0";            // second core shown in multi-core view
-let mcPrevRegs = {
-  pru0: new Array(32).fill("0x00000000"),
-  rtu0: new Array(32).fill("0x00000000"),
-  pru1: new Array(32).fill("0x00000000"),
-};
-let mcLastSourceKey = { pru0: '', rtu0: '', pru1: '' };
-let mcBreakpoints   = { pru0: new Set(), rtu0: new Set(), pru1: new Set() };
-let mcHaltedState   = { pru0: false, rtu0: false, pru1: false };
-let mcBreakState    = { pru0: false, rtu0: false, pru1: false };
+let mcExtras = [];                 // optional third and fourth cores (RTU0/PRU1/RTU1)
+// Per-slot state. Slot i holds the i-th shown core (pru0, partner, extra, extra);
+// the slot names are the DOM id fragments, see PruChrome.mcCores.
+const mcFreshRegs = () => new Array(32).fill("0x00000000");
+let mcPrevRegs = { pru0: mcFreshRegs(), rtu0: mcFreshRegs(), x2: mcFreshRegs(), x3: mcFreshRegs() };
+let mcLastSourceKey = { pru0: '', rtu0: '', x2: '', x3: '' };
+let mcBreakpoints   = { pru0: new Set(), rtu0: new Set(), x2: new Set(), x3: new Set() };
+let mcHaltedState   = { pru0: false, rtu0: false, x2: false, x3: false };
+let mcBreakState    = { pru0: false, rtu0: false, x2: false, x3: false };
+const mcShown = () => PruChrome.mcCores(mcPartner, mcExtras);
+const mcSlotOf = core => PruChrome.mcSlot(mcShown(), core);
+const mcCoreOfSlot = slot => mcShown()[PruChrome.MC_SLOTS.indexOf(slot)];
+function mcResetSlot(slot) {
+  mcPrevRegs[slot] = mcFreshRegs();
+  mcLastSourceKey[slot] = '';
+  mcBreakpoints[slot] = new Set();
+  mcHaltedState[slot] = false;
+  mcBreakState[slot] = false;
+}
 let mcSpadVisible   = new Set();   // SPAD banks visible in PRU0 MC reg panel
 let mcPrevSpad      = {};          // key -> Array for change detection
 
@@ -334,8 +344,7 @@ function connect() {
     wsStatus.textContent = "Connected";
     wsStatus.className = "connected";
     if (multiCoreMode) {
-      sendAction({ action: "get_state", core: "pru0" });
-      sendAction({ action: "get_state", core: mcPartner });
+      for (const core of mcShown()) sendAction({ action: "get_state", core });
     } else {
       sendAction({ action: "get_state", core: currentCore });
     }
@@ -365,7 +374,7 @@ function connect() {
       if (msg.type === "state") {
         if (msg.iep) showIepClock(msg.iep);
         window.MotorControl?.onState(msg);
-        window.updateWorkspaceEvents?.(msg, multiCoreMode ? ['pru0', mcPartner] : [currentCore]);
+        window.updateWorkspaceEvents?.(msg, multiCoreMode ? mcShown() : [currentCore]);
         if (multiCoreMode) {
           updateMCUI(msg);
         } else if (!msg.core || msg.core === currentCore) {
@@ -1972,8 +1981,7 @@ coreSelect.addEventListener("change", () => {
 btnStep.addEventListener("click", () => {
   stopRun(); stopSim();
   if (multiCoreMode) {
-    sendAction({ action: "step", core: "pru0", count: 1 });
-    sendAction({ action: "step", core: mcPartner, count: 1 });
+    for (const core of mcShown()) sendAction({ action: "step", core, count: 1 });
   } else {
     sendAction({ action: "step", core: currentCore, count: 1 });
   }
@@ -1993,9 +2001,8 @@ btnReset.addEventListener("click", () => {
   clearErrors();
   prevRegisters = new Array(32).fill("0x00000000");
   if (multiCoreMode) {
-    mcPrevRegs = { pru0: new Array(32).fill("0x00000000"), rtu0: new Array(32).fill("0x00000000") };
-    sendAction({ action: "reset", core: "pru0" });
-    sendAction({ action: "reset", core: mcPartner });
+    for (const slot of PruChrome.MC_SLOTS) mcPrevRegs[slot] = mcFreshRegs();
+    for (const core of mcShown()) sendAction({ action: "reset", core });
   } else {
     sendAction({ action: "reset", core: currentCore });
   }
@@ -2006,9 +2013,9 @@ btnHardReset.addEventListener("click", () => {
   clearErrors();
   prevRegisters = new Array(32).fill("0x00000000");
   if (multiCoreMode) {
-    mcPrevRegs = { pru0: new Array(32).fill("0x00000000"), rtu0: new Array(32).fill("0x00000000") };
+    for (const slot of PruChrome.MC_SLOTS) mcPrevRegs[slot] = mcFreshRegs();
     sendAction({ action: "hard_reset", core: "pru0" });
-    sendAction({ action: "get_state", core: mcPartner });
+    for (const core of mcShown().slice(1)) sendAction({ action: "get_state", core });
   } else {
     sendAction({ action: "hard_reset", core: currentCore });
   }
@@ -2061,9 +2068,9 @@ btnLoad.addEventListener("click", async () => {
 
   if (multiCoreMode) {
     const targetCore = mcLoadCore.value || "pru0";
-    mcPrevRegs[targetCore] = new Array(32).fill("0x00000000");
-    mcLastSourceKey[targetCore] = '';
-    const srcList = document.getElementById(`mc-${targetCore}-source-list`);
+    const slot = mcSlotOf(targetCore);
+    if (slot) { mcPrevRegs[slot] = mcFreshRegs(); mcLastSourceKey[slot] = ''; }
+    const srcList = document.getElementById(`mc-${slot}-source-list`);
     if (srcList) srcList.innerHTML = "";
     sendAction({ action: "load", core: targetCore, source, filename });
   } else {
@@ -2541,7 +2548,7 @@ function startRun() {
     const max_steps = 1000;
     if (multiCoreMode) {
       sendAction({ action: "run_multicore", core: "pru0",
-                   partner: mcPartner, max_steps, capture });
+                   partners: mcShown().slice(1), max_steps, capture });
     } else {
       sendAction({ action: "run", core: currentCore, max_steps, capture });
     }
@@ -2569,8 +2576,7 @@ function startSim() {
   const ms = Math.round((parseFloat(simIntervalInput.value) || 1.0) * 1000);
   simTimer = setInterval(() => {
     if (multiCoreMode) {
-      sendAction({ action: "step", core: "pru0", count: 1 });
-      sendAction({ action: "step", core: mcPartner, count: 1 });
+      for (const core of mcShown()) sendAction({ action: "step", core, count: 1 });
     } else {
       sendAction({ action: "step", core: currentCore, count: 1 });
     }
@@ -3632,6 +3638,7 @@ document.getElementById("btn-reset-layout").addEventListener("click", resetLayou
 
 // ---- Multi-core partner (second core in the MC view: RTU0 or PRU1) --------
 const mcPartnerSelect = document.getElementById("mc-partner-select");
+const mcExtraCores    = document.getElementById("mc-extra-cores");
 const deviceCoreSelect = document.getElementById('device-core-select');
 const deviceCoreSelectWrap = document.getElementById('device-core-select-wrap');
 
@@ -3664,7 +3671,38 @@ function applyMCPartnerLabels() {
   if (srcTitle) srcTitle.textContent = `${label} Source`;
   if (regTitle) regTitle.textContent = `${label} Registers`;
   if (cntLabel) cntLabel.textContent = label;
+  mcExtras.forEach((core, i) => {
+    const slot = PruChrome.MC_SLOTS[i + 2];
+    document.getElementById(`mc-${slot}-source-title`).textContent = `${core.toUpperCase()} Source`;
+    document.getElementById(`mc-${slot}-reg-title`).textContent = `${core.toUpperCase()} Registers`;
+  });
+  // The partner is always shown, so its own toggle is pressed and locked.
+  document.querySelectorAll("#mc-extra-cores button").forEach(btn => {
+    const core = btn.dataset.mcExtra;
+    btn.disabled = core === mcPartner;
+    btn.setAttribute("aria-pressed", String(core === mcPartner || mcExtras.includes(core)));
+  });
 }
+
+// Rebuild the multi-core view after the set of shown cores changed.
+function applyMCCores() {
+  mcExtras = PruChrome.mcExtras(mcPartner, mcExtras);
+  applyMCPartnerLabels();
+  for (const slot of PruChrome.MC_SLOTS) mcResetSlot(slot);
+  mcShown().forEach((_, i) => buildMCRegTable(PruChrome.MC_SLOTS[i]));
+  switchLayoutMode(PruChrome.mcMode(mcShown().length));
+  for (const core of mcShown()) sendAction({ action: "get_state", core });
+}
+
+document.querySelectorAll("#mc-extra-cores button").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const core = btn.dataset.mcExtra;
+    stopRun(); stopSim();
+    mcExtras = mcExtras.includes(core) ? mcExtras.filter(c => c !== core) : [...mcExtras, core];
+    if (multiCoreMode) applyMCCores();
+    else applyMCPartnerLabels();
+  });
+});
 
 mcPartnerSelect.addEventListener("change", () => {
   stopRun(); stopSim();
@@ -3672,17 +3710,18 @@ mcPartnerSelect.addEventListener("change", () => {
   mcPartner = mcPartnerSelect.value;
   if (devicePanelCore === previousPartner) devicePanelCore = mcPartner;
   syncDeviceCoreSelect();
+  mcExtras = PruChrome.mcExtras(mcPartner, mcExtras);
   applyMCPartnerLabels();
   if (multiCoreMode) {
-    // Reset the partner DOM slot and re-request state for the new core.
-    mcPrevRegs.rtu0 = new Array(32).fill("0x00000000");
-    mcLastSourceKey.rtu0 = '';
-    mcBreakpoints.rtu0 = new Set();
-    mcHaltedState.rtu0 = false;
-    mcBreakState.rtu0 = false;
-    buildMCRegTable("rtu0");
-    sendAction({ action: "get_state", core: "pru0" });
-    sendAction({ action: "get_state", core: mcPartner });
+    if (mcExtras.length || currentMode !== PruChrome.mcMode(mcShown().length)) {
+      applyMCCores();   // the extras' slots follow the partner, or the layout shrinks
+    } else {
+      // Reset the partner DOM slot and re-request state for the new core.
+      mcResetSlot("rtu0");
+      buildMCRegTable("rtu0");
+      sendAction({ action: "get_state", core: "pru0" });
+      sendAction({ action: "get_state", core: mcPartner });
+    }
   }
 });
 
@@ -3696,6 +3735,7 @@ function toggleMultiCore() {
     coreSelect.style.display = "none";
     mcLoadCore.style.display = "";
     mcPartnerSelect.style.display = "";
+    mcExtraCores.style.display = "";
     applyMCPartnerLabels();
     btnMulticore.classList.add("mc-active");
 
@@ -3714,16 +3754,9 @@ function toggleMultiCore() {
       mcPrevSpad[b.key] = new Array(b.count).fill("0x00000000");
     }
 
-    // Build register tables for both cores
-    buildMCRegTable("pru0");
-    buildMCRegTable("rtu0");
-
-    // Switch to MC layout
-    switchLayoutMode("mc");
-
-    // Request state for both cores
-    sendAction({ action: "get_state", core: "pru0" });
-    sendAction({ action: "get_state", core: mcPartner });
+    // Build register tables, switch to the MC layout for the shown cores and
+    // request state for each of them
+    applyMCCores();
 
   } else {
     devicePanelCore = currentCore;
@@ -3731,6 +3764,7 @@ function toggleMultiCore() {
     coreSelect.style.display = "";
     mcLoadCore.style.display = "none";
     mcPartnerSelect.style.display = "none";
+    mcExtraCores.style.display = "none";
     btnMulticore.classList.remove("mc-active");
 
     // Restore SC counter layout
@@ -3780,7 +3814,7 @@ function buildMCRegTable(core) {
     tr.innerHTML = html;
     const valCell = tr.querySelector(".reg-val");
     const regIdx = i;
-    valCell.addEventListener("dblclick", () => editMCRegister(valCell, core, regIdx));
+    valCell.addEventListener("dblclick", () => editMCRegister(valCell, mcCoreOfSlot(core), regIdx));
     tbody.appendChild(tr);
   }
 }
@@ -3816,10 +3850,9 @@ function editMCRegister(valEl, core, index) {
 }
 
 function updateMCUI(state) {
-  if (state.core !== "pru0" && state.core !== mcPartner) return;   // core not shown
-  // The second MC panel's DOM ids are the "rtu0" slot; the partner core
-  // (RTU0 or PRU1) renders into it.
-  const core = state.core === "pru0" ? "pru0" : "rtu0";
+  // Each shown core renders into its slot's panels (see PruChrome.mcCores).
+  const core = mcSlotOf(state.core);
+  if (!core) return;   // core not shown
 
   // PC badge in panel title
   const pcBadge = document.getElementById(`mc-${core}-pc`);
@@ -3894,8 +3927,9 @@ function updateMCSpad(spad) {
 }
 
 function updateMCStatus() {
-  const anyBreak  = mcBreakState.pru0  || mcBreakState.rtu0;
-  const anyHalted = mcHaltedState.pru0 || mcHaltedState.rtu0;
+  const slots = mcShown().map((_, i) => PruChrome.MC_SLOTS[i]);
+  const anyBreak  = slots.some(slot => mcBreakState[slot]);
+  const anyHalted = slots.some(slot => mcHaltedState[slot]);
   if (anyBreak) {
     statusBadge.textContent = "BREAK";
     statusBadge.className   = "halted";
@@ -3989,32 +4023,24 @@ function updateMCSource(core, instructions, pc, labels) {
     currentLine.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }
 
-  // "rtu0" is this panel's fixed DOM slot; the core actually loaded into it
-  // (RTU0 or PRU1) is whatever mcPartner currently points at.
-  const realCore = core === "pru0" ? "pru0" : mcPartner;
-  renderBpBar(`mc-${core}-`, realCore, mcBreakpoints[core]);
+  // The slot's DOM ids are fixed; the core it shows is whichever is chosen.
+  renderBpBar(`mc-${core}-`, mcCoreOfSlot(core), mcBreakpoints[core]);
 }
 
 // Breakpoint toggle via dblclick on MC source panels
-document.getElementById("mc-pru0-source-panel").addEventListener("dblclick", (e) => {
-  const li = e.target.closest("li[id^='mc-pru0-src-line-']");
-  if (!li) return;
-  const addr = parseInt(li.id.replace("mc-pru0-src-line-", ""), 10);
-  if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: "pru0", addr });
-});
-
-document.getElementById("mc-rtu0-source-panel").addEventListener("dblclick", (e) => {
-  const li = e.target.closest("li[id^='mc-rtu0-src-line-']");
-  if (!li) return;
-  const addr = parseInt(li.id.replace("mc-rtu0-src-line-", ""), 10);
-  if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: mcPartner, addr });
-});
+for (const slot of PruChrome.MC_SLOTS) {
+  document.getElementById(`mc-${slot}-source-panel`).addEventListener("dblclick", (e) => {
+    const li = e.target.closest(`li[id^='mc-${slot}-src-line-']`);
+    if (!li) return;
+    const addr = parseInt(li.id.replace(`mc-${slot}-src-line-`, ""), 10);
+    if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: mcCoreOfSlot(slot), addr });
+  });
+}
 
 // ---- Init -----------------------------------------------------------------
 
 wireBpBar("", () => currentCore);
-wireBpBar("mc-pru0-", () => "pru0");
-wireBpBar("mc-rtu0-", () => mcPartner);
+for (const slot of PruChrome.MC_SLOTS) wireBpBar(`mc-${slot}-`, () => mcCoreOfSlot(slot));
 
 initUI();
 connect();
@@ -4037,16 +4063,13 @@ document.addEventListener("keydown", (e) => {
   if (e.key === " ") {
     e.preventDefault();
     if (multiCoreMode) {
-      const pru0Line = document.querySelector("#mc-pru0-source-list li.current-pc");
-      if (pru0Line) {
-        const addr = parseInt(pru0Line.id.replace("mc-pru0-src-line-", ""), 10);
-        if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: "pru0", addr });
-      }
-      const partnerLine = document.querySelector("#mc-rtu0-source-list li.current-pc");
-      if (partnerLine) {
-        const addr = parseInt(partnerLine.id.replace("mc-rtu0-src-line-", ""), 10);
-        if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: mcPartner, addr });
-      }
+      mcShown().forEach((core, i) => {
+        const slot = PruChrome.MC_SLOTS[i];
+        const line = document.querySelector(`#mc-${slot}-source-list li.current-pc`);
+        if (!line) return;
+        const addr = parseInt(line.id.replace(`mc-${slot}-src-line-`, ""), 10);
+        if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core, addr });
+      });
     } else {
       const pcLine = sourceList.querySelector("li.current-pc");
       if (!pcLine) return;
@@ -4057,8 +4080,7 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     stopRun(); stopSim();
     if (multiCoreMode) {
-      sendAction({ action: "step", core: "pru0", count: 1 });
-      sendAction({ action: "step", core: mcPartner, count: 1 });
+      for (const core of mcShown()) sendAction({ action: "step", core, count: 1 });
     } else {
       sendAction({ action: "step", core: currentCore, count: 1 });
     }
@@ -4066,8 +4088,7 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     stopRun(); stopSim();
     if (multiCoreMode) {
-      sendAction({ action: "step_back", core: mcPartner });
-      sendAction({ action: "step_back", core: "pru0" });
+      for (const core of [...mcShown()].reverse()) sendAction({ action: "step_back", core });
     } else {
       sendAction({ action: "step_back", core: currentCore });
     }

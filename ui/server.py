@@ -666,24 +666,27 @@ async def websocket_endpoint(websocket: WebSocket):
             elif action == "run_multicore":
                 max_steps = int(msg.get("max_steps", 1000))
                 capture = bool(msg.get("capture", False))
-                partner = msg.get("partner", "pru1")
+                # "partners" runs three or four cores together; "partner" is the
+                # original single follower.
+                partners = msg.get("partners") or [msg.get("partner", "pru1")]
                 lead_pru = sim.cores[core]
-                partner_pru = sim.cores[partner]
-                lead_bp = partner_bp = False
+                partner_prus = [sim.cores[name] for name in partners]
+                lead_bp = False
+                partner_bp = [False] * len(partners)
                 samples = []
                 try:
                     steps = 0
                     while (steps < max_steps and not lead_pru.halted
                            and lead_pru.pc < len(lead_pru.instructions)):
-                        sim.step_paced(core, partner, 1)
+                        sim.step_paced_many(core, partners, 1)
                         steps += 1
                         if capture and _capture_due(lead_pru, steps):
                             samples.append(_capture_sample(lead_pru))
                         if lead_pru.pc in lead_pru.breakpoints:
                             lead_bp = True
                             break
-                        if partner_pru.pc in partner_pru.breakpoints:
-                            partner_bp = True
+                        partner_bp = [p.pc in p.breakpoints for p in partner_prus]
+                        if any(partner_bp):
                             break
                 except ValueError as ve:
                     await websocket.send_json({"type": "error", "errors": [str(ve)]})
@@ -691,8 +694,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     await _send_capture(websocket, core, samples)
                 await _send_state(websocket, core, at_breakpoint=lead_bp,
                                   captured=capture)
-                await _send_state(websocket, partner, at_breakpoint=partner_bp,
-                                  captured=capture)
+                for name, at_bp in zip(partners, partner_bp):
+                    await _send_state(websocket, name, at_breakpoint=at_bp,
+                                      captured=capture)
             elif action == "set_sd_modulator":
                 ch = int(msg.get("channel", 0))
                 params = msg.get("params", {})

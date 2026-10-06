@@ -267,6 +267,17 @@ assert.match(elements.get('device-event-log').textContent, /No device events/);
 // Default Simulator layout: the I/O Pins tile is tall enough for R30 and R31.
 assert.equal(run("SC_DEFAULT_TREE.children[1].sizes.join(',')"), '30,45,25');
 
+// Three and four core layouts show every core's source and registers once.
+for (const [mode, cores] of [['mc', ['pru0', 'rtu0']], ['mc3', ['pru0', 'rtu0', 'x2']], ['mc4', ['pru0', 'rtu0', 'x2', 'x3']]]) {
+  const leaves = run(`getLeafIds(defaultTree('${mode}'))`);
+  assert.equal(new Set(leaves).size, leaves.length, `${mode}: no panel twice`);
+  for (const core of cores) for (const kind of ['source', 'registers'])
+    assert.ok(leaves.includes(`mc-${core}-${kind}`), `${mode} shows mc-${core}-${kind}`);
+  assert.equal(leaves.filter(id => id.startsWith('mc-')).length, cores.length * 2, `${mode}: only its own cores`);
+  for (const shared of ['editor', 'io', 'signal-graph', 'mem-graph', 'memory1', 'memory2'])
+    assert.ok(leaves.includes(shared), `${mode} keeps ${shared}`);
+}
+
 // Resize correctly persists the pair when a hidden sibling sits between them.
 run(`hiddenPanelIds = new Set(['hidden']);
   const tree = {type: 'split', children: [

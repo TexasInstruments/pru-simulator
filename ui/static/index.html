@@ -230,6 +230,9 @@
     #controls .btn-run:hover:not(:disabled) { background: var(--btn-active); }
     #controls .btn-reset { background: var(--highlight); border-color: var(--brand-red-bright); color: var(--halted); }
     #controls .btn-reset:hover:not(:disabled) { background: var(--btn-hover); }
+    #mc-extra-cores { display: inline-flex; gap: 3px; }
+    #mc-extra-cores button { padding: 3px 6px; font-size: 11px; }
+    #mc-extra-cores button[aria-pressed="true"] { background: var(--highlight); border-color: var(--accent); }
     #btn-multicore.mc-active { background: var(--highlight); border-color: var(--accent); color: var(--text); }
     #btn-reset-layout { font-size: 11px; }
 
@@ -1187,7 +1190,9 @@
     .tile-divider.tile-divider-v { width: auto; height: 4px; cursor: row-resize; }
 
     #mc-pru0-reg-panel .panel-body,
-    #mc-rtu0-reg-panel .panel-body { overflow-y: auto; padding: 0; }
+    #mc-rtu0-reg-panel .panel-body,
+    #mc-x2-reg-panel .panel-body,
+    #mc-x3-reg-panel .panel-body { overflow-y: auto; padding: 0; }
 
     .tile-drag-ghost {
       position: fixed;
@@ -1677,12 +1682,18 @@
     </div>
 
     <div class="toolbar-group toolbar-execution" role="group" aria-label="Execution controls">
-      <button id="btn-multicore" class="btn-17" title="Toggle dual-core debug view"><span class="text-container"><span class="text">Multi-core</span></span></button>
+      <button id="btn-multicore" class="btn-17" title="Toggle multi-core debug view (PRU0 plus up to three more cores)"><span class="text-container"><span class="text">Multi-core</span></span></button>
       <select id="mc-partner-select" title="Second core in multi-core view" style="display:none;">
         <option value="rtu0">RTU0</option>
         <option value="pru1">PRU1</option>
         <option value="rtu1">RTU1</option>
       </select>
+
+      <span id="mc-extra-cores" role="group" aria-label="Additional cores in the multi-core view" style="display:none;">
+        <button type="button" data-mc-extra="rtu0" aria-pressed="false" title="Also show RTU0">+RTU0</button>
+        <button type="button" data-mc-extra="pru1" aria-pressed="false" title="Also show PRU1">+PRU1</button>
+        <button type="button" data-mc-extra="rtu1" aria-pressed="false" title="Also show RTU1">+RTU1</button>
+      </span>
 
       <button id="btn-step" class="btn-17 btn-step"><span class="text-container"><span class="text">Step</span></span></button>
       <button id="btn-run" class="btn-17 btn-run"><span class="text-container"><span class="text">Run</span></span></button>
@@ -2025,6 +2036,66 @@ Example:
         </div>
         <div class="panel-body">
           <table class="reg-table"><tbody id="mc-rtu0-reg-tbody"></tbody></table>
+        </div>
+      </div>
+
+      <!-- MC third core source panel -->
+      <div class="panel" id="mc-x2-source-panel">
+        <div class="panel-title" data-panel-id="mc-x2-source" style="display:flex;align-items:center;">
+          <span id="mc-x2-source-title">Core 3 Source</span>
+          <span class="mc-pc-badge" id="mc-x2-pc">PC: 0</span>
+        </div>
+        <div class="bp-bar" id="mc-x2-bp-bar">
+          <span class="bp-bar-label">Breakpoints:</span>
+          <span class="bp-chip-list" id="mc-x2-bp-chip-list"></span>
+          <input type="text" id="mc-x2-bp-addr-input" placeholder="addr" title="Set a breakpoint at an address (hex 0x.. or decimal)">
+          <button class="bp-action btn-17" id="mc-x2-bp-add-btn" title="Set breakpoint at address"><span class="text-container"><span class="text">Set</span></span></button>
+          <button class="bp-action btn-17" id="mc-x2-bp-clear-btn" title="Clear all breakpoints on this core"><span class="text-container"><span class="text">Clear all</span></span></button>
+        </div>
+        <div class="panel-body">
+          <ul class="source-list" id="mc-x2-source-list"></ul>
+        </div>
+      </div>
+
+      <!-- MC third core register panel -->
+      <div class="panel" id="mc-x2-reg-panel">
+        <div class="panel-title mc-reg-title" data-panel-id="mc-x2-registers">
+          <span id="mc-x2-reg-title">Core 3 Registers</span>
+          <span class="mc-carry-row">Carry: <span class="mc-carry-val" id="mc-x2-carry">0</span></span>
+          <span class="mc-mac-row">MAC: <span class="mc-mac-mode" id="mc-x2-mac-mode">MPY</span><span class="mc-mac-carry" id="mc-x2-mac-carry"></span></span>
+        </div>
+        <div class="panel-body">
+          <table class="reg-table"><tbody id="mc-x2-reg-tbody"></tbody></table>
+        </div>
+      </div>
+
+      <!-- MC fourth core source panel -->
+      <div class="panel" id="mc-x3-source-panel">
+        <div class="panel-title" data-panel-id="mc-x3-source" style="display:flex;align-items:center;">
+          <span id="mc-x3-source-title">Core 4 Source</span>
+          <span class="mc-pc-badge" id="mc-x3-pc">PC: 0</span>
+        </div>
+        <div class="bp-bar" id="mc-x3-bp-bar">
+          <span class="bp-bar-label">Breakpoints:</span>
+          <span class="bp-chip-list" id="mc-x3-bp-chip-list"></span>
+          <input type="text" id="mc-x3-bp-addr-input" placeholder="addr" title="Set a breakpoint at an address (hex 0x.. or decimal)">
+          <button class="bp-action btn-17" id="mc-x3-bp-add-btn" title="Set breakpoint at address"><span class="text-container"><span class="text">Set</span></span></button>
+          <button class="bp-action btn-17" id="mc-x3-bp-clear-btn" title="Clear all breakpoints on this core"><span class="text-container"><span class="text">Clear all</span></span></button>
+        </div>
+        <div class="panel-body">
+          <ul class="source-list" id="mc-x3-source-list"></ul>
+        </div>
+      </div>
+
+      <!-- MC fourth core register panel -->
+      <div class="panel" id="mc-x3-reg-panel">
+        <div class="panel-title mc-reg-title" data-panel-id="mc-x3-registers">
+          <span id="mc-x3-reg-title">Core 4 Registers</span>
+          <span class="mc-carry-row">Carry: <span class="mc-carry-val" id="mc-x3-carry">0</span></span>
+          <span class="mc-mac-row">MAC: <span class="mc-mac-mode" id="mc-x3-mac-mode">MPY</span><span class="mc-mac-carry" id="mc-x3-mac-carry"></span></span>
+        </div>
+        <div class="panel-body">
+          <table class="reg-table"><tbody id="mc-x3-reg-tbody"></tbody></table>
         </div>
       </div>
 

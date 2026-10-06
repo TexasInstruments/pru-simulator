@@ -39,6 +39,20 @@ assert.equal(made.children.length, 1, 'labels are rewritten in place');
 assert.equal(made.querySelector('.text').textContent, 'Open');
 assert.equal(context.setButtonLabel, C.setButtonLabel, 'app.js calls it as a global');
 
+// Multi-core view: PRU0 leads, the partner is second, extras fill slots three and four.
+assert.deepEqual(plain(C.mcCores('rtu0', [])), ['pru0', 'rtu0']);
+assert.deepEqual(plain(C.mcCores('pru1', ['rtu1', 'rtu0'])), ['pru0', 'pru1', 'rtu0', 'rtu1'], 'extras keep core order');
+assert.deepEqual(plain(C.mcExtras('rtu0', ['rtu0', 'pru1', 'pru1', 'nope'])), ['pru1'], 'partner, duplicates and unknown cores dropped');
+assert.deepEqual(plain(C.MC_SLOTS), ['pru0', 'rtu0', 'x2', 'x3'], 'the first two slots keep the dual view ids');
+{
+  const shown = C.mcCores('pru1', ['rtu1']);
+  assert.equal(C.mcSlot(shown, 'pru0'), 'pru0');
+  assert.equal(C.mcSlot(shown, 'pru1'), 'rtu0', 'the partner renders into the second slot');
+  assert.equal(C.mcSlot(shown, 'rtu1'), 'x2');
+  assert.equal(C.mcSlot(shown, 'rtu0'), null, 'a core that is not shown has no slot');
+}
+assert.deepEqual([2, 3, 4].map(C.mcMode), ['mc', 'mc3', 'mc4']);
+
 // Tabs keyboard model.
 assert.equal(C.nextTabIndex('ArrowRight', 0, 3), 1);
 assert.equal(C.nextTabIndex('ArrowRight', 2, 3), 0);
@@ -131,6 +145,18 @@ for (const id of ['spad', 'loopback', 'mem-btn', 'panel-toggle'])
 // Nothing writes textContent on a wipe button (it would destroy the label spans).
 const app = readFileSync(new URL('../ui/static/app.js', import.meta.url), 'utf8');
 assert.ok(!/\bbtn(Run|Sim|Step|Reset|HardReset|Config|Help|Multicore)\.textContent\s*=/.test(app));
+
+// Run, Step, Reset and the shortcuts address every shown core, not a fixed pair.
+assert.match(app, /run_multicore[\s\S]{0,80}partners: mcShown\(\)\.slice\(1\)/);
+assert.equal((app.match(/for \(const core of mcShown\(\)\) sendAction\(\{ action: "step", core, count: 1 \}\)/g) || []).length, 3,
+  'Step button, SIM timer and ArrowRight step all shown cores');
+
+// Multi-core markup: a panel pair per slot, and a toggle per candidate core.
+for (const slot of ['pru0', 'rtu0', 'x2', 'x3'])
+  for (const id of [`mc-${slot}-source-panel`, `mc-${slot}-reg-panel`, `mc-${slot}-source-list`, `mc-${slot}-reg-tbody`,
+    `mc-${slot}-pc`, `mc-${slot}-bp-add-btn`, `mc-${slot}-bp-chip-list`])
+    assert.ok(html.includes(`id="${id}"`), `multi-core slot ${slot} has ${id}`);
+assert.deepEqual([...html.matchAll(/data-mc-extra="(\w+)"/g)].map(m => m[1]), ['rtu0', 'pru1', 'rtu1']);
 
 // IEP clock selector: runtime-only choice sent over the WebSocket, shown from state.
 const iepSelect = html.match(/<select id="iep-clock-select"[\s\S]*?<\/select>/)[0];

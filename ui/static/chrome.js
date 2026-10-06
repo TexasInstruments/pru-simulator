@@ -84,7 +84,34 @@
       .map(core => `${core} · ${faults[core].opcode} at ${faults[core].address}: ${faults[core].error}`);
   }
 
+  // Multi-core view. PRU0 always leads, `partner` is the second core and the
+  // extras add a third and fourth. Core i renders into DOM slot i: slots keep
+  // the ids of the original dual view (mc-pru0-*, mc-rtu0-*) plus mc-x2-*, mc-x3-*.
+  const MC_SLOTS = ['pru0', 'rtu0', 'x2', 'x3'];
+  const MC_CANDIDATES = ['rtu0', 'pru1', 'rtu1'];
+
+  // Extras minus duplicates, the partner and unknown names, in core order.
+  function mcExtras(partner, extras) {
+    return MC_CANDIDATES.filter(core => core !== partner && (extras || []).includes(core));
+  }
+
+  function mcCores(partner, extras) {
+    return ['pru0', partner, ...mcExtras(partner, extras)];
+  }
+
+  // DOM slot a core renders into, or null when it is not shown.
+  function mcSlot(cores, core) {
+    const at = cores.indexOf(core);
+    return at < 0 ? null : MC_SLOTS[at];
+  }
+
+  // Layout mode for a number of shown cores: 'mc' (two), 'mc3', 'mc4'.
+  function mcMode(count) {
+    return count >= 4 ? 'mc4' : count === 3 ? 'mc3' : 'mc';
+  }
+
   root.setButtonLabel = setButtonLabel;
   root.PruChrome = { setButtonLabel, nextTabIndex, gliderBox, gliderStyle, placeGlider,
-    faultTotal, newFaultCount, badgeLabel, coreFaultLines };
+    faultTotal, newFaultCount, badgeLabel, coreFaultLines,
+    MC_SLOTS, mcExtras, mcCores, mcSlot, mcMode };
 })(globalThis);
