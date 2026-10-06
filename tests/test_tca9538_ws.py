@@ -85,6 +85,7 @@ def test_tca9538_device_refused_next_to_legacy_i2c_on_the_same_pins(fresh_sim):
         messages = _send(ws, action="device_attach", profile="tca9538")
         (error,) = _errors(messages)
         assert "legacy I2C" in error["errors"][0]
+        assert "attaching a tca9538 device" in error["errors"][0]
         assert _devices(messages) == []
         # A tca9538 on other pins does not collide with the legacy slot.
         messages = _send(ws, action="device_attach", profile="tca9538",
@@ -102,6 +103,7 @@ def test_any_device_driving_legacy_i2c_pins_is_refused(fresh_sim):
                          config={"clock_pin": 4, "data_pin": 1})
         (error,) = _errors(messages)
         assert "legacy I2C" in error["errors"][0]
+        assert "attaching an ssi_encoder device" in error["errors"][0]
         assert _devices(messages) == []
         # Its clock input on bit 0 is not driven by the device: no conflict.
         messages = _send(ws, action="device_attach", profile="ssi_encoder",

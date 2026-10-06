@@ -75,9 +75,11 @@ def _reject_i2c_pin_conflict(core: str, profile: object, config: object) -> None
         return  # unknown profile: pru_device_attach reports it
     values = {**spec["defaults"], **(config if isinstance(config, dict) else {})}
     if {values.get(key) for key in spec.get("outputs", {})} & {0, 1}:
+        # Spelled-out acronyms (ssi, sd) take "an" like vowels do.
+        article = "an" if profile.startswith(("a", "e", "i", "o", "u", "ssi", "sd")) else "a"
         raise ValueError(
             f"the legacy I2C attach already owns {core} pins 0 and 1; "
-            f"detach it before attaching a {profile} device on those pins")
+            f"detach it before attaching {article} {profile} device on those pins")
 
 
 def _device_api_for_current_sim() -> PRUSimulatorMCP:
