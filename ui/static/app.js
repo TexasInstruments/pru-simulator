@@ -382,7 +382,7 @@ function connect() {
           st.textContent = "\u2713 Armed: " + msg.payload_len + " bytes \u00D7 " +
             msg.frames + " frame" + (msg.frames > 1 ? "s" : "") +
             " \u00B7 trigger cycle " + msg.trigger_cycle + " \u00B7 run to receive";
-          st.style.color = "#6a9955";
+          st.style.color = "var(--green)";
           st.style.display = "";
         }
       } else if (msg.type === "foc_samples") {
@@ -698,9 +698,9 @@ function updateSDPanel(io) {
   // R30 decode
   const r30El = document.getElementById('sd-r30-decode');
   if (r30El) {
-    r30El.innerHTML = '<span style="color:#ce93d8;">R30:</span> ' +
+    r30El.innerHTML = '<span style="color:var(--accent);">R30:</span> ' +
       `<span class="sd-r30-field">[29:26] ch_sel=<b>${sd.ch_sel}</b></span>` +
-      `<span class="sd-r30-field">[25] sd_en=<b style="color:#66bb6a;">${sd.sd_en ? 1 : 0}</b></span>` +
+      `<span class="sd-r30-field">[25] sd_en=<b style="color:var(--green);">${sd.sd_en ? 1 : 0}</b></span>` +
       `<span class="sd-r30-field">[24] snoop=<b>${sd.snoop ? 1 : 0}</b></span>` +
       `<span class="sd-r30-field">[23] data_sel=<b>${sd.data_sel ? 1 : 0}</b></span>`;
   }
@@ -715,8 +715,8 @@ function updateSDPanel(io) {
       const cfg = ch.config || {};
       const accName = _ACC_SEL_NAMES[cfg.acc_sel || 0] || 'sinc3';
       const clkName = _CLK_SEL_NAMES[cfg.clk_sel || 0] || 'own';
-      const titleColor = ch.selected ? '#4fc3f7' : '#888';
-      const dotColor = ch.valid ? '#66bb6a' : '#666';
+      const titleColor = ch.selected ? 'var(--accent)' : 'var(--text-dim)';
+      const dotColor = ch.valid ? 'var(--green)' : 'var(--gray)';
       card.innerHTML = `
         <div class="sd-channel-title" style="color:${titleColor};">
           CH ${ch.id} <span style="color:${dotColor};">●</span>${ch.selected ? ' <span style="font-size:9px;">★</span>' : ''}
@@ -726,8 +726,8 @@ function updateSDPanel(io) {
         <div class="sd-acc-row">acc2: <span class="sd-acc-val">0x${(ch.acc2 || 0).toString(16).toUpperCase().padStart(4,'0')}</span></div>
         <div class="sd-acc-row">acc3: <span class="sd-acc-val">0x${(ch.acc3 || 0).toString(16).toUpperCase().padStart(6,'0')}</span></div>
         <div class="sd-status">
-          <div style="color:${ch.valid ? '#ffb74d' : '#555'};">ovf=${ch.ovf ? 1 : 0} valid=<b style="color:${ch.valid ? '#66bb6a' : '#666'};">${ch.valid ? 1 : 0}</b></div>
-          <div style="color:#fff;">data=0x${(ch.shadow_acc3 || 0).toString(16).toUpperCase().padStart(7,'0')}</div>
+          <div style="color:${ch.valid ? 'var(--accent)' : 'var(--text-dim)'};">ovf=${ch.ovf ? 1 : 0} valid=<b style="color:${ch.valid ? 'var(--green)' : 'var(--gray)'};">${ch.valid ? 1 : 0}</b></div>
+          <div style="color:var(--text);">data=0x${(ch.shadow_acc3 || 0).toString(16).toUpperCase().padStart(7,'0')}</div>
         </div>`;
       chContainer.appendChild(card);
     });
@@ -826,7 +826,7 @@ function updateSDPanel(io) {
 // ---- Peripheral Interface (3-channel) panel --------------------------------
 
 function _fifoHex(arr) {
-  if (!arr || !arr.length) return '<span style="color:#555;">empty</span>';
+  if (!arr || !arr.length) return '<span style="color:var(--text-dim);">empty</span>';
   return arr.map(b => '0x' + b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
 }
 
@@ -862,7 +862,7 @@ function updatePerifPanel(io) {
   const dec = document.getElementById('perif-r30-decode');
   if (dec) {
     const sh = p.shared || {};
-    dec.innerHTML = '<span style="color:#ce93d8;">shared:</span> ' +
+    dec.innerHTML = '<span style="color:var(--accent);">shared:</span> ' +
       `<span class="perif-r30-field">tx_clk_sel=<b>${sh.tx_clk_sel ?? 0}</b></span>` +
       `<span class="perif-r30-field">tx_div=<b>${sh.tx_div_factor ?? 0}</b></span>` +
       `<span class="perif-r30-field">rx_clk_sel=<b>${sh.rx_clk_sel ?? 0}</b></span>` +
@@ -1452,6 +1452,18 @@ function drawGraph() {
   drawMemGraph();
 }
 
+// Canvas colours come from the theme tokens in index.html (read at draw time).
+function graphThemeColor(name, fallback) {
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return value || fallback;
+}
+
+// Both themes change the tokens, so every themed canvas is redrawn.
+document.addEventListener("pru-theme-changed", () => {
+  drawGraph();
+  if (typeof fillWaveCanvas !== "undefined" && fillWaveCanvas) drawWavePreview();
+});
+
 function drawDigitalGraph() {
   const canvas = document.getElementById("signal-graph-canvas");
   if (!canvas) return;
@@ -1463,13 +1475,13 @@ function drawDigitalGraph() {
   const ctx = canvas.getContext("2d");
 
   // Background
-  ctx.fillStyle = "#141414";
+  ctx.fillStyle = graphThemeColor("--graph-bg", "#1b2127");
   ctx.fillRect(0, 0, W, H);
 
   const samples = graphGetSamples();
 
   // Faint vertical grid lines (8 divisions)
-  ctx.strokeStyle = "#222";
+  ctx.strokeStyle = graphThemeColor("--graph-grid", "#35414b");
   ctx.lineWidth = 1;
   for (let gx = 1; gx < 8; gx++) {
     const x = (gx / 8) * W;
@@ -1567,11 +1579,11 @@ function drawMemGraph() {
   const ctx = canvas.getContext("2d");
 
   // Background
-  ctx.fillStyle = "#141414";
+  ctx.fillStyle = graphThemeColor("--graph-bg", "#1b2127");
   ctx.fillRect(0, 0, W, H);
 
   // Faint vertical grid lines (8 divisions)
-  ctx.strokeStyle = "#222";
+  ctx.strokeStyle = graphThemeColor("--graph-grid", "#35414b");
   ctx.lineWidth = 1;
   for (let gx = 1; gx < 8; gx++) {
     const x = (gx / 8) * W;
@@ -1597,7 +1609,7 @@ function drawMemGraph() {
     const yH    = rowH - 1;
 
     if (ri > 0) {
-      ctx.strokeStyle = "#2a2a2a"; ctx.lineWidth = 1;
+      ctx.strokeStyle = graphThemeColor("--graph-grid-strong", "#4b5863"); ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(0, yBase); ctx.lineTo(W, yBase); ctx.stroke();
     }
 
@@ -1607,7 +1619,7 @@ function drawMemGraph() {
 
     const snap = ch.snapshot;
     if (!snap || snap.length < 2) {
-      ctx.fillStyle = "#444";
+      ctx.fillStyle = graphThemeColor("--graph-placeholder", "#9da9b3");
       ctx.fillText("waiting…", 28, yBase + yH * 0.6);
       return;
     }
@@ -1622,7 +1634,7 @@ function drawMemGraph() {
       : v.toString();
 
     // Y-axis labels
-    ctx.fillStyle = "#555";
+    ctx.fillStyle = graphThemeColor("--graph-label", "#c0c7cd");
     ctx.font = "8px Consolas, monospace";
     if (flat) {
       ctx.fillText(`= ${fmtV(vMin)}`, 28, yBase + yH * 0.5 + 4);
@@ -2114,25 +2126,25 @@ btnFile.addEventListener("click", async () => {
 
   const menu = document.createElement("div");
   menu.id = "_src-menu";
-  menu.style.cssText = "position:fixed;background:#252526;border:1px solid #3c3c3c;border-radius:4px;z-index:2000;min-width:200px;max-height:300px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,.6);font-size:12px;";
+  menu.style.cssText = "position:fixed;background:var(--panel-raised);border:1px solid var(--border-strong);border-radius:6px;z-index:2000;min-width:200px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px var(--shadow);font-size:12px;";
   const rect = btnFile.getBoundingClientRect();
   menu.style.left = rect.left + "px";
   menu.style.top  = (rect.bottom + 4) + "px";
 
   // "Browse..." item at top — opens native file picker for .asm/.out files
   const browseItem = document.createElement("div");
-  browseItem.style.cssText = "padding:6px 12px;cursor:pointer;color:#569cd6;border-bottom:1px solid #3c3c3c;font-style:italic;";
+  browseItem.style.cssText = "padding:6px 12px;cursor:pointer;color:var(--accent);border-bottom:1px solid var(--border);font-style:italic;";
   browseItem.textContent = "Browse file system...";
-  browseItem.addEventListener("mouseover", () => browseItem.style.background = "#094771");
+  browseItem.addEventListener("mouseover", () => browseItem.style.background = "var(--highlight)");
   browseItem.addEventListener("mouseout",  () => browseItem.style.background = "");
   browseItem.addEventListener("click", () => { menu.remove(); fileInput.click(); });
   menu.appendChild(browseItem);
 
   allFiles.forEach(path => {
     const item = document.createElement("div");
-    item.style.cssText = "padding:6px 12px;cursor:pointer;color:#d4d4d4;";
+    item.style.cssText = "padding:6px 12px;cursor:pointer;color:var(--text);";
     item.textContent = path;
-    item.addEventListener("mouseover", () => item.style.background = "#094771");
+    item.addEventListener("mouseover", () => item.style.background = "var(--highlight)");
     item.addEventListener("mouseout",  () => item.style.background = "");
     item.addEventListener("click", async () => {
       menu.remove();
@@ -2254,16 +2266,16 @@ btnOpenProject.addEventListener("click", async () => {
 
   const menu = document.createElement("div");
   menu.id = "_proj-menu";
-  menu.style.cssText = "position:fixed;background:#252526;border:1px solid #3c3c3c;border-radius:4px;z-index:2000;min-width:200px;max-height:300px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,.6);font-size:12px;";
+  menu.style.cssText = "position:fixed;background:var(--panel-raised);border:1px solid var(--border-strong);border-radius:6px;z-index:2000;min-width:200px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px var(--shadow);font-size:12px;";
   const rect = btnOpenProject.getBoundingClientRect();
   menu.style.left = rect.left + "px";
   menu.style.top  = (rect.bottom + 4) + "px";
 
   projectNames.forEach(projName => {
     const item = document.createElement("div");
-    item.style.cssText = "padding:6px 12px;cursor:pointer;color:#d4d4d4;";
+    item.style.cssText = "padding:6px 12px;cursor:pointer;color:var(--text);";
     item.textContent = projName;
-    item.addEventListener("mouseover", () => item.style.background = "#094771");
+    item.addEventListener("mouseover", () => item.style.background = "var(--highlight)");
     item.addEventListener("mouseout",  () => item.style.background = "");
     item.addEventListener("click", async () => {
       menu.remove();
@@ -2777,7 +2789,7 @@ function editWord2(el, absoluteAddr, wordSize) {
   const maxLen = wordSize * 2;
   const oldVal = el.textContent;
   const input = document.createElement("input");
-  input.style.cssText = `width:${Math.max(56, maxLen * 8)}px;font-size:13px;text-align:center;background:#1a1a1a;color:#fff;border:1px solid var(--accent);padding:0;font-family:inherit;`;
+  input.style.cssText = `width:${Math.max(56, maxLen * 8)}px;font-size:13px;text-align:center;background:var(--panel-inset);color:var(--text);border:1px solid var(--accent);padding:0;font-family:inherit;`;
   input.value = oldVal;
   input.maxLength = maxLen;
   el.textContent = "";
@@ -2846,7 +2858,7 @@ function drawWavePreview() {
   fillWaveCanvas.height = H;
 
   const ctx = fillWaveCanvas.getContext("2d");
-  ctx.fillStyle = "#1a1a1a";
+  ctx.fillStyle = graphThemeColor("--graph-bg", "#1b2127");
   ctx.fillRect(0, 0, W, H);
 
   // ---- Compute y range from current parameters ----------------------------
@@ -2874,13 +2886,13 @@ function drawWavePreview() {
   // ---- Y reference lines --------------------------------------------------
   ctx.lineWidth = 1;
   for (const [py, bright] of [[yTopPx, false], [midY, true], [yBotPx, false]]) {
-    ctx.strokeStyle = bright ? "#3c3c3c" : "#262626";
+    ctx.strokeStyle = bright ? graphThemeColor("--graph-grid-strong", "#4b5863") : graphThemeColor("--graph-grid", "#35414b");
     ctx.beginPath(); ctx.moveTo(Y_MAR, py); ctx.lineTo(W, py); ctx.stroke();
   }
 
   // ---- Y-axis labels -------------------------------------------------------
   ctx.font      = "9px Consolas, monospace";
-  ctx.fillStyle = "#858585";
+  ctx.fillStyle = graphThemeColor("--graph-label", "#c0c7cd");
   ctx.textAlign = "right";
   ctx.fillText(fmtYLabel(yMax), Y_MAR - 4, yTopPx + 4);
   ctx.fillText(fmtYLabel(yMid), Y_MAR - 4, midY   + 3);
@@ -2888,7 +2900,7 @@ function drawWavePreview() {
 
   // ---- Waveform -----------------------------------------------------------
   const cycles = parseFloat(fillWaveCycles.value) || 1;
-  ctx.strokeStyle = "#569cd6";
+  ctx.strokeStyle = graphThemeColor("--graph-wave", "#ff7c84");
   ctx.lineWidth   = 1.5;
   ctx.beginPath();
   for (let xi = 0; xi < WAVE_W; xi++) {
@@ -2909,13 +2921,13 @@ function drawWavePreview() {
   const nTicks = 5;
 
   ctx.font      = "9px Consolas, monospace";
-  ctx.fillStyle = "#858585";
+  ctx.fillStyle = graphThemeColor("--graph-label", "#c0c7cd");
   for (let i = 0; i <= nTicks; i++) {
     const frac  = i / nTicks;
     const px    = Y_MAR + Math.round(frac * WAVE_W);
     const label = Math.round(frac * nElems).toString();
 
-    ctx.strokeStyle = "#555";
+    ctx.strokeStyle = graphThemeColor("--graph-grid-strong", "#4b5863");
     ctx.lineWidth   = 1;
     ctx.beginPath(); ctx.moveTo(px + 0.5, WAVE_H); ctx.lineTo(px + 0.5, WAVE_H + 3); ctx.stroke();
 
@@ -3150,7 +3162,7 @@ function editWord(el, absoluteAddr, wordSize) {
   const maxLen = wordSize * 2;
   const oldVal = el.textContent;
   const input = document.createElement("input");
-  input.style.cssText = `width:80px;font-size:13px;text-align:center;background:#1a1a1a;color:#fff;border:1px solid var(--accent);padding:0;font-family:inherit;`;
+  input.style.cssText = `width:80px;font-size:13px;text-align:center;background:var(--panel-inset);color:var(--text);border:1px solid var(--accent);padding:0;font-family:inherit;`;
   input.value = oldVal;
   input.maxLength = maxLen;
   el.textContent = "";
@@ -3185,7 +3197,7 @@ function editWord(el, absoluteAddr, wordSize) {
 function editRegister(valEl, index) {
   const oldVal = valEl.textContent;
   const input = document.createElement("input");
-  input.style.cssText = "width:88px;font-size:13px;text-align:right;background:#1a1a1a;color:#fff;border:1px solid var(--accent);padding:0 2px;font-family:inherit;";
+  input.style.cssText = "width:88px;font-size:13px;text-align:right;background:var(--panel-inset);color:var(--text);border:1px solid var(--accent);padding:0 2px;font-family:inherit;";
   input.value = oldVal.slice(2);  // strip leading "0x"
   input.maxLength = 8;
   valEl.textContent = "";
@@ -3639,7 +3651,7 @@ function buildMCRegTable(core) {
 function editMCRegister(valEl, core, index) {
   const oldVal = valEl.textContent;
   const input = document.createElement("input");
-  input.style.cssText = "width:88px;font-size:13px;text-align:right;background:#1a1a1a;color:#fff;border:1px solid var(--accent);padding:0 2px;font-family:inherit;";
+  input.style.cssText = "width:88px;font-size:13px;text-align:right;background:var(--panel-inset);color:var(--text);border:1px solid var(--accent);padding:0 2px;font-family:inherit;";
   input.value = oldVal.slice(2);
   input.maxLength = 8;
   valEl.textContent = "";
@@ -4056,7 +4068,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
 
     if (!bytes || bytes.length === 0) {
       statusEl.textContent = "\u2717 Invalid payload \u2014 enter space-separated hex bytes or ASCII text";
-      statusEl.style.color = "#f38ba8";
+      statusEl.style.color = "var(--halted)";
       statusEl.style.display = "";
       return;
     }
@@ -4065,7 +4077,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     const baudMb = parseFloat(baudStr);
     if (isNaN(baudMb) || baudMb <= 0 || baudMb > 10) {
       statusEl.textContent = "\u2717 Baud must be between 0.01 and 10.00 Mb";
-      statusEl.style.color = "#f38ba8";
+      statusEl.style.color = "var(--halted)";
       statusEl.style.display = "";
       return;
     }
@@ -4074,7 +4086,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     const framesVal = parseInt(document.getElementById("uart-inj-frames").value, 10);
     if (isNaN(framesVal) || framesVal < 1 || framesVal > 100) {
       statusEl.textContent = "\u2717 Frames must be between 1 and 100";
-      statusEl.style.color = "#f38ba8";
+      statusEl.style.color = "var(--halted)";
       statusEl.style.display = "";
       return;
     }
@@ -4091,7 +4103,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     });
 
     statusEl.textContent = "\u231B Arming...";
-    statusEl.style.color = "#888";
+    statusEl.style.color = "var(--text-dim)";
     statusEl.style.display = "";
   });
 })();

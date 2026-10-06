@@ -332,9 +332,10 @@
     const target = surface(canvas);
     if (!target) return;
     const { ctx, width, height } = target;
-    const bg = themeColor('--bg', '#1e1e1e');
-    const grid = themeColor('--border', '#3c3c3c');
-    const dim = themeColor('--text-dim', '#a8a8b0');
+    const bg = themeColor('--graph-bg', '#1b2127');
+    const grid = themeColor('--graph-grid', '#35414b');
+    const dim = themeColor('--graph-label', '#c0c7cd');
+    const placeholder = themeColor('--graph-placeholder', '#9da9b3');
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, width, height);
     const left = 42, right = 8, top = 16, bottom = 8;
@@ -359,7 +360,7 @@
       labelX += lane.label.length * 7 + 22;
     }
     if (rows.length < 2) {
-      ctx.fillStyle = dim;
+      ctx.fillStyle = placeholder;
       ctx.fillText(emptyText, left + 6, top + plotH / 2);
       return;
     }
@@ -384,9 +385,9 @@
     const target = surface($('motor-dial'));
     if (!target) return;
     const { ctx, width, height } = target;
-    const bg = themeColor('--bg', '#1e1e1e');
-    const grid = themeColor('--border', '#3c3c3c');
-    const dim = themeColor('--text-dim', '#a8a8b0');
+    const bg = themeColor('--graph-bg', '#1b2127');
+    const grid = themeColor('--graph-grid-strong', '#4b5863');
+    const dim = themeColor('--graph-label', '#c0c7cd');
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, width, height);
     const cx = width / 2;
@@ -483,6 +484,7 @@
   document.addEventListener('pru-workspace-view-changed', event => {
     if (event.detail && event.detail.view === 'motor') queueDraw();
   });
+  document.addEventListener('pru-theme-changed', queueDraw);
   window.addEventListener('resize', queueDraw);
 
   window.MotorControl = { onState, onSamples, onError, onLoadError, onConnect };
