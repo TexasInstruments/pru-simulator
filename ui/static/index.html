@@ -1572,9 +1572,11 @@
     @media (max-width: 1760px) {
       #controls { display: flex; flex-wrap: wrap; align-items: stretch; }
       #controls > .toolbar-group, #controls > .toolbar-end { flex: 0 0 auto; }
-      #workspace-tools { order: 4; flex: 1 1 760px; }
-      #controls > .toolbar-end { order: 5; margin-left: auto; }
-      #counters { order: 6; flex: 1 1 100%; }
+      /* Status shares the Telemetry row, so a status change (IDLE/RUNNING) never
+         reflows the Panels row. */
+      #workspace-tools { order: 4; flex: 1 1 100%; }
+      #counters { order: 5; flex: 1 1 320px; }
+      #controls > .toolbar-end { order: 6; margin-left: auto; }
     }
     @media (max-width: 1240px) {
       #controls {
