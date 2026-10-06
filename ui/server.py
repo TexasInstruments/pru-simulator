@@ -252,6 +252,7 @@ def _restore(core: str, snap: dict) -> None:
             sim.memory.regions[i]._data[:] = region_data
     if snap.get("iep") is not None:
         sim.iep.restore(snap["iep"])
+        _apply_iep_override()
     if snap.get("device_bus") is not None:
         sim.device_bus.restore(snap["device_bus"])
     if snap.get("xfr") is not None:
@@ -330,13 +331,14 @@ async def put_source_file(path: str, request: Request):
 
 @app.put("/config")
 async def put_config(request: Request):
-    global sim
+    global sim, _iep_clock_override
     text = (await request.body()).decode("utf-8")
     async with _config_lock:
         try:
             with open(config_path, "w") as f:
                 f.write(text)
             sim = Simulator(config_path=config_path)
+            _iep_clock_override = None   # a saved config speaks for itself
             _clear_history()
             return {"ok": True}
         except Exception as e:
@@ -344,6 +346,26 @@ async def put_config(request: Request):
 
 
 ALLOWED_CLOCK_MHZ = {200, 225, 250, 300, 333}
+
+# IEP counter clock chosen in the dashboard. Runtime only: memory.cfg's
+# iep_clock_mhz is never written. None means "the configured default".
+IEP_CLOCK_CHOICES_MHZ = (200, 250, 300)
+_iep_clock_override = None
+
+
+def _set_iep_clock(mhz) -> None:
+    """Switch the running simulator's IEP counter clock (runtime only)."""
+    global _iep_clock_override
+    if isinstance(mhz, bool) or mhz not in IEP_CLOCK_CHOICES_MHZ:
+        raise ValueError(f"IEP clock must be one of {list(IEP_CLOCK_CHOICES_MHZ)} MHz")
+    sim.iep.set_clock_mhz(mhz)
+    _iep_clock_override = mhz
+
+
+def _apply_iep_override() -> None:
+    """Re-apply the dashboard's IEP clock to a (re)built simulator or restored snapshot."""
+    if _iep_clock_override is not None:
+        sim.iep.set_clock_mhz(_iep_clock_override)
 
 
 def _set_ini_value(text: str, section: str, key: str, value: str) -> str:
@@ -393,6 +415,7 @@ async def put_clock_speed(request: Request):
             with open(config_path, "w") as f:
                 f.write(text)
             sim = Simulator(config_path=config_path)
+            _apply_iep_override()
             _clear_history()
             return {"ok": True}
         except Exception as e:
@@ -483,6 +506,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 sim.set_input(core, msg["pin"], bool(msg["value"]))
                 await _send_state(websocket, core)
             elif action == "get_state":
+                await _send_state(websocket, core)
+            elif action == "set_iep_clock":
+                try:
+                    _set_iep_clock(msg.get("mhz"))
+                except ValueError as ve:
+                    await websocket.send_json({"type": "error", "tag": "iep", "errors": [str(ve)]})
                 await _send_state(websocket, core)
             elif action == "read_memory":
                 addr = int(msg.get("addr", 0))
@@ -1026,6 +1055,12 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False):
         "instruction_count": c.counters.instruction_count,
         "ipc": round(c.counters.ipc, 3),
         "io": io_section,
+        "iep": {
+            "clock_mhz": float(sim.iep.active_clock_mhz),
+            "external_mhz": float(sim.iep.external_clock_hz / 1_000_000),
+            "core_clock": bool(sim.iep.iepclk & sim.iep.IEPCLK_OCP_EN),
+            "choices_mhz": list(IEP_CLOCK_CHOICES_MHZ),
+        },
         "instructions": [{"addr": i.address, "text": i.source_text} for i in c.instructions],
         "labels": dict(c._parser.labels),   # name -> word address
         "spad": _read_spad(sim),

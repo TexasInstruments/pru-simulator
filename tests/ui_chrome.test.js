@@ -132,6 +132,24 @@ for (const id of ['spad', 'loopback', 'mem-btn', 'panel-toggle'])
 const app = readFileSync(new URL('../ui/static/app.js', import.meta.url), 'utf8');
 assert.ok(!/\bbtn(Run|Sim|Step|Reset|HardReset|Config|Help|Multicore)\.textContent\s*=/.test(app));
 
+// IEP clock selector: runtime-only choice sent over the WebSocket, shown from state.
+const iepSelect = html.match(/<select id="iep-clock-select"[\s\S]*?<\/select>/)[0];
+assert.deepEqual([...iepSelect.matchAll(/<option value="(\d+)"/g)].map(m => m[1]), ['200', '250', '300']);
+{
+  const section = app.slice(app.indexOf('// ---- IEP counter clock selector'), app.indexOf('// ---- end IEP counter clock selector'));
+  assert.ok(section.length > 0 && !/fetch\(|config/.test(section.replace(/memory\.cfg/g, '')), 'no REST or config write');
+  const sent = [];
+  let onChange;
+  const select = { value: '200', title: '', addEventListener: (name, fn) => { onChange = fn; } };
+  const iep = new Function('iepClockSelect', 'sendAction', `${section}; return { showIepClock };`)(select, a => sent.push(a));
+  iep.showIepClock({ external_mhz: 300, clock_mhz: 300, core_clock: false });
+  assert.equal(select.value, '300');
+  iep.showIepClock({ external_mhz: 250, clock_mhz: 250.0, core_clock: true });
+  assert.match(select.title, /core clock.*250 MHz/);
+  select.value = '250'; onChange();
+  assert.deepEqual(sent, [{ action: 'set_iep_clock', mhz: 250 }]);
+}
+
 // Every id the scripts look up exists (three are created at run time).
 const known = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map(m => m[1]));
 const dynamic = new Set(['_src-menu', '_proj-menu']);  // menus created on demand

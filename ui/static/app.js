@@ -110,6 +110,7 @@ const btnConfig       = document.getElementById("btn-config");
 const configModal     = document.getElementById("config-modal");
 const configTextarea  = document.getElementById("config-textarea");
 const pruSpeedSelect  = document.getElementById("pru-speed-select");
+const iepClockSelect  = document.getElementById("iep-clock-select");
 const configError     = document.getElementById("config-error");
 const btnConfigSave   = document.getElementById("btn-config-save");
 const btnConfigCancel = document.getElementById("btn-config-cancel");
@@ -362,6 +363,7 @@ function connect() {
     try {
       const msg = JSON.parse(event.data);
       if (msg.type === "state") {
+        if (msg.iep) showIepClock(msg.iep);
         window.MotorControl?.onState(msg);
         window.updateWorkspaceEvents?.(msg, multiCoreMode ? ['pru0', mcPartner] : [currentCore]);
         if (multiCoreMode) {
@@ -2449,6 +2451,21 @@ btnConfigSave.addEventListener("click", async () => {
     setButtonLabel(btnConfigSave, "Save \u0026 Reload");
   }
 });
+
+// ---- IEP counter clock selector ----------------------------------------------
+// Runtime only: the server applies it to the live IepTimer and never writes memory.cfg.
+
+function showIepClock(iep) {
+  iepClockSelect.value = String(Math.round(iep.external_mhz));
+  iepClockSelect.title = iep.core_clock
+    ? "Firmware selected the core clock through IEPCLK; the counter runs at " + iep.clock_mhz + " MHz. This choice applies when it selects the external clock."
+    : "IEP counter clock (this session only; memory.cfg is not changed)";
+}
+
+iepClockSelect.addEventListener("change", () => {
+  sendAction({ action: "set_iep_clock", mhz: Number(iepClockSelect.value) });
+});
+// ---- end IEP counter clock selector ----
 
 // ---- PRU core speed selector ------------------------------------------------
 

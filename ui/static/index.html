@@ -236,6 +236,7 @@
     #core-select,
     #mc-partner-select,
     #pru-speed-select,
+    #iep-clock-select,
     #sim-interval {
       background: var(--panel-inset);
       border: 1px solid var(--border-strong);
@@ -1666,6 +1667,12 @@
         <option value="250">250 MHz</option>
         <option value="300">300 MHz</option>
         <option value="333">333 MHz</option>
+      </select>
+
+      <select id="iep-clock-select" title="IEP counter clock (this session only; memory.cfg is not changed)" aria-label="IEP counter clock">
+        <option value="200">IEP 200 MHz</option>
+        <option value="250">IEP 250 MHz</option>
+        <option value="300">IEP 300 MHz</option>
       </select>
     </div>
 
