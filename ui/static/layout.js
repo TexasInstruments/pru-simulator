@@ -80,7 +80,7 @@ const MC_DEFAULT_TREE = {
 // four, two over one for three); the shared panels keep their MC columns.
 const MC_SHARED_COLUMNS = [
   {
-    type: 'split', dir: 'v', sizes: [25, 15, 30, 30],
+    type: 'split', dir: 'v', sizes: [22, 26, 26, 26],
     children: [
       { type: 'leaf', panelId: 'editor' },
       { type: 'leaf', panelId: 'io' },

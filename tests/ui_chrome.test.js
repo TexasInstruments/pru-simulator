@@ -166,12 +166,16 @@ assert.deepEqual([...iepSelect.matchAll(/<option value="(\d+)"/g)].map(m => m[1]
   assert.ok(section.length > 0 && !/fetch\(|config/.test(section.replace(/memory\.cfg/g, '')), 'no REST or config write');
   const sent = [];
   let onChange;
-  const select = { value: '200', title: '', addEventListener: (name, fn) => { onChange = fn; } };
+  const select = { value: '200', title: '', options: [{ value: '200' }, { value: '250' }, { value: '300' }], addEventListener: (name, fn) => { onChange = fn; } };
   const iep = new Function('iepClockSelect', 'sendAction', `${section}; return { showIepClock };`)(select, a => sent.push(a));
   iep.showIepClock({ external_mhz: 300, clock_mhz: 300, core_clock: false });
   assert.equal(select.value, '300');
   iep.showIepClock({ external_mhz: 250, clock_mhz: 250.0, core_clock: true });
   assert.match(select.title, /core clock.*250 MHz/);
+  select.selectedIndex = 0; select.options = [{ value: '200' }, { value: '250' }, { value: '300' }];
+  iep.showIepClock({ external_mhz: 225, clock_mhz: 225, core_clock: false });
+  assert.equal(select.selectedIndex, -1, 'an unlisted rate selects nothing');
+  assert.match(select.title, /225 MHz/);
   select.value = '250'; onChange();
   assert.deepEqual(sent, [{ action: 'set_iep_clock', mhz: 250 }]);
 }

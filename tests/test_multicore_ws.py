@@ -74,3 +74,15 @@ def test_step_and_reset_address_each_core_separately(loaded):
             ws.send_json({"action": "reset", "core": core})
             assert ws.receive_json()["core"] == core
         assert [loaded.cores[core].pc for core in CORES] == [0, 0, 0, 0]
+
+
+@pytest.mark.parametrize("partners", [["nope"], ["pru0"], "rtu0", ["rtu0", "x"]])
+def test_run_multicore_rejects_bad_partners_without_dropping_the_socket(loaded, partners):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "run_multicore", "core": "pru0", "partners": partners})
+        error = ws.receive_json()
+        assert error["type"] == "error" and "partners" in error["errors"][0]
+        assert ws.receive_json()["type"] == "state"
+        ws.send_json({"action": "get_state", "core": "pru0"})   # still alive
+        assert ws.receive_json()["core"] == "pru0"
+    assert loaded.cores["pru0"].counters.cycles == 0

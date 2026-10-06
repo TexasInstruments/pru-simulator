@@ -669,6 +669,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 # "partners" runs three or four cores together; "partner" is the
                 # original single follower.
                 partners = msg.get("partners") or [msg.get("partner", "pru1")]
+                if (not isinstance(partners, list) or core in partners
+                        or any(name not in sim.cores for name in partners)):
+                    await websocket.send_json({"type": "error", "errors": [
+                        f"partners must be other cores of {list(sim.cores)}, got {partners!r}"]})
+                    await _send_state(websocket, core)
+                    continue
                 lead_pru = sim.cores[core]
                 partner_prus = [sim.cores[name] for name in partners]
                 lead_bp = False

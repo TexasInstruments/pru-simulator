@@ -49,8 +49,8 @@ is the original two-core one.
 external IEP clock (200, 250 or 300 MHz) of the running simulator through the
 `set_iep_clock` WebSocket action. It is runtime only: `memory.cfg` is not
 written, a restart returns to its `iep_clock_mhz`, saving the config resets
-it, and changing the core clock keeps it. It keeps the counter's elapsed
-time (the rational timebase is rebuilt for the new rate). The *core clock*
+it, and changing the core clock keeps it. It keeps the counter value (a sub-tick
+fraction is dropped) and rebuilds the rational timebase for the new rate. The *core clock*
 source is the firmware's IEPCLK bit 0 and is not overridden: state messages
 report `iep.core_clock` and the actual `iep.clock_mhz`.
 

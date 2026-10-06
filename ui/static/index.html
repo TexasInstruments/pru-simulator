@@ -149,7 +149,7 @@
     .btn-run { background: var(--brand-red); border-color: var(--brand-red-bright); color: var(--on-brand); }
     .btn-run:hover:not(:disabled) { background: var(--btn-active); }
     .btn-reset { background: var(--highlight); border-color: var(--brand-red-bright); color: var(--halted); }
-    .btn-load { border-color: var(--brand-red-bright); color: var(--accent); }
+    .btn-load { border-color: var(--brand-red-bright); }
     .btn-sim { border-color: var(--brand-red-bright); color: var(--text); }
     .btn-run.running, .btn-sim.running { box-shadow: inset 0 -2px 0 var(--brand-red-bright); }
 
@@ -493,6 +493,7 @@
       overflow: hidden;
     }
 
+    #editor-panel .panel-title { flex-wrap: wrap; gap: 4px; }
     .panel-title {
       display: flex;
       align-items: center;
@@ -835,7 +836,7 @@
       padding: 3px 8px;
       white-space: nowrap;
     }
-    .graph-btn.export-csv { border-color: var(--brand-red-bright); color: var(--accent); }
+    .graph-btn.export-csv { border-color: var(--brand-red-bright); }
 
     .graph-mem-section-title {
       font-size: 10px;
@@ -1098,7 +1099,7 @@
     #config-textarea:focus-visible { outline: 2px solid var(--accent2); outline-offset: -2px; }
     #config-error { color: var(--halted); font-size: 12px; flex-shrink: 0; min-height: 0; }
     #config-buttons { display: flex; gap: 8px; justify-content: flex-end; flex-shrink: 0; }
-    #btn-config-save { border-color: var(--brand-red-bright); color: var(--accent); }
+    #btn-config-save { border-color: var(--brand-red-bright); }
 
     /* ---- Constant table ----------------------------------------------------------------------- */
     #ctable-toggle {
@@ -1108,7 +1109,6 @@
       background: var(--btn);
       border: 1px solid var(--border-strong);
       border-radius: 4px;
-      color: var(--accent);
       letter-spacing: 0;
       text-transform: none;
     }
@@ -1517,7 +1517,8 @@
        shape is scoped to #controls; panel buttons keep their own size. Labels live in .text-container > .text; write
        them with setButtonLabel(), never button.textContent. Hover only on
        devices that can hover; reduced motion gets a border change only. */
-    .btn-17 { position: relative; isolation: isolate; overflow: hidden; }
+    /* overflow clips the skewed wipe shapes, so keep the button from shrinking below its label. */
+    .btn-17 { position: relative; isolation: isolate; overflow: hidden; flex-shrink: 0; }
     #controls .btn-17 {
       flex: 0 0 auto;
       border-radius: 99rem;
@@ -2393,7 +2394,7 @@ Example:
             <div class="uart-controls">
               <span class="uart-label">Pin: <span class="uart-pin">GPO0</span></span>
               <span class="uart-label">Format: <span class="uart-pin">8N1</span></span>
-              <button id="uart-decode-btn" class="graph-btn btn-17" style="color:var(--accent);border-color:#3a5a8a;"><span class="text-container"><span class="text">&#9654; Decode</span></span></button>
+              <button id="uart-decode-btn" class="graph-btn btn-17" style="border-color:#3a5a8a;"><span class="text-container"><span class="text">&#9654; Decode</span></span></button>
               <button id="uart-clear-btn"  class="graph-btn btn-17"><span class="text-container"><span class="text">Clear</span></span></button>
             </div>
             <div id="uart-status" class="uart-status" style="display:none;"></div>
@@ -2425,7 +2426,7 @@ Example:
               <span class="uart-label" style="color:#666;">Mb</span>
               <span class="uart-label">Frames:</span>
               <input type="text" id="uart-inj-frames" class="uart-inj-num" style="width:28px;text-align:center;" value="1" />
-              <button id="uart-inj-btn" class="graph-btn btn-17" style="color:var(--accent);border-color:#3a5a8a;margin-left:auto;"><span class="text-container"><span class="text">&#9654; Inject</span></span></button>
+              <button id="uart-inj-btn" class="graph-btn btn-17" style="border-color:#3a5a8a;margin-left:auto;"><span class="text-container"><span class="text">&#9654; Inject</span></span></button>
             </div>
             <!-- Status line -->
             <div id="uart-inj-status" class="uart-hint" style="display:none;"></div>

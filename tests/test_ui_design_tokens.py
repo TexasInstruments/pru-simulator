@@ -160,3 +160,19 @@ def test_wipe_respects_reduced_motion_and_hover_capability():
     assert "@media (hover: hover) and (pointer: fine)" in STYLE
     reduced = STYLE[STYLE.index(".btn-17, .btn-17::before"):]
     assert "animation: none !important" in reduced and "--progress: 0%" in reduced
+
+
+def test_wipe_buttons_do_not_set_their_own_label_colour():
+    """The neutral wipe label is --wipe blended with `difference`; an id rule or
+    inline colour (accent) would turn cyan at the end of the hover."""
+    page = (Path(__file__).parent.parent / "ui" / "static" / "index.html").read_text()
+    for match in re.finditer(r"<button\b([^>]*\bbtn-17\b[^>]*)>", page):
+        attrs = match.group(1)
+        if re.search(r'class="[^"]*\b(btn-run|btn-reset)\b', attrs):
+            continue
+        style = re.search(r'style="([^"]*)"', attrs)
+        assert not (style and re.search(r"(^|;)\s*color\s*:", style.group(1))), attrs
+        ident = re.search(r'\bid="([^"]+)"', attrs)
+        if ident:
+            rules = re.findall(r"#" + re.escape(ident.group(1)) + r"\s*\{([^}]*)\}", page)
+            assert not any(re.search(r"(^|;)\s*color\s*:", rule) for rule in rules), ident.group(1)
