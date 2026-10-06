@@ -1565,6 +1565,12 @@
       #controls .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled) { color: var(--text); }
       #controls .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled) .text-container { mix-blend-mode: normal; }
     }
+    @media (forced-colors: active) {
+      /* The difference blend inverts the forced text backplate (black boxes). */
+      #controls .btn-17:not(.btn-run):not(.btn-reset) .text-container { mix-blend-mode: normal; }
+      #controls .btn-17:not(.btn-run):not(.btn-reset)::before,
+      #controls .btn-17:not(.btn-run):not(.btn-reset)::after { display: none; }
+    }
 
     /* ---- Responsive -------------------------------------------------------------------------------------------- */
     /* Below ~1760px the four-column grid cannot hold every group at its natural
