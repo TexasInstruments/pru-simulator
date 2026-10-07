@@ -71,10 +71,10 @@ Open the pull request from `dev` once every row reads Pass. If a case fails, fix
 
 | ID | Result | Measured | Board / date | Notes |
 | --- | --- | --- | --- | --- |
-| TC1 | Pass (after model fix) | `r10 = 0x0000C9D7`, `r11 = 0x383AD48D` | AM64x / 2026-10-07 | Silicon showed the accumulator (R29) is non-reflected; model and firmware corrected to match |
-| TC2 | Not run |  |  |  |
-| TC3 | Not run |  |  |  |
-| TC4 | Not run |  |  |  |
-| TC5 | Not run |  |  |  |
-| TC6 | Not run |  |  |  |
+| TC1 | Pass (after model fix) | `r10 = 0x0000C9D7`, `r11 = 0x383AD48D` | AM243x LP, ICSS_G0 PRU0 / 2026-10-07 | Silicon showed the accumulator (R29) is non-reflected; model and firmware corrected to match. Extra check: CRC-16 CCITT reads `0x3684` (byte and half-word writes), i.e. bytes fed MSB first; model corrected |
+| TC2 | Pass | R27 `0x1C5C2BB1`, R28 `0xB12B5C1C`, R29 `0x383AD48D`, byte and word pass identical | AM243x LP, ICSS_G0 PRU0 / 2026-10-07 | Expected values updated for the non-reflected accumulator |
+| TC3 | Pass | R29 read after R27/R28 returns the CRC, not the seed | AM243x LP, ICSS_G0 PRU0 / 2026-10-07 |  |
+| TC4 | Pass | FCS = `zlib.crc32` for all 10 lengths; end pointer `0x0500 + len`; `r28 = 0x1234`, `r29 = 0x5678` | AM243x LP, ICSS_G0 PRU0 / 2026-10-07 | Harness inlined into one firmware with TC5/TC6 |
+| TC5 | Pass | 2, 1 and 0 NOPs all give the correct FCS at every length | AM243x LP, ICSS_G0 PRU0 / 2026-10-07 | 0 NOPs also works on this board; firmware keeps 2 per the TRM |
+| TC6 | Pass | 2 NOPs: 0→22, 1→33, 2→38, 3→43, 4→28, 5→39, 7→49, 60→98, 128→183, 201→284 cycles | AM243x LP, ICSS_G0 PRU0 / 2026-10-07 | Every count, at every NOP setting, is exactly the simulator figure + 3; the 3 is constant overhead of the `CYCLE` reads, so the per-word cost (5 cycles / 4 bytes) matches the model exactly |
 | TC7 | Not run |  |  |  |

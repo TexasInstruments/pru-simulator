@@ -14,13 +14,16 @@ from core.registers import RegisterFile
 from xfr.crc_accelerator import CRCAccelerator, _POLY_CRC16_MOD, _POLY_CRC16_STD, _POLY_CRC32
 
 
-def _rtl_crc(data: bytes, poly: int, width: int, init: int) -> int:
-    """Reference CRC as the RTL holds it: each byte fed LSB-first into an
-    MSB-first (non-reflected) shift register with the normal polynomial."""
+def _rtl_crc(data: bytes, poly: int, width: int, init: int,
+             msb_first_data: bool = False) -> int:
+    """Reference CRC as the RTL holds it: an MSB-first (non-reflected) shift
+    register with the normal polynomial, each byte fed LSB first (or MSB
+    first, as CRC-16 CCITT mode does on silicon)."""
     mask = (1 << width) - 1
     crc = init
+    order = range(7, -1, -1) if msb_first_data else range(8)
     for byte in data:
-        for i in range(8):
+        for i in order:
             feedback = ((crc >> (width - 1)) ^ (byte >> i)) & 1
             crc = (crc << 1) & mask
             if feedback:
@@ -130,7 +133,7 @@ class TestDataWriteCorrectness:
         c.xout(25, bytes([0x04]))       # select mod polynomial
         for b in FRAME:
             c.xout(29, bytes([b]))
-        expected = _rtl_crc(FRAME, _POLY_CRC16_MOD, 16, 0x0000)
+        expected = _rtl_crc(FRAME, _POLY_CRC16_MOD, 16, 0x0000, msb_first_data=True)
         assert c.crc_reg == expected
 
     def test_crc32_word_at_a_time(self, crc):
@@ -151,8 +154,18 @@ class TestDataWriteCorrectness:
         bflip = struct.unpack("<I", c.xin(28, 4))[0]
         assert (bflip ^ 0xFFFFFFFF) == zlib.crc32(FRAME)
 
+    @pytest.mark.parametrize("width", [1, 2])
+    def test_crc16_mod_matches_hardware_on_example_frame(self, crc, width):
+        """Measured on AM243x silicon: CCITT mode feeds each byte MSB first
+        (plain CRC-16/XMODEM), 0x3684 for byte and half-word writes alike."""
+        c, _ = crc
+        c.xout(25, bytes([0x04]))
+        for i in range(0, len(FRAME), width):
+            c.xout(29, FRAME[i:i + width])
+        assert struct.unpack("<I", c.xin(29, 4))[0] == 0x3684
+
     def test_crc16_matches_hardware_on_example_frame(self, crc):
-        """Measured on AM64x silicon: crc_example.asm Pass 1 reads 0xC9D7."""
+        """Measured on AM243x silicon: crc_example.asm Pass 1 reads 0xC9D7."""
         c, _ = crc
         for i in range(0, len(FRAME), 2):
             c.xout(29, FRAME[i:i + 2])

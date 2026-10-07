@@ -501,7 +501,7 @@ TRM's "1–2 NOPs" rule.
 
 ### 9.5 Silicon check: accumulator bit order (2026-10-07)
 
-`crc_example.asm` was run standalone on AM64x silicon, built with `clpru`.
+`crc_example.asm` was run standalone on AM243x silicon, built with `clpru`.
 It read `R10 = 0x0000C9D7` (CRC-16) and `R11 = 0x383AD48D` (CRC-32). The
 simulator returned `0x0000EB93` and `0xB12B5C1C`, the exact bit-reverse of
 each value.

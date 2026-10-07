@@ -38,7 +38,7 @@ class TestCrcBitswapExample:
 
     def test_raw_crc_matches_silicon(self):
         regs = self._run()
-        assert regs["r12"] == 0x383AD48D  # measured on AM64x
+        assert regs["r12"] == 0x383AD48D  # measured on AM243x
 
     def test_32bit_flip_is_ethernet_crc32_before_final_xor(self):
         regs = self._run()

@@ -29,11 +29,13 @@ The RTL bit-reverses each data word and feeds it into an MSB-first
 (non-reflected) shift register using the normal polynomials, so data is
 consumed LSB-first per byte but crc_reg -- and the CRC_DATA read -- is NOT
 reflected. The conventional reflected value (e.g. zlib CRC-32 before its
-final complement) is what CRC_DATA_32_BFLIP returns. Verified on AM64x
+final complement) is what CRC_DATA_32_BFLIP returns. Verified on AM243x
 silicon: DE AD BE EF CA FE BA BE reads 0xC9D7 (CRC-16, half-word writes)
 and 0x383AD48D (CRC-32, word writes).
-Because data is LSB-first per byte, 1/2/4-byte writes are all equivalent to
-one per-byte update loop.
+CRC-16 CCITT ("mod") mode is the exception: it feeds each byte MSB first,
+giving plain CRC-16/XMODEM (0x3684 for that frame on AM243x silicon, for
+byte and half-word writes alike). In every mode, 1/2/4-byte writes are
+equivalent to one per-byte update loop.
 """
 
 import struct
@@ -87,7 +89,9 @@ class CRCAccelerator(Accelerator):
         mask = self._width_mask()
         top = 31 if self.crc32_mode else 15
         crc = self.crc_reg
-        for i in range(8):
+        # Silicon: CCITT mode feeds each byte MSB first (plain CRC-16/XMODEM).
+        msb_first = self.mod_en and not self.crc32_mode
+        for i in (range(7, -1, -1) if msb_first else range(8)):
             feedback = ((crc >> top) ^ (byte >> i)) & 1
             crc = (crc << 1) & mask
             if feedback:

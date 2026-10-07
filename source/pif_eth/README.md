@@ -118,7 +118,7 @@ How it drives the hardware (TRM SPRUIM2H §6.4.6.2.2.1, Table 6-429):
    `LBBO &r29` then `XOUT 1, &r29, 4`.
 3. Two `NOP`s, then `XIN 1, &r28, 4` reads the result from
    `CRC_DATA_32_BFLIP`. The accumulator itself (`R29`) is not reflected
-   (confirmed on AM64x silicon); its 32-bit mirror is the reflected CRC
+   (confirmed on AM243x silicon); its 32-bit mirror is the reflected CRC
    that Ethernet uses. The engine applies no final XOR, so the firmware
    does `NOT`.
 4. A session must keep one write width. So when the length is not a
