@@ -435,3 +435,19 @@ after the first rising edge — drop that first bit before grouping into octets.
 - **Step back:** Click **Step Back** (or press `←`) to reverse the last instruction. The full machine state — registers, memory, SD filter — is restored exactly.
 - **Layout:** Drag a panel title bar onto another panel to split the window. Layouts persist across sessions.
 - **Reset Layout:** Click the **⊞ Reset Layout** button in the toolbar to restore the default arrangement.
+
+### Core and IEP clocks
+
+The simulator starts at 250 MHz because the project chose it as a common starting point. Unless `iep_clock_mhz` is specified, the IEP uses the selected PRU0/core frequency. Core and IEP clocks remain independently configurable, including positive fractional MHz values. Firmware's IEPCLK register selects which configured source drives the timer. This software default does not assert a universal hardware clock or reset frequency.
+
+| INI setting | Default |
+| --- | --- |
+| `pru_clock_mhz` | 250 |
+| `pru1_clock_mhz` | inherited core |
+| `iep_clock_mhz` | inherited core |
+
+With CNT_ENABLE=1 and DEFAULT_INC=1, 1000 unstalled default core cycles produce 1000 IEP ticks. Explicitly setting the external IEP to 200 MHz instead produces 800 ticks at a 250 MHz core rate. IEPCLK bit 0 clear selects the configured external clock; set selects the modeled OCP/core clock. Memory and wait stalls contribute elapsed cycles too.
+
+TI's [EnDAT3 example](https://software-dl.ti.com/processor-industrial-sw/esd/motor_control_sdk/am243x/latest/docs/api_guide_am243x/EXAMPLE_MOTORCONTROL_ENDAT3.html) uses configurations at 200 and 300 MHz; its [EtherNet/IP firmware](https://software-dl.ti.com/processor-industrial-sw/esd/ind_comms_sdk/am243x/2025_00_00_08/docs/api_guide_am243x/ETHERNETIP_ADAPTER_FWHAL.html) specifies 200 MHz for that configuration. The [GPIO example](https://git.ti.com/cgit/pru-software-support-package/pru-software-support-package/commit/examples?id=3895fa73784357366bbee5ca993660c6da50acc2) illustrates selecting the core source through IEPCLK. These firmware examples do not establish a universal IEP frequency; the simulator accepts positive fractional rates without a hardware whitelist. Register reset values are a separate hardware question.
+
+RTU1 is available for AM243x and AM64x profiles (an omitted target selects AM243x), including `tools.headless_runner --core rtu1`. Its local address 0 accesses DRAM1 and it uses the slice-1 clock. Each core has an independent mutable constant table.

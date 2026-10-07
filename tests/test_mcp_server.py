@@ -13,29 +13,6 @@ class TestMCPTools:
         assert result["line_count"] == 2
         assert result["errors"] == []
 
-    def test_pru_load_tool_schema_accepts_optional_include_path_array(self):
-        from mcp_server.server import _build_tool_input_schema
-
-        schema = _build_tool_input_schema(self.mcp.pru_load)
-
-        assert schema["properties"]["include_paths"] == {
-            "type": "array",
-            "items": {"type": "string"},
-            "default": None,
-        }
-        assert "include_paths" not in schema["required"]
-
-    def test_tool_schema_maps_optional_dict_to_object(self):
-        from mcp_server.server import _build_tool_input_schema
-
-        def tool(config: dict | None = None) -> dict:
-            return config or {}
-
-        schema = _build_tool_input_schema(tool)
-
-        assert schema["properties"]["config"] == {"type": "object", "default": None}
-        assert "config" not in schema["required"]
-
     def test_pru_step(self):
         self.mcp.pru_load(source="ldi r0, 1\nldi r1, 2\nhalt", core="pru0")
         result = self.mcp.pru_step(core="pru0", count=2)

@@ -34,15 +34,15 @@ def test_pru_vcd_export_records_deterministic_gpo_transitions(tmp_path):
     assert first["halted"] is True
     assert first["stop_reason"] == "halted"
     assert first["transition_count"] == 3
-    assert first["cycle_period_ps"] == 5000
+    assert first["cycle_period_ps"] == 4000
     assert first["signals"] == [
         {"name": "gpo_0", "kind": "gpo", "pin": 0},
         {"name": "gpo_1", "kind": "gpo", "pin": 1},
     ]
     assert first["sha256"] == hashlib.sha256(first_bytes).hexdigest()
-    assert "#10000\n1!\n" in first_bytes.decode("ascii")
-    assert "#15000\n1\"\n" in first_bytes.decode("ascii")
-    assert "#20000\n0!\n" in first_bytes.decode("ascii")
+    assert "#8000\n1!\n" in first_bytes.decode("ascii")
+    assert "#12000\n1\"\n" in first_bytes.decode("ascii")
+    assert "#16000\n0!\n" in first_bytes.decode("ascii")
     json.dumps(first)
 
     mcp.pru_reset()
@@ -75,7 +75,7 @@ def test_pru_vcd_export_can_capture_gpi_and_respects_step_budget(tmp_path):
     text = (tmp_path / "budget.vcd").read_text(encoding="ascii")
     assert "0!" in text
     assert "1\"" in text
-    assert "#5000\n1!" in text
+    assert "#4000\n1!" in text
 
 
 def test_pru_vcd_export_zero_step_budget_is_incomplete_and_deterministic(tmp_path):

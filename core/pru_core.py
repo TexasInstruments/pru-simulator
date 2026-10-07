@@ -94,12 +94,14 @@ class PRUCore:
     def __init__(self, name: str, memory: MemoryBus, xfr: XFRBus, io_port: IOPort,
                  constant_table: ConstantTable | None = None,
                  dram_swap: bool = False,
-                 cycle_observer: Callable[[int], None] | None = None):
+                 cycle_observer: Callable[[int], None] | None = None,
+                 reset_observer: Callable[[], None] | None = None):
         self.name = name
         self.registers = RegisterFile()
         self.counters = CycleCounters()
         self.iep = None          # set by Simulator when an IEP is present
         self.cycle_observer = cycle_observer
+        self.reset_observer = reset_observer
         self.memory = memory
         self.xfr = xfr
         self.io_port = io_port
@@ -168,6 +170,8 @@ class PRUCore:
         self.registers.regs[:] = [0] * 32
         self.registers.carry = False
         self.counters.reset()
+        if self.reset_observer is not None:
+            self.reset_observer()
         self.pc = 0
         self.halted = False
         self.fault = None
@@ -599,6 +603,15 @@ class PRUCore:
                 else:
                     # Loop finished
                     self.loop_state = None
+
+        # ---- Settle the device bus (if any device attached) --------------
+        # AFTER the instruction, not before: an R30 write must be visible to
+        # the device in the same cycle it happens, so that the next
+        # instruction's R31 read sees the response. Settling first delays every
+        # pin change by one instruction, which is enough to make a bit-banged
+        # I2C master misread its ACK and abort the transfer.
+        self.io_port._device_cycle = self.counters.cycles
+        self.io_port.tick_devices(self.counters.cycles, time_only=True)
 
         # ---- Advance SD filter clock (if attached) ----------------------
         if self.io_port.sd_filter is not None:
