@@ -8,6 +8,8 @@ through the sigma-delta filter interface instead of raw GPIO.
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
+from pru_io.device_model import DeviceBus
+
 if TYPE_CHECKING:
     from pru_io.sd_filter import SigmaDeltaFilter
     from pru_io.tca9538 import TCA9538Device
@@ -28,6 +30,11 @@ class IOPort:
         self.loopback_mask: int = 0   # which GPO bits feed back to GPI (5 groups × 4 bits)
         self.uart_generator = None  # type: UARTFrameGenerator | None
         self.i2c_device = None        # type: TCA9538Device | None
+        # Generic device bus. Empty by default, and while empty it costs one
+        # `if` per cycle and changes nothing - attaching a device is always
+        # opt-in, for the same reason attach_i2c_device is.
+        self.device_bus = DeviceBus()
+        self._device_cycle = 0        # last cycle seen, for write-triggered settles
 
     # ------------------------------------------------------------------
     # R30 / GPO
@@ -58,6 +65,45 @@ class IOPort:
                 self.gpi |= (1 << _I2C_SDA_BIT)
             else:
                 self.gpi &= ~(1 << _I2C_SDA_BIT)
+        # A pin change is the event a reactive device model waits for.
+        self.tick_devices(self._device_cycle)
+
+    # ------------------------------------------------------------------
+    # Generic device bus
+    # ------------------------------------------------------------------
+
+    def attach_device(self, device):
+        """Attach a DeviceModel to the pins it declares in `nets`.
+
+        The generic replacement for attach_i2c_device: any number of devices,
+        on any pins, sharing nets. Opt-in, like everything else here.
+        """
+        return self.device_bus.attach(device)
+
+    def tick_devices(self, cycle: int, time_only: bool = False) -> None:
+        """One bus settle.
+
+        Called from `write_r30` whenever a pin changes, and once per core cycle
+        with *time_only* set. Reactive devices are settled only on pin changes:
+        a bus slave detects edges, so ticking it repeatedly between changes
+        feeds it its own last output as fresh input and derails the state
+        machine. Devices that declare `time_driven` advance on both.
+
+        Only pins some attached device actually drives are written back into
+        GPI. Pins nothing drives keep whatever loopback, the UART generator or
+        `set_gpi_pin` put there - attaching a device must not quietly take over
+        the whole port.
+        """
+        if not self.device_bus.devices:
+            return
+        if time_only and not any(d.time_driven for d in self.device_bus.devices):
+            return
+        bus = self.device_bus.settle(cycle, self.gpo)
+        driven = 0
+        for dev in self.device_bus.devices:
+            for pin in dev.nets:
+                driven |= 1 << pin
+        self.gpi = ((self.gpi & ~driven) | (bus & driven)) & _MASK_20
 
     def attach_i2c_device(self, device: "TCA9538Device | None") -> None:
         """Attach (or detach with None) an I2C slave model on SCL=bit0/SDA=bit1.
@@ -136,6 +182,11 @@ class IOPort:
         self.gpo = 0
         if self.perif is not None:
             self.perif.reset()
+        # Devices stay attached across a reset (they model external hardware,
+        # which does not vanish), but their state and any recorded faults do
+        # not survive - a stale fault from the previous run would be read as a
+        # finding about this one.
+        self.device_bus.reset()
 
     # ------------------------------------------------------------------
     # Pin-list helpers

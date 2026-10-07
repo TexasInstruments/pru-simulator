@@ -288,7 +288,7 @@ class Simulator:
             "cycles": pru.counters.cycles,
             "stall_cycles": pru.counters.stall_cycles,
             "halted": pru.halted,
-            "fault": pru.fault,
+            "fault": dict(pru.fault) if pru.fault is not None else None,
         }
 
     def step_paced(self, lead: str, follow: str, count: int = 1,
@@ -457,8 +457,7 @@ class Simulator:
         for core in self.cores.values():
             core.reset()
         self.xfr.reset()
-        if hasattr(self, "iep"):
-            self.iep.hardware_reset()
+        self.iep.hardware_reset()
 
     def uart_inject(
         self,
@@ -506,6 +505,6 @@ class Simulator:
                 "instruction_count": pru.counters.instruction_count,
                 "ipc": pru.counters.ipc,
                 "halted": pru.halted,
-                "fault": pru.fault,
+                "fault": dict(pru.fault) if pru.fault is not None else None,
             }
         return result

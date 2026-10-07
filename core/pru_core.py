@@ -596,6 +596,15 @@ class PRUCore:
                     # Loop finished
                     self.loop_state = None
 
+        # ---- Settle the device bus (if any device attached) --------------
+        # AFTER the instruction, not before: an R30 write must be visible to
+        # the device in the same cycle it happens, so that the next
+        # instruction's R31 read sees the response. Settling first delays every
+        # pin change by one instruction, which is enough to make a bit-banged
+        # I2C master misread its ACK and abort the transfer.
+        self.io_port._device_cycle = self.counters.cycles
+        self.io_port.tick_devices(self.counters.cycles, time_only=True)
+
         # ---- Advance SD filter clock (if attached) ----------------------
         if self.io_port.sd_filter is not None:
             self.io_port.sd_filter.tick()
