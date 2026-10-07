@@ -40,8 +40,8 @@ Run the cases in order. TC1–TC3 check the accelerator on its own, and TC4–TC
 
 | ID | Case | Procedure | Expected |
 | --- | --- | --- | --- |
-| TC1 | Basic CRC-16 / CRC-32 | Run `crc_example.asm` to `halt` | `r10 = 0x0000EB93`, `r11 = 0xB12B5C1C` |
-| TC2 | Bit-swap reads | Run `crc_bitswap_example.asm` to `halt` | `r10 = r13 = 0x8DD43A38` (R27), `r11 = r14 = 0x383AD48D` (R28), `r12 = r15 = 0xB12B5C1C` (R29) |
+| TC1 | Basic CRC-16 / CRC-32 | Run `crc_example.asm` to `halt` | `r10 = 0x0000C9D7`, `r11 = 0x383AD48D` |
+| TC2 | Bit-swap reads | Run `crc_bitswap_example.asm` to `halt` | `r10 = r13 = 0x1C5C2BB1` (R27), `r11 = r14 = 0xB12B5C1C` (R28), `r12 = r15 = 0x383AD48D` (R29) |
 | TC3 | R27/R28 reads don't reset | Covered by TC2: R29 is read after R27 and R28 | `r12` is the real CRC, not the seed `0xFFFFFFFF` |
 | TC4 | `crc32_core` contract and tail path | Build the `_CRC_HARNESS` program from `tests/test_pif_eth.py` with `pif_eth_crc32_hw.inc`. Run it for lengths 0, 1, 2, 3, 4, 5, 7, 60, 128 and 201, using the test's data pattern `(i*37+11) & 0xFF` | FCS at `0x0404` = `zlib.crc32(data)`; end pointer = `0x0500 + len`; `r28 = 0x1234`, `r29 = 0x5678` |
 | TC5 | NOP margin before XIN | Repeat TC4 at lengths 4 and 7 with 2, 1 and 0 `NOP`s before each `XIN` | 2 and 1 pass; record whether 0 passes. Firmware keeps 2 |
@@ -71,7 +71,7 @@ Open the pull request from `dev` once every row reads Pass. If a case fails, fix
 
 | ID | Result | Measured | Board / date | Notes |
 | --- | --- | --- | --- | --- |
-| TC1 | Not run |  |  |  |
+| TC1 | Pass (after model fix) | `r10 = 0x0000C9D7`, `r11 = 0x383AD48D` | AM64x / 2026-10-07 | Silicon showed the accumulator (R29) is non-reflected; model and firmware corrected to match |
 | TC2 | Not run |  |  |  |
 | TC3 | Not run |  |  |  |
 | TC4 | Not run |  |  |  |

@@ -16,13 +16,16 @@
 ; as return-address registers, so both are saved in r22/r24 on entry and
 ; restored before returning.
 ;
-; CRC-32 mode is the reflected IEEE 802.3 polynomial (0xEDB88320), seeded
-; with 0xFFFFFFFF by the CRC_CFG write, fed LSB first -- the same
-; algorithm as the software loop, minus the final XOR, which is done here.
+; CRC-32 mode runs the IEEE 802.3 polynomial seeded with 0xFFFFFFFF by the
+; CRC_CFG write, data fed LSB first.  The accumulator itself (R29 CRC_DATA)
+; is NOT reflected; its full 32-bit mirror (R28 CRC_DATA_32_BFLIP) is the
+; value the software loop computes, so the result is taken from R28 and
+; only the final XOR is done here.
 ;
 ; A session must keep one CRC_DATA write width, so the buffer is pushed as
 ; count/4 32-bit words, and any 1-3 trailing bytes go through a second,
-; byte-wide session seeded (CRC_SEED) with the word session's result.
+; byte-wide session seeded (CRC_SEED) with the word session's raw R29
+; result (seed and CRC_DATA share the accumulator's bit order).
 ;
 ; MUST be included at the END of a program: it is straight-line code and
 ; would execute at startup if pasted before the entry point.
@@ -43,9 +46,9 @@ crc32_core:
 c3_words_done:
     nop                         ; TRM: 1-2 NOPs between the last XOUT
     nop                         ;   and the XIN of the result
-    xin  CRC_XID, &r29, 4       ; r29 = crc (read resets crc_reg to seed)
     and  r23, r8, 3             ; trailing bytes (0..3)
     qbeq c3_done, r23, 0
+    xin  CRC_XID, &r29, 4       ; raw accumulator (read resets crc_reg to seed)
     mov  r28, r29
     xout CRC_XID, &r28, 4       ; CRC_SEED = word-session result
     loop c3_tail_done, r23
@@ -55,9 +58,9 @@ c3_words_done:
 c3_tail_done:
     nop
     nop
-    xin  CRC_XID, &r29, 4
 c3_done:
-    not  r20, r29               ; final XOR 0xFFFFFFFF
+    xin  CRC_XID, &r28, 4       ; R28 = CRC_DATA_32_BFLIP (reflected CRC)
+    not  r20, r28               ; final XOR 0xFFFFFFFF
     mov  r29, r24               ; restore caller's r28/r29
     mov  r28, r22
     jmp  r26

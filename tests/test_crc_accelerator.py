@@ -14,18 +14,17 @@ from core.registers import RegisterFile
 from xfr.crc_accelerator import CRCAccelerator, _POLY_CRC16_MOD, _POLY_CRC16_STD, _POLY_CRC32
 
 
-def _reflected_crc(data: bytes, poly: int, width: int, init: int) -> int:
-    """Reference reflected bit-serial CRC, same shape as pif_eth's crc32_bitwise."""
+def _rtl_crc(data: bytes, poly: int, width: int, init: int) -> int:
+    """Reference CRC as the RTL holds it: each byte fed LSB-first into an
+    MSB-first (non-reflected) shift register with the normal polynomial."""
     mask = (1 << width) - 1
     crc = init
     for byte in data:
-        crc ^= byte
-        for _ in range(8):
-            if crc & 1:
-                crc = (crc >> 1) ^ poly
-            else:
-                crc >>= 1
-        crc &= mask
+        for i in range(8):
+            feedback = ((crc >> (width - 1)) ^ (byte >> i)) & 1
+            crc = (crc << 1) & mask
+            if feedback:
+                crc ^= poly
     return crc
 
 
@@ -123,7 +122,7 @@ class TestDataWriteCorrectness:
         c, _ = crc
         for b in FRAME:
             c.xout(29, bytes([b]))
-        expected = _reflected_crc(FRAME, _POLY_CRC16_STD, 16, 0x0000)
+        expected = _rtl_crc(FRAME, _POLY_CRC16_STD, 16, 0x0000)
         assert c.crc_reg == expected
 
     def test_crc16_mod_byte_at_a_time(self, crc):
@@ -131,7 +130,7 @@ class TestDataWriteCorrectness:
         c.xout(25, bytes([0x04]))       # select mod polynomial
         for b in FRAME:
             c.xout(29, bytes([b]))
-        expected = _reflected_crc(FRAME, _POLY_CRC16_MOD, 16, 0x0000)
+        expected = _rtl_crc(FRAME, _POLY_CRC16_MOD, 16, 0x0000)
         assert c.crc_reg == expected
 
     def test_crc32_word_at_a_time(self, crc):
@@ -139,16 +138,25 @@ class TestDataWriteCorrectness:
         c.xout(25, bytes([0x01]))       # select CRC-32
         for i in range(0, len(FRAME), 4):
             c.xout(29, FRAME[i:i + 4])
-        expected = _reflected_crc(FRAME, _POLY_CRC32, 32, 0xFFFFFFFF)
+        expected = _rtl_crc(FRAME, _POLY_CRC32, 32, 0xFFFFFFFF)
         assert c.crc_reg == expected
 
-    def test_crc32_matches_zlib_crc32_after_final_complement(self, crc):
-        """Hardware does not auto-apply the final XOR; raw crc_reg == zlib.crc32 ^ 0xFFFFFFFF."""
+    def test_crc32_bflip_matches_zlib_crc32_after_final_complement(self, crc):
+        """CRC_DATA is the non-reflected register with no final XOR, so the
+        32-bit flip (R28 read) complemented equals the textbook CRC-32."""
         c, _ = crc
         c.xout(25, bytes([0x01]))
         for b in FRAME:
             c.xout(29, bytes([b]))
-        assert (c.crc_reg ^ 0xFFFFFFFF) == zlib.crc32(FRAME)
+        bflip = struct.unpack("<I", c.xin(28, 4))[0]
+        assert (bflip ^ 0xFFFFFFFF) == zlib.crc32(FRAME)
+
+    def test_crc16_matches_hardware_on_example_frame(self, crc):
+        """Measured on AM64x silicon: crc_example.asm Pass 1 reads 0xC9D7."""
+        c, _ = crc
+        for i in range(0, len(FRAME), 2):
+            c.xout(29, FRAME[i:i + 2])
+        assert struct.unpack("<I", c.xin(29, 4))[0] == 0xC9D7
 
     def test_illegal_length_write_is_ignored(self, crc):
         c, _ = crc
@@ -248,10 +256,10 @@ class TestBitFlipMirrors:
     def test_crc16_32bflip_puts_reversed_value_in_upper_half(self, crc):
         """For CRC16, only CRC_DATA_32_BFLIP[31:16] are valid per the TRM."""
         c, _ = crc
-        c.crc_reg = 0xEB93                  # 16-bit CRC value, upper 16 bits are 0
+        c.crc_reg = 0xC9D7                  # 16-bit CRC value, upper 16 bits are 0
         result = struct.unpack("<I", c.xin(28, 4))[0]
         assert result & 0xFFFF == 0          # lower half stays 0
-        assert (result >> 16) == _reverse_bits(0xEB93, 16)
+        assert (result >> 16) == _reverse_bits(0xC9D7, 16)
 
 
 # ---------------------------------------------------------------------------

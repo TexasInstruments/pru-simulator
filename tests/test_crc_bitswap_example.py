@@ -36,17 +36,21 @@ class TestCrcBitswapExample:
         assert result["success"] is True
         assert result["errors"] == []
 
-    def test_raw_crc_is_ethernet_crc32_before_final_xor(self):
+    def test_raw_crc_matches_silicon(self):
         regs = self._run()
-        assert regs["r12"] == (~zlib.crc32(FRAME)) & 0xFFFFFFFF == 0xB12B5C1C
+        assert regs["r12"] == 0x383AD48D  # measured on AM64x
+
+    def test_32bit_flip_is_ethernet_crc32_before_final_xor(self):
+        regs = self._run()
+        assert regs["r11"] == (~zlib.crc32(FRAME)) & 0xFFFFFFFF == 0xB12B5C1C
 
     def test_byte_wide_flip_r27(self):
         regs = self._run()
-        assert regs["r10"] == _bflip8(regs["r12"]) == 0x8DD43A38
+        assert regs["r10"] == _bflip8(regs["r12"]) == 0x1C5C2BB1
 
     def test_32bit_wide_flip_r28(self):
         regs = self._run()
-        assert regs["r11"] == _rev(regs["r12"], 32) == 0x383AD48D
+        assert regs["r11"] == _rev(regs["r12"], 32)
         # The 32-bit mirror is the byte-wise mirror with its bytes swapped.
         assert regs["r11"] == int.from_bytes(
             regs["r10"].to_bytes(4, "little"), "big")

@@ -428,11 +428,13 @@ pif_eth FCS computation onto that accelerator.
      also seeds `0xFFFFFFFF`.
   2. A zero-overhead `LOOP` runs `LBBO &r29` / `XOUT 1, &r29, 4` for each
      32-bit word.
-  3. Two `NOP`s (TRM rule), then `XIN 1, &r29, 4`. The engine applies no
-     final XOR, so the firmware does `NOT`.
+  3. Two `NOP`s (TRM rule), then `XIN 1, &r28, 4` (`CRC_DATA_32_BFLIP`).
+     Silicon showed the `R29` accumulator is not reflected; its 32-bit
+     mirror is the reflected Ethernet CRC. The engine applies no final
+     XOR, so the firmware does `NOT`.
 - **Uneven lengths.** The TRM says one CRC session must keep one write
   width. So 1–3 trailing bytes run as a second, byte-wide session seeded
-  via `CRC_SEED` (`R28`) with the word session's result. BERT (128) and
+  via `CRC_SEED` (`R28`) with the word session's raw `R29` result. BERT (128) and
   UDP (60) never need this; RX with `payload_len = 201` does.
 - **Register window.** The broadside window is fixed at `R25`–`R29`, which
   overlaps the firmware's return-address registers `r28`/`r29`. In RX both

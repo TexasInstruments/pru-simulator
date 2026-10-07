@@ -22,9 +22,10 @@
 ;  Per the TRM: "Firmware must add 1 to 2 NOPs after the last XOUT to the
 ;  XIN" -- there is no ready/status register to poll.
 ;
-;  Expected results after HALT:
-;    R10 = 0x0000EB93   (CRC-16 standard, half-word-wide writes)
-;    R11 = 0xB12B5C1C   (CRC-32, word-wide writes)
+;  Expected results after HALT (CRC_DATA is the non-reflected register;
+;  read R28 / CRC_DATA_32_BFLIP for the conventional reflected value):
+;    R10 = 0x0000C9D7   (CRC-16 standard, half-word-wide writes; HW-verified)
+;    R11 = 0x383AD48D   (CRC-32, word-wide writes; HW-verified)
 ; ============================================================
 
 CRC_XID .set 1

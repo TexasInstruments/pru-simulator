@@ -8,28 +8,28 @@
 ;                            CRC_DATA (bit0<->bit31, ...)
 ;  (AM64x/AM243x TRM SPRUIM2H Sec 6.4.6.2.2.1, Table 6-429.)
 ;
-;  The accelerator keeps its CRC LSB first (reflected), because the ICSS
-;  bus presents data LSB first.  A protocol that wants the CRC in the
-;  conventional MSB-first order -- the whole word, or each byte on its
-;  own -- can read it pre-reversed from R27/R28 instead of mirroring
-;  32 bits in software.  Neither read resets the accumulator; only the
-;  R29 (CRC_DATA) read does, so R27 and R28 are read first and R29 last.
+;  The accelerator consumes data LSB first but keeps its accumulator
+;  MSB first (non-reflected), so R29 (CRC_DATA) is NOT the reflected CRC
+;  that zlib / the Ethernet FCS use.  R28 returns exactly that reflected
+;  value, and R27 the per-byte mirror, without mirroring 32 bits in
+;  software.  Neither read resets the accumulator; only the R29 read
+;  does, so R27 and R28 are read first and R29 last.
 ;
 ;  The same 8-byte frame, DE AD BE EF CA FE BA BE, is run through CRC-32
 ;  twice: once pushed byte-wide (XOUT size 1) and once pushed 32-bit wide
 ;  (XOUT size 4).  The data write width does not change the result, so
 ;  both passes must produce identical values.
 ;
-;  Expected results after HALT (both passes):
-;    R10 / R13 = 0x8DD43A38   R27  CRC_DATA_8_BFLIP  (each byte mirrored)
-;    R11 / R14 = 0x383AD48D   R28  CRC_DATA_32_BFLIP (whole word mirrored)
-;    R12 / R15 = 0xB12B5C1C   R29  CRC_DATA          (raw, LSB first)
+;  Expected results after HALT (both passes; R29 value HW-verified):
+;    R10 / R13 = 0x1C5C2BB1   R27  CRC_DATA_8_BFLIP  (each byte mirrored)
+;    R11 / R14 = 0xB12B5C1C   R28  CRC_DATA_32_BFLIP (whole word mirrored)
+;    R12 / R15 = 0x383AD48D   R29  CRC_DATA          (raw accumulator)
 ;
-;  Worked through byte by byte (CRC_DATA = 0xB12B5C1C, bytes 1C 5C 2B B1):
-;    8-bit flip  : 1C->38  5C->3A  2B->D4  B1->8D   -> 0x8DD43A38
-;    32-bit flip : the same mirrored bytes in reverse order -> 0x383AD48D
+;  Worked through byte by byte (CRC_DATA = 0x383AD48D, bytes 8D D4 3A 38):
+;    8-bit flip  : 8D->B1  D4->2B  3A->5C  38->1C   -> 0x1C5C2BB1
+;    32-bit flip : the same mirrored bytes in reverse order -> 0xB12B5C1C
 ;  i.e. CRC_DATA_32_BFLIP is CRC_DATA_8_BFLIP with its bytes swapped.
-;  (NOT of CRC_DATA, 0x4ED4A3E3, is the Ethernet FCS / zlib.crc32.)
+;  (NOT of CRC_DATA_32_BFLIP, 0x4ED4A3E3, is the Ethernet FCS / zlib.crc32.)
 ;  In CRC-16 modes only bits [31:16] of the 32-bit flip are valid.
 ; ============================================================
 

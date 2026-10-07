@@ -303,8 +303,12 @@ using 4-byte (`ldi32`) writes instead of 2-byte ones — see
 > `CRC_DATA_8_BFLIP` (`R27`) and `CRC_DATA_32_BFLIP` (`R28` read side) are
 > read-only mirrors of the same accumulator, pre-reversed at the byte or
 > bit level so firmware that needs the conventional bit order for a given
-> CRC standard doesn't have to reverse it in software — see §4's `bitswap`
-> discussion for why the accumulator is stored LSB-first to begin with.
+> CRC standard doesn't have to reverse it in software. Per §4, input data is
+> bit-reversed into an MSB-first (non-reflected) accumulator, so `CRC_DATA`
+> itself is **not** reflected; the reflected (textbook / zlib-style) value is
+> `CRC_DATA_32_BFLIP` (bits `[31:16]` for CRC-16). Hardware-verified on AM64x:
+> `DE AD BE EF CA FE BA BE` reads `0xC9D7` for CRC-16 (half-word writes) and
+> `0x383AD48D` for CRC-32 (word writes).
 > Reading either mirror does **not** reset the accumulator.
 >
 > `source/crc_bitswap_example.asm` (tests: `tests/test_crc_bitswap_example.py`)

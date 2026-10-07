@@ -25,13 +25,15 @@ Register mapping:
                              first -- and, per the TRM, this READ resets
                              crc_reg back to the CRC_SEED state.
 
-The RTL (references/icss_m_xfr_crc.v) is LSB-first throughout (see its
-revision 6: "icss is [0]/lsb first"), so its parallel 8/16/32-bit
-datapaths are all equivalent to running the classic reflected bit-serial
-CRC update one byte at a time. That equivalence is what lets this model
-process every CRC_DATA write (1, 2, or 4 bytes) through the same per-byte
-update loop regardless of transfer width, matching `crc32_bitwise` in
-source/pif_eth/crc32.py.
+The RTL bit-reverses each data word and feeds it into an MSB-first
+(non-reflected) shift register using the normal polynomials, so data is
+consumed LSB-first per byte but crc_reg -- and the CRC_DATA read -- is NOT
+reflected. The conventional reflected value (e.g. zlib CRC-32 before its
+final complement) is what CRC_DATA_32_BFLIP returns. Verified on AM64x
+silicon: DE AD BE EF CA FE BA BE reads 0xC9D7 (CRC-16, half-word writes)
+and 0x383AD48D (CRC-32, word writes).
+Because data is LSB-first per byte, 1/2/4-byte writes are all equivalent to
+one per-byte update loop.
 """
 
 import struct
@@ -39,10 +41,10 @@ import struct
 from core.registers import RegisterFile
 from xfr.accelerator import Accelerator
 
-# Reflected polynomials (LSB-first bit order)
-_POLY_CRC16_STD = 0xA001       # reflection of 0x8005: x^16+x^15+x^2+1
-_POLY_CRC16_MOD = 0x8408       # reflection of 0x1021: x^16+x^12+x^5+1
-_POLY_CRC32     = 0xEDB88320   # reflection of 0x04C11DB7 (IEEE 802.3)
+# Normal (MSB-first) polynomials
+_POLY_CRC16_STD = 0x8005       # x^16+x^15+x^2+1
+_POLY_CRC16_MOD = 0x1021       # x^16+x^12+x^5+1
+_POLY_CRC32     = 0x04C11DB7   # IEEE 802.3
 
 
 def _reverse_bits(value: int, width: int) -> int:
@@ -83,13 +85,14 @@ class CRCAccelerator(Accelerator):
     def _update_byte(self, byte: int) -> None:
         poly = self._poly()
         mask = self._width_mask()
-        crc = self.crc_reg ^ byte
-        for _ in range(8):
-            if crc & 1:
-                crc = (crc >> 1) ^ poly
-            else:
-                crc >>= 1
-        self.crc_reg = crc & mask
+        top = 31 if self.crc32_mode else 15
+        crc = self.crc_reg
+        for i in range(8):
+            feedback = ((crc >> top) ^ (byte >> i)) & 1
+            crc = (crc << 1) & mask
+            if feedback:
+                crc ^= poly
+        self.crc_reg = crc
 
     def _data_8_bflip(self) -> int:
         """Same byte order as crc_reg, each byte's bits individually mirrored."""

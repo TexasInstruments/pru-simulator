@@ -8,18 +8,17 @@ from mcp_server.server import PRUSimulatorMCP
 FRAME = bytes.fromhex("DEADBEEFCAFEBABE")
 
 
-def _reflected_crc(data: bytes, poly: int, width: int, init: int) -> int:
-    """Reference reflected bit-serial CRC, same shape as pif_eth's crc32_bitwise."""
+def _rtl_crc(data: bytes, poly: int, width: int, init: int) -> int:
+    """Reference CRC as the RTL holds it: each byte fed LSB-first into an
+    MSB-first (non-reflected) shift register with the normal polynomial."""
     mask = (1 << width) - 1
     crc = init
     for byte in data:
-        crc ^= byte
-        for _ in range(8):
-            if crc & 1:
-                crc = (crc >> 1) ^ poly
-            else:
-                crc >>= 1
-        crc &= mask
+        for i in range(8):
+            feedback = ((crc >> (width - 1)) ^ (byte >> i)) & 1
+            crc = (crc << 1) & mask
+            if feedback:
+                crc ^= poly
     return crc
 
 
@@ -43,11 +42,11 @@ class TestCrcExample:
 
         regs = self.mcp.pru_registers(core="pru0")
 
-        expected_crc16 = _reflected_crc(FRAME, 0xA001, 16, 0x0000)
-        expected_crc32 = _reflected_crc(FRAME, 0xEDB88320, 32, 0xFFFFFFFF)
+        expected_crc16 = _rtl_crc(FRAME, 0x8005, 16, 0x0000)
+        expected_crc32 = _rtl_crc(FRAME, 0x04C11DB7, 32, 0xFFFFFFFF)
 
-        assert int(regs["r10"], 16) == expected_crc16
-        assert int(regs["r11"], 16) == expected_crc32
+        assert int(regs["r10"], 16) == expected_crc16 == 0xC9D7  # measured on silicon
+        assert int(regs["r11"], 16) == expected_crc32 == 0x383AD48D  # measured on silicon
 
     def test_crc16_result_is_width_invariant(self):
         """Byte-wide and half-word-wide feeding of the same frame must agree.

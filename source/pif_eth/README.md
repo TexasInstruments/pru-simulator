@@ -24,7 +24,7 @@ renders it to a **Wireshark** trace.
     padded to 60 octets + 4-octet FCS = 64 octets. Dissects cleanly in
     Wireshark.
 * **CRC-32:** computed on the ICSSG **CRC16/32 broadside accelerator** (XFR
-  device 1, reflected poly `0xEDB88320`), matching `zlib.crc32` / Ethernet
+  device 1, IEEE 802.3 poly), matching `zlib.crc32` / Ethernet
   FCS — see [CRC-32 on the broadside accelerator](#crc-32-on-the-broadside-accelerator).
   The original bit-serial firmware routine is kept as a fallback.
 
@@ -116,13 +116,15 @@ How it drives the hardware (TRM SPRUIM2H §6.4.6.2.2.1, Table 6-429):
 1. `XOUT 1, &r25, 1` with `CRC_CFG = 0x01` selects CRC-32 and seeds `0xFFFFFFFF`.
 2. A zero-overhead `LOOP` pushes the buffer one 32-bit word at a time:
    `LBBO &r29` then `XOUT 1, &r29, 4`.
-3. Two `NOP`s, then `XIN 1, &r29, 4` reads the result. The read is
-   destructive. The engine applies no final XOR, so the firmware does
-   `NOT`.
+3. Two `NOP`s, then `XIN 1, &r28, 4` reads the result from
+   `CRC_DATA_32_BFLIP`. The accumulator itself (`R29`) is not reflected
+   (confirmed on AM64x silicon); its 32-bit mirror is the reflected CRC
+   that Ethernet uses. The engine applies no final XOR, so the firmware
+   does `NOT`.
 4. A session must keep one write width. So when the length is not a
    multiple of 4, the 1–3 trailing bytes run as a second, byte-wide
    session, seeded through `CRC_SEED` (`R28`) with the word session's
-   result. BERT (128) and UDP (60) are both multiples of 4 and never take
+   raw `R29` result (a destructive read). BERT (128) and UDP (60) are both multiples of 4 and never take
    this path. RX tests with `payload_len=201` do.
 
 The broadside window is fixed at `R25`–`R29`, and the firmware already
