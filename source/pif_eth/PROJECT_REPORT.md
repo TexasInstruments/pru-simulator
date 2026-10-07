@@ -498,3 +498,38 @@ TRM's "1–2 NOPs" rule.
 - `python3 source/pif_eth/rx_driver.py o1` still passes all 28
   rung/seed combinations (n_tx = 2, 4, 6, 8 × 7 seeds) with `ovf = symerr
   = biterr = 0` and `crc_ok = 1`, including the 125 Mbaud rung.
+
+### 9.5 Silicon check: accumulator bit order (2026-10-07)
+
+`crc_example.asm` was run standalone on AM64x silicon, built with `clpru`.
+It read `R10 = 0x0000C9D7` (CRC-16) and `R11 = 0x383AD48D` (CRC-32). The
+simulator returned `0x0000EB93` and `0xB12B5C1C`, the exact bit-reverse of
+each value.
+
+- **Root cause.** The RTL bit-reverses each data word and feeds it into an
+  MSB-first shift register with the normal polynomials
+  (`references/icss_m_xfr_crc_functional_spec.md` §4). So data is consumed
+  LSB first, but the accumulator, and with it the `CRC_DATA` (`R29`) read,
+  is not reflected. The model had stored it reflected. The TRM agrees with
+  silicon: for CRC-16 only `CRC_DATA[15:0]` and `CRC_DATA_32_BFLIP[31:16]`
+  are valid, which only works for a non-reflected accumulator.
+- **What reads what.** `R28` (`CRC_DATA_32_BFLIP`) is the reflected CRC that
+  Ethernet and `zlib.crc32` use, before the final XOR. `R29` is the raw
+  accumulator. `CRC_SEED` loads in the same raw order as `R29`.
+- **Model fix.** `xfr/crc_accelerator.py` now keeps an MSB-first register
+  (polynomials `0x8005`, `0x1021`, `0x04C11DB7`), fed LSB first per byte.
+  Results do not depend on the write width.
+- **Firmware fix.** `crc32_core` now takes the FCS from `R28`. It still
+  reads `R29` before a byte-wide tail session, because that raw value is
+  what `CRC_SEED` needs. The instructions are only reordered, so every
+  cycle count in §9.3 is unchanged.
+- **Examples.** `crc_example.asm` now expects `0x0000C9D7` / `0x383AD48D`
+  (silicon values). `crc_bitswap_example.asm` now expects
+  `R27 = 0x1C5C2BB1`, `R28 = 0xB12B5C1C`, `R29 = 0x383AD48D`.
+- **Verification.** Full repo suite: 1436 passed, 2 xfailed.
+  `rx_driver.py o1` passes all 28 rung/seed combinations. The `pif_eth`
+  firmware itself (test plan TC4–TC7) has not been run on silicon yet.
+
+The bug was invisible in the simulator: every test compared the model with
+a reference written under the same reflected assumption. The silicon run
+caught it.
