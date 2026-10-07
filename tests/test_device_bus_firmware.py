@@ -29,6 +29,7 @@ STEPS = 20_000
 
 def _load(nominal_config):
     sim = Simulator(nominal_config)
+    sim.set_gpio_drive_mask("pru0", 3)
     errors = sim.load("pru0", SOURCE)
     assert errors == [], errors
     return sim

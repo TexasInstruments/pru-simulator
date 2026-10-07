@@ -57,10 +57,10 @@ def test_overlapping_reader_runtimes_restore_output_after_last_close(close_order
     initial_mask = sim.io("pru1")["gpo_drive_mask"]
     runtimes = [SSIRuntime(sim, name="axis_a"), SSIRuntime(sim, name="axis_b")]
 
-    assert sim.io("pru1")["gpo_drive_mask"] == initial_mask & ~bit
+    assert sim.io("pru1")["gpo_drive_mask"] == (initial_mask & ~bit) | 1
 
     runtimes[close_order[0]].close()
-    assert sim.io("pru1")["gpo_drive_mask"] == initial_mask & ~bit
+    assert sim.io("pru1")["gpo_drive_mask"] == (initial_mask & ~bit) | 1
     runtimes[close_order[1]].close()
 
     assert sim.io("pru1")["gpo_drive_mask"] == initial_mask
@@ -138,7 +138,9 @@ def test_reader_publishes_both_mailbox_words_for_each_preset(
     sim = Simulator("memory.cfg")
     position = 0xA5A5A5A5A5A5A5A5 & ((1 << position_bits) - 1)
     error = 0b101 & ((1 << error_bits) - 1)
-    expected = (position << error_bits) | error  # error bits are sent last
+    # Vendor Gray position literal for 0xA5A5A5 is 0xF77777; error bits last.
+    expected = {"TTK70": 0x3DDDDDD, "KH53": 0xF77777}.get(
+        preset, (position << error_bits) | error)
 
     with SSIRuntime(sim, preset=preset, position=position,
                     error_value=error) as runtime:
@@ -198,3 +200,86 @@ def test_reader_halts_with_status_one_on_invalid_config(config):
     assert runtime.mailbox()["status"] == 1
     assert runtime.mailbox()["frame_count"] == 0
     runtime.close()
+
+
+@pytest.mark.parametrize(("raw", "encoding", "position_bits", "error_bits", "position", "error"), [
+    (0xA5, "binary", 8, 0, 0xA5, 0),
+    (0x17, "gray", 4, 2, 6, 3),
+    (0x123456789ABCDEF0, "binary", 60, 4, 0x123456789ABCDEF, 0),
+])
+def test_mailbox_decodes_literal_word_without_model_decoder(
+        raw, encoding, position_bits, error_bits, position, error, monkeypatch):
+    sim = Simulator("memory.cfg")
+    with SSIRuntime(sim, resolution=position_bits + error_bits,
+                    position_bits=position_bits, error_bits=error_bits,
+                    encoding=encoding) as runtime:
+        def forbidden(*args):
+            raise AssertionError("host must decode independently of the model")
+        monkeypatch.setattr(runtime.encoder, "decode_frame", forbidden)
+        sim.memory.write(abi.MAILBOX_ADDRESS,
+                         struct.pack("<IIIII", 2, raw & 0xFFFFFFFF,
+                                     raw >> 32, 1, 0))
+        mailbox = runtime.mailbox()
+        assert mailbox["coherent"] is True
+        assert (mailbox["raw_frame"], mailbox["position"], mailbox["error"]) == (
+            raw, position, error)
+
+
+def test_odd_mailbox_is_diagnostic_only_and_does_not_advance():
+    sim = Simulator("memory.cfg")
+    with SSIRuntime(sim) as runtime:
+        runtime.load()
+        sim.memory.write(abi.MAILBOX_ADDRESS,
+                         struct.pack("<IIIII", 3, 0xA5, 0, 99, 0))
+        before = sim.status()
+        mailbox = runtime.mailbox()
+        assert mailbox["coherent"] is False
+        assert mailbox["sequence"] == 3
+        assert mailbox["frame_count"] == 99
+        assert (mailbox["raw_frame"], mailbox["position"], mailbox["error"]) == (
+            None, None, None)
+        assert sim.status() == before
+        result = runtime.run_until_frames(1, max_steps=0)
+        assert result["reached"] is False
+        assert result["steps"] == 0
+        sim.memory.write(abi.MAILBOX_ADDRESS, struct.pack("<IIIII", 4, 0xA5, 0, 1, 0))
+        assert runtime.mailbox()["raw_frame"] == 0xA5
+
+
+def test_mailbox_rejects_sequence_change_during_body_read(monkeypatch):
+    sim = Simulator("memory.cfg")
+    with SSIRuntime(sim) as runtime:
+        sim.memory.write(abi.MAILBOX_ADDRESS,
+                         struct.pack("<IIIII", 2, 0xA5, 0, 1, 0))
+        original = sim.memory_read
+        def read(address, size):
+            data = original(address, size)
+            if size == abi.MAILBOX_SIZE:
+                sim.memory.write(abi.MAILBOX_ADDRESS, struct.pack("<I", 4))
+            return data
+        monkeypatch.setattr(sim, "memory_read", read)
+        mailbox = runtime.mailbox()
+        assert mailbox["coherent"] is False
+        assert mailbox["raw_frame"] is None
+
+
+def test_reader_leases_clock_output_and_data_input_then_restores():
+    sim = Simulator("memory.cfg")
+    initial = 1 << 16
+    sim.set_gpio_drive_mask("pru1", initial)
+    runtime = SSIRuntime(sim)
+    assert sim.io("pru1")["gpo_drive_mask"] == 1
+    runtime.close()
+    assert sim.io("pru1")["gpo_drive_mask"] == initial
+
+
+def test_emulator_leases_data_output_and_clock_input_then_restores():
+    from pru_io.ssi_runtime import SSIEmulatorRuntime
+    sim = Simulator("memory.cfg")
+    initial = 1
+    sim.set_gpio_drive_mask("pru0", initial)
+    runtime = SSIEmulatorRuntime(sim)
+    runtime.load()
+    assert sim.io("pru0")["gpo_drive_mask"] == 1 << 16
+    runtime.close()
+    assert sim.io("pru0")["gpo_drive_mask"] == initial

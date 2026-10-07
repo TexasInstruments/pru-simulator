@@ -1,6 +1,7 @@
 """The emulator firmware is checked against an independent Python SSI master."""
 from pathlib import Path
 import struct
+from math import ceil
 
 import pytest
 
@@ -15,7 +16,10 @@ PHASE_STEPS = 40  # PRU cycles per clock phase; far above the firmware's needs
 def read_frame(sim: Simulator, bits: int) -> int:
     """Clock one frame into PRU0 as an SSI master and return the sampled word."""
     sim.set_input("pru0", 0, True)
-    sim.step("pru0", PHASE_STEPS)
+    # The independent master allows the configured monoflop guard between words.
+    timeout_ticks = int.from_bytes(sim.memory_read(abi.EMULATOR_ADDRESS + 0x14, 4), "little")
+    guard_cycles = ceil(timeout_ticks * sim.iep.core_clock_hz("pru0") / sim.iep.active_clock_hz)
+    sim.step("pru0", guard_cycles + PHASE_STEPS)
     sim.set_input("pru0", 0, False)  # first falling edge latches the frame
     sim.step("pru0", PHASE_STEPS)
     word = 0
@@ -63,7 +67,7 @@ def test_emulator_shifts_the_host_packed_frame_out_msb_first(
 
     word = read_frame(sim, frame_bits)
 
-    assert word == independent_frame(position, error, position_bits, error_bits)
+    assert word == independent_frame(position, error, position_bits, error_bits, gray=preset == "TTK70")
     assert emulator.status() == 0
 
 
@@ -92,7 +96,7 @@ def test_host_changes_between_frames_reach_the_next_frame(sim):
 
 
 @pytest.mark.parametrize(("version", "frame_bits"), [
-    (abi.ABI_VERSION + 1, 12), (abi.ABI_VERSION, 0),
+    (abi.ABI_VERSION + 1, 12), (abi.ABI_VERSION - 1, 12), (abi.ABI_VERSION, 0),
     (abi.ABI_VERSION, 65), (0, 0),
 ])
 def test_emulator_halts_with_status_one_on_invalid_config(sim, version, frame_bits):
@@ -104,3 +108,159 @@ def test_emulator_halts_with_status_one_on_invalid_config(sim, version, frame_bi
     read_frame(sim, 1)
 
     assert emulator.status() == 1
+
+@pytest.mark.parametrize("stopped_high", [False, True])
+@pytest.mark.parametrize("bits, word", [(8, 0xA5), (1, 1), (33, 0x1000000A5), (64, 0xABCDEF00123456A5)])
+@pytest.mark.parametrize("iep_mhz", [200, 300])
+def test_partial_read_timeout_discards_bits(sim_config, stopped_high, bits, word, iep_mhz):
+    sim = Simulator(sim_config(pru_clock_mhz=250, iep_clock_mhz=iep_mhz))
+    emulator = SSIEmulatorRuntime(sim, resolution=bits, position=word, monoflop_us=4)
+    emulator.load()
+    sim.set_input("pru0", 0, True)
+    sim.step("pru0", PHASE_STEPS)
+    sim.set_input("pru0", 0, False)
+    sim.step("pru0", PHASE_STEPS)
+    for _ in range(min(3, bits - 1)):
+        sim.set_input("pru0", 0, True)
+        sim.step("pru0", PHASE_STEPS)
+        sim.set_input("pru0", 0, False)
+        sim.step("pru0", PHASE_STEPS)
+    sim.set_input("pru0", 0, stopped_high)
+    sim.step("pru0", 1500)
+
+    assert sim.io("pru0")["gpo_pins"][16] == 1
+    assert read_frame(sim, bits) == word
+    assert emulator.status() == 0
+
+
+def test_timeout_crosses_counter_low_word_rollover(sim):
+    emulator = SSIEmulatorRuntime(sim, resolution=8, position=0xA5, monoflop_us=4)
+    sim.iep.count = 0xFFFFFFFF - 100
+    emulator.load()
+    sim.set_input("pru0", 0, True)
+    sim.step("pru0", PHASE_STEPS)
+    sim.set_input("pru0", 0, False)
+    sim.step("pru0", PHASE_STEPS)
+    sim.set_input("pru0", 0, True)
+    sim.step("pru0", 1500)
+    assert read_frame(sim, 8) == 0xA5
+    assert sim.iep.count >> 32 == 1
+
+
+@pytest.mark.parametrize("cfg, cmp_cfg", [(0x21, 0), (0x01, 0), (0x11, 3)])
+def test_emulator_rejects_timer_not_free_running_unit_increment(sim, cfg, cmp_cfg):
+    sim.iep.global_cfg = cfg
+    sim.iep.cmp_cfg = cmp_cfg
+    emulator = SSIEmulatorRuntime(sim)
+    with pytest.raises(ValueError, match="IEP"):
+        emulator.load()
+
+
+def test_emulator_enables_stopped_timer_without_resetting_count(sim_config):
+    sim = Simulator(sim_config(pru_clock_mhz=250, iep_clock_mhz=200))
+    sim.iep.count = 123
+    emulator = SSIEmulatorRuntime(sim, monoflop_us="1.001")
+    emulator.load()
+    assert sim.iep.count == 123
+    assert sim.iep.count_enabled and sim.iep.default_inc == 1
+    cfg = abi.unpack_emulator(sim.memory_read(abi.EMULATOR_ADDRESS, abi.EMULATOR_SIZE))
+    assert cfg["monoflop_ticks"] == 201  # active external IEP is 200 MHz in this branch
+
+
+@pytest.mark.parametrize("ocp, expected", [(False, 301), (True, 251)])
+def test_timeout_rounds_up_selected_iep_source_and_reload_updates_it(sim_config, ocp, expected):
+    sim = Simulator(sim_config(pru_clock_mhz=250, iep_clock_mhz=300))
+    sim.iep.write_iepclk(int(ocp))
+    sim.iep.global_cfg = 0x11
+    sim.iep.count = 12345
+    emulator = SSIEmulatorRuntime(sim, monoflop_us="1.001")
+    emulator.load()
+    assert emulator.monoflop_ticks == expected
+    assert sim.iep.count == 12345
+    assert sim.iep.global_cfg == 0x11
+    sim.iep.write_iepclk(int(not ocp))
+    assert emulator.monoflop_ticks == expected  # configuration is explicitly load-time
+    emulator.load()
+    assert emulator.monoflop_ticks == (251 if not ocp else 301)
+
+
+def test_host_can_update_frame_before_loading_emulator(sim):
+    emulator = SSIEmulatorRuntime(sim, resolution=8)
+    emulator.set_position(0xA5)
+    emulator.set_error(0)
+    emulator.load()
+    assert read_frame(sim, 8) == 0xA5
+
+
+def test_emulator_rejects_zero_timeout_config(sim):
+    emulator = SSIEmulatorRuntime(sim)
+    emulator.load()
+    sim.memory.write(abi.EMULATOR_ADDRESS + 0x14, b"\x00" * 4)
+    read_frame(sim, 1)
+    assert emulator.status() == 1
+
+
+@pytest.mark.parametrize("late_edge", ["rise", "fall"])
+def test_edge_observed_after_shared_timer_expiry_aborts_partial_frame(sim_config, late_edge):
+    sim = Simulator(sim_config(pru_clock_mhz=250, pru1_clock_mhz=250, iep_clock_mhz=200))
+    emulator = SSIEmulatorRuntime(sim, resolution=8, position=0x25, monoflop_us=4)
+    emulator.load()
+    assert sim.load("pru1", "nop\njmp 0") == []
+    core = sim.cores["pru0"]
+    loop_name = "wait_for_" + late_edge
+    loop_pc = next(instruction.operands[0].resolved_addr
+                   for instruction in core.instructions
+                   if instruction.opcode == "QBA"
+                   and instruction.operands[0].name == loop_name)
+    sim.set_input("pru0", 0, True)
+    sim.step("pru0", PHASE_STEPS)
+    sim.set_input("pru0", 0, False)
+    sim.step("pru0", PHASE_STEPS)
+    if late_edge == "fall":
+        sim.set_input("pru0", 0, True)
+        sim.step("pru0", PHASE_STEPS)
+    for _ in range(30):
+        if core.pc == loop_pc:
+            break
+        sim.step("pru0")
+    assert core.pc == loop_pc
+    last_fall = core.registers.read(8, 0, 32) | core.registers.read(9, 0, 32) << 32
+    sim.step("pru1", 2000)
+    assert sim.iep.count - last_fall > emulator.monoflop_ticks
+
+    sim.set_input("pru0", 0, late_edge == "rise")
+    observed_data = []
+    for _ in range(PHASE_STEPS):
+        sim.step("pru0")
+        observed_data.append(sim.io("pru0")["gpo_pins"][16])
+    if late_edge == "rise":
+        assert observed_data == [1] * PHASE_STEPS  # expired rising edge never shifts a bit
+
+    assert sim.io("pru0")["gpo_pins"][16] == 1  # expired frame restores idle DATA
+    assert core.registers.read(5, 0, 32) == 8  # no stale falling-edge bit decrement
+    assert read_frame(sim, 8) == 0x25
+    assert emulator.status() == 0
+
+
+def test_emulator_closing_fall_holds_data_low_until_monoflop(sim_config):
+    sim = Simulator(sim_config(pru_clock_mhz=250, iep_clock_mhz=250))
+    emulator = SSIEmulatorRuntime(sim, resolution=8, position=0xA5, monoflop_us=4)
+    emulator.load()
+    sim.set_input("pru0", 0, True)
+    sim.step("pru0", PHASE_STEPS)
+    sim.set_input("pru0", 0, False)
+    sim.step("pru0", PHASE_STEPS)
+    sampled = []
+    for bit in range(8):
+        sim.set_input("pru0", 0, True)
+        sim.step("pru0", PHASE_STEPS)
+        sampled.append(sim.io("pru0")["gpo_pins"][16])
+        sim.set_input("pru0", 0, False)
+        sim.step("pru0", PHASE_STEPS)
+    assert sampled == [1, 0, 1, 0, 0, 1, 0, 1]
+    sim.set_input("pru0", 0, True)
+    sim.step("pru0", 400)  # well within Tm after closing fall
+    assert sim.io("pru0")["gpo_pins"][16] == 0
+    sim.step("pru0", 1200)  # past Tm, ordinary instruction polling restores idle
+    assert sim.io("pru0")["gpo_pins"][16] == 1
+    assert emulator.status() == 0

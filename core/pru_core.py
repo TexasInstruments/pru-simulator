@@ -94,12 +94,14 @@ class PRUCore:
     def __init__(self, name: str, memory: MemoryBus, xfr: XFRBus, io_port: IOPort,
                  constant_table: ConstantTable | None = None,
                  dram_swap: bool = False,
-                 cycle_observer: Callable[[int], None] | None = None):
+                 cycle_observer: Callable[[int], None] | None = None,
+                 reset_observer: Callable[[], None] | None = None):
         self.name = name
         self.registers = RegisterFile()
         self.counters = CycleCounters()
         self.iep = None          # set by Simulator when an IEP is present
         self.cycle_observer = cycle_observer
+        self.reset_observer = reset_observer
         self.memory = memory
         self.xfr = xfr
         self.io_port = io_port
@@ -168,6 +170,8 @@ class PRUCore:
         self.registers.regs[:] = [0] * 32
         self.registers.carry = False
         self.counters.reset()
+        if self.reset_observer is not None:
+            self.reset_observer()
         self.pc = 0
         self.halted = False
         self.fault = None

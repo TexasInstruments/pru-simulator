@@ -77,3 +77,16 @@ def test_elf_load_rejects_malformed_header(offset, replacement, message):
     assert result["entry"] is None
     assert result["sections"] == []
     assert message in result["errors"][0]
+
+
+def test_successful_elf_replacement_releases_nondevice_gpio_lease_owner():
+    mcp = fresh_mcp()
+    previous = mcp.sim
+    owner = object()
+    previous.set_gpio_drive_mask("pru0", 16)
+    previous.lease_gpio_outputs("pru0", 16, owner)
+    assert previous.io("pru0")["gpo_drive_mask"] == 0
+    result = mcp.pru_elf_load(path=str(ELF_FIXTURE))
+    assert result["success"] is True
+    assert previous.io("pru0")["gpo_drive_mask"] == 16
+    assert previous.device_bus._lease_owners == {}

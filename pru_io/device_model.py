@@ -135,18 +135,24 @@ class DeviceBus:
 
     Attach to one or more IOPorts. Pin changes call `settle()` immediately;
     time-driven models advance through `advance_cycles()` for elapsed core
-    cycles. Cross-core GPIO connections share this resolver.
+    cycles. Cross-core GPIO connections share this resolver. GPIO outputs are
+    released until callers explicitly select a drive mask. Reactive propagation
+    has two phases: sample inputs, resolve changed drives, then sample affected
+    devices once more. It does not recursively seek a fixed point. Unchanged
+    R30 writes do not retick reactive devices; elapsed cycles (including stalls)
+    still advance time-driven devices.
     """
 
     def __init__(self) -> None:
         self.devices: list[DeviceModel] = []
         self.contentions: list[str] = []
         self.contention_records: list[dict] = []
+        self._active_conflicts: dict[object, tuple] = {}
         self._last_drives: dict[int, tuple[int, int]] = {}
         self._device_ports: dict[int, str | None] = {}
         self._last_inputs: dict[int, int] = {}
         self._bus = _MASK_20          # idle: pull-ups high
-        self._pru_drive_mask = _MASK_20
+        self._pru_drive_mask = 0
         self._last_gpo = 0
         self._ports: dict[str, object] = {}
         self._port_devices: dict[str, list[DeviceModel]] = {}
@@ -179,11 +185,22 @@ class DeviceBus:
         self._port_buses[name] = _MASK_20
         self._managed_masks[name] = 0
 
-    def lease_core_outputs(self, core: str, mask: int, owner: object) -> None:
-        """Temporarily release output pins while their external device is attached."""
+    def lease_core_outputs(self, core: str, mask: int, owner: object,
+                           drive_mask: int = 0) -> None:
+        """Lease selected GPIO directions, restoring them after the last owner."""
         if core not in self._ports:
             raise KeyError(f"Unknown GPIO endpoint {core!r}")
-        mask &= _MASK_20
+        if not isinstance(mask, int) or not 0 <= mask <= _MASK_20:
+            raise ValueError("GPIO lease mask must be a 20-bit integer")
+        if (not isinstance(drive_mask, int) or drive_mask < 0
+                or drive_mask & ~mask):
+            raise ValueError("GPIO lease drive mask must be a subset of its mask")
+        for pin in range(20):
+            bit = 1 << pin
+            lease = self._output_leases.get((core, pin))
+            if mask & bit and lease is not None:
+                if lease["drive_output"] != bool(drive_mask & bit):
+                    raise ValueError("GPIO lease direction conflicts with an active owner")
         if not mask:
             return
         owner_id = id(owner)
@@ -198,13 +215,14 @@ class DeviceBus:
                 continue
             lease = self._output_leases.get(key)
             if lease is None:
-                lease = {"was_output": bool(current & bit), "owners": set()}
+                lease = {"was_output": bool(current & bit),
+                         "drive_output": bool(drive_mask & bit), "owners": set()}
                 self._output_leases[key] = lease
             lease["owners"].add(owner_id)
             held.add(key)
             changed = True
         if changed:
-            self.set_core_drive_mask(core, current & ~mask,
+            self.set_core_drive_mask(core, (current & ~mask) | drive_mask,
                                      cycle=self._current_cycle())
 
     def release_core_outputs(self, owner: object) -> None:
@@ -258,6 +276,8 @@ class DeviceBus:
     def attach(self, device: DeviceModel, port: str | None = None,
                cycle: int = 0) -> DeviceModel:
         """Attach a device at one GPIO endpoint (or the stand-alone bus)."""
+        if port is None and self._ports:
+            raise ValueError("A registered GPIO bus requires an attachment endpoint")
         if port is not None and port not in self._ports:
             raise KeyError(f"Unknown GPIO endpoint {port!r}")
         key = id(device)
@@ -268,6 +288,8 @@ class DeviceBus:
             self._index_device(device, port, add=True)
             self._refresh_shared(cycle, process_reactive=True,
                                  affected={port})
+        else:
+            self.settle(cycle, self._last_gpo)
         return device
 
     def detach(self, device: DeviceModel) -> None:
@@ -288,7 +310,7 @@ class DeviceBus:
                                  affected=affected)
         elif port is None:
             self._bus = self._resolve_standalone(0, self._last_gpo,
-                                                 record_contention=False)
+                                                 record_contention=True)
         self.release_core_outputs(device)
 
     def detach_all(self, port: str | None = None) -> None:
@@ -459,50 +481,36 @@ class DeviceBus:
         return levels
 
     def _resolve_pin(self, cycle: int, pin: int, drivers: list[tuple],
-                     record_contention: bool) -> int:
-        if not drivers:
-            return 1
-        pp = [(name, value, identity) for name, value, mode, identity in drivers
-              if mode == PUSH_PULL]
-        od = [(name, value) for name, value, mode, _identity in drivers
-              if mode == OPEN_DRAIN]
-        pp_values = {value for _, value, _identity in pp}
-        if record_contention and len(pp_values) > 1:
-            message = (f"cycle {cycle}: push-pull contention on pin {pin} "
-                       f"({', '.join(f'{name}={value}' for name, value, _ in pp)})")
-            self.contentions.append(message)
-            self.contention_records.append({
-                "kind": "push_pull",
-                "cycle": cycle,
-                "pin": pin,
-                "message": message,
-                "drivers": [
-                    {**identity, "value": value, "mode": PUSH_PULL}
-                    for _name, value, identity in pp
-                ],
-            })
-        od_low = any(value == 0 for _, value in od)
-        pp_high = any(value == 1 for _, value, _identity in pp)
-        if record_contention and od_low and pp_high:
-            message = (
-                f"cycle {cycle}: mixed open-drain/push-pull contention on pin {pin} "
-                f"({', '.join(f'{name}={value}' for name, value, _, _ in drivers)})"
-            )
-            self.contentions.append(message)
-            self.contention_records.append({
-                "kind": "mixed_open_drain_push_pull",
-                "cycle": cycle,
-                "pin": pin,
-                "message": message,
-                "drivers": [
-                    {**identity, "value": value, "mode": mode}
-                    for _name, value, mode, identity in drivers
-                ],
-            })
-        if od_low:
+                     record_contention: bool, net=None) -> int:
+        pp_values = {value for _, value, mode, _ in drivers if mode == PUSH_PULL}
+        od_low = any(value == 0 and mode == OPEN_DRAIN
+                     for _, value, mode, _ in drivers)
+        mixed = od_low and 1 in pp_values
+        conflict = len(pp_values) > 1 or mixed
+        net = pin if net is None else net
+        ordered = sorted(drivers, key=lambda d: (d[0], d[1], d[2],
+                                                d[3].get("device_id", 0)))
+        if record_contention:
+            if conflict:
+                identity = tuple((name, value, mode, info.get("device_id"))
+                                 for name, value, mode, info in ordered)
+                if self._active_conflicts.get(net) != identity:
+                    kind = "mixed_open_drain_push_pull" if mixed else "push_pull"
+                    label = "mixed open-drain/push-pull" if mixed else "push-pull"
+                    who = ", ".join(f"{name}={value}" for name, value, _, _ in ordered)
+                    message = f"cycle {cycle}: {label} contention on pin {pin} ({who})"
+                    self.contentions.append(message)
+                    self.contention_records.append({
+                        "kind": kind, "cycle": cycle, "pin": pin,
+                        "message": message,
+                        "drivers": [{**info, "value": value, "mode": mode}
+                                    for _, value, mode, info in ordered],
+                    })
+                self._active_conflicts[net] = identity
+            else:
+                self._active_conflicts.pop(net, None)
+        if conflict or od_low or 0 in pp_values:
             return 0
-        if pp:
-            return pp[0][1]
         return 1
 
     def _shared_components(self):
@@ -568,7 +576,7 @@ class DeviceBus:
         for root in roots:
             pin = root[1]
             levels[root] = self._resolve_pin(
-                cycle, pin, drivers.get(root, []), record_contention)
+                cycle, pin, drivers.get(root, []), record_contention, net=root)
         return find, levels
 
     def _shared_levels(self, cycle: int, record_contention: bool):
@@ -602,7 +610,8 @@ class DeviceBus:
                                     device.nets.get(pin, PUSH_PULL),
                                     {"type": "device", "name": device.name,
                                      "device_id": id(device)}))
-            if self._resolve_pin(cycle, pin, drivers, record_contention):
+            if self._resolve_pin(cycle, pin, drivers, record_contention,
+                                 net=(port, pin)):
                 word |= bit
         return word
 
@@ -746,6 +755,7 @@ class DeviceBus:
     def reset(self) -> None:
         self.contentions.clear()
         self.contention_records.clear()
+        self._active_conflicts.clear()
         self._last_inputs.clear()
         for device in self.devices:
             self._last_drives[id(device)] = (0, 0)
@@ -765,8 +775,21 @@ class DeviceBus:
                 self._last_gpo = gpo & _MASK_20
             self.reset()
             return
-        self.contentions.clear()
-        self.contention_records.clear()
+        reset_devices = {id(device) for device in self.devices
+                         if self._device_ports.get(id(device)) == port}
+        self.contention_records = [
+            record for record in self.contention_records
+            if not any((driver["type"] == "core" and driver["name"] == port)
+                       or driver.get("device_id") in reset_devices
+                       for driver in record["drivers"])
+        ]
+        self.contentions = [record["message"] for record in self.contention_records]
+        self._active_conflicts = {
+            net: identity for net, identity in self._active_conflicts.items()
+            if not any((device_id is None and name == port)
+                       or device_id in reset_devices
+                       for name, _value, _mode, device_id in identity)
+        }
         self._port_gpo[port] = self._ports[port].gpo & _MASK_20
         self._core_drive_masks[port] = self._ports[port].gpo_drive_mask & _MASK_20
         for device in self.devices:
@@ -778,8 +801,10 @@ class DeviceBus:
 
     def snapshot(self) -> dict:
         return {
+            "active_conflicts": dict(self._active_conflicts),
             "bus": self._bus,
             "output_leases": {key: {"was_output": lease["was_output"],
+                                    "drive_output": lease["drive_output"],
                                     "owners": set(lease["owners"])}
                               for key, lease in self._output_leases.items()},
             "lease_owner_pins": {owner: set(pins)
@@ -813,9 +838,12 @@ class DeviceBus:
         }
 
     def restore(self, snap: dict) -> None:
+        self._active_conflicts = dict(snap.get("active_conflicts", {}))
         self._bus = snap["bus"]
         self._output_leases = {
-            key: {"was_output": lease["was_output"], "owners": set(lease["owners"])}
+            key: {"was_output": lease["was_output"],
+                  "drive_output": lease.get("drive_output", False),
+                  "owners": set(lease["owners"])}
             for key, lease in snap.get("output_leases", {}).items()
         }
         self._lease_owner_pins = {owner: set(pins)

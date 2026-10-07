@@ -82,7 +82,7 @@ comes from the RM08 miniature magnetic encoder data sheet, RM08D01_18 (issue 18,
 | `AFS_AFM60_MULTITURN_30BIT` | 33 | 30 | 3 | p. 14 |
 | `AFS_AFM60_MULTITURN_27BIT` | 30 | 27 | 3 | pp. 14-15 |
 | `AFS_AFM60S_PRO_SINGLETURN` | 21 | 18 | 3 | p. 17 |
-| `AFS_AFM60S_PRO_MULTITURN` | 28 | 25 | 3 | p. 18 (the 25-bit example) |
+| `AFS_AFM60S_PRO_MULTITURN_EXAMPLE` | 28 | 25 | 3 | p. 18 (the 25-bit example) |
 | `ARS60_SHORT` | 13 | 13 | 0 | p. 22 |
 | `ARS60_LONG` | 17 | 15 | 2 | p. 22 |
 | `TTK70` | 26 | 24 | 2 | p. 23 |
@@ -96,8 +96,20 @@ Timing fields the model uses: SICK presets set `f_max_hz` to 2 MHz, the
 highest baud rate the document allows (p. 4), and `monoflop_us` to 20, the
 middle of its 15-25 us tm range (p. 5). The document's tv (< T/2) and Tp
 (> tm) constrain the master and have no equivalent in the model, so presets
-do not carry them. Every preset is binary because the document says the code
-is configurable but gives no default. The multi-turn presets are a plain
+do not carry them. Configurable AHS/AHM and AFS/AFM presets use explicit binary
+examples rather than claiming a manufacturer's default. `AFS_AFM60S_PRO_MULTITURN_EXAMPLE`
+keeps the illustrated 25-bit position, not a universal width.
+
+`ARS60_SHORT` and `ARS60_LONG` use standard Gray position for the
+[ARS60-AAA08192](https://www.sick.com/media/pdf/8/28/728/dataSheet_ARS60-AAA08192_1031458_en.pdf)
+and [ARS60-A4B32768](https://www.sick.com/media/pdf/6/06/406/dataSheet_ARS60-A4B32768_1031497_zf.pdf)
+SSI variants (Interfaces, p. 2); trimmed Gray variants need a different layout.
+`TTK70` uses the [TTK70-AXA0-K02](https://www.sick.com/media/pdf/0/40/840/dataSheet_TTK70-AXA0-K02_1038033_en.pdf)
+24-bit Gray position (p. 2), followed by the two separate error bits in
+[IM0100079](https://www.sick.com/media/docs/9/79/079/technical_information_ssi_interface_description_en_im0100079.pdf)
+p. 23: the resulting full wire frame is 26 bits, not a 26-bit Gray conversion.
+`KH53` uses [24-bit Gray SSI](https://www.sick.com/media/docs/0/00/600/product_information_kh53_linear_encoders_en_im0011600.pdf)
+(Interfaces, p. 3). The multi-turn presets are a plain
 position field; the model does not split turns from steps. Left/right
 justification, round-axis and ATM60/ATM90 formats are not presets (use
 `position_offset`/`position_bits` for a custom layout).
@@ -118,9 +130,9 @@ All fields are little-endian unsigned 32-bit values. The shared-memory base is
 
 | Block | Offset | Fields |
 |---|---:|---|
-| Reader config | `0x00` | ABI version (2), frame width, clock delay loops, idle delay loops |
+| Reader config | `0x00` | ABI version (3), frame width, clock delay loops, idle delay loops |
 | Latest-frame mailbox | `0x20` | seqlock sequence, raw frame low word, raw frame high word, frame count, status |
-| Emulator config | `0x40` | ABI version, frame width, frame word low, frame word high, status |
+| Emulator config | `0x40` | ABI version, frame width, frame word low, frame word high, status, monoflop ticks |
 
 Frame widths are 1–64 bits; the mailbox and the emulator block carry the frame
 as low and high 32-bit words (the high word is 0 up to 32 bits).
@@ -134,7 +146,22 @@ the same layout code as the encoder model; the firmware only shifts the word
 out. The emulator re-reads the block at every frame's first falling clock
 edge, so host changes apply to the next frame (the block is not seqlocked).
 Its `status` is written by the firmware: 0 while running, 1 if it halted on an
-invalid ABI version or a frame width outside 1-64.
+invalid ABI version, a frame width outside 1-64, or zero timeout ticks.
+ABI 3 appends `monoflop_ticks` as u32 at emulator offset `0x14`; reader and
+mailbox offsets stay unchanged. The host rounds up the selected monoflop
+interval times the active IEP rate. Both mid-frame waits use the memory-mapped
+64-bit IEP count since the most recent falling edge. Timeout discards a partial
+word, restores idle DATA, and requires high idle followed by a fresh falling
+start; it is a normal abort, with status zero. Expiry is checked before either
+wait accepts an edge, so a late edge after another core advanced shared time
+cannot continue an expired word. Normal completion drives DATA low at the
+closing fall and holds it through the monoflop interval before restoring idle
+high. Polling uses ordinary PRU instructions and memory access cycles.
+
+The runtime reuses an enabled free-running IEP with `DEFAULT_INC=1`. An enabled
+timer with another increment, or enabled CMP0 reset, is rejected. A stopped
+timer is enabled with increment one without resetting its count. Changing the
+active IEP clock requires reloading the emulator timeout configuration.
 
 ## Run the reader and SSI model
 
@@ -292,3 +319,10 @@ and invalid values are rejected before attachment. The existing TCA
 When `pru_device_faults` is filtered by device name, its `contentions` field
 contains structured records for each bus conflict involving that exact device.
 The existing `faults` field retains human-readable messages.
+
+
+SSI clock limits apply to each rising-edge period. Integer cycle quantization
+rounds the minimum interval up: at 250 MHz, 4 MHz takes 62.5 cycles, so 62 cycles
+exceeds the limit and 63 cycles satisfies it. At 300 MHz, 75 cycles represents
+4 MHz exactly. The model does not relax a per-period limit to accept rounding
+to a shorter interval.

@@ -37,7 +37,7 @@ def test_generic_discovery_attach_state_and_detach_preserve_output_ownership():
         config={"name": "axis", "data_pin": 16, "resolution": 8},
     )
     assert attached["device"]["name"] == "axis"
-    assert mcp.sim.io("pru1")["gpo_drive_mask"] == initial_mask & ~(1 << 16)
+    assert mcp.sim.io("pru1")["gpo_drive_mask"] == (initial_mask & ~(1 << 16)) | 1
     assert mcp.pru_device_state()["devices"][0]["name"] == "axis"
 
     detached = mcp.pru_device_detach(device_name="axis")
@@ -126,7 +126,7 @@ def test_overlapping_ssi_outputs_stay_released_until_last_device_detaches():
         profile="ssi_encoder", config={**config, "name": "axis_b"})
 
     mcp.pru_device_detach("axis_a")
-    assert mcp.sim.io("pru0")["gpo_drive_mask"] == initial_mask & ~(1 << 8)
+    assert mcp.sim.io("pru0")["gpo_drive_mask"] == (initial_mask & ~(1 << 8)) | 1
 
     mcp.pru_device_detach("axis_b")
     assert mcp.sim.io("pru0")["gpo_drive_mask"] == initial_mask
@@ -140,7 +140,7 @@ def test_tca_profile_keeps_sda_and_scl_owned_as_open_drain_master_lines():
         profile="tca9538", config={"name": "expander", "address": 0x24})
 
     assert result["success"] is True
-    assert mcp.sim.io("pru0")["gpo_drive_mask"] == initial_mask
+    assert mcp.sim.io("pru0")["gpo_drive_mask"] == initial_mask | 3
     assert mcp.sim.device_bus.devices[0].nets == {
         0: "open_drain", 1: "open_drain",
     }
@@ -270,7 +270,7 @@ def test_successful_elf_load_cleans_up_generic_device_output_ownership():
     assert result["success"] is True
     assert mcp.sim is not previous
     assert previous.device_bus.devices == []
-    assert previous.io("pru0")["gpo_drive_mask"] == (1 << 20) - 1
+    assert previous.io("pru0")["gpo_drive_mask"] == 0
     assert mcp.pru_device_state()["devices"] == []
 
 
@@ -296,3 +296,18 @@ def test_each_device_receives_structured_contentions_with_exact_name_matching():
     assert {record["pin"] for record in axis_a["contentions"]} == {8}
     assert {record["pin"] for record in prefixed["contentions"]} == {9}
     assert suffixed["faults"] and suffixed["contentions"][0]["pin"] == 9
+
+
+@pytest.mark.parametrize(("profile", "config", "expected"), [
+    ("ssi_encoder", {"clock_pin": 2, "data_pin": 8}, 1 << 2),
+    ("tca9538", {"scl_pin": 3, "sda_pin": 4}, (1 << 3) | (1 << 4)),
+])
+def test_profile_explicitly_leases_transmitting_pins_and_restores(profile, config, expected):
+    mcp = PRUSimulatorMCP("memory.cfg")
+    initial = 1 << 8
+    mcp.sim.set_gpio_drive_mask("pru0", initial)
+    result = mcp.pru_device_attach(profile, config=config)
+    assert mcp.sim.io("pru0")["gpo_drive_mask"] == (
+        expected if profile == "ssi_encoder" else initial | expected)
+    mcp.pru_device_detach(result["device"]["name"])
+    assert mcp.sim.io("pru0")["gpo_drive_mask"] == initial

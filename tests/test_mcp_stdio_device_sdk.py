@@ -34,14 +34,31 @@ async def _exercise_stdio_tools():
                 "pru_device_discover", "pru_device_attach", "pru_device_detach",
                 "pru_device_state", "pru_device_events", "pru_device_faults",
                 "pru_load", "pru_step", "pru_run_until", "pru_status",
+                "pru_gpio_drive_mask",
             }
             assert required <= by_name.keys()
-            attach_tool = by_name["pru_device_attach"]
-            attach_schema = getattr(attach_tool, "input_schema", None)
-            if attach_schema is None:
-                attach_schema = attach_tool.inputSchema
-            assert attach_schema[
-                "properties"]["config"]["type"] == "object"
+            def property_schema(name, field):
+                tool = by_name[name]
+                schema = getattr(tool, "input_schema", None)
+                if schema is None:
+                    schema = tool.inputSchema
+                prop = schema["properties"][field]
+                variants = prop.get("anyOf", [prop])
+                return next(variant for variant in variants
+                            if variant.get("type") != "null")
+
+            assert property_schema("pru_device_attach", "config")["type"] == "object"
+            include_paths = property_schema("pru_load", "include_paths")
+            assert include_paths["type"] == "array"
+            assert include_paths["items"]["type"] == "string"
+            assert property_schema("pru_gpio_drive_mask", "mask")["type"] == "integer"
+            for arguments, expected in [({}, 0), ({"core": "pru1", "mask": 7}, 7),
+                                        ({"core": "pru1"}, 7)]:
+                result = _payload(await session.call_tool("pru_gpio_drive_mask", arguments))
+                assert result["drive_mask"] == expected
+            loaded = _payload(await session.call_tool(
+                "pru_load", {"source": "nop\nhalt", "include_paths": []}))
+            assert loaded["success"] is True
 
             discovered = _payload(await session.call_tool(
                 "pru_device_discover", {}))

@@ -50,3 +50,21 @@ def test_standard_preset_clock_limit_is_enforced_at_300mhz(config_300mhz):
         faults = runtime.encoder.faults()
 
     assert any("f_max" in fault for fault in faults)
+
+@pytest.mark.parametrize("rate, period, violates", [
+    (250_000_000, 62, True),
+    (250_000_000, 63, False),
+    (300_000_000, 75, False),
+])
+def test_individual_clock_period_quantization(rate, period, violates):
+    from pru_io.ssi_encoder_model import SSIEncoderModel
+
+    model = SSIEncoderModel(resolution=2, position=2,
+                            core_clock_hz=rate, f_max_hz=4_000_000)
+    model.tick(0, 1)
+    model.tick(10, 0)
+    model.tick(20, 1)
+    model.tick(40, 0)
+    model.tick(20 + period, 1)
+
+    assert any("f_max" in fault for fault in model.faults()) == violates

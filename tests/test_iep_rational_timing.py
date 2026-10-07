@@ -46,8 +46,8 @@ def _load_loop(sim, core):
     assert sim.load(core, "nop\njmp 0\n") == []
 
 
-def test_cmp0_resets_counter_through_the_shared_simulator_timer():
-    sim = Simulator()
+def test_cmp0_resets_counter_through_the_shared_simulator_timer(tmp_path):
+    sim = _clocked_sim(tmp_path, pru="250", iep="200")
     _load_loop(sim, "pru0")
     _write32(sim, IEP_BASE + GLOBAL_CFG, 0x11)
     _write32(sim, IEP_BASE + CMP0_REG0, 50)
@@ -120,6 +120,7 @@ def test_rational_core_clock_preserves_exact_iep_cadence(tmp_path):
 
 def test_repeated_global_cfg_firmware_writes_preserve_rational_tick_phase():
     sim = Simulator("memory.cfg")
+    sim.iep.set_clock_mhz("200")
     sim.iep.global_cfg = 0x11
     assert sim.load(
         "pru0",
@@ -138,7 +139,7 @@ def test_repeated_global_cfg_firmware_writes_preserve_rational_tick_phase():
 
 
 def test_global_cfg_noop_and_non_timing_writes_preserve_tick_phase():
-    iep = IepTimer()
+    iep = IepTimer(clock_mhz="200")
     iep.write32(GLOBAL_CFG, 0x11)
     iep.observe_core_cycles("pru0", 1)
     assert iep._tick_remainder == 4
@@ -153,7 +154,7 @@ def test_global_cfg_noop_and_non_timing_writes_preserve_tick_phase():
 
 
 def test_global_cfg_enable_and_increment_transitions_reset_tick_phase():
-    iep = IepTimer()
+    iep = IepTimer(clock_mhz="200")
     iep.write32(GLOBAL_CFG, 0x11)
     iep.observe_core_cycles("pru0", 1)
     assert iep._tick_remainder == 4
@@ -180,7 +181,7 @@ def test_global_cfg_enable_and_increment_transitions_reset_tick_phase():
 
 
 def test_iep_clock_source_and_rate_transitions_reset_tick_phase():
-    iep = IepTimer()
+    iep = IepTimer(clock_mhz="200")
     iep.write32(GLOBAL_CFG, 0x11)
     iep.observe_core_cycles("pru0", 1)
     assert iep._tick_remainder == 4
@@ -202,6 +203,7 @@ def test_iep_clock_source_and_rate_transitions_reset_tick_phase():
 
 def test_repeated_iepclk_firmware_writes_preserve_tick_phase():
     sim = Simulator("memory.cfg")
+    sim.iep.set_clock_mhz("200")
     sim.iep.global_cfg = 0x11
     assert sim.load("pru0", "ldi32 r0, 0x26030\nldi r1, 0\n"
                     "loop: sbbo &r1, r0, 0, 4\nqba loop\n") == []
@@ -211,7 +213,7 @@ def test_repeated_iepclk_firmware_writes_preserve_tick_phase():
 
 
 def test_unchanged_effective_clock_preserves_tick_phase():
-    iep = IepTimer()
+    iep = IepTimer(clock_mhz="200")
     iep.global_cfg = 0x11
     iep.observe_core_cycles("pru0", 1)
     iep.write_iepclk(0)
@@ -255,7 +257,7 @@ def test_lbbo_and_wait_stalls_reach_the_cycle_observer():
     sim.step("pru0", 2)
 
     assert elapsed == [1, 3, 1, 1, 1]
-    assert sim.iep.count == 5
+    assert sim.iep.count == 7
 
 
 def test_rtu1_uses_slice_one_local_dram_mapping():
@@ -360,18 +362,18 @@ def test_single_core_reset_rejoins_global_time_and_hardware_reset_restarts_it():
     cycles = sim.cores["pru0"].counters.cycles
     sim.step("pru0", 2)
     assert sim.iep.now_ns == Fraction(48)
-    assert sim.iep.count == 9
+    assert sim.iep.count == 12
 
     sim.cores["pru0"].counters.cycles = cycles
     sim.iep.restore(snapshot)
     sim.step("pru0")
     assert sim.iep.now_ns == Fraction(44)
-    assert sim.iep.count == 8
+    assert sim.iep.count == 11
 
     sim.hard_reset()
     assert sim.iep.now_ns == 0
     assert sim.iep.count == 0
-    assert sim.iep.read32(GLOBAL_CFG) == 0
+    assert sim.iep.read32(GLOBAL_CFG) & 0xffff1 == 0x550  # SPRUIM2J Table 14-10907
     assert sim.iep.iepclk == 0
 
 
@@ -393,3 +395,113 @@ def test_ui_step_back_restores_the_shared_timer_timeline(monkeypatch):
     assert sim.iep.now_ns == saved_time
     assert sim.iep.count == saved_count
     assert sim.cores["pru0"].counters.cycles == 10
+
+
+def test_direct_core_reset_notifies_shared_timeline():
+    sim = Simulator()
+    _load_loop(sim, "pru0")
+    sim.step("pru0")
+    assert sim.iep.now_ns == 4
+    sim.cores["pru0"].reset()
+    sim.step("pru0")
+    assert sim.iep.now_ns == 8
+
+
+def test_omitted_external_clock_inherits_selected_core(tmp_path):
+    for rate in ("250", "300", "333.333"):
+        config = tmp_path / "inherit.cfg"
+        config.write_text(f"[device]\npru_clock_mhz = {rate}\n")
+        sim = Simulator(str(config))
+        _load_loop(sim, "pru0")
+        sim.iep.global_cfg = 0x11
+        sim.step("pru0", 1000)
+        assert sim.iep.external_clock_hz == Fraction(rate) * 1_000_000
+        assert sim.iep.count == 1000
+    assert IepTimer(ocp_clock_mhz="333.333").external_clock_hz == 333333000
+    assert Simulator("missing.cfg").iep.external_clock_hz == 250000000
+
+
+def test_rtu1_is_only_available_on_icssg_targets(tmp_path):
+    config = tmp_path / "target.cfg"
+    config.write_text("[device]\ntarget = AM263x\n")
+    assert "rtu1" not in Simulator(str(config)).cores
+
+
+def test_configured_constants_are_independent_per_core():
+    sim = Simulator()
+    assert sim.cores["rtu1"].constant_table is not sim.cores["pru0"].constant_table
+    assert sim.cores["pru1"].constant_table is not sim.cores["pru0"].constant_table
+
+
+def test_bulk_compare_matches_independent_single_tick_execution():
+    for inc in (0, 1, 2, 3, 15):
+        for start in (0, 1, 7, (1 << 64) - 4):
+            for reset in (False, True):
+                for ticks in (1, 2, 17, 81):
+                    bulk = IepTimer()
+                    bulk.global_cfg = 1 | inc << 4
+                    bulk.count = start
+                    bulk.cmp_cfg = 0b1110 | reset
+                    bulk.compare[:3] = [6, 3, 6]
+                    serial = IepTimer()
+                    serial.restore(bulk.snapshot())
+                    bulk._advance_ticks(ticks)
+                    for _ in range(ticks):
+                        serial.tick()
+                    assert bulk.snapshot() == serial.snapshot()
+
+
+def test_bulk_compare_reset_every_tick_is_bounded(monkeypatch):
+    iep = IepTimer()
+    iep.global_cfg = 0x11
+    iep.cmp_cfg = 7
+    iep.compare[:2] = [1, 1]
+    calls = []
+    original = iep.tick
+    def counted():
+        calls.append(1)
+        assert len(calls) < 100
+        original()
+    monkeypatch.setattr(iep, 'tick', counted)
+    iep._advance_ticks(10**9)
+    assert iep.count == 0
+    assert iep.cmp_status == 3
+
+
+def test_default_equal_rate_stalled_firmware_and_cmp0():
+    sim = Simulator()
+    sim.iep.global_cfg = 0x11
+    assert sim.load("pru0", "ldi32 r0, 0x2E000\nldi r1, 0x11\nloop: sbbo &r1, r0, 0, 4\nqba loop\n") == []
+    assert sim.step("pru0", 302)["cycles"] == 452
+    assert sim.iep.count == 452
+    sim = Simulator()
+    _load_loop(sim, "pru0")
+    sim.iep.global_cfg = 0x11
+    sim.iep.compare[0] = 50
+    sim.iep.cmp_cfg = 3
+    sim.step("pru0", 300)
+    assert sim.iep.count == 0
+    assert sim.iep.cmp_status == 1
+
+
+def test_direct_reset_stalled_instruction_preserves_peer_time(tmp_path):
+    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="250")
+    _load_loop(sim, "pru1")
+    assert sim.load("pru0", "lbbo &r1, r0, 0, 4\njmp 0") == []
+    sim.step("pru1", 10)
+    sim.cores["pru0"].reset()
+    sim.step("pru0")
+    assert sim.iep.now_ns == 52
+    assert sim.iep.core_time_units("pru1", 10) == sim.iep.nanoseconds_to_units(40)
+
+
+def test_rtu1_constants_write_and_clock_are_slice_local(tmp_path):
+    sim = _clocked_sim(tmp_path, pru="250", pru1="200", iep="250")
+    baseline = sim.cores["pru0"].constant_table.resolve(26)
+    sim.cores["rtu1"].constant_table.set(26, 0x1234)
+    assert sim.cores["pru0"].constant_table.resolve(26) == baseline
+    assert sim.cores["pru1"].constant_table.resolve(26) == baseline
+    assert sim.load("rtu1", "ldi r1, 0xA5\nsbbo &r1, r0, 0, 4\nhalt") == []
+    sim.step("rtu1", 3)
+    assert sim.memory_read(0x2000, 4) == bytes.fromhex("a5000000")
+    assert sim.iep.now_ns == sim.cores["rtu1"].counters.cycles * 5

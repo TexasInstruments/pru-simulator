@@ -3,6 +3,8 @@
 import sys
 import os
 
+import pytest
+
 # Ensure the project root is on sys.path so "simulator" can be imported
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -73,6 +75,20 @@ class TestSimulatorBasic:
         sim.reset("pru0")
         assert sim.status()["pru0"]["fault"] is None
 
+    @pytest.mark.parametrize("response", ["step", "status"])
+    def test_returned_fault_does_not_mutate_core_fault(self, response):
+        sim = Simulator(config_path="nonexistent.cfg")
+        assert sim.load("pru0", "ldi r1, 0x4000\nlbbo &r0, r1, 0, 4") == []
+        result = sim.step("pru0", count=2)
+        expected = dict(sim.cores["pru0"].fault)
+        fault = result["fault"] if response == "step" else sim.status()["pru0"]["fault"]
+
+        fault["address"] = 0
+        fault["caller_note"] = "mutated"
+
+        assert sim.cores["pru0"].fault == expected
+        assert sim.status()["pru0"]["fault"] == expected
+
     def test_constants_can_be_loaded_from_the_project_root(self, tmp_path):
         config_path = tmp_path / "memory.cfg"
         config_path.write_text("[device]\n", encoding="utf-8")
@@ -91,7 +107,7 @@ class TestSimulatorBasic:
 
         sim.hard_reset()
 
-        assert sim.iep.global_cfg == 0
+        assert sim.iep.global_cfg & 0xffff1 == 0x550
         assert sim.iep.count == 0
 
     def test_reset(self):
