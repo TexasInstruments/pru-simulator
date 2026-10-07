@@ -34,7 +34,7 @@ class IOPort:
         self.device_bus = DeviceBus()
         self._device_endpoint: str | None = None
         self._device_pin_mask = 0
-        self.gpo_drive_mask: int = _MASK_20
+        self.gpo_drive_mask: int = 0
         self._device_cycle = 0        # last cycle seen, for write-triggered settles
 
     # ------------------------------------------------------------------

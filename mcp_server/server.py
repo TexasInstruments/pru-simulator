@@ -7,8 +7,6 @@ import binascii
 import struct
 import copy
 import random
-import inspect
-from typing import get_args, get_origin
 
 # Allow imports from parent directory when run directly
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -17,49 +15,20 @@ from simulator import Simulator
 from mcp_server.vcd_export import export_pin_waveform
 
 
-def _build_tool_input_schema(method) -> dict:
-    """Build an MCP JSON schema from a wrapper method's signature."""
-    properties = {}
-    required = []
-    sig = inspect.signature(method)
-    for param_name, param in sig.parameters.items():
-        if param_name == "self":
-            continue
-        annotation = param.annotation
-        annotated_type = annotation
-        union_args = get_args(annotation)
-        if type(None) in union_args:
-            annotated_type = next(arg for arg in union_args if arg is not type(None))
-
-        if get_origin(annotated_type) is list and get_args(annotated_type) == (str,):
-            prop = {"type": "array", "items": {"type": "string"}}
-        else:
-            ptype = "string"
-            if annotated_type is int:
-                ptype = "integer"
-            elif annotated_type is float:
-                ptype = "number"
-            elif annotated_type is bool:
-                ptype = "boolean"
-            elif annotated_type is dict:
-                ptype = "object"
-            prop = {"type": ptype}
-
-        if param.default is inspect.Parameter.empty:
-            required.append(param_name)
-        else:
-            prop["default"] = param.default
-        properties[param_name] = prop
-
-    return {"type": "object", "properties": properties, "required": required}
-
-
 class PRUSimulatorMCP:
     """Wraps the Simulator and exposes its methods as MCP-compatible tool functions."""
 
     def __init__(self, config_path: str = "memory.cfg"):
         self._config_path = config_path
         self.sim = Simulator(config_path)
+
+    def pru_gpio_drive_mask(self, core: str = "pru0", mask: int | None = None) -> dict:
+        """Query or set the twenty GPIO output-enable bits without changing R30."""
+        if mask is not None:
+            if not isinstance(mask, int) or not 0 <= mask < (1 << 20):
+                raise ValueError("GPIO drive mask must be a 20-bit integer")
+            self.sim.set_gpio_drive_mask(core, mask)
+        return {"core": core, "drive_mask": self.sim.io(core)["gpo_drive_mask"]}
 
     def pru_load(self, source: str, core: str = "pru0",
                  include_paths: list[str] | None = None) -> dict:
@@ -188,6 +157,7 @@ class PRUSimulatorMCP:
             if not errors:
                 candidate.cores[core].pc = entry_pc
                 self.sim.device_bus.detach_all()
+                self.sim.device_bus.release_all_core_outputs()
                 self.sim = candidate
         except (OSError, ValueError, binascii.Error) as exc:
             errors = [f"ELF load failed: {exc}"]
@@ -234,6 +204,7 @@ class PRUSimulatorMCP:
                 "pc": c.pc,
                 "cycles": c.counters.cycles,
                 "halted": c.halted,
+                "fault": dict(c.fault) if c.fault is not None else None,
             }
 
         for _ in range(count):
@@ -254,7 +225,14 @@ class PRUSimulatorMCP:
             follow_units = self.sim.iep.core_time_units(
                 follow, follow_core.counters.cycles
             )
-            if follow_units < target_units:
+            if lead_core.fault is not None or follow_core.fault is not None:
+                return {
+                    "success": False,
+                    "reason": "core_fault",
+                    "lead": state(lead),
+                    "follow": state(follow),
+                }
+            if not follow_core.halted and follow_units < target_units:
                 target_ns = float(self.sim.iep.time_units_to_ns(target_units))
                 follow_ns = float(self.sim.iep.time_units_to_ns(follow_units))
                 return {
@@ -478,6 +456,7 @@ def run_stdio_server():
         from mcp.server.stdio import stdio_server
         from mcp.types import Tool, TextContent
         import asyncio
+        import inspect
         import json
 
         server = Server("pru-simulator")
@@ -488,10 +467,34 @@ def run_stdio_server():
         for name, method in inspect.getmembers(mcp_wrapper, predicate=inspect.ismethod):
             if name.startswith("_"):
                 continue
+            sig = inspect.signature(method)
+            properties = {}
+            required = []
+            for param_name, param in sig.parameters.items():
+                if param_name == "self":
+                    continue
+                ptype = "string"
+                annotation = param.annotation
+                if annotation in (int,):
+                    ptype = "integer"
+                elif annotation in (float,):
+                    ptype = "number"
+                elif annotation in (bool,):
+                    ptype = "boolean"
+                prop = {"type": ptype}
+                if param.default is inspect.Parameter.empty:
+                    required.append(param_name)
+                else:
+                    prop["default"] = param.default
+                properties[param_name] = prop
             _TOOLS.append(Tool(
                 name=name,
                 description=method.__doc__ or name,
-                inputSchema=_build_tool_input_schema(method),
+                inputSchema={
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
+                },
             ))
 
         @server.list_tools()

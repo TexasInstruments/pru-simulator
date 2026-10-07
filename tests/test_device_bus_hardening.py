@@ -151,6 +151,7 @@ def test_cross_core_wire_resolves_direction_without_changing_drive_masks():
     a = sim.cores["pru0"].io_port
     b = sim.cores["rtu0"].io_port
     pin_a, pin_b = 3, 7
+    a.set_gpo_drive_mask(_MASK_20)
     a.write_r30(1 << pin_a)
     b.set_gpo_drive_mask(_MASK_20 ^ (1 << pin_b))
 
@@ -167,6 +168,8 @@ def test_cross_core_wire_resolves_direction_without_changing_drive_masks():
 
 def test_two_core_push_pull_conflict_is_reported():
     sim = Simulator()
+    sim.set_gpio_drive_mask("pru0", 1 << 2)
+    sim.set_gpio_drive_mask("rtu0", 1 << 2)
     sim.add_gpio_wire("pru0", 2, "rtu0", 2)
     sim.cores["pru0"].io_port.write_r30(1 << 2)
 
@@ -177,6 +180,7 @@ def test_two_core_push_pull_conflict_is_reported():
 def test_device_vs_core_push_pull_conflict_is_reported():
     sim = Simulator()
     port = sim.cores["pru1"].io_port
+    port.set_gpo_drive_mask(1 << 5)
     port.write_r30(1 << 5)
     sim.attach_device("pru1", _PinDevice(5, value=0, name="low-device"))
 
@@ -246,6 +250,7 @@ def test_ui_step_back_restores_device_drives_wires_masks_and_cycle(monkeypatch):
     sim = Simulator()
     monkeypatch.setattr(ui_server, "sim", sim)
     port = sim.cores["pru0"].io_port
+    sim.set_gpio_drive_mask("pru0", _MASK_20)
     sim.set_gpio_drive_mask("rtu0", _MASK_20 ^ (1 << 5))
     device = sim.attach_device("rtu0", _PinDevice(5, value=0))
     sim.add_gpio_wire("pru0", 0, "rtu0", 1)
@@ -305,6 +310,7 @@ def test_ui_step_back_rewinds_remote_core_and_tca_transaction(
     monkeypatch.setattr(ui_server, "sim", sim)
     firmware = Path("source/i2c_tca9538_running_led.asm").read_text()
     assert sim.load("rtu0", firmware) == []
+    sim.set_gpio_drive_mask("rtu0", 3)
     model = sim.attach_device("rtu0", TCA9538Model())
     rtu0 = sim.cores["rtu0"]
     before = ui_server._snapshot("pru0")
@@ -403,3 +409,164 @@ def test_ui_step_back_restores_device_attachments(monkeypatch):
 
     assert sim.device_bus.devices == [original]
     assert later not in sim.device_bus.devices
+
+
+def test_default_inputs_and_standalone_attachment_settle_immediately():
+    from pru_io.device_model import DeviceBus
+    bus = DeviceBus()
+    device = bus.attach(_PinDevice(4, value=0))
+    assert bus.get_state()["bus"] & (1 << 4) == 0
+    assert device.calls
+    sim = Simulator()
+    assert sim.io("pru0")["gpo_drive_mask"] == 0
+    sim.attach_device("pru0", _PinDevice(4, value=1))
+    assert _level(sim.cores["pru0"].io_port.gpi, 4) == 1
+    assert sim.device_bus.faults() == []
+
+
+def test_conflict_is_low_sorted_and_one_record_per_episode():
+    results = []
+    for reverse in (False, True):
+        sim = Simulator()
+        devices = [_PinDevice(4, value=1, name="high"),
+                   _PinDevice(4, value=0, name="low")]
+        for device in devices[::-1] if reverse else devices:
+            sim.attach_device("pru0", device)
+        for cycle in range(10000):
+            sim.device_bus.settle(cycle, 0, port="pru0")
+        assert _level(sim.cores["pru0"].io_port.gpi, 4) == 0
+        assert len(sim.device_bus.contentions) == 1
+        results.append(sim.device_bus.contentions)
+        snap = sim.device_bus.snapshot()
+        sim.device_bus.restore(snap)
+        sim.device_bus.settle(10001, 0, port="pru0")
+        assert len(sim.device_bus.contentions) == 1
+        devices[0].value = 0
+        sim.device_bus._last_inputs.clear()
+        sim.device_bus.settle(10002, 0, port="pru0")
+        devices[0].value = 1
+        sim.device_bus._last_inputs.clear()
+        sim.device_bus.settle(10003, 0, port="pru0")
+        assert len(sim.device_bus.contentions) == 2
+        assert len(sim.device_bus.contentions_for_device(devices[0])) == 2
+    assert results[0][0] == results[1][0]
+
+
+def test_generic_direction_lease_detach_and_snapshot_restore():
+    sim = Simulator()
+    sim.set_gpio_drive_mask("pru0", 1 << 4)
+    device = sim.attach_device("pru0", _PinDevice(4, value=1))
+    sim.lease_gpio_outputs("pru0", 1 << 4, device)
+    assert sim.io("pru0")["gpo_drive_mask"] == 0
+    snap = sim.device_bus.snapshot()
+    sim.detach_device(device)
+    assert sim.io("pru0")["gpo_drive_mask"] == 1 << 4
+    sim.device_bus.restore(snap)
+    assert sim.io("pru0")["gpo_drive_mask"] == 0
+    sim.detach_device(device)
+    assert sim.io("pru0")["gpo_drive_mask"] == 1 << 4
+
+
+def test_unrelated_same_pin_conflicts_are_separate_and_filtered():
+    sim = Simulator()
+    attached = []
+    for core in ("pru0", "pru1"):
+        sim.set_gpio_drive_mask(core, 1 << 4)
+        attached.append(sim.attach_device(core, _PinDevice(4, value=1)))
+    assert len(sim.device_bus.contention_records) == 2
+    assert len(sim.device_bus.contentions_for_device(attached[0])) == 1
+    sim.device_bus.settle(1, 0, port="pru0")
+    sim.device_bus.settle(1, 0, port="pru1")
+    assert len(sim.device_bus.contention_records) == 2
+    records = sim.device_bus.contentions_for_device(attached[0])
+    records[0]["drivers"][0]["value"] = 99
+    assert all(driver["value"] in (0, 1)
+               for record in sim.device_bus.contention_records
+               for driver in record["drivers"])
+
+
+def test_mixed_conflicts_resolve_low_in_both_attach_orders():
+    for reverse in (False, True):
+        sim = Simulator()
+        devices = [_PinDevice(3, OPEN_DRAIN, 0, name="low"),
+                   _PinDevice(3, PUSH_PULL, 1, name="high")]
+        for device in devices[::-1] if reverse else devices:
+            sim.attach_device("pru0", device)
+        assert _level(sim.cores["pru0"].io_port.gpi, 3) == 0
+        assert len(sim.device_bus.contention_records) == 1
+        assert sim.device_bus.contention_records[0]["kind"] == "mixed_open_drain_push_pull"
+
+
+def test_standalone_detach_clears_conflict_episode():
+    from pru_io.device_model import DeviceBus
+    bus = DeviceBus()
+    bus.attach(_PinDevice(2, value=0, name="low"))
+    high = bus.attach(_PinDevice(2, value=1, name="high"))
+    assert len(bus.contentions) == 1
+    bus.detach(high)
+    bus.attach(high)
+    assert len(bus.contentions) == 2
+
+
+def test_reset_one_core_preserves_unrelated_contention_episode():
+    sim = Simulator()
+    sim.set_gpio_drive_mask("pru1", 1 << 4)
+    device = sim.attach_device("pru1", _PinDevice(4, value=1))
+    before = sim.device_bus.contentions_for_device(device)
+    assert len(before) == 1
+    sim.reset("pru0")
+    assert sim.device_bus.contentions_for_device(device) == before
+    sim.device_bus.settle(1, 0, port="pru1")
+    assert sim.device_bus.contentions_for_device(device) == before
+
+
+def test_registered_bus_requires_endpoint_before_attachment_mutates_state():
+    import pytest
+    sim = Simulator()
+    before = sim.device_bus.snapshot()
+    with pytest.raises(ValueError, match="endpoint"):
+        sim.device_bus.attach(_PinDevice(4))
+    assert sim.device_bus.snapshot() == before
+
+
+def test_output_lease_enables_transmitter_and_restores_both_directions():
+    sim = Simulator()
+    sim.set_gpio_drive_mask("pru0", 2)
+    device = sim.attach_device("pru0", _PinDevice(5))
+    sim.lease_gpio_outputs("pru0", 3, device, drive_mask=1)
+    assert sim.io("pru0")["gpo_drive_mask"] == 1
+    snap = sim.device_bus.snapshot()
+    sim.detach_device(device)
+    assert sim.io("pru0")["gpo_drive_mask"] == 2
+    sim.device_bus.restore(snap)
+    assert sim.io("pru0")["gpo_drive_mask"] == 1
+    sim.detach_device(device)
+    assert sim.io("pru0")["gpo_drive_mask"] == 2
+
+
+def test_overlapping_direction_leases_restore_after_last_owner():
+    sim = Simulator()
+    owners = [object(), object()]
+    for owner in owners:
+        sim.lease_gpio_outputs("pru0", 1, owner, drive_mask=1)
+    sim.lease_gpio_outputs("pru0", 1, owners[0], drive_mask=1)
+    sim.device_bus.release_core_outputs(owners[0])
+    assert sim.io("pru0")["gpo_drive_mask"] == 1
+    sim.device_bus.release_core_outputs(owners[1])
+    assert sim.io("pru0")["gpo_drive_mask"] == 0
+
+
+def test_contradictory_or_invalid_direction_leases_do_not_mutate_state():
+    import pytest
+    sim = Simulator()
+    owner = object()
+    sim.lease_gpio_outputs("pru0", 1, owner, drive_mask=1)
+    before = sim.device_bus.snapshot()
+    for request_owner in (owner, object()):
+        with pytest.raises(ValueError, match="direction"):
+            sim.lease_gpio_outputs("pru0", 3, request_owner, drive_mask=2)
+        assert sim.device_bus.snapshot() == before
+    for mask, drive in ((-1, 0), (1 << 20, 0), (1, 2), (1, -1)):
+        with pytest.raises(ValueError):
+            sim.lease_gpio_outputs("pru0", mask, object(), drive_mask=drive)
+        assert sim.device_bus.snapshot() == before

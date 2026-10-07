@@ -26,7 +26,7 @@ EXIT_OK = 0
 EXIT_INPUT = 2
 EXIT_UNMET = 3
 EXIT_INTERNAL = 4
-_CORES = ("pru0", "pru1", "rtu0")
+_CORES = ("pru0", "pru1", "rtu0", "rtu1")
 _ELF_HEADER_SIZE = 52
 _ELF_SECTION_HEADER_SIZE = 40
 _ELF_PROGRAM_HEADER_SIZE = 32
@@ -317,6 +317,8 @@ def run(args: argparse.Namespace) -> tuple[int, dict]:
 
     try:
         sim = Simulator(args.config)
+        if args.core not in sim.cores:
+            raise ValueError(f"Core {args.core} is unavailable for the configured target")
         condition_met = _compile_condition(sim, args.core, args.until)
         if args.assembly:
             include_paths = [str(input_path.resolve().parent)]

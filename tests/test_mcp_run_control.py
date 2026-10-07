@@ -47,17 +47,15 @@ def test_multicore_rejects_same_lead_and_follow():
         fresh_mcp().pru_step_multicore(lead="pru0", follow="pru0")
 
 
-def test_multicore_reports_when_follower_cannot_catch_up():
+def test_multicore_normal_follower_halt_preserves_success():
     mcp = fresh_mcp()
-    assert mcp.pru_load("ldi r0, 1\nhalt", core="pru0")["success"]
-    assert mcp.pru_load("ldi r0, 1\nhalt", core="pru1")["success"]
-    mcp.sim.cores["pru1"].halted = True
-
-    result = mcp.pru_step_multicore(count=1)
-
-    assert result["success"] is False
-    assert result["reason"] == "pacing_catchup_failed"
-    assert result["follow_ns"] < result["target_ns"]
+    assert mcp.pru_load("nop\njmp 0", core="pru0")["success"]
+    assert mcp.pru_load("halt", core="pru1")["success"]
+    for _ in range(3):
+        result = mcp.pru_step_multicore(count=3)
+        assert result["success"] is True
+        assert result["follow"]["halted"] is True
+    assert result["lead"]["cycles"] == 9
 
 
 def test_pin_predicates_select_one_direction_only():
@@ -122,3 +120,47 @@ def test_run_until_honors_breakpoint_before_execution():
 def test_run_until_rejects_negative_limits(kwargs):
     with pytest.raises(ValueError, match="non-negative"):
         fresh_mcp().pru_run_until(**kwargs)
+
+
+def test_multicore_live_follower_without_progress_is_catchup_failure(monkeypatch):
+    mcp = fresh_mcp()
+    assert mcp.pru_load("nop\njmp 0", core="pru0")["success"]
+    assert mcp.pru_load("nop\njmp 0", core="pru1")["success"]
+    monkeypatch.setattr(mcp.sim, "step_paced", lambda lead, follow, count, **kw: mcp.sim.step(lead, count))
+    result = mcp.pru_step_multicore(count=1)
+    assert result["success"] is False
+    assert result["reason"] == "pacing_catchup_failed"
+    assert result["follow_ns"] < result["target_ns"]
+
+
+def test_multicore_faulted_follower_is_not_normal_halt():
+    mcp = fresh_mcp()
+    assert mcp.pru_load("nop\njmp 0", core="pru0")["success"]
+    assert mcp.pru_load("halt", core="pru1")["success"]
+    follower = mcp.sim.cores["pru1"]
+    follower.halted = True
+    follower.fault = {"type": "memory", "address": 0xFFFFFFFF}
+    result = mcp.pru_step_multicore(count=1)
+    assert result["success"] is False
+    assert result["follow"]["fault"] == follower.fault
+
+
+def test_multicore_actual_lead_fault_is_not_normal_completion():
+    mcp = fresh_mcp()
+    assert mcp.pru_load("ldi32 r0, 0xFFFFFFFF\nlbbo &r1, r0, 0, 4\nhalt", core="pru0")["success"]
+    assert mcp.pru_load("nop\njmp 0", core="pru1")["success"]
+    result = mcp.pru_step_multicore(count=4)
+    assert result["success"] is False
+    assert result["reason"] == "core_fault"
+    assert result["lead"]["fault"]["address"] == 0xFFFFFFFF
+    assert result["lead"]["fault"]["opcode"] == "LBBO"
+
+
+def test_multicore_normal_lead_halt_is_success():
+    mcp = fresh_mcp()
+    assert mcp.pru_load("halt", core="pru0")["success"]
+    assert mcp.pru_load("nop\njmp 0", core="pru1")["success"]
+    result = mcp.pru_step_multicore(count=4)
+    assert result["success"] is True
+    assert result["lead"]["halted"] is True
+    assert result["lead"]["fault"] is None
