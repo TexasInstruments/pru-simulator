@@ -21,6 +21,7 @@ let _lastSourceKey = '';
 // ---- Multi-core state ------------------------------------------------------
 let multiCoreMode = false;
 let mcPartner = "rtu0";            // second core shown in multi-core view
+let availableCores = ["pru0"];
 let mcExtras = [];                 // optional third and fourth cores (RTU0/PRU1/RTU1)
 // Per-slot state. Slot i holds the i-th shown core (pru0, partner, extra, extra);
 // the slot names are the DOM id fragments, see PruChrome.mcCores.
@@ -30,7 +31,7 @@ let mcLastSourceKey = { pru0: '', rtu0: '', x2: '', x3: '' };
 let mcBreakpoints   = { pru0: new Set(), rtu0: new Set(), x2: new Set(), x3: new Set() };
 let mcHaltedState   = { pru0: false, rtu0: false, x2: false, x3: false };
 let mcBreakState    = { pru0: false, rtu0: false, x2: false, x3: false };
-const mcShown = () => PruChrome.mcCores(mcPartner, mcExtras);
+const mcShown = () => PruChrome.mcCores(mcPartner, mcExtras, availableCores);
 const mcSlotOf = core => PruChrome.mcSlot(mcShown(), core);
 const mcCoreOfSlot = slot => mcShown()[PruChrome.MC_SLOTS.indexOf(slot)];
 function mcResetSlot(slot) {
@@ -329,6 +330,7 @@ function initUI() {
   initSpadState();
   buildRegTable();
   buildPinGrid(gpoGrid, 20, "gpo", null);
+  buildGpioDirectionControls();
   buildPinGrid(gpiGrid, 20, "gpi", handleGpiClick);
   initLayout('sc');
   initEditorTabs();
@@ -372,6 +374,7 @@ function connect() {
     try {
       const msg = JSON.parse(event.data);
       if (msg.type === "state") {
+        if (msg.available_cores) showAvailableCores(msg.available_cores);
         if (msg.iep) showIepClock(msg.iep);
         window.MotorControl?.onState(msg);
         window.updateWorkspaceEvents?.(msg, multiCoreMode ? mcShown() : [currentCore]);
@@ -409,6 +412,16 @@ function connect() {
         }
       } else if (msg.type === "error") {
         if (msg.tag && msg.tag.startsWith("graph-")) graphMarkChannelError(msg.tag);
+        else if (msg.tag === "gpio") {
+          const error = document.getElementById('gpio-drive-error');
+          error.textContent = msg.errors.join('; ');
+          error.hidden = false;
+        }
+        else if (msg.tag === "iep") {
+          const error = document.getElementById('iep-clock-error');
+          error.textContent = msg.errors.join('; ');
+          error.hidden = false;
+        }
         else if (msg.tag === "device") showDeviceError(msg.errors);
         else if (msg.tag === "motor") window.MotorControl?.onError(msg.errors);
         else {
@@ -475,7 +488,7 @@ function updateUI(state) {
   updateSource(state.instructions, state.pc, state.labels || {});
 
   // IO pins
-  updatePins(state.io);
+  updatePins(state.io, state.core);
   updateSDPanel(state.io);
   updatePerifPanel(state.io);
   updateI2CPanel(state.io);
@@ -656,8 +669,36 @@ function updateSource(instructions, pc, labels) {
   renderBpBar("", currentCore, clientBreakpoints);
 }
 
-function updatePins(io) {
+function buildGpioDirectionControls() {
+  const container = document.getElementById('gpio-drive-controls');
+  for (let pin = 0; pin < 20; pin++) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.addEventListener('click', () => {
+      document.getElementById('gpio-drive-error').hidden = true;
+      sendAction({ action: 'set_gpio_drive_mask', core: container.dataset.core || currentCore,
+        mask: Number(container.dataset.mask || 0) ^ (1 << pin) });
+    });
+    container.appendChild(button);
+  }
+}
+
+function updateGpioDirections(io, core = currentCore) {
+  const container = document.getElementById('gpio-drive-controls');
+  const mask = io.gpo_drive_mask || 0;
+  container.dataset.mask = String(mask);
+  container.dataset.core = core;
+  [...container.children].forEach((button, pin) => {
+    const driving = !!(mask & (1 << pin));
+    button.textContent = `${pin}: ${driving ? 'Drive' : 'Release'}`;
+    button.setAttribute('aria-pressed', String(driving));
+    button.setAttribute('aria-label', `GPIO ${pin}: ${driving ? 'driving; release pin' : 'released; drive pin'}`);
+  });
+}
+
+function updatePins(io, core = currentCore) {
   if (!io) return;
+  updateGpioDirections(io, core);
 
   (io.gpo_pins || []).forEach((val, i) => {
     const pin = document.getElementById(`pin-gpo-${i}`);
@@ -2463,18 +2504,39 @@ btnConfigSave.addEventListener("click", async () => {
 // Runtime only: the server applies it to the live IepTimer and never writes memory.cfg.
 
 function showIepClock(iep) {
-  const known = [...iepClockSelect.options].some(o => Number(o.value) === iep.external_mhz);
-  if (known) iepClockSelect.value = String(iep.external_mhz);
-  else iepClockSelect.selectedIndex = -1;   // e.g. iep_clock_mhz in memory.cfg is not a choice
-  iepClockSelect.title = !known
-    ? "IEP counter clock is " + iep.external_mhz + " MHz (from memory.cfg); pick 200, 225, 250, 300 or 333 MHz for this session"
-    : iep.core_clock
-    ? "Firmware selected the core clock through IEPCLK; the counter runs at " + iep.clock_mhz + " MHz. This choice applies when it selects the external clock."
-    : "IEP counter clock (this session only; memory.cfg is not changed)";
+  const known = [...iepClockSelect.options].some(o => o.value !== 'configured' &&
+    o.value !== 'custom' && Number(o.value) === iep.external_mhz);
+  const custom = document.getElementById('iep-clock-custom');
+  if (document.activeElement !== custom) {
+    iepClockSelect.value = iep.override_mhz == null ? 'configured'
+      : known ? String(iep.external_mhz) : 'custom';
+    custom.value = String(iep.external_mhz);
+  }
+  document.getElementById('iep-clock-custom-form').hidden = iepClockSelect.value !== 'custom';
+  document.getElementById('iep-clock-status').textContent =
+    `Active ${iep.clock_mhz} MHz (${iep.core_clock ? 'core' : 'external'} source) · ` +
+    `Configured ${iep.configured_mhz} MHz · External ${iep.external_mhz} MHz`;
 }
 
 iepClockSelect.addEventListener("change", () => {
-  sendAction({ action: "set_iep_clock", mhz: Number(iepClockSelect.value) });
+  document.getElementById('iep-clock-error').hidden = true;
+  const custom = iepClockSelect.value === 'custom';
+  document.getElementById('iep-clock-custom-form').hidden = !custom;
+  if (custom) document.getElementById('iep-clock-custom').focus();
+  else sendAction({ action: 'set_iep_clock',
+    mhz: iepClockSelect.value === 'configured' ? null : Number(iepClockSelect.value) });
+});
+document.getElementById('iep-clock-custom-form').addEventListener('submit', event => {
+  event.preventDefault();
+  const mhz = Number(document.getElementById('iep-clock-custom').value);
+  const error = document.getElementById('iep-clock-error');
+  error.hidden = true;
+  if (!Number.isFinite(mhz) || mhz <= 0) {
+    error.textContent = 'Enter a finite positive IEP rate in MHz';
+    error.hidden = false;
+    return;
+  }
+  sendAction({ action: 'set_iep_clock', mhz });
 });
 // ---- end IEP counter clock selector ----
 
@@ -3646,11 +3708,41 @@ const mcExtraCores    = document.getElementById("mc-extra-cores");
 const deviceCoreSelect = document.getElementById('device-core-select');
 const deviceCoreSelectWrap = document.getElementById('device-core-select-wrap');
 
+function showAvailableCores(cores) {
+  if (JSON.stringify(availableCores) === JSON.stringify(cores)) return;
+  stopRun(); stopSim();
+  availableCores = cores;
+  const previousCore = currentCore;
+  if (!cores.includes(currentCore)) currentCore = cores[0];
+  if (!cores.includes(mcPartner)) mcPartner = cores.find(core => core !== 'pru0');
+  mcExtras = mcExtras.filter(core => cores.includes(core) && core !== mcPartner);
+  if (!cores.includes(devicePanelCore)) devicePanelCore = currentCore;
+  for (const select of [coreSelect, mcPartnerSelect, mcLoadCore, deviceCoreSelect]) {
+    for (const option of select.options) {
+      option.hidden = !cores.includes(option.value);
+      option.disabled = option.hidden;
+    }
+    if (!cores.includes(select.value)) select.value = select === mcPartnerSelect ? mcPartner : currentCore;
+  }
+  coreSelect.value = currentCore;
+  mcPartnerSelect.value = mcPartner;
+  for (const button of document.querySelectorAll('#mc-extra-cores button')) {
+    button.hidden = !cores.includes(button.dataset.mcExtra);
+    button.disabled = button.hidden || button.dataset.mcExtra === mcPartner;
+  }
+  syncDeviceCoreSelect();
+  if (multiCoreMode) applyMCCores();
+  else applyMCPartnerLabels();
+  if (previousCore !== currentCore) sendAction({ action: 'get_state', core: currentCore });
+}
+
 function syncDeviceCoreSelect() {
   if (!deviceCoreSelect || !deviceCoreSelectWrap) return;
   const partnerOption = deviceCoreSelect.options[1];
   partnerOption.value = mcPartner;
   partnerOption.textContent = mcPartner.toUpperCase();
+  partnerOption.hidden = !availableCores.includes(mcPartner);
+  partnerOption.disabled = partnerOption.hidden;
   deviceCoreSelectWrap.hidden = !multiCoreMode;
   if (multiCoreMode) {
     if (devicePanelCore !== 'pru0' && devicePanelCore !== mcPartner) {
@@ -3683,14 +3775,14 @@ function applyMCPartnerLabels() {
   // The partner is always shown, so its own toggle is pressed and locked.
   document.querySelectorAll("#mc-extra-cores button").forEach(btn => {
     const core = btn.dataset.mcExtra;
-    btn.disabled = core === mcPartner;
+    btn.disabled = !availableCores.includes(core) || core === mcPartner;
     btn.setAttribute("aria-pressed", String(core === mcPartner || mcExtras.includes(core)));
   });
 }
 
 // Rebuild the multi-core view after the set of shown cores changed.
 function applyMCCores() {
-  mcExtras = PruChrome.mcExtras(mcPartner, mcExtras);
+  mcExtras = PruChrome.mcExtras(mcPartner, mcExtras, availableCores);
   applyMCPartnerLabels();
   for (const slot of PruChrome.MC_SLOTS) mcResetSlot(slot);
   mcShown().forEach((_, i) => buildMCRegTable(PruChrome.MC_SLOTS[i]));
@@ -3714,7 +3806,7 @@ mcPartnerSelect.addEventListener("change", () => {
   mcPartner = mcPartnerSelect.value;
   if (devicePanelCore === previousPartner) devicePanelCore = mcPartner;
   syncDeviceCoreSelect();
-  mcExtras = PruChrome.mcExtras(mcPartner, mcExtras);
+  mcExtras = PruChrome.mcExtras(mcPartner, mcExtras, availableCores);
   applyMCPartnerLabels();
   if (multiCoreMode) {
     if (mcExtras.length || currentMode !== PruChrome.mcMode(mcShown().length)) {
@@ -3895,7 +3987,7 @@ function updateMCUI(state) {
     cntInstrs.textContent = state.instruction_count;
     cntIpc.textContent    = state.ipc.toFixed(3);
     cntPc.textContent     = state.pc;
-    updatePins(state.io);
+    updatePins(state.io, state.core);
     updateSDPanel(state.io);
     updateI2CPanel(state.io);
     // Update SPAD columns in PRU0 MC reg panel

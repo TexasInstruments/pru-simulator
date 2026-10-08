@@ -13,7 +13,7 @@ EXPECTED = {
     "AFS_AFM60_MULTITURN_30BIT": (33, 30, 3),
     "AFS_AFM60_MULTITURN_27BIT": (30, 27, 3),
     "AFS_AFM60S_PRO_SINGLETURN": (21, 18, 3),
-    "AFS_AFM60S_PRO_MULTITURN": (28, 25, 3),
+    "AFS_AFM60S_PRO_MULTITURN_EXAMPLE": (28, 25, 3),
     "ARS60_SHORT": (13, 13, 0),
     "ARS60_LONG": (17, 15, 2),
     "TTK70": (26, 24, 2),
@@ -37,7 +37,7 @@ def test_every_preset_validates_with_the_documented_frame(name):
     # The SICK frames send error bits after the position, so they are the
     # low bits of the word and the position sits above them.
     assert (model.position_offset, model.error_offset) == (error_bits, 0)
-    assert model.encoding == "binary"
+    assert model.encoding == ("gray" if name in {"ARS60_SHORT", "ARS60_LONG", "TTK70", "KH53"} else "binary")
 
 
 def test_sick_presets_use_the_documented_timing_limits():
@@ -65,3 +65,15 @@ def test_options_override_preset_fields_and_unknown_presets_are_rejected():
         preset_fields("NOT_A_PRESET")
     preset_fields("TTK70")["resolution"] = 1  # a copy: the table is unchanged
     assert PRESETS["TTK70"]["resolution"] == 26
+
+
+@pytest.mark.parametrize("name, position, error, raw", [
+    ("ARS60_SHORT", 0x15, 0, 0x1F),
+    ("ARS60_LONG", 0x15, 2, 0x7E),
+    ("TTK70", 0x15, 2, 0x7E),
+    ("KH53", 0x15, 0, 0x1F),
+])
+def test_vendor_gray_position_keeps_error_field_binary(name, position, error, raw):
+    model = SSIEncoderModel.from_preset(name)
+    assert model.pack_frame(position, error) == raw
+    assert model.decode_frame(raw) == (position, error)

@@ -80,13 +80,7 @@
     if (!referenceLocked && config && config.requested_generation > 0 && motor) {
       referenceLocked = true;
       const poles = motor.parameters.pole_pairs;
-      const values = {
-        speedRpm: config.speed_ref_q28 / 268435456 * 1000 * 60 / poles,
-        vdPu: config.vd_ref_q15 / 32768,
-        vqPu: config.vq_ref_q15 / 32768,
-        accelRpmS: config.ramp_rate_q28 >= 268435456 ? null
-          : config.ramp_rate_q28 / 268435456 * 1000 * 60 / poles * 16000,
-      };
+      const values = H.referenceValues(config, poles, clocks);
       for (const [key, input] of Object.entries(referenceInputs)) {
         if (input.dataset.dirty || document.activeElement === input || values[key] === null) continue;
         input.value = String(Number(values[key].toFixed(key === 'vdPu' || key === 'vqPu' ? 4 : 1)));
@@ -263,7 +257,9 @@
     }
     motor = found || null;
     config = motor ? io.foc_config || null : null;
+    const previousIepHz = clocks?.iep_hz;
     clocks = motor ? io.foc_clocks || null : null;
+    if (previousIepHz && clocks?.iep_hz !== previousIepHz) referenceLocked = false;
     firmwareLoaded = !!(msg.labels && msg.labels.control_update !== undefined) &&
       Array.isArray(msg.instructions) && msg.instructions.length > 0;
     if (awaitingLoad && motor && firmwareLoaded) awaitingLoad = false;

@@ -47,6 +47,8 @@ The dashboard is divided into resizable panels. You can drag panel title bars to
 | HW Reset | Full hardware reset — clears all SPAD banks, all cores, and every core's Peripheral Interface state (TX/RX FIFOs, overrun/underrun, RX valid/overflow, busy). Perif config registers, GP Mux and loopback settings are kept |
 | Multi-core | Toggle dual-core (PRU0 + RTU0) debug view |
 
+**Load & Assemble** installs the new instructions only; it does not reset the core. Click **Reset** before running a newly loaded program, especially after the previous one halted or faulted.
+
 ---
 
 ## Example 1 — Running LED (`running_led.asm`)
@@ -435,3 +437,21 @@ after the first rising edge — drop that first bit before grouping into octets.
 - **Step back:** Click **Step Back** (or press `←`) to reverse the last instruction. The full machine state — registers, memory, SD filter — is restored exactly.
 - **Layout:** Drag a panel title bar onto another panel to split the window. Layouts persist across sessions.
 - **Reset Layout:** Click the **⊞ Reset Layout** button in the toolbar to restore the default arrangement.
+
+### Core and IEP clocks
+
+The PRU cores start at 250 MHz because the project chose it as an arbitrary starting point, not because of a hardware value. The IEP does not follow that choice. It defaults to 200 MHz, the rate the TRM gives for ICSSG_IEP_CLK (SPRUIM2J §6.4.13.2.4: the counter counts every ICSSG_IEP_CLK cycle at a "default rate of 200 MHz"). Core and IEP clocks remain independently configurable, including positive fractional MHz values, and changing the core speed leaves the IEP clock unchanged. Firmware's IEPCLK register selects which configured source drives the timer.
+
+| INI setting | Default |
+| --- | --- |
+| `pru_clock_mhz` | 250 |
+| `pru1_clock_mhz` | inherited core |
+| `iep_clock_mhz` | 200 |
+
+With CNT_ENABLE=1 and DEFAULT_INC=1, 1000 unstalled default core cycles produce 800 IEP ticks, because the IEP defaults to 200 MHz and the core to 250 MHz. Setting `iep_clock_mhz = 250` instead produces 1000 ticks. IEPCLK bit 0 clear selects the configured external clock; set selects the modeled OCP/core clock. Memory and wait stalls contribute elapsed cycles too.
+
+The simulator's IEP `GLOBAL_CFG` reset value, `0x550`, follows the TRM register defaults (IEP_GLOBAL_CFG_REG, Table 14-10907: `CMP_INC` and `DEFAULT_INC` reset to 5h, `CNT_ENABLE` to 0h). `DEFAULT_INC=5` counts nanoseconds at the default 200 MHz IEP clock, where one tick is 5 ns, so firmware that enables the counter with a read-modify-write (`GLOBAL_CFG | 1`) gets a nanosecond count. If you set a different IEP clock, for example 250 MHz (a 4 ns tick), firmware must set `DEFAULT_INC` itself (4 at 250 MHz) to keep a nanosecond count. A full-word write of `1` leaves `DEFAULT_INC=0`, and the counter does not advance. The SSI runtime (`pru_io/ssi_runtime.py`) is the in-repo example: it enables a stopped IEP with `DEFAULT_INC=1` written explicitly and sizes its timeouts from the active IEP clock.
+
+TI's [EnDAT3 example](https://software-dl.ti.com/processor-industrial-sw/esd/motor_control_sdk/am243x/latest/docs/api_guide_am243x/EXAMPLE_MOTORCONTROL_ENDAT3.html) uses configurations at 200 and 300 MHz; its [EtherNet/IP firmware](https://software-dl.ti.com/processor-industrial-sw/esd/ind_comms_sdk/am243x/2025_00_00_08/docs/api_guide_am243x/ETHERNETIP_ADAPTER_FWHAL.html) specifies 200 MHz for that configuration. The [GPIO example](https://git.ti.com/cgit/pru-software-support-package/pru-software-support-package/commit/examples?id=3895fa73784357366bbee5ca993660c6da50acc2) illustrates selecting the core source through IEPCLK. These firmware examples do not establish a universal IEP frequency; the simulator accepts positive fractional rates without a hardware whitelist. Register reset values are a separate hardware question.
+
+RTU1 is available for AM243x and AM64x profiles (an omitted target selects AM243x), including `tools.headless_runner --core rtu1`. Its local address 0 accesses DRAM1 and it uses the slice-1 clock. Each core has an independent mutable constant table.

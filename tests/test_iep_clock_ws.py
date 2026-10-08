@@ -35,10 +35,11 @@ def test_state_reports_the_default_iep_clock(fresh_sim):
     with client.websocket_connect("/ws") as ws:
         state = _send(ws, action="get_state")[-1]
     assert state["iep"] == {"clock_mhz": 200.0, "external_mhz": 200.0, "core_clock": False,
-                            "choices_mhz": [200, 225, 250, 300, 333]}
+                            "choices_mhz": [200, 225, 250, 300, 333],
+                            "configured_mhz": 200.0, "override_mhz": None}
 
 
-@pytest.mark.parametrize("mhz", [225, 250, 300, 333])
+@pytest.mark.parametrize("mhz", [225, 250, 275, 300, 333, 333.333])
 def test_set_iep_clock_changes_the_counter_rate_without_losing_time(fresh_sim, mhz):
     iep = fresh_sim.iep
     iep.global_cfg = CNT_ENABLE_INC1
@@ -51,10 +52,10 @@ def test_set_iep_clock_changes_the_counter_rate_without_losing_time(fresh_sim, m
         assert state["iep"]["clock_mhz"] == float(mhz)
         assert iep.count == before, "switching the clock does not move the counter"
         iep.observe_core_cycles("pru0", 3000)
-    assert iep.count - before == round(2000 * mhz * 1e6 / core_hz)
+    assert iep.count - before == int(2000 * mhz * 1e6 / core_hz)
 
 
-@pytest.mark.parametrize("bad", [0, 275, "300", None, True, -1])
+@pytest.mark.parametrize("bad", [0, "300", True, -1, float("nan"), float("inf")])
 def test_set_iep_clock_rejects_other_values(fresh_sim, bad):
     with client.websocket_connect("/ws") as ws:
         messages = _send(ws, action="set_iep_clock", mhz=bad)

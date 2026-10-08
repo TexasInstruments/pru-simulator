@@ -4,9 +4,12 @@
 1") controller that ramps a speed reference, integrates the electrical angle,
 applies the inverse Park transform to Vd/Vq references and produces
 three-phase space-vector PWM on `R30.0`-`R30.2`. It polls the simulator's IEP
-counter and starts each period every 12,500 IEP ticks. With the shipped 200 MHz
-IEP clock that is 62.5 us, or 16 kHz. The firmware requires matching 12,500-tick
-control and PWM periods.
+counter and starts each period every 12,500 IEP ticks. The actual period depends
+on the active IEP source: 200 MHz gives 62.5 us (16 kHz), 250 MHz gives 50 us
+(20 kHz), and 300 MHz gives about 41.667 us (24 kHz). The firmware requires
+matching 12,500-tick control and PWM periods. The project's chosen 250 MHz
+starting frequency is a software convention; users can select independent
+core and IEP rates. Firmware's IEPCLK bit still selects the active source.
 
 There is no simulator fast path or callback: the firmware executes instruction
 by instruction (`cycles == instructions + stall cycles`), and the motor
@@ -43,7 +46,7 @@ The phase order and common-mode convention match TI's
 
 ### Timing
 
-At the shipped 250 MHz PRU0 and 200 MHz IEP clocks the saturated-vector
+At a 250 MHz PRU0 and an explicitly selected 200 MHz IEP clock the saturated-vector
 low window is 838 IEP ticks, or 1,047 PRU cycles. The worst measured control
 update (the one that adopts a new generation) takes 233 PRU cycles including
 19 stall cycles; steady-state updates take 190-200 cycles and a disabled update
@@ -90,10 +93,13 @@ wrong `abi_version` or non-default periods set `STATUS_INVALID_CONFIG`, keep
 the output neutral and are still acknowledged; the next valid generation
 recovers. `pack_config` rejects the same ranges on the host.
 
-**Units.** Speed is electrical, per unit of a 1 kHz base:
-`speed_q28 = rpm * pole_pairs / 60 / 1000 * 2^28`, so 1 pu advances the angle by
-1/16 turn per 16 kHz update. `ramp_rate_q28` is the speed change per update:
-`rpm_per_s * pole_pairs / 60 / 1000 / 16000 * 2^28`. Voltages are per unit of
+**Units.** Each update adds the signed `speed_ref_q28` value to a 32-bit phase
+accumulator. Derive the update rate from the active IEP frequency divided by
+12,500: `speed_q28 = rpm * pole_pairs / 60 / update_hz * 2^32` and
+`ramp_rate_q28 = rpm_per_s * pole_pairs / 60 / update_hz^2 * 2^32`.
+The nominal 16 kHz conversion retains the 1 kHz electrical per-unit convention
+(1 pu = 2^28), but an actual simulator session must pass its update rate to
+the host conversion helpers. Voltages are per unit of
 the DC bus: a Vd/Vq vector of magnitude 1 pu is a phase amplitude equal to
 `Vdc`; the linear limit is 1/sqrt(3) = 0.577 pu, beyond which the centered
 phases clamp. `pru_io/foc_control.py` has the conversions
@@ -178,10 +184,11 @@ mcp = PRUSimulatorMCP("memory.cfg")
 mcp.pru_device_attach(profile="foc_motor", config={"load_torque_nm": 0.0})
 mcp.pru_sd_route_input(channel=0, pin=3)
 mcp.pru_sd_route_input(channel=1, pin=4)
+update_hz = foc.update_frequency_hz(mcp.sim.iep)
 foc.stage_control(
     mcp.sim.memory, enable=1,
-    speed_ref_q28=foc.speed_rpm_to_q28(400, pole_pairs=4),
-    ramp_rate_q28=foc.ramp_rpm_s_to_q28(1000, pole_pairs=4),
+    speed_ref_q28=foc.speed_rpm_to_q28(400, pole_pairs=4, update_hz=update_hz),
+    ramp_rate_q28=foc.ramp_rpm_s_to_q28(1000, pole_pairs=4, update_hz=update_hz),
     vq_ref_q15=foc.voltage_pu_to_q15(0.15),
 )
 source = Path("source/foc_open_loop.asm").read_text(encoding="utf-8")
@@ -193,7 +200,9 @@ mcp.pru_device_configure("foc_motor", {"load_torque_nm": 0.2})
 
 There is no MCP tool that writes shared memory; stage the control block from
 Python as above (or from the dashboard). Reference changes while running use
-`stage_control` again.
+`stage_control` again. After changing the IEP rate or its firmware-selected
+source, derive the new update rate and restage speed/ramp references; existing
+raw phase increments remain unchanged until a new generation is published.
 
 The simulator runs the bus per elapsed core cycle, so a device-attached run
 advances roughly 40,000 PRU cycles (one 16 kHz period is 15,625) per wall

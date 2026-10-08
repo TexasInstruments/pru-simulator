@@ -161,24 +161,9 @@ assert.deepEqual([...html.matchAll(/data-mc-extra="(\w+)"/g)].map(m => m[1]), ['
 // IEP clock selector: runtime-only choice sent over the WebSocket, shown from state.
 const iepSelect = html.match(/<select id="iep-clock-select"[\s\S]*?<\/select>/)[0];
 assert.deepEqual([...iepSelect.matchAll(/<option value="(\d+)"/g)].map(m => m[1]), ['200', '225', '250', '300', '333']);
-{
-  const section = app.slice(app.indexOf('// ---- IEP counter clock selector'), app.indexOf('// ---- end IEP counter clock selector'));
-  assert.ok(section.length > 0 && !/fetch\(|config/.test(section.replace(/memory\.cfg/g, '')), 'no REST or config write');
-  const sent = [];
-  let onChange;
-  const select = { value: '200', title: '', options: [{ value: '200' }, { value: '250' }, { value: '300' }], addEventListener: (name, fn) => { onChange = fn; } };
-  const iep = new Function('iepClockSelect', 'sendAction', `${section}; return { showIepClock };`)(select, a => sent.push(a));
-  iep.showIepClock({ external_mhz: 300, clock_mhz: 300, core_clock: false });
-  assert.equal(select.value, '300');
-  iep.showIepClock({ external_mhz: 250, clock_mhz: 250.0, core_clock: true });
-  assert.match(select.title, /core clock.*250 MHz/);
-  select.selectedIndex = 0; select.options = [{ value: '200' }, { value: '250' }, { value: '300' }];
-  iep.showIepClock({ external_mhz: 225, clock_mhz: 225, core_clock: false });
-  assert.equal(select.selectedIndex, -1, 'an unlisted rate selects nothing');
-  assert.match(select.title, /225 MHz/);
-  select.value = '250'; onChange();
-  assert.deepEqual(sent, [{ action: 'set_iep_clock', mhz: 250 }]);
-}
+const clockSection = app.slice(app.indexOf('// ---- IEP counter clock selector'), app.indexOf('// ---- end IEP counter clock selector'));
+assert.ok(clockSection.length > 0 && !/fetch\(/.test(clockSection), 'IEP session choice does not call REST');
+// Clock rendering and actions are exercised with a DOM harness in ui_controls.test.js.
 
 // Every id the scripts look up exists (three are created at run time).
 const known = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map(m => m[1]));
@@ -189,3 +174,8 @@ for (const file of ['app.js', 'workspace.js', 'motor.js', 'layout.js', 'chrome.j
     assert.ok(known.has(id) || dynamic.has(id), `${file} looks up #${id}, which is not in index.html`);
 }
 console.log('Chrome helpers, glider, fault badge and markup contract pass');
+
+// Actual target capabilities constrain partners/extras even after a target reload.
+assert.deepEqual(plain(C.mcCores('rtu1', ['pru1', 'rtu1'], ['pru0', 'rtu0', 'pru1'])),
+  ['pru0', 'rtu0', 'pru1']);
+assert.deepEqual(plain(C.mcExtras('rtu0', ['pru1', 'rtu1'], ['pru0', 'rtu0', 'pru1'])), ['pru1']);

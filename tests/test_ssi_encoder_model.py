@@ -354,3 +354,54 @@ def test_snapshot_restores_the_error_field():
 def test_invalid_frame_layouts_are_rejected(kwargs):
     with pytest.raises(ValueError):
         SSIEncoderModel(**kwargs)
+
+
+@pytest.mark.parametrize("restored", [False, True])
+def test_first_low_sample_is_idle_then_literal_waveform_latches_cleanly(restored):
+    # SICK IM0100079 / 8027422 (2022-02-08), section 2.2,
+    # p.5 Figure2: first falling edge latches; each rise presents next MSB.
+    # https://www.sick.com/media/docs/9/79/079/technical_information_ssi_interface_description_en_im0100079.pdf
+    model = SSIEncoderModel(resolution=8, position=0xA5,
+                            core_clock_hz=100_000_000, f_max_hz=10_000_000,
+                            monoflop_us=1)
+    model.reset()
+    if restored:
+        model.restore(model.snapshot())
+    assert tick(model, 0, 0) == 1
+    assert tick(model, 150, 0) == 1
+    assert model.faults() == []
+    assert model.get_state()["state"] == "idle"
+    assert tick(model, 160, 1) == 1
+    # Explicit clock/data oracle; high-phase samples are included separately.
+    waveform = [
+        (170, 0, 1), (180, 1, 1), (185, 1, 1),
+        (190, 0, 1), (200, 1, 0), (205, 1, 0),
+        (210, 0, 0), (220, 1, 1), (225, 1, 1),
+        (230, 0, 1), (240, 1, 0), (245, 1, 0),
+        (250, 0, 0), (260, 1, 0), (265, 1, 0),
+        (270, 0, 0), (280, 1, 1), (285, 1, 1),
+        (290, 0, 1), (300, 1, 0), (305, 1, 0),
+        (310, 0, 0), (320, 1, 1), (325, 1, 1),
+        (330, 0, 0), (340, 1, 0), (429, 1, 0), (430, 1, 1),
+    ]
+    sampled = []
+    for cycle, clock, data in waveform:
+        actual = tick(model, cycle, clock)
+        assert actual == data, (cycle, clock)
+        if cycle in (180, 200, 220, 240, 260, 280, 300, 320):
+            sampled.append(actual)
+        if cycle == 185:
+            model.set_position(0)
+    assert sampled == [1, 0, 1, 0, 0, 1, 0, 1]
+    assert complete_events(model)[0]["raw_value"] == 0xA5
+    assert model.faults() == []
+
+
+def test_restore_of_initialized_clock_preserves_real_next_edge():
+    model = SSIEncoderModel(resolution=8, position=0xA5)
+    tick(model, 0, 1)
+    snapshot = model.snapshot()
+    model.reset()
+    model.restore(snapshot)
+    tick(model, 100, 0)
+    assert model.get_state()["state"] == "active"

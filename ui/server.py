@@ -7,7 +7,9 @@ import math
 import os
 import pathlib
 import re
+import shutil
 import sys
+import tempfile
 
 # Ensure project root is on path so simulator can be imported
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -105,11 +107,12 @@ def _foc_reference_angle(vd_q15: int, vq_q15: int, previous: float) -> float:
 def _foc_set_reference(motor: FocMotorModel, msg: dict) -> None:
     """Stage speed/Vd/Vq/acceleration (engineering units) for the firmware."""
     pole_pairs = motor.pole_pairs
+    update_hz = foc_control.update_frequency_hz(sim.iep)
     updates = {}
     if "speed_rpm" in msg:
-        updates["speed_ref_q28"] = foc_control.speed_rpm_to_q28(msg["speed_rpm"], pole_pairs)
+        updates["speed_ref_q28"] = foc_control.speed_rpm_to_q28(msg["speed_rpm"], pole_pairs, update_hz=update_hz)
     if "accel_rpm_s" in msg:
-        updates["ramp_rate_q28"] = foc_control.ramp_rpm_s_to_q28(msg["accel_rpm_s"], pole_pairs)
+        updates["ramp_rate_q28"] = foc_control.ramp_rpm_s_to_q28(msg["accel_rpm_s"], pole_pairs, update_hz=update_hz)
     if "vd_pu" in msg:
         updates["vd_ref_q15"] = foc_control.voltage_pu_to_q15(msg["vd_pu"])
     if "vq_pu" in msg:
@@ -329,15 +332,41 @@ async def put_source_file(path: str, request: Request):
     return {"ok": True}
 
 
+def _replace_config(text: str) -> Simulator:
+    """Build a Simulator from *text*, then make *text* the content of config_path.
+
+    The text is validated through a temp file beside config_path (so lookups
+    relative to the config directory resolve the same way) and only replaces
+    config_path once the Simulator built; a bad config leaves the file as it was."""
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=".memory-", suffix=".cfg.tmp",
+        dir=os.path.dirname(os.path.abspath(config_path)),
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        if os.path.exists(config_path):
+            shutil.copymode(config_path, tmp_path)
+        try:
+            new_sim = Simulator(config_path=tmp_path)
+        except Exception as e:
+            # Parser errors quote the file name; report config_path, not the temp file.
+            msg = str(e).replace(repr(tmp_path)[1:-1], repr(config_path)[1:-1])
+            raise ValueError(msg.replace(tmp_path, config_path)) from e
+        os.replace(tmp_path, config_path)
+        return new_sim
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
 @app.put("/config")
 async def put_config(request: Request):
     global sim, _iep_clock_override
     text = (await request.body()).decode("utf-8")
     async with _config_lock:
         try:
-            with open(config_path, "w") as f:
-                f.write(text)
-            sim = Simulator(config_path=config_path)
+            sim = _replace_config(text)
             _iep_clock_override = None   # a saved config speaks for itself
             _clear_history()
             return {"ok": True}
@@ -353,19 +382,28 @@ IEP_CLOCK_CHOICES_MHZ = (200, 225, 250, 300, 333)
 _iep_clock_override = None
 
 
+def _configured_iep_mhz() -> float:
+    """Keep the backend's configured external rate before applying an override."""
+    return getattr(sim, "_ui_configured_iep_mhz", float(sim.iep.external_clock_hz / 1_000_000))
+
+
 def _set_iep_clock(mhz) -> None:
-    """Switch the running simulator's IEP counter clock (runtime only)."""
+    """Switch only the external IEP clock; None restores the configured rate."""
     global _iep_clock_override
-    if isinstance(mhz, bool) or mhz not in IEP_CLOCK_CHOICES_MHZ:
-        raise ValueError(f"IEP clock must be one of {list(IEP_CLOCK_CHOICES_MHZ)} MHz")
-    sim.iep.set_clock_mhz(mhz)
+    if mhz is not None and (isinstance(mhz, bool) or not isinstance(mhz, (int, float))
+                            or not math.isfinite(mhz) or mhz <= 0):
+        raise ValueError("IEP clock must be a finite positive number in MHz")
+    configured = _configured_iep_mhz()
+    sim.iep.set_clock_mhz(configured if mhz is None else mhz)
+    sim._ui_configured_iep_mhz = configured
     _iep_clock_override = mhz
 
 
 def _apply_iep_override() -> None:
-    """Re-apply the dashboard's IEP clock to a (re)built simulator or restored snapshot."""
-    if _iep_clock_override is not None:
-        sim.iep.set_clock_mhz(_iep_clock_override)
+    """Preserve the session choice across rebuilds and history restoration."""
+    configured = _configured_iep_mhz()
+    sim._ui_configured_iep_mhz = configured
+    sim.iep.set_clock_mhz(configured if _iep_clock_override is None else _iep_clock_override)
 
 
 def _set_ini_value(text: str, section: str, key: str, value: str) -> str:
@@ -412,9 +450,7 @@ async def put_clock_speed(request: Request):
                 text = f.read()
             text = _set_ini_value(text, "device", "pru_clock_mhz", str(mhz))
             text = _set_ini_value(text, "device", "pru1_clock_mhz", str(mhz))
-            with open(config_path, "w") as f:
-                f.write(text)
-            sim = Simulator(config_path=config_path)
+            sim = _replace_config(text)
             _apply_iep_override()
             _clear_history()
             return {"ok": True}
@@ -431,6 +467,13 @@ async def websocket_endpoint(websocket: WebSocket):
             msg = json.loads(data)
             action = msg.get("action")
             core = msg.get("core", "pru0")
+
+            if not isinstance(core, str) or core not in sim.cores:
+                await websocket.send_json({"type": "error", "tag": "core",
+                    "errors": [f"core must be one of {list(sim.cores)}, got {core!r}"],
+                    "available_cores": list(sim.cores)})
+                await _send_state(websocket, next(iter(sim.cores)))
+                continue
 
             if action == "load":
                 _clear_history()
@@ -506,6 +549,20 @@ async def websocket_endpoint(websocket: WebSocket):
                 sim.set_input(core, msg["pin"], bool(msg["value"]))
                 await _send_state(websocket, core)
             elif action == "get_state":
+                await _send_state(websocket, core)
+            elif action == "set_gpio_drive_mask":
+                try:
+                    mask = msg.get("mask")
+                    if (isinstance(mask, bool) or not isinstance(mask, int)
+                            or not 0 <= mask < (1 << 20)):
+                        raise ValueError("GPIO drive mask must be a 20-bit integer")
+                    for (owner_core, pin), lease in sim.device_bus.snapshot()["output_leases"].items():
+                        if owner_core == core and bool(mask & (1 << pin)) != lease["drive_output"]:
+                            raise ValueError(f"GPIO {pin} direction is owned; detach its device before changing it")
+                    sim.set_gpio_drive_mask(core, mask)
+                    _clear_history()
+                except ValueError as ve:
+                    await websocket.send_json({"type": "error", "tag": "gpio", "errors": [str(ve)]})
                 await _send_state(websocket, core)
             elif action == "set_iep_clock":
                 try:
@@ -1049,10 +1106,11 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False):
         io_section["i2c"] = i2c_data
     state = {
         "type": "state",
+        "available_cores": list(sim.cores),
         "core": core,
         "pc": c.pc,
         "halted": c.halted,
-        "fault": c.fault,
+        "fault": dict(c.fault) if c.fault is not None else None,
         "core_faults": {name: dict(pru.fault) for name, pru in sim.cores.items()
                         if pru.fault is not None},
         "at_breakpoint": at_breakpoint,
@@ -1072,6 +1130,8 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False):
             "external_mhz": float(sim.iep.external_clock_hz / 1_000_000),
             "core_clock": bool(sim.iep.iepclk & sim.iep.IEPCLK_OCP_EN),
             "choices_mhz": list(IEP_CLOCK_CHOICES_MHZ),
+            "configured_mhz": _configured_iep_mhz(),
+            "override_mhz": _iep_clock_override,
         },
         "instructions": [{"addr": i.address, "text": i.source_text} for i in c.instructions],
         "labels": dict(c._parser.labels),   # name -> word address

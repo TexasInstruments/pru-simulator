@@ -293,7 +293,7 @@ class SSIEncoderModel(DeviceModel):
     def reset(self) -> None:
         self._state = "idle"
         self._output_value = self.idle_value
-        self._prev_clock = 1
+        self._prev_clock: int | None = None
         self._last_falling_cycle: int | None = None
         self._last_rising_cycle: int | None = None
         self._frame_started_cycle: int | None = None

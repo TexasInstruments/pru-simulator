@@ -33,6 +33,7 @@ def test_tca9538_state_reports_wiring_and_reset_values():
 
 def test_tca9538_state_levels_follow_firmware_writes(nominal_config):
     sim = _load(nominal_config)
+    sim.set_gpio_drive_mask("pru0", 0b11)
     model = sim.cores["pru0"].io_port.attach_device(TCA9538Model())
     sim.step("pru0", count=STEPS)
 

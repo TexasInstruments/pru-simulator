@@ -5,13 +5,14 @@ reading memory, and querying I/O state.
 """
 
 import configparser
+import copy
 import os
 import re
 
 from core.pru_core import PRUCore
 from mem.memory_bus import MemoryBus
 from mem.regions import MemoryRegion
-from perif.iep import IepTimer, IEP_SIZE
+from perif.iep import IepTimer, IEP_SIZE, IEP_DEFAULT_CLOCK_MHZ
 from mem.constant_table import ConstantTable
 from xfr.xfr_bus import XFRBus
 from pru_io.device_model import DeviceBus, DeviceModel
@@ -126,21 +127,30 @@ class Simulator:
         self.memory = self._load_memory(config_path)
         self.constant_table = self._load_constants(config_path)
         dev = self._get_device_config(config_path)
-        pru_clock = dev.get("pru_clock_mhz", "200")
+        pru_clock = dev.get("pru_clock_mhz", "250")
         pru1_clock = dev.get("pru1_clock_mhz", pru_clock)
-        iep_clock = dev.get("iep_clock_mhz", "200")
+        iep_clock = dev.get("iep_clock_mhz", IEP_DEFAULT_CLOCK_MHZ)
         io_pru0 = IOPort()
         io_rtu0 = IOPort()
         io_pru1 = IOPort()
         io_rtu1 = IOPort()
         self.cores: dict[str, PRUCore] = {
-            "pru0": PRUCore("PRU0", self.memory, self.xfr, io_pru0, self.constant_table),
-            "rtu0": PRUCore("RTU0", self.memory, self.xfr, io_rtu0, self.constant_table),
-            "pru1": PRUCore("PRU1", self.memory, self.xfr, io_pru1, self.constant_table,
+            "pru0": PRUCore("PRU0", self.memory, self.xfr, io_pru0, copy.deepcopy(self.constant_table)),
+            "rtu0": PRUCore("RTU0", self.memory, self.xfr, io_rtu0, copy.deepcopy(self.constant_table)),
+            "pru1": PRUCore("PRU1", self.memory, self.xfr, io_pru1, copy.deepcopy(self.constant_table),
                             dram_swap=True),
-            "rtu1": PRUCore("RTU1", self.memory, self.xfr, io_rtu1, self.constant_table,
+            "rtu1": PRUCore("RTU1", self.memory, self.xfr, io_rtu1, copy.deepcopy(self.constant_table),
                             dram_swap=True),
         }
+
+        # configparser keeps inline comments, which the design spec uses on target
+        target = dev.get("target", "AM243x").split("#", 1)[0].strip()
+        if target.lower() not in ("am243x", "am64x", "am263x"):
+            raise ValueError(
+                f"Unknown device target {target!r}; "
+                "expected one of AM243x, AM64x, AM263x")
+        if target.lower() == "am263x":
+            del self.cores["rtu1"]
 
         # One resolver owns generic external devices and cross-core GPIO nets.
         # It is inert until a device or wire is attached.
@@ -209,6 +219,8 @@ class Simulator:
             "pru1": pru1_clock,
             "rtu1": pru1_clock,
         }
+        core_clock_rates = {name: rate for name, rate in core_clock_rates.items()
+                            if name in self.cores}
         self.iep = IepTimer(
             clock_mhz=iep_clock,
             ocp_clock_mhz=pru_clock,
@@ -220,15 +232,10 @@ class Simulator:
             core.iep = self.iep
 
             def observe_cycles(elapsed_cycles: int, *, _name=name, _core=core) -> None:
-                def sample_sd(_cycle: int, gpi: int) -> None:
-                    sd_filter = _core.io_port.sd_filter
-                    if sd_filter is not None:
-                        sd_filter.tick(gpi)
-
-                _core.io_port.advance_devices(elapsed_cycles, after_cycle=sample_sd)
                 self.iep.observe_core_cycles(_name, _core.counters.cycles)
 
             core.cycle_observer = observe_cycles
+            core.reset_observer = lambda *, _name=name: self.iep.rebase_core(_name)
 
         # Loopback: PRU0 TX channel-N -> PRU1 RX channel-N.
         self._loopback = Loopback(self._perif["pru0"], self._perif["pru1"])
@@ -348,7 +355,7 @@ class Simulator:
             "cycles": pru.counters.cycles,
             "stall_cycles": pru.counters.stall_cycles,
             "halted": pru.halted,
-            "fault": pru.fault,
+            "fault": dict(pru.fault) if pru.fault is not None else None,
         }
 
     def step_paced(self, lead: str, follow: str, count: int = 1,
@@ -440,9 +447,10 @@ class Simulator:
         """Attach a generic pin device at one core's GPIO endpoint."""
         return self._get_core(core).io_port.attach_device(device)
 
-    def lease_gpio_outputs(self, core: str, mask: int, owner: object) -> None:
-        """Release selected output directions for an attached external device."""
-        self.device_bus.lease_core_outputs(core, mask, owner)
+    def lease_gpio_outputs(self, core: str, mask: int, owner: object,
+                           drive_mask: int = 0) -> None:
+        """Lease GPIO directions and restore their initial state on release."""
+        self.device_bus.lease_core_outputs(core, mask, owner, drive_mask=drive_mask)
 
     def detach_device(self, device: DeviceModel) -> None:
         """Detach a generic device and release all pins it previously drove."""
@@ -556,7 +564,6 @@ class Simulator:
     def reset(self, core: str) -> None:
         """Reset *core* to its initial state (registers, counters, PC, halted flag)."""
         self._get_core(core).reset()
-        self.iep.rebase_core(core)
 
     def set_strict_unsupported_xfr(self, enabled: bool) -> None:
         """Choose what happens when firmware drives an unmodelled XFR device ID.
@@ -639,6 +646,6 @@ class Simulator:
                 "instruction_count": pru.counters.instruction_count,
                 "ipc": pru.counters.ipc,
                 "halted": pru.halted,
-                "fault": pru.fault,
+                "fault": dict(pru.fault) if pru.fault is not None else None,
             }
         return result

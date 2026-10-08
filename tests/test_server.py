@@ -53,6 +53,34 @@ def test_put_config_writes_to_disk(tmp_path, monkeypatch):
     assert "; patched" in cfg_file.read_text()
 
 
+def test_put_config_unknown_target_returns_400_and_keeps_the_live_simulator(
+    tmp_path, monkeypatch
+):
+    import ui.server as srv
+    cfg_file = tmp_path / "memory.cfg"
+    original = client.get("/config").text
+    cfg_file.write_text(original)
+    before = cfg_file.read_bytes()
+    monkeypatch.setattr(srv, "config_path", str(cfg_file))
+    live = Simulator(config_path=str(cfg_file))
+    monkeypatch.setattr(srv, "sim", live)
+    typo = original.replace("target = AM243x", "target = am234x", 1)
+    assert typo != original
+
+    response = client.put("/config", content=typo)
+    assert response.status_code == 400
+    assert "am234x" in response.json()["error"]
+    assert cfg_file.read_bytes() == before
+    assert [p.name for p in tmp_path.iterdir()] == ["memory.cfg"]
+    assert srv.sim is live
+
+    response = client.put("/config", content=original)
+    assert response.status_code == 200
+    assert srv.sim is not live
+    assert cfg_file.read_text() == original
+    assert [p.name for p in tmp_path.iterdir()] == ["memory.cfg"]
+
+
 @pytest.mark.parametrize("replace_clock", [False, True])
 def test_config_replacement_clears_rtu1_step_history(
     tmp_path, monkeypatch, replace_clock
@@ -74,6 +102,29 @@ def test_config_replacement_clears_rtu1_step_history(
 
     assert response.status_code == 200
     assert all(not history for history in srv._history.values())
+
+
+def test_put_config_invalid_leaves_file_history_and_simulator_untouched(
+    tmp_path, monkeypatch
+):
+    import ui.server as srv
+    cfg_file = tmp_path / "memory.cfg"
+    original = client.get("/config").text
+    cfg_file.write_bytes(original.encode("utf-8"))
+    before = cfg_file.read_bytes()
+    monkeypatch.setattr(srv, "config_path", str(cfg_file))
+    live = Simulator(config_path=str(cfg_file))
+    monkeypatch.setattr(srv, "sim", live)
+    monkeypatch.setattr(srv, "_history", {core: [] for core in srv._history})
+    srv._history["pru0"].append({"stale": True})
+
+    response = client.put("/config", content=original + "\n[DRAM0\nbase = 0\n")
+    assert response.status_code == 400
+    assert repr(str(cfg_file))[1:-1] in response.json()["error"]
+    assert cfg_file.read_bytes() == before
+    assert [p.name for p in tmp_path.iterdir()] == ["memory.cfg"]
+    assert srv.sim is live
+    assert srv._history["pru0"] == [{"stale": True}]
 
 
 # ---- WebSocket helpers -------------------------------------------------
@@ -176,6 +227,8 @@ def test_fault_is_reported_in_state_and_restored_by_step_back(fresh_sim):
     sink = WebSocketSink()
     asyncio.run(srv._send_state(sink, "pru0"))
     assert sink.payload["fault"]["opcode"] == "LBBO"
+    assert sink.payload["fault"] == fresh_sim.cores["pru0"].fault
+    assert sink.payload["fault"] is not fresh_sim.cores["pru0"].fault
 
     srv._restore("pru0", snapshot)
     assert fresh_sim.cores["pru0"].fault is None
@@ -242,7 +295,7 @@ def test_websocket_attaches_updates_and_detaches_ssi_encoder(fresh_sim):
     assert device["core"] == "pru1"
     assert device["position"] == 17
     assert fresh_sim.device_bus.devices == []
-    assert fresh_sim.io("pru1")["gpo_drive_mask"] == (1 << 20) - 1
+    assert fresh_sim.io("pru1")["gpo_drive_mask"] == 0
     assert all(not history for history in srv._history.values())
     assert srv._history_order == []
 
@@ -492,3 +545,170 @@ def test_websocket_foc_apply_with_empty_config_only_changes_routes(fresh_sim):
     ])
     assert fresh_sim.cores["pru0"].io_port.sd_filter.input_routes[:2] == [3, 4]
     assert _foc_block(fresh_sim)["vd_ref_q15"] == 77
+
+
+@pytest.mark.parametrize('mhz', [333.333, 0.125, 251.5])
+def test_custom_iep_clock_preserves_counters_and_time(fresh_sim, monkeypatch, mhz):
+    import ui.server as srv
+    monkeypatch.setattr(srv, '_iep_clock_override', None)
+    fresh_sim.load('pru0', 'nop\nhalt')
+    fresh_sim.step('pru0')
+    before = (fresh_sim.iep.count, fresh_sim.iep.global_time_units, fresh_sim.cores['pru0'].counters.cycles)
+    sent = _run_websocket_actions([{'action': 'set_iep_clock', 'mhz': mhz}])
+    assert [p['type'] for p in sent] == ['state']
+    assert sent[0]['iep']['override_mhz'] == mhz
+    assert sent[0]['iep']['configured_mhz'] == 200
+    assert sent[0]['iep']['external_mhz'] == mhz
+    assert before == (fresh_sim.iep.count, fresh_sim.iep.global_time_units, fresh_sim.cores['pru0'].counters.cycles)
+
+
+@pytest.mark.parametrize('mhz', [True, '250', float('nan'), float('inf'), 0, -1])
+def test_invalid_iep_clock_is_non_mutating(fresh_sim, monkeypatch, mhz):
+    import ui.server as srv
+    monkeypatch.setattr(srv, '_iep_clock_override', None)
+    before = fresh_sim.iep.snapshot()
+    sent = _run_websocket_actions([{'action': 'set_iep_clock', 'mhz': mhz}])
+    assert sent[0]['type'] == 'error'
+    assert sent[0]['tag'] == 'iep'
+    assert fresh_sim.iep.snapshot() == before
+    assert srv._iep_clock_override is None
+
+
+def test_iep_configured_reset_retains_source_and_session_step_back(fresh_sim, monkeypatch):
+    import ui.server as srv
+    monkeypatch.setattr(srv, '_iep_clock_override', None)
+    fresh_sim.iep.set_clock_mhz(211.25)
+    fresh_sim.iep.write_iepclk(1)
+    fresh_sim.load('pru0', 'nop\nhalt')
+    sent = _run_websocket_actions([
+        {'action': 'step'}, {'action': 'set_iep_clock', 'mhz': 333.333},
+        {'action': 'step_back'}, {'action': 'set_iep_clock', 'mhz': None},
+        {'action': 'reset'}, {'action': 'hard_reset'},
+    ])
+    assert not any(p['type'] == 'error' for p in sent)
+    assert sent[1]['iep']['core_clock'] is True
+    assert sent[1]['iep']['clock_mhz'] == 250
+    assert all(p['iep']['external_mhz'] == 333.333 for p in sent[2:6])
+    assert sent[6]['iep']['external_mhz'] == 211.25
+    assert sent[6]['iep']['override_mhz'] is None
+    assert sent[6]['iep']['core_clock'] is True
+    assert sent[-1]['iep']['external_mhz'] == 211.25
+
+
+def test_gpio_direction_control_preserves_r30_and_reports_ownership(fresh_sim):
+    sent = _run_websocket_actions([
+        {'action': 'set_register', 'index': 30, 'value': 15},
+        {'action': 'set_gpio_drive_mask', 'mask': 7},
+        {'action': 'device_attach', 'profile': 'foc_motor'},
+        {'action': 'set_gpio_drive_mask', 'mask': 0},
+        {'action': 'get_state'},
+    ])
+    assert sent[1]['io']['gpo_drive_mask'] == 7
+    assert sent[1]['registers'][30] == '0x0000000F'
+    errors = [p for p in sent if p['type'] == 'error' and p.get('tag') == 'gpio']
+    assert len(errors) == 1
+    assert sent[-1]['io']['gpo_drive_mask'] == sent[2]['io']['gpo_drive_mask']
+    assert sent[-1]['registers'][30] == '0x0000000F'
+
+
+@pytest.mark.parametrize('mask', [True, -1, 1 << 20, 1.2, '7', None])
+def test_gpio_direction_rejects_invalid_masks(fresh_sim, mask):
+    sent = _run_websocket_actions([{'action': 'set_gpio_drive_mask', 'mask': mask}])
+    assert sent[0]['type'] == 'error'
+    assert sent[0]['tag'] == 'gpio'
+    assert fresh_sim.cores['pru0'].io_port.gpo_drive_mask == 0
+
+
+def test_unavailable_core_request_keeps_socket_and_advertises_actual_cores(fresh_sim):
+    del fresh_sim.cores['rtu1']
+    sent = _run_websocket_actions([
+        {'action': 'get_state', 'core': 'rtu1'}, {'action': 'get_state', 'core': 'pru0'},
+        {'action': 'run_multicore', 'partners': ['rtu1']},
+    ])
+    assert sent[0]['type'] == 'error'
+    assert sent[1]['type'] == 'state'
+    assert sent[1]['core'] == 'pru0'
+    assert sent[1]['available_cores'] == ['pru0', 'rtu0', 'pru1']
+    assert any(p['type'] == 'error' and 'partners' in p['errors'][0] for p in sent)
+
+
+@pytest.mark.parametrize('core_source', [False, True])
+def test_foc_reference_uses_active_iep_rate(fresh_sim, core_source):
+    from pru_io import foc_control
+    fresh_sim.iep.set_clock_mhz(333.333)
+    fresh_sim.iep.write_iepclk(int(core_source))
+    sent = _run_websocket_actions([
+        {'action': 'device_attach', 'profile': 'foc_motor'},
+        {'action': 'foc_set_reference', 'speed_rpm': 600, 'accel_rpm_s': 1200},
+    ])
+    assert not any(p['type'] == 'error' for p in sent)
+    hz = float(fresh_sim.iep.active_clock_hz) / 12500
+    block = _foc_block(fresh_sim)
+    assert block['speed_ref_q28'] == foc_control.speed_rpm_to_q28(600, 4, update_hz=hz)
+    assert block['ramp_rate_q28'] == foc_control.ramp_rpm_s_to_q28(1200, 4, update_hz=hz)
+
+
+def test_iep_override_survives_core_reload_saved_config_clears_it(tmp_path, monkeypatch):
+    import ui.server as srv
+    cfg = tmp_path / 'memory.cfg'
+    # Insert into the actual device section, not whichever section ends the file.
+    original = srv._set_ini_value(client.get('/config').text, 'device', 'iep_clock_mhz', '211.25')
+    cfg.write_text(original)
+    monkeypatch.setattr(srv, 'config_path', str(cfg))
+    monkeypatch.setattr(srv, 'sim', Simulator(str(cfg)))
+    monkeypatch.setattr(srv, '_iep_clock_override', None)
+    srv._set_iep_clock(333.333)
+    assert client.put('/config/clock_speed', json={'mhz': 300}).status_code == 200
+    assert float(srv.sim.iep.external_clock_hz / 1e6) == 333.333
+    assert srv._configured_iep_mhz() == 211.25
+    srv._set_iep_clock(None)
+    assert float(srv.sim.iep.external_clock_hz / 1e6) == 211.25
+    srv._set_iep_clock(250)
+    assert client.put('/config', content=original).status_code == 200
+    assert srv._iep_clock_override is None
+    assert float(srv.sim.iep.external_clock_hz / 1e6) == 211.25
+
+
+def test_am263x_state_advertises_only_supported_cores(tmp_path, monkeypatch):
+    import ui.server as srv
+    cfg = tmp_path / 'memory.cfg'
+    cfg.write_text(srv._set_ini_value(client.get('/config').text, 'device', 'target', 'AM263x'))
+    monkeypatch.setattr(srv, 'sim', Simulator(str(cfg)))
+    sent = _run_websocket_actions([{'action': 'get_state'},
+                                  {'action': 'load', 'core': 'rtu1', 'source': 'halt'},
+                                  {'action': 'get_state'}])
+    assert sent[0]['available_cores'] == ['pru0', 'rtu0', 'pru1']
+    assert sent[1]['type'] == 'error'
+    assert sent[-1]['type'] == 'state'
+
+
+def test_configured_reset_uses_backend_policy_when_iep_rate_is_omitted(tmp_path, monkeypatch):
+    import ui.server as srv
+    cfg = tmp_path / 'memory.cfg'
+    original = client.get('/config').text
+    import re
+    original = re.sub(r'^iep_clock_mhz\s*=.*\n', '', original, flags=re.M)
+    cfg.write_text(original)
+    monkeypatch.setattr(srv, 'config_path', str(cfg))
+    monkeypatch.setattr(srv, 'sim', Simulator(str(cfg)))
+    monkeypatch.setattr(srv, '_iep_clock_override', None)
+    configured = float(srv.sim.iep.external_clock_hz / 1_000_000)
+    srv._set_iep_clock(333.333)
+    srv._set_iep_clock(None)
+    assert float(srv.sim.iep.external_clock_hz / 1_000_000) == configured
+    assert client.put('/config/clock_speed', json={'mhz': 300}).status_code == 200
+    assert float(srv.sim.iep.external_clock_hz / 1_000_000) == float(Simulator(str(cfg)).iep.external_clock_hz / 1_000_000)
+
+
+def test_ws_ssi_attach_then_load_current_abi_firmware_keeps_session(fresh_sim):
+    from pathlib import Path
+    source = Path('source/ssi_generic_emulator.asm').read_text()
+    sent = _run_websocket_actions([
+        {'action': 'device_attach', 'core': 'pru1', 'profile': 'ssi_encoder'},
+        {'action': 'load', 'core': 'pru1', 'filename': 'ssi_generic_emulator.asm', 'source': source},
+        {'action': 'step', 'core': 'pru1'},
+    ])
+    assert not any(p['type'] == 'error' for p in sent)
+    assert sent[-1]['instructions']
+    assert sent[-1]['fault'] is None
+    assert sent[-1]['io']['device_bus']['devices'][0]['name'] == 'ssi_encoder'

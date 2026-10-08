@@ -93,6 +93,7 @@ def test_devices_see_the_pru_immediately_but_not_their_own_drive():
 
     bus = DeviceBus()
     dev = bus.attach(Watcher(SDA, OPEN_DRAIN))
+    seen.clear()  # attachment already sampled the initial idle bus
     dev.driving = True
     bus.set_pru_drive_mask(0)
 

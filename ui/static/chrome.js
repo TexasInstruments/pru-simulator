@@ -91,12 +91,13 @@
   const MC_CANDIDATES = ['rtu0', 'pru1', 'rtu1'];
 
   // Extras minus duplicates, the partner and unknown names, in core order.
-  function mcExtras(partner, extras) {
-    return MC_CANDIDATES.filter(core => core !== partner && (extras || []).includes(core));
+  function mcExtras(partner, extras, available = ['pru0', ...MC_CANDIDATES]) {
+    return MC_CANDIDATES.filter(core => available.includes(core) && core !== partner && (extras || []).includes(core));
   }
 
-  function mcCores(partner, extras) {
-    return ['pru0', partner, ...mcExtras(partner, extras)];
+  function mcCores(partner, extras, available = ['pru0', ...MC_CANDIDATES]) {
+    const actualPartner = available.includes(partner) ? partner : available.find(core => core !== 'pru0');
+    return ['pru0', actualPartner, ...mcExtras(actualPartner, extras, available)].filter(core => available.includes(core));
   }
 
   // DOM slot a core renders into, or null when it is not shown.

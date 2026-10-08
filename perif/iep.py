@@ -67,8 +67,8 @@ TIMING
 
 The IEP is shared by every configured core and advances to the furthest exact
 core time seen. Core rates come from [device] `pru_clock_mhz` and
-`pru1_clock_mhz`; absent values retain the simulator's 200 MHz fallback. The
-IEP uses `iep_clock_mhz` (200 MHz by default) while ICSS CFG IEPCLK bit 0 is
+`pru1_clock_mhz`; absent values use the project's 250 MHz starting clock. The
+IEP uses `iep_clock_mhz` (200 MHz when omitted, the TRM default ICSSG_IEP_CLK rate) while ICSS CFG IEPCLK bit 0 is
 clear, and the PRU0 OCP/core clock while it is set. Rational clock periods are
 represented with integer time units, so fractional MHz values and mixed core
 rates do not accumulate float drift. Memory and wait stalls count as elapsed
@@ -104,6 +104,9 @@ NUM_COMPARE = 16
 # 0x20..0x6C is 0x50 bytes = ten 64-bit pairs.
 NUM_CAPTURE = 10
 IEP_SIZE = 0x100
+# TRM SPRUIM2J §6.4.13.2.4: the IEP counter counts every ICSSG_IEP_CLK cycle at a
+# "default rate of 200 MHz". This is the rate used when `iep_clock_mhz` is not set.
+IEP_DEFAULT_CLOCK_MHZ = 200
 
 _MASK32 = 0xFFFFFFFF
 _MASK64 = 0xFFFFFFFFFFFFFFFF
@@ -131,7 +134,7 @@ class IepTimer:
 
     IEPCLK_OCP_EN = 1 << 0
 
-    def __init__(self, clock_mhz: float | str = 200.0,
+    def __init__(self, clock_mhz: float | str | None = None,
                  ocp_clock_mhz: float | str = 250.0,
                  core_clocks_mhz: dict[str, float | str] | None = None):
         core_clocks_mhz = core_clocks_mhz or {"pru0": ocp_clock_mhz}
@@ -154,7 +157,7 @@ class IepTimer:
         self._tick_numerator = 0
         self._tick_denominator = 1
         self._ticks_per_time_unit = 0
-        self.external_clock_hz = _mhz_to_hz(clock_mhz)
+        self.external_clock_hz = _mhz_to_hz(IEP_DEFAULT_CLOCK_MHZ if clock_mhz is None else clock_mhz)
         self.ocp_clock_hz = _mhz_to_hz(ocp_clock_mhz)
         if self.external_clock_hz <= 0:
             raise ValueError(f"IEP clock must be positive, got {clock_mhz}")
@@ -165,13 +168,15 @@ class IepTimer:
         self.reset()
 
     def reset(self) -> None:
-        self._global_cfg = 0
+        # SPRUIM2J Table 14-10907: CMP_INC=5, DEFAULT_INC=5, disabled.
+        self._global_cfg = 0x550
         self.global_status = 0
         self.count = 0                       # 64-bit
         self.cmp_cfg = 0
         self.cmp_status = 0                  # 16 bits, write-1-to-clear
         self.compare = [0] * NUM_COMPARE     # each 64-bit
-        self.cap_cfg = 0
+        # SPRUIM2J Table 14-10925: CAP_ASYNC_EN=0x7f, captures disabled.
+        self.cap_cfg = 0x1FC00
         self.cap_status = 0                  # valid bits, write-1-to-clear
         self.capture = [0] * NUM_CAPTURE     # each 64-bit
         self._tick_remainder = 0
@@ -269,7 +274,7 @@ class IepTimer:
             raise ValueError("PRU cycle counters cannot be negative")
         timeline = self._core_timelines[core]
         if cycles < timeline.last_cycles:
-            self.rebase_core(core)
+            self.rebase_core(core, cycles)
         timeline.last_cycles = cycles
         core_time_units = self.core_time_units(core, cycles)
         if core_time_units <= self._global_time_units:
@@ -324,11 +329,46 @@ class IepTimer:
     def _advance_ticks(self, ticks: int) -> None:
         if ticks <= 0 or not self.count_enabled:
             return
+        increment = self.default_inc
         if not (self.cmp_cfg & 0x1FFFE):
-            self.count = (self.count + ticks * self.default_inc) & _MASK64
+            self.count = (self.count + ticks * increment) & _MASK64
             return
-        for _ in range(ticks):
-            self.tick()
+        modulus = 1 << 64
+        divisor = gcd(increment, modulus)
+        period = modulus // divisor
+        inverse = pow(increment // divisor, -1, period) if increment else 0
+
+        def hit_distance(start: int, value: int) -> int | None:
+            delta = (value - start) & _MASK64
+            if not increment:
+                return 1 if delta == 0 else None
+            if delta % divisor:
+                return None
+            distance = ((delta // divisor) * inverse) % period
+            return distance or period
+
+        def record_hits(start: int, length: int) -> None:
+            for j in range(NUM_COMPARE):
+                if self.cmp_enabled(j):
+                    distance = hit_distance(start, self.compare[j])
+                    if distance is not None and distance <= length:
+                        self.cmp_status |= 1 << j
+
+        reset_distance = (hit_distance(self.count, self.compare[0])
+                          if self.cmp0_rst_cnt_en and self.cmp_enabled(0) else None)
+        if reset_distance is None or reset_distance > ticks:
+            record_hits(self.count, ticks)
+            self.count = (self.count + ticks * increment) & _MASK64
+            return
+        record_hits(self.count, reset_distance)
+        ticks -= reset_distance
+        self.count = 0
+        reset_period = hit_distance(0, self.compare[0])
+        if reset_period is not None and ticks >= reset_period:
+            record_hits(0, reset_period)
+            ticks %= reset_period
+        record_hits(0, ticks)
+        self.count = (ticks * increment) & _MASK64
 
     # -- configuration views --------------------------------------------
     @property

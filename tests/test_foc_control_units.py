@@ -64,3 +64,35 @@ def test_build_control_validates_without_writing():
     sim.memory.write(abi.CONTROL_ADDRESS, block)
     after = control.read_control(sim.memory)
     assert (after["vd_ref_q15"], after["vq_ref_q15"], after["requested_generation"]) == (-3, 5, 2)
+
+@pytest.mark.parametrize("iep_mhz, expected_speed, expected_ramp", [
+    (200, round(100 / 16000 * 2**32), round((1000 * 4 / 60) / 16000**2 * 2**32)),
+    (250, round(100 / 20000 * 2**32), round((1000 * 4 / 60) / 20000**2 * 2**32)),
+    (300, round(100 / 24000 * 2**32), round((1000 * 4 / 60) / 24000**2 * 2**32)),
+    (333.333, round(100 / 26666.64 * 2**32), round((1000 * 4 / 60) / 26666.64**2 * 2**32)),
+])
+def test_engineering_units_follow_the_active_iep_rate(iep_mhz, expected_speed, expected_ramp):
+    sim = Simulator()
+    sim.iep.set_clock_mhz(iep_mhz)
+    rate = control.update_frequency_hz(sim.iep)
+    assert rate == pytest.approx(iep_mhz * 1_000_000 / 12500)
+    assert control.speed_rpm_to_q28(1500, 4, update_hz=rate) == expected_speed
+    assert control.speed_q28_to_rpm(expected_speed, 4, update_hz=rate) == pytest.approx(1500, abs=0.001)
+    assert control.ramp_rpm_s_to_q28(1000, 4, update_hz=rate) == expected_ramp
+
+
+def test_control_rate_uses_firmware_selected_source():
+    sim = Simulator()
+    sim.iep.set_clock_mhz(300)
+    sim.iep.write_iepclk(1)
+    assert control.update_frequency_hz(sim.iep) == 20000
+
+
+@pytest.mark.parametrize("bad", [0, -1, True, "20000", math.nan, math.inf])
+def test_engineering_conversions_reject_invalid_update_rates(bad):
+    with pytest.raises(ValueError, match="update"):
+        control.speed_rpm_to_q28(100, 4, update_hz=bad)
+    with pytest.raises(ValueError, match="update"):
+        control.speed_q28_to_rpm(1, 4, update_hz=bad)
+    with pytest.raises(ValueError, match="update"):
+        control.ramp_rpm_s_to_q28(1000, 4, update_hz=bad)

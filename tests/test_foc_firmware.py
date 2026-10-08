@@ -385,3 +385,25 @@ def _first_pulse(events: list[tuple[int, int]]) -> tuple[int, int]:
     fallings = [timestamp for timestamp, value in events if value == 0]
     falling = next(timestamp for timestamp in fallings if timestamp > rises[0])
     return rises[0], falling
+
+
+@pytest.mark.parametrize("core_mhz, iep_mhz, core_source, period_cycles", [
+    (250, 200, False, 15625),
+    (250, 250, False, 12500),
+    (300, 200, False, 18750),
+    (333.333, 250, False, 16666.65),
+    (250, 300, True, 12500),
+])
+def test_foc_physical_period_uses_the_selected_iep_source(
+        tmp_path, core_mhz, iep_mhz, core_source, period_cycles):
+    config = tmp_path / "clock.cfg"
+    config.write_text((ROOT / "memory.cfg").read_text().replace(
+        "pru_clock_mhz = 250", f"pru_clock_mhz = {core_mhz}").replace(
+        "[device]", f"[device]\niep_clock_mhz = {iep_mhz}"))
+    mcp = _new_simulator({**RUN, "vd_ref_q15": 8192}, str(config))
+    mcp.sim.iep.write_iepclk(int(core_source))
+    for period in _capture_periods(mcp, 2):
+        assert period["length"] == pytest.approx(period_cycles, abs=12)
+        assert period["duties"] == pytest.approx((0.6875, 0.3125, 0.3125), abs=DUTY_TOLERANCE)
+    core = mcp.sim.cores["pru0"]
+    assert core.counters.cycles == core.counters.instruction_count + core.counters.stall_cycles

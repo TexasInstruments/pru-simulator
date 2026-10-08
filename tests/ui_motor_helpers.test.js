@@ -124,3 +124,12 @@ assert.deepEqual(plain(H.controlState({ attached: true, loaded: true, running: t
   { load: true, apply: true, start: false, stop: true });
 
 console.log('Motor control helpers validate forms, bound history and format readouts');
+
+// The same phase increment requests different engineering speeds at a new clock.
+assert.equal(H.formatReadouts({ parameters: { pole_pairs: 4 } },
+  { speed_ref_q28: 2 ** 28 }, { iep_hz: 300e6 }).requestedSpeed, '22500.0 rpm');
+assert.equal(H.referenceValues({ speed_ref_q28: 2 ** 28, ramp_rate_q28: 1000,
+  vd_ref_q15: 8192, vq_ref_q15: 16384 }, 4, { iep_hz: 300e6 }).speedRpm, 22500);
+assert.equal(H.referenceValues({ speed_ref_q28: 0, ramp_rate_q28: 1000,
+  vd_ref_q15: 0, vq_ref_q15: 0 }, 4, { iep_hz: 300e6 }).accelRpmS,
+  1000 / 2 ** 32 * 24000 ** 2 * 60 / 4);

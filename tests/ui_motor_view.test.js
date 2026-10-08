@@ -175,3 +175,14 @@ M.onState({ type: 'state', core: 'pru0', labels: {}, instructions: [], io: {} })
 assert.equal(get('motor-start').disabled, true, 'controls disable once the motor is gone');
 
 console.log('Motor control view sends validated actions and follows backend state');
+
+// A clock change resynchronizes clean staged fields using actual fixed-tick cadence.
+for (const id of ['motor-speed-rpm', 'motor-accel', 'motor-vd-pu', 'motor-vq-pu']) delete get(id).dataset.dirty;
+M.onState(stateWith({ foc_clocks: { pru_hz: 250e6, iep_hz: 300e6 } }));
+assert.equal(get('motor-speed-rpm').value, '600');
+assert.equal(get('motor-accel').value, '2249');
+assert.equal(readoutElements.find(e => e.dataset.readout === 'requestedSpeed').textContent, '600.0 rpm');
+get('motor-speed-rpm').value = '77';
+get('motor-speed-rpm').listeners.input();
+M.onState(stateWith({ foc_clocks: { pru_hz: 250e6, iep_hz: 333.333e6 } }));
+assert.equal(get('motor-speed-rpm').value, '77', 'clock updates preserve user edits');

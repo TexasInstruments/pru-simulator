@@ -145,12 +145,23 @@
   const fixed = (value, digits, unit = '') =>
     Number.isFinite(value) ? `${value.toFixed(digits)}${unit}` : '--';
 
+  function referenceValues(config, poles, clocks) {
+    const updateHz = clocks ? clocks.iep_hz / 12500 : 16000;
+    return {
+      speedRpm: config.speed_ref_q28 / 2 ** 32 * updateHz * 60 / poles,
+      vdPu: config.vd_ref_q15 / 32768,
+      vqPu: config.vq_ref_q15 / 32768,
+      accelRpmS: config.ramp_rate_q28 >= 268435456 ? null
+        : config.ramp_rate_q28 / 2 ** 32 * updateHz ** 2 * 60 / poles,
+    };
+  }
+
   // Everything the readout list shows, as display strings.
   function formatReadouts(motor, config, clocks) {
     if (!motor) return null;
     const poles = motor.parameters ? motor.parameters.pole_pairs : 4;
     const requestedRpm = config
-      ? config.speed_ref_q28 / 268435456 * 1000 * 60 / poles : NaN;
+      ? referenceValues(config, poles, clocks).speedRpm : NaN;
     const duties = motor.duty_cycles || [];
     const phase = motor.phase_currents_a || [];
     const alphaBeta = motor.alpha_beta_v || [];
@@ -190,6 +201,6 @@
     MAX_SPEED_RPM, SAMPLE_CAPACITY, PHYSICS_DEFAULTS, PHYSICS_RULES,
     readReferenceForm, readPhysicsForm, createHistory, appendSamples, column,
     lastRows, chartRange, normalizeAngle, toDegrees, signedDegrees,
-    describeStatus, formatReadouts, controlState,
+    describeStatus, referenceValues, formatReadouts, controlState,
   };
 })(globalThis);

@@ -45,14 +45,21 @@ columns still follow PRU0 (and the counters the partner); the device-core
 selector offers PRU0 and the partner only. With no extra core toggled the view
 is the original two-core one.
 
-**IEP counter clock.** The header selector next to the core clock sets the
-external IEP clock (200, 225, 250, 300 or 333 MHz) of the running simulator through the
-`set_iep_clock` WebSocket action. It is runtime only: `memory.cfg` is not
-written, a restart returns to its `iep_clock_mhz`, saving the config resets
-it, and changing the core clock keeps it. It keeps the counter value (a sub-tick
-fraction is dropped) and rebuilds the rational timebase for the new rate. The *core clock*
-source is the firmware's IEPCLK bit 0 and is not overridden: state messages
-report `iep.core_clock` and the actual `iep.clock_mhz`.
+**IEP counter clock.** The header offers 200, 225, 250, 300 and 333 MHz
+shortcuts, a custom finite positive MHz rate (including fractions), and a
+**configured rate** reset. The visible clock status identifies the configured
+rate, external session rate, and active rate/source. `set_iep_clock` changes
+only the external source; `mhz: null` clears the session override and returns to
+the backend's configured rate. Clock-only changes preserve timer counters and
+elapsed time; a sub-tick fraction is dropped when the active rate changes.
+Firmware's IEPCLK bit 0 selects the core clock independently. Session overrides
+survive core-clock reload and step-back; saving a valid config clears them.
+Reset uses the existing session semantics (hardware reset clears the source
+bit, retaining the external session rate). 250 MHz is a chosen software
+convention for core clocks; configured IEP rates can be independent. The current
+parent still defaults omitted IEP rates to 200 MHz, contrary to the accepted
+250 MHz/core-inheritance policy; configured reset follows the backend and will
+inherit its eventual correction.
 
 ## I/O & Devices
 
@@ -240,3 +247,21 @@ shift) and are switched off when the browser asks for reduced motion.
   label wrapper; it also builds the wrapper for a `.btn-17` button created in script. `--wipe` is defined in both themes, and
   `tests/test_ui_design_tokens.py` checks the label's contrast before and at the
   end of the wipe.
+
+
+## Target cores and GPIO directions
+
+Every core selector, multi-core partner/extra, load target, and device target
+follows `available_cores` from the simulator. AM263x offers PRU0, RTU0 and PRU1,
+with no RTU1. Reloading a target returns unsupported selections to an available
+core; invalid WebSocket core requests report an error and keep the session.
+
+The I/O panel separates R30 values from GPIO output enable. Each pin's
+**Drive / Release** button switches its direction without changing R30. Device
+leases reserve their pins' directions; attempting to change them shows an
+inline error and preserves the mask/R30 until that device is detached. In the
+multi-core view these GPIO controls operate on the displayed PRU0 pins.
+
+FOC speed and acceleration conversions, clean staged fields, and requested
+RPM readouts use the active IEP rate divided by the firmware's fixed 12500-tick
+period. User edits remain intact during clock updates.

@@ -73,6 +73,8 @@ print(mcp.pru_registers())           # {'r0': '0x0000002a', 'r1': '0x00000000', 
 | `pru_device_discover` / `pru_device_attach` / `pru_device_detach` | profile, core, config, or device name | device profile/state | Attach an SSI encoder, TCA9538, or PRU0 FOC motor model |
 | `pru_sd_route_input` | `channel`, `pin` (`-1` restores the internal modulator) | `{channel, pin}` | Route an SD channel to a physical GPI pin |
 
+Integer and boolean parameters are strictly typed: a bool is not accepted as an integer, and a string is not accepted as a boolean.
+
 ---
 
 ## Example 1 — UART TX: Single Character (`source/uart_tx.asm`)

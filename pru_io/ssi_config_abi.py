@@ -1,8 +1,9 @@
 """GENERATED FILE -- source: schema/ssi_config_abi.json."""
 import struct
 
-ABI_VERSION = 0x2
+ABI_VERSION = 0x3
 SHARED_BASE = 0x10000
+CONFIG_SIZE = 0x10
 CONFIG_OFFSET = 0x0
 CONFIG_ADDRESS = 0x10000
 CONFIG_ABI_VERSION_OFFSET = 0x0
@@ -13,6 +14,7 @@ CONFIG_CLOCK_DELAY_LOOPS_OFFSET = 0x8
 CONFIG_CLOCK_DELAY_LOOPS_OFFSET_FROM_SHARED = 0x8
 CONFIG_IDLE_DELAY_LOOPS_OFFSET = 0xC
 CONFIG_IDLE_DELAY_LOOPS_OFFSET_FROM_SHARED = 0xC
+MAILBOX_SIZE = 0x14
 MAILBOX_OFFSET = 0x20
 MAILBOX_ADDRESS = 0x10020
 MAILBOX_SEQUENCE_OFFSET = 0x0
@@ -25,6 +27,7 @@ MAILBOX_FRAME_COUNT_OFFSET = 0xC
 MAILBOX_FRAME_COUNT_OFFSET_FROM_SHARED = 0x2C
 MAILBOX_STATUS_OFFSET = 0x10
 MAILBOX_STATUS_OFFSET_FROM_SHARED = 0x30
+EMULATOR_SIZE = 0x18
 EMULATOR_OFFSET = 0x40
 EMULATOR_ADDRESS = 0x10040
 EMULATOR_ABI_VERSION_OFFSET = 0x0
@@ -37,12 +40,11 @@ EMULATOR_FRAME_HI_OFFSET = 0xC
 EMULATOR_FRAME_HI_OFFSET_FROM_SHARED = 0x4C
 EMULATOR_STATUS_OFFSET = 0x10
 EMULATOR_STATUS_OFFSET_FROM_SHARED = 0x50
-CONFIG_SIZE = 16
-MAILBOX_SIZE = 20
-EMULATOR_SIZE = 20
+EMULATOR_MONOFLOP_TICKS_OFFSET = 0x14
+EMULATOR_MONOFLOP_TICKS_OFFSET_FROM_SHARED = 0x54
 _CONFIG_STRUCT = struct.Struct('<IIII')
 _MAILBOX_STRUCT = struct.Struct('<IIIII')
-_EMULATOR_STRUCT = struct.Struct('<IIIII')
+_EMULATOR_STRUCT = struct.Struct('<IIIIII')
 _U32_MAX = 0xFFFFFFFF
 
 def _u32(name, value):
@@ -61,13 +63,13 @@ def pack_config(frame_bits, clock_delay_loops, idle_delay_loops):
         _u32('idle_delay_loops', idle_delay_loops),
     )
 
-def pack_emulator_config(frame_bits, frame_lo, frame_hi):
+def pack_emulator_config(frame_bits, frame_lo, frame_hi, monoflop_ticks):
     if (isinstance(frame_bits, bool) or not isinstance(frame_bits, int)
             or not 1 <= frame_bits <= 64):
         raise ValueError('frame_bits must be an integer from 1 to 64')
     return _EMULATOR_STRUCT.pack(
         ABI_VERSION, frame_bits, _u32('frame_lo', frame_lo),
-        _u32('frame_hi', frame_hi), 0,
+        _u32('frame_hi', frame_hi), 0, _u32('monoflop_ticks', monoflop_ticks),
     )
 
 def _unpack(structure, buffer, size, names):
@@ -89,5 +91,5 @@ def unpack_mailbox(buffer):
 
 def unpack_emulator(buffer):
     return _unpack(_EMULATOR_STRUCT, buffer, EMULATOR_SIZE, (
-        'abi_version', 'frame_bits', 'frame_lo', 'frame_hi', 'status',
+        'abi_version', 'frame_bits', 'frame_lo', 'frame_hi', 'status', 'monoflop_ticks',
     ))

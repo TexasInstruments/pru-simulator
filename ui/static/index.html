@@ -236,6 +236,15 @@
     #btn-multicore.mc-active { background: var(--highlight); border-color: var(--accent); color: var(--text); }
     #btn-reset-layout { font-size: 11px; }
 
+    .toolbar-context { flex-wrap: wrap; max-width: 100%; min-width: 0; }
+    #iep-clock-status { flex-basis: 100%; white-space: normal; font-size: 11px; color: var(--text-dim); overflow-wrap: anywhere; }
+    #iep-clock-custom-form { display: flex; align-items: center; gap: 4px; }
+    #iep-clock-custom-form[hidden], #mc-extra-cores button[hidden] { display: none; }
+    #iep-clock-custom { width: 90px; }
+    #iep-clock-error, #gpio-drive-error { color: var(--halted); font-size: 12px; }
+    #gpio-drive-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(76px, 1fr)); gap: 4px; }
+    #gpio-drive-controls button { font: inherit; padding: 5px 3px; }
+    #gpio-drive-controls button[aria-pressed="true"] { color: var(--green); }
     #core-select,
     #mc-partner-select,
     #pru-speed-select,
@@ -1665,7 +1674,7 @@
         <option value="pru0">PRU0</option>
         <option value="rtu0">RTU0</option>
         <option value="pru1">PRU1</option>
-        <option value="rtu1">RTU1</option>
+        <option value="rtu1" hidden disabled>RTU1</option>
       </select>
 
       <select id="pru-speed-select" title="PRU core clock speed (applies to PRU0, RTU0, and PRU1)">
@@ -1677,12 +1686,20 @@
       </select>
 
       <select id="iep-clock-select" title="IEP counter clock (this session only; memory.cfg is not changed)" aria-label="IEP counter clock">
+        <option value="configured">IEP configured rate</option>
         <option value="200">IEP 200 MHz</option>
         <option value="225">IEP 225 MHz</option>
         <option value="250">IEP 250 MHz</option>
         <option value="300">IEP 300 MHz</option>
         <option value="333">IEP 333 MHz</option>
+        <option value="custom">IEP custom rate…</option>
       </select>
+      <form id="iep-clock-custom-form" hidden>
+        <label>IEP MHz <input id="iep-clock-custom" type="number" step="any" aria-label="Custom IEP rate in MHz" required></label>
+        <button type="submit">Apply rate</button>
+      </form>
+      <span id="iep-clock-status" role="status"></span>
+      <span id="iep-clock-error" role="alert" hidden></span>
     </div>
 
     <div class="toolbar-group toolbar-execution" role="group" aria-label="Execution controls">
@@ -1690,13 +1707,13 @@
       <select id="mc-partner-select" title="Second core in multi-core view" style="display:none;">
         <option value="rtu0">RTU0</option>
         <option value="pru1">PRU1</option>
-        <option value="rtu1">RTU1</option>
+        <option value="rtu1" hidden disabled>RTU1</option>
       </select>
 
       <span id="mc-extra-cores" role="group" aria-label="Additional cores in the multi-core view" style="display:none;">
         <button type="button" data-mc-extra="rtu0" aria-pressed="false" title="Also show RTU0">+RTU0</button>
         <button type="button" data-mc-extra="pru1" aria-pressed="false" title="Also show PRU1">+PRU1</button>
-        <button type="button" data-mc-extra="rtu1" aria-pressed="false" title="Also show RTU1">+RTU1</button>
+        <button type="button" data-mc-extra="rtu1" hidden disabled aria-pressed="false" title="Also show RTU1">+RTU1</button>
       </span>
 
       <button id="btn-step" class="btn-17 btn-step"><span class="text-container"><span class="text">Step</span></span></button>
@@ -1789,7 +1806,7 @@
             <option value="pru0">→ PRU0</option>
             <option value="rtu0">→ RTU0</option>
             <option value="pru1">→ PRU1</option>
-            <option value="rtu1">→ RTU1</option>
+            <option value="rtu1" hidden disabled>→ RTU1</option>
           </select>
           <input type="file" id="file-input" accept=".asm,.inc,.s,.out" style="display:none" />
           <button id="btn-file" class="btn-load btn-17"><span class="text-container"><span class="text">Open</span></span></button>
@@ -1905,6 +1922,9 @@ Example:
           <div class="io-section">
             <div class="io-section-title">GPO (R30) — Output</div>
             <div class="pin-grid" id="gpo-grid"></div>
+            <div class="io-section-title">GPIO output enable — Drive / Release</div>
+            <div id="gpio-drive-controls" role="group" aria-label="GPIO output enable"></div>
+            <div id="gpio-drive-error" role="alert" hidden></div>
           </div>
           <div class="lb-strip" id="loopback-strip">
             <span class="lb-label">&#x21A9; Loopback</span>

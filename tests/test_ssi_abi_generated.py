@@ -25,18 +25,27 @@ def test_ssi_config_pack_round_trip_and_mailbox_decode():
                        "frame_count": 3, "status": 0}
 
 
-def test_abi_version_two_blocks_do_not_overlap_and_accept_64_bit_frames():
+def test_abi_version_three_blocks_do_not_overlap_and_accept_64_bit_frames():
     blocks = [(abi.CONFIG_OFFSET, abi.CONFIG_SIZE),
               (abi.MAILBOX_OFFSET, abi.MAILBOX_SIZE),
               (abi.EMULATOR_OFFSET, abi.EMULATOR_SIZE)]
     ends = [offset + size for offset, size in blocks]
-    assert abi.ABI_VERSION == 2
+    assert abi.ABI_VERSION == 3
     assert all(end <= start for end, (start, _) in zip(ends, blocks[1:]))
     assert abi.unpack_config(abi.pack_config(64, 1, 1))["frame_bits"] == 64
     with pytest.raises(ValueError):
         abi.pack_config(65, 1, 1)
     with pytest.raises(ValueError):
-        abi.pack_emulator_config(0, 0, 0)
-    assert abi.unpack_emulator(abi.pack_emulator_config(33, 5, 1)) == {
-        "abi_version": 2, "frame_bits": 33, "frame_lo": 5, "frame_hi": 1,
-        "status": 0}
+        abi.pack_emulator_config(0, 0, 0, 100)
+    assert abi.unpack_emulator(abi.pack_emulator_config(33, 5, 1, 100)) == {
+        "abi_version": 3, "frame_bits": 33, "frame_lo": 5, "frame_hi": 1,
+        "status": 0, "monoflop_ticks": 100}
+
+
+def test_abi_three_preserves_reader_and_mailbox_offsets_and_appends_timeout():
+    assert (abi.CONFIG_ADDRESS, abi.CONFIG_SIZE) == (0x10000, 16)
+    assert (abi.MAILBOX_ADDRESS, abi.MAILBOX_SIZE) == (0x10020, 20)
+    assert (abi.EMULATOR_ADDRESS, abi.EMULATOR_SIZE) == (0x10040, 24)
+    assert abi.EMULATOR_MONOFLOP_TICKS_OFFSET == 0x14
+    assert abi.pack_emulator_config(8, 0xA5, 0, 1000) == bytes.fromhex(
+        "03000000 08000000 a5000000 00000000 00000000 e8030000")
