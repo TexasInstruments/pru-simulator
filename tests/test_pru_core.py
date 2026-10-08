@@ -692,6 +692,53 @@ def test_memory_faults_are_recorded_and_reset_clears_them(
     assert core.fault is None
 
 
+@pytest.mark.parametrize(
+    "load",
+    [
+        lambda core: core.load_asm("nop\nhalt"),
+        lambda core: core.load_binary([], b"", 0),
+    ],
+    ids=["load_asm", "load_binary"],
+)
+def test_loading_a_program_clears_the_previous_programs_fault(load):
+    """A fault belongs to the program that raised it, so a load drops it.
+
+    Only `fault` is cleared. `halted` and `pc` are deliberately left alone:
+    a halted core staying halted across a load predates the fault field, and
+    changing it is a separate decision.
+    """
+    core = make_core("ldi r1, 0x3000\nlbbo &r0, r1, 0, 4\nhalt")
+    run_to_halt(core)
+    assert core.fault is not None
+
+    assert load(core) == []
+
+    assert core.fault is None
+
+
+@pytest.mark.parametrize(
+    "load",
+    [
+        lambda core: core.load_asm("ldi r1\n"),
+        lambda core: core.load_binary(["not a word"], b"", 0),
+    ],
+    ids=["load_asm", "load_binary"],
+)
+def test_a_failed_load_keeps_the_faulting_program_and_its_fault(load):
+    """A load that fails installs nothing, so the fault still explains the halt."""
+    core = make_core("ldi r1, 0x3000\nlbbo &r0, r1, 0, 4\nhalt")
+    run_to_halt(core)
+    fault = core.fault
+    program = core.instructions
+    assert fault is not None
+
+    assert load(core) != []
+
+    assert core.fault == fault
+    assert core.instructions is program
+    assert core.halted
+
+
 # ---------------------------------------------------------------------------
 # load_asm error handling
 # ---------------------------------------------------------------------------

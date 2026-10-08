@@ -133,10 +133,16 @@ class PRUCore:
         """Parse assembly source and load instructions.
 
         Returns a list of error strings (empty on success).
+
+        Loading installs instructions only: halted, pc, loop state and
+        registers are left as they were, so reset() the core before running a
+        newly loaded program. A successful load drops the recorded fault; a
+        failed parse leaves the previous program and its fault in place.
         """
         errors: list[str] = []
         try:
             self.instructions = self._parser.parse_text(source, include_paths)
+            self.fault = None  # a fault belongs to the program that raised it
         except Exception as exc:  # noqa: BLE001
             errors.append(str(exc))
         return errors
@@ -146,12 +152,18 @@ class PRUCore:
         """Load pre-compiled binary instructions (from .out ELF).
 
         Returns a list of error strings (empty on success).
+
+        Loading installs instructions only: halted, pc, loop state and
+        registers are left as they were, so reset() the core before running a
+        newly loaded program. A successful load drops the recorded fault; a
+        failed disassembly leaves the previous program and its fault in place.
         """
         from .disassembler import disassemble
         errors: list[str] = []
         try:
             syms = symbols or {}
             self.instructions = disassemble(text_words, syms)
+            self.fault = None
             # Store symbols as labels (name → addr) for the frontend
             self._parser.labels = {name: addr for addr, name in syms.items()}
             if data_bytes:
