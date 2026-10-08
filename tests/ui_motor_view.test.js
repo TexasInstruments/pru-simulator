@@ -58,6 +58,9 @@ context.running = false;
 context.globalThis = context;
 const load = file => vm.runInContext(readFileSync(new URL(`../ui/static/${file}`, import.meta.url), 'utf8'), context);
 load('motor_helpers.js');
+let currentHistory;
+const createHistory = context.MotorHelpers.createHistory;
+context.MotorHelpers.createHistory = (...args) => (currentHistory = createHistory(...args));
 load('motor.js');
 const M = context.window.MotorControl;
 assert.ok(M, 'motor.js registers window.MotorControl');
@@ -186,3 +189,20 @@ get('motor-speed-rpm').value = '77';
 get('motor-speed-rpm').listeners.input();
 M.onState(stateWith({ foc_clocks: { pru_hz: 250e6, iep_hz: 333.333e6 } }));
 assert.equal(get('motor-speed-rpm').value, '77', 'clock updates preserve user edits');
+
+// Reset state clears plot rows immediately, even while sample requests are throttled.
+M.onConnect();
+M.onState(stateWith());
+drain();
+M.onSamples({ type: 'foc_samples', fields: ['index', 'time_s', 'ia'], next_index: 3,
+  dropped: 0, samples: [[0, 0.0001, 1], [1, 0.0002, 2], [2, 0.0003, 3]] });
+assert.equal(currentHistory.rows.length, 3);
+const resetState = stateWith();
+resetState.io.device_bus.devices[0].sample_index = 0;
+resetState.io.device_bus.devices[0].cycles = 0;
+M.onState(resetState);
+assert.equal(currentHistory.rows.length, 0, 'reset state must clear plots before a sample reply');
+assert.equal(currentHistory.nextIndex, 0);
+M.onSamples({ type: 'foc_samples', fields: ['index', 'time_s', 'ia'], next_index: 2,
+  dropped: 0, samples: [[0, 0.0001, 4], [1, 0.0002, 5]] });
+assert.deepEqual(Array.from(currentHistory.rows, row => Array.from(row)), [[0, 0.0001, 4], [1, 0.0002, 5]]);

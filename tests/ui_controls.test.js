@@ -66,7 +66,8 @@ assert.equal(buttons[0].textContent, '0: Drive');
 assert.equal(buttons[2].textContent, '2: Release');
 buttons[2].listeners.click();
 assert.equal(sent.at(-1).action, 'set_gpio_drive_mask');
-assert.equal(sent.at(-1).mask, 7);
+assert.equal(sent.at(-1).pin, 2);
+assert.equal(sent.at(-1).mask, undefined);
 assert.equal(buttons[0].attributes['aria-pressed'], 'true');
 
 const clockSection = app.slice(app.indexOf('// ---- IEP counter clock selector'), app.indexOf('// ---- end IEP counter clock selector'));
@@ -93,6 +94,18 @@ context.currentCore = 'pru1';
 context.updateGpioDirections({ gpo_drive_mask: 1 }, 'pru0');
 buttons[1].listeners.click();
 assert.equal(sent.at(-1).core, 'pru0');
+
+// Withhold state feedback: send each pin intent without rebuilding a stale mask.
+context.updateGpioDirections({ gpo_drive_mask: 0 }, 'pru0');
+sent.length = 0;
+buttons[0].listeners.click();
+buttons[1].listeners.click();
+assert.deepEqual(sent.map(message => message.pin), [0, 1]);
+assert.ok(sent.every(message => message.mask === undefined));
+sent.length = 0;
+buttons[0].listeners.click();
+buttons[0].listeners.click();
+assert.deepEqual(sent.map(message => message.pin), [0, 0]);
 
 // A reloaded target must unhide the device partner option after replacing RTU1.
 context.deviceCoreSelectWrap = get('device-core-select-wrap');

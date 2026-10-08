@@ -262,6 +262,14 @@ leases reserve their pins' directions; attempting to change them shows an
 inline error and preserves the mask/R30 until that device is detached. In the
 multi-core view these GPIO controls operate on the displayed PRU0 pins.
 
+The WebSocket `set_gpio_drive_mask` action accepts either a 20-bit integer
+`mask` to replace all directions or an integer `pin` from 0 to 19 to toggle
+that pin against the current server mask. Supplying both is rejected. The
+dashboard sends pin intents, so clicks made before state feedback accumulate
+in arrival order; two clicks on the same pin cancel. Both forms enforce device
+direction leases and leave R30 unchanged. Errors return the `gpio` tag followed
+by current state.
+
 FOC speed and acceleration conversions, clean staged fields, and requested
 RPM readouts use the active IEP rate divided by the firmware's fixed 12500-tick
 period. User edits remain intact during clock updates.

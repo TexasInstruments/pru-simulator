@@ -677,7 +677,7 @@ function buildGpioDirectionControls() {
     button.addEventListener('click', () => {
       document.getElementById('gpio-drive-error').hidden = true;
       sendAction({ action: 'set_gpio_drive_mask', core: container.dataset.core || currentCore,
-        mask: Number(container.dataset.mask || 0) ^ (1 << pin) });
+        pin });
     });
     container.appendChild(button);
   }

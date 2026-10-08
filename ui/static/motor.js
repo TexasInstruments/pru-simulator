@@ -251,8 +251,9 @@
     const io = msg.io || {};
     const bus = io.device_bus || {};
     const found = (bus.devices || []).find(device => device.model === 'pmsm' && device.core === 'pru0');
-    if (!found && motor) {
+    if ((!found && motor) || (found && found.sample_index < history.nextIndex)) {
       history = H.createHistory();
+      samplePending = false;
       lastStateKey = '';
     }
     motor = found || null;

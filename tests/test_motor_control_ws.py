@@ -1,4 +1,5 @@
 """Motor Control flow over a real dashboard WebSocket session."""
+import asyncio
 import math
 from pathlib import Path
 
@@ -173,3 +174,104 @@ def test_firmware_counters_stay_instruction_accurate_during_a_session(fresh_sim)
         counters = fresh_sim.cores["pru0"].counters
         assert counters.cycles == counters.instruction_count + counters.stall_cycles
         assert session.state["cycles"] == counters.cycles
+
+
+@pytest.mark.parametrize("action", ["reset", "hard_reset"])
+def test_normal_motor_reset_starts_a_new_sample_history(fresh_sim, action):
+    with client.websocket_connect("/ws") as ws:
+        session = Session(ws)
+        _start(session, speed_rpm=100, vd_pu=0.0, vq_pu=0.1, accel_rpm_s=1000)
+        for _ in range(10):
+            if session.motor()["pwm_periods"] >= 3:
+                break
+            session.send(action="run", max_steps=20_000)
+        assert session.motor()["pwm_periods"] >= 3, session.state
+        before = session.send(action="foc_state", since=0)[-1]
+        assert before["next_index"] > 0
+        session.send(action=action)
+        assert session.motor()["sample_index"] == 0
+        reset = session.send(action="foc_state", since=before["next_index"])[-1]
+        assert reset["next_index"] == 0 and reset["samples"] == []
+        session.send(action="foc_set_reference", enable=True, speed_rpm=100, vq_pu=0.1)
+        for _ in range(10):
+            if session.motor()["pwm_periods"] >= 3:
+                break
+            session.send(action="run", max_steps=20_000)
+        assert session.motor()["pwm_periods"] >= 3, session.state
+        resumed = session.send(action="foc_state", since=0)[-1]
+        assert [row[0] for row in resumed["samples"]] == list(range(resumed["next_index"]))
+        times = [row[1] for row in resumed["samples"]]
+        assert times and all(a < b for a, b in zip(times, times[1:]))
+        assert not session.errors
+
+
+def test_overflowed_json_motor_clock_returns_validation_error_and_keeps_session_alive(fresh_sim):
+    from starlette.websockets import WebSocketDisconnect
+    from tests.test_server import _ActionWebSocket
+    import ui.server as srv
+
+    class RawWebSocket(_ActionWebSocket):
+        async def receive_text(self):
+            try:
+                return next(self._actions)
+            except StopIteration:
+                raise WebSocketDisconnect(code=1000)
+
+    before = fresh_sim.device_bus.snapshot()
+    ws = RawWebSocket([
+        '{"action":"device_attach","core":"pru0","profile":"foc_motor",'
+        '"config":{"core_clock_hz":1e309}}',
+        '{"action":"get_state","core":"pru0"}',
+    ])
+    asyncio.run(srv.websocket_endpoint(ws))
+    assert [message["type"] for message in ws.sent] == ["error", "state", "state"]
+    assert ws.sent[0]["tag"] == "device"
+    assert "core_clock_hz" in ws.sent[0]["errors"][0]
+    assert fresh_sim.device_bus.snapshot() == before
+
+
+@pytest.mark.parametrize("pins,expected", [([0, 1], 3), ([0, 0], 0)])
+def test_pending_gpio_pin_clicks_apply_against_current_state(fresh_sim, pins, expected):
+    fresh_sim.set_gpio_drive_mask("pru0", 0)
+    fresh_sim.cores["pru0"].registers.regs[30] = 0x12345
+    with client.websocket_connect("/ws") as ws:
+        for pin in pins:
+            ws.send_json({"action": "set_gpio_drive_mask", "core": "pru0", "pin": pin})
+        states = [ws.receive_json() for _ in pins]
+        assert all(state["type"] == "state" for state in states)
+        assert states[-1]["io"]["gpo_drive_mask"] == expected
+    assert fresh_sim.cores["pru0"].io_port.gpo_drive_mask == expected
+    assert fresh_sim.cores["pru0"].registers.regs[30] == 0x12345
+
+
+def test_pending_gpio_owned_pin_rejection_does_not_lose_other_pin_intent(fresh_sim):
+    with client.websocket_connect("/ws") as ws:
+        session = Session(ws)
+        session.send(action="device_attach", profile="ssi_encoder")
+        before = fresh_sim.device_bus.snapshot()["output_leases"]
+        fresh_sim.cores["pru0"].registers.regs[30] = 0x12345
+        for pin in (0, 5, 5, 6):
+            ws.send_json({"action": "set_gpio_drive_mask", "core": "pru0", "pin": pin})
+        error = ws.receive_json()
+        assert error["type"] == "error" and error["tag"] == "gpio"
+        states = [ws.receive_json() for _ in range(4)]
+        assert states[-1]["io"]["gpo_drive_mask"] == 0x41
+        assert fresh_sim.device_bus.snapshot()["output_leases"] == before
+        assert fresh_sim.cores["pru0"].registers.regs[30] == 0x12345
+
+
+@pytest.mark.parametrize("fields", [
+    {"pin": True}, {"pin": -1}, {"pin": 20}, {"pin": 1.5}, {"pin": "1"},
+    {"pin": None}, {"pin": 0, "mask": 1},
+])
+def test_invalid_gpio_pin_intent_preserves_mask_and_r30(fresh_sim, fields):
+    from tests.test_server import _run_websocket_actions
+
+    fresh_sim.set_gpio_drive_mask("pru0", 7)
+    fresh_sim.cores["pru0"].registers.regs[30] = 0x12345
+    messages = _run_websocket_actions([{"action": "set_gpio_drive_mask", **fields},
+                                      {"action": "get_state"}])
+    assert [message["type"] for message in messages] == ["error", "state", "state"]
+    assert messages[0]["tag"] == "gpio"
+    assert fresh_sim.cores["pru0"].io_port.gpo_drive_mask == 7
+    assert fresh_sim.cores["pru0"].registers.regs[30] == 0x12345

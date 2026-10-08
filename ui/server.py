@@ -552,7 +552,18 @@ async def websocket_endpoint(websocket: WebSocket):
                 await _send_state(websocket, core)
             elif action == "set_gpio_drive_mask":
                 try:
-                    mask = msg.get("mask")
+                    # Full-mask clients replace all directions; dashboard pin
+                    # intents toggle one pin against the current authoritative mask.
+                    if "pin" in msg:
+                        if "mask" in msg:
+                            raise ValueError("provide either GPIO pin or drive mask, not both")
+                        pin = msg["pin"]
+                        if (isinstance(pin, bool) or not isinstance(pin, int)
+                                or not 0 <= pin < 20):
+                            raise ValueError("GPIO pin must be an integer from 0 to 19")
+                        mask = sim.cores[core].io_port.gpo_drive_mask ^ (1 << pin)
+                    else:
+                        mask = msg.get("mask")
                     if (isinstance(mask, bool) or not isinstance(mask, int)
                             or not 0 <= mask < (1 << 20)):
                         raise ValueError("GPIO drive mask must be a 20-bit integer")

@@ -68,6 +68,26 @@ assert.equal(history.nextIndex, 2);
 assert.equal(H.appendSamples(history, { error: true }), history, 'malformed payloads are ignored');
 assert.equal(history.rows.length, 2);
 
+// Normal reset publishes an empty index-zero payload before restarted samples.
+// The backend lifecycle regression independently verifies these payload shapes.
+const lifecycle = {
+  before: { fields, next_index: 2, dropped: 0, samples: [[0, 0.0001, 1], [1, 0.0002, 2]] },
+  advanced: { fields, next_index: 3, dropped: 0, samples: [[2, 0.0003, 3]] },
+  restored: { fields, next_index: 2, dropped: 0, samples: [[0, 0.0001, 1], [1, 0.0002, 2]] },
+  reset: { fields, next_index: 0, dropped: 0, samples: [] },
+  resumed: { fields, next_index: 2, dropped: 0, samples: [[0, 0.0001, 4], [1, 0.0002, 5]] },
+};
+history = H.createHistory();
+H.appendSamples(history, lifecycle.before);
+H.appendSamples(history, lifecycle.advanced);
+H.appendSamples(history, lifecycle.restored);
+assert.deepEqual(plain(history.rows), lifecycle.before.samples);
+H.appendSamples(history, lifecycle.reset);
+assert.equal(history.rows.length, 0, 'normal reset removes all old rows');
+H.appendSamples(history, lifecycle.resumed);
+assert.deepEqual(ids(history), [0, 1]);
+assert.deepEqual(plain(H.column(history, 'time_s')), [0.0001, 0.0002]);
+
 // Chart ranges never collapse and always include the data.
 assert.deepEqual(plain(H.chartRange([])), { min: -1, max: 1 });
 const flat = H.chartRange([5, 5, 5], { minSpan: 2 });
