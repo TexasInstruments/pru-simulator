@@ -37,6 +37,15 @@ class PRUSimulatorMCP:
         self._config_path = config_path
         self.sim = Simulator(config_path)
 
+    def pru_gpio_drive_mask(self, core: str = "pru0", mask: int | None = None) -> dict:
+        """Query or set the twenty GPIO output-enable bits without changing R30."""
+        if mask is not None:
+            if (isinstance(mask, bool) or not isinstance(mask, int)
+                    or not 0 <= mask < (1 << 20)):
+                raise ValueError("GPIO drive mask must be a 20-bit integer")
+            self.sim.set_gpio_drive_mask(core, mask)
+        return {"core": core, "drive_mask": self.sim.io(core)["gpo_drive_mask"]}
+
     def pru_load(self, source: str, core: str = "pru0",
                  include_paths: list[str] | None = None) -> dict:
         """Parse and load assembly source into a PRU core."""
@@ -163,6 +172,8 @@ class PRUSimulatorMCP:
             errors = candidate.load_elf(core, elf_data)
             if not errors:
                 candidate.cores[core].pc = entry_pc
+                self.sim.device_bus.detach_all()
+                self.sim.device_bus.release_all_core_outputs()
                 self.sim = candidate
         except (OSError, ValueError, binascii.Error) as exc:
             errors = [f"ELF load failed: {exc}"]

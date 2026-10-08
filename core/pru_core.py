@@ -616,15 +616,6 @@ class PRUCore:
                     # Loop finished
                     self.loop_state = None
 
-        # ---- Settle the device bus (if any device attached) --------------
-        # AFTER the instruction, not before: an R30 write must be visible to
-        # the device in the same cycle it happens, so that the next
-        # instruction's R31 read sees the response. Settling first delays every
-        # pin change by one instruction, which is enough to make a bit-banged
-        # I2C master misread its ACK and abort the transfer.
-        self.io_port._device_cycle = self.counters.cycles
-        self.io_port.tick_devices(self.counters.cycles, time_only=True)
-
         # ---- Advance SD filter clock (if attached) ----------------------
         if self.io_port.sd_filter is not None:
             self.io_port.sd_filter.tick()
@@ -635,8 +626,18 @@ class PRUCore:
 
         # ---- Count instruction cycle ------------------------------------
         self.counters.tick()
+        # Time-driven devices advance by the cycles this step consumed, stalls
+        # included, so a core built without a Simulator still ticks them. With
+        # no device attached only the cycle count moves; it stays exact so a
+        # device attached later starts at the right cycle.
+        elapsed_cycles = self.counters.cycles - cycles_before
+        io_port = self.io_port
+        if io_port.device_bus.devices:
+            io_port.advance_devices(elapsed_cycles)
+        else:
+            io_port._device_cycle += elapsed_cycles
         if self.cycle_observer is not None:
-            self.cycle_observer(self.counters.cycles - cycles_before)
+            self.cycle_observer(elapsed_cycles)
 
     def run(self, max_steps: int = 100_000) -> int:
         """Run until halted or max_steps reached. Returns steps executed."""

@@ -87,3 +87,9 @@ def test_no_property_is_advertised_as_string_unless_annotated_str():
             else:
                 assert advertised != "string", (name, param_name, param.annotation)
     assert checked > 10
+
+
+def test_optional_int_mask_is_an_integer():
+    schema = tool_schemas()["pru_gpio_drive_mask"]
+    assert schema["properties"]["mask"] == {"type": "integer", "default": None}
+    assert "mask" not in schema["required"]

@@ -3582,8 +3582,8 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     stopRun(); stopSim();
     if (multiCoreMode) {
-      sendAction({ action: "step_back", core: "pru0" });
       sendAction({ action: "step_back", core: mcPartner });
+      sendAction({ action: "step_back", core: "pru0" });
     } else {
       sendAction({ action: "step_back", core: currentCore });
     }

@@ -6,7 +6,7 @@ through the sigma-delta filter interface instead of raw GPIO.
 """
 
 from __future__ import annotations
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from pru_io.device_model import DeviceBus
 
@@ -30,10 +30,11 @@ class IOPort:
         self.loopback_mask: int = 0   # which GPO bits feed back to GPI (5 groups × 4 bits)
         self.uart_generator = None  # type: UARTFrameGenerator | None
         self.i2c_device = None        # type: TCA9538Device | None
-        # Generic device bus. Empty by default, and while empty it costs one
-        # `if` per cycle and changes nothing - attaching a device is always
-        # opt-in, for the same reason attach_i2c_device is.
+        # Generic device bus. It stays inert until a device or wire is attached.
         self.device_bus = DeviceBus()
+        self._device_endpoint: str | None = None
+        self._device_pin_mask = 0
+        self.gpo_drive_mask: int = 0
         self._device_cycle = 0        # last cycle seen, for write-triggered settles
 
     # ------------------------------------------------------------------
@@ -50,6 +51,7 @@ class IOPort:
         When sd_en (R30 bit 25) is clear, applies loopback_mask: masked GPO bits
         are immediately reflected into GPI (combinatorial, matching hardware).
         """
+        old_gpo = self.gpo
         self.gpo = value & _MASK_20
         if self.perif is not None:
             self.perif.process_r30(value, wstrb)
@@ -65,8 +67,10 @@ class IOPort:
                 self.gpi |= (1 << _I2C_SDA_BIT)
             else:
                 self.gpi &= ~(1 << _I2C_SDA_BIT)
-        # A pin change is the event a reactive device model waits for.
-        self.tick_devices(self._device_cycle)
+        # Reactive models see actual pin changes; repeated writes of the same
+        # value must not manufacture protocol edges.
+        if old_gpo != self.gpo and self.device_bus.active:
+            self.tick_devices(self._device_cycle)
 
     # ------------------------------------------------------------------
     # Generic device bus
@@ -78,32 +82,89 @@ class IOPort:
         The generic replacement for attach_i2c_device: any number of devices,
         on any pins, sharing nets. Opt-in, like everything else here.
         """
-        return self.device_bus.attach(device)
+        return self.device_bus.attach(device, port=self._device_endpoint,
+                                      cycle=self._device_cycle)
 
-    def tick_devices(self, cycle: int, time_only: bool = False) -> None:
+    def bind_device_bus(self, bus: DeviceBus, endpoint: str) -> None:
+        """Join a simulator-wide electrical bus under this core's name."""
+        self.device_bus = bus
+        self._device_endpoint = endpoint
+        bus.register_port(endpoint, self)
+
+    def set_gpo_drive_mask(self, mask: int) -> None:
+        """Set which pins this core is currently driving as GPIO outputs."""
+        if not isinstance(mask, int) or isinstance(mask, bool):
+            raise ValueError("GPIO drive mask must be a 20-bit integer")
+        self.gpo_drive_mask = mask & _MASK_20
+        if self._device_endpoint is None:
+            self.device_bus.set_pru_drive_mask(self.gpo_drive_mask)
+            if self.device_bus.active:
+                self.tick_devices(self._device_cycle)
+        else:
+            self.device_bus.set_core_drive_mask(
+                self._device_endpoint, self.gpo_drive_mask,
+                cycle=self._device_cycle)
+
+    def tick_devices(self, cycle: int) -> None:
         """One bus settle.
 
-        Called from `write_r30` whenever a pin changes, and once per core cycle
-        with *time_only* set. Reactive devices are settled only on pin changes:
+        Called from `write_r30` when a pin changes. Time-driven models advance
+        through `advance_devices()` with the elapsed cycle count. Reactive
+        devices are settled only on pin changes:
         a bus slave detects edges, so ticking it repeatedly between changes
         feeds it its own last output as fresh input and derails the state
-        machine. Devices that declare `time_driven` advance on both.
+        machine.
 
         Only pins some attached device actually drives are written back into
         GPI. Pins nothing drives keep whatever loopback, the UART generator or
         `set_gpi_pin` put there - attaching a device must not quietly take over
         the whole port.
         """
-        if not self.device_bus.devices:
+        if not self.device_bus.active:
             return
-        if time_only and not any(d.time_driven for d in self.device_bus.devices):
+        bus = self.device_bus.settle(cycle, self.gpo, port=self._device_endpoint)
+        if self._device_endpoint is None:
+            self._update_device_gpi(bus)
+
+    def advance_devices(self, elapsed_cycles: int,
+                        after_cycle: Callable[[int, int], None] | None = None) -> None:
+        """Advance time-driven models and optionally observe each elapsed cycle.
+
+        `after_cycle` receives the new device-cycle number and resolved GPI word
+        after the bus has advanced. It is used by other generic cycle-based
+        peripherals that need the pin state for every elapsed cycle.
+        """
+        if elapsed_cycles <= 0:
             return
-        bus = self.device_bus.settle(cycle, self.gpo)
+        has_time_driven = self.device_bus.has_time_driven(self._device_endpoint)
+        if not has_time_driven and after_cycle is None:
+            self._device_cycle += elapsed_cycles
+            return
+        for _ in range(elapsed_cycles):
+            cycle = self._device_cycle + 1
+            if has_time_driven:
+                self.device_bus.advance_cycles(
+                    self._device_endpoint, 1, first_cycle=cycle)
+                if self._device_endpoint is None:
+                    self._update_device_gpi(self.device_bus._bus)
+            self._device_cycle = cycle
+            if after_cycle is not None:
+                after_cycle(cycle, self.gpi)
+
+    def detach_device(self, device) -> None:
+        """Detach one model and release its previous output pins."""
+        self.device_bus.detach(device)
+        if self._device_endpoint is None:
+            self._update_device_gpi(self.device_bus._bus)
+
+    def _update_device_gpi(self, bus: int) -> None:
         driven = 0
-        for dev in self.device_bus.devices:
-            for pin in dev.nets:
+        for device in self.device_bus.devices:
+            for pin in device.nets:
                 driven |= 1 << pin
-        self.gpi = ((self.gpi & ~driven) | (bus & driven)) & _MASK_20
+        managed = self._device_pin_mask | driven
+        self.gpi = ((self.gpi & ~managed) | (bus & managed)) & _MASK_20
+        self._device_pin_mask = driven
 
     def attach_i2c_device(self, device: "TCA9538Device | None") -> None:
         """Attach (or detach with None) an I2C slave model on SCL=bit0/SDA=bit1.
@@ -180,13 +241,16 @@ class IOPort:
         frames), not core state.
         """
         self.gpo = 0
+        self._device_cycle = 0
         if self.perif is not None:
             self.perif.reset()
         # Devices stay attached across a reset (they model external hardware,
         # which does not vanish), but their state and any recorded faults do
         # not survive - a stale fault from the previous run would be read as a
         # finding about this one.
-        self.device_bus.reset()
+        self.device_bus.reset_port(self._device_endpoint, gpo=self.gpo)
+        if self._device_endpoint is None:
+            self._update_device_gpi(self.device_bus._bus)
 
     # ------------------------------------------------------------------
     # Pin-list helpers
