@@ -45,6 +45,14 @@ columns still follow PRU0 (and the counters the partner); the device-core
 selector offers PRU0 and the partner only. With no extra core toggled the view
 is the original two-core one.
 
+**Run and Stop.** Run waits for each instruction chunk to finish before sending
+another, including all core states in multicore mode. Stop prevents further
+chunks; the one already executing can finish. This keeps slow device models
+from building a queue of work after Stop. When updating the dashboard, restart
+the Python server and reload the tab so the frontend and backend use the same
+protocol. A tab reload alone keeps simulator state in the server; a server
+restart creates a new session.
+
 **IEP counter clock.** The header offers 200, 225, 250, 300 and 333 MHz
 shortcuts, a custom finite positive MHz rate (including fractions), and a
 **configured rate** reset. The visible clock status identifies the configured

@@ -260,6 +260,39 @@ def _run_websocket_actions(actions):
     return websocket.sent
 
 
+@pytest.mark.parametrize("action,partners", [
+    ("run", None),
+    ("run_multicore", ["rtu0", "pru1"]),
+    ("run_multicore", ["nope"]),
+])
+def test_run_completion_identifies_only_the_final_state(fresh_sim, action, partners):
+    for core in fresh_sim.cores:
+        assert fresh_sim.load(core, "loop:\nadd r0, r0, 1\njmp loop") == []
+    request = {"action": action, "core": "pru0", "max_steps": 100,
+               "capture": True, "run_id": 17}
+    if partners is not None:
+        request["partners"] = partners
+    sent = _run_websocket_actions([
+        request, {"action": "get_state", "core": "pru0"},
+    ])
+    completed = [message for message in sent if message.get("run_id") == 17]
+    assert len(completed) == 1
+    assert completed[0]["type"] == "state"
+    assert completed[0]["core"] == ("pru1" if partners == ["rtu0", "pru1"] else "pru0")
+    assert completed[0] is sent[-2], "completion follows every state/capture/error in its chunk"
+    assert "run_id" not in sent[-1], "ordinary state pushes cannot acknowledge a run"
+
+
+def test_invalid_run_core_returns_a_completion_and_keeps_the_socket(fresh_sim):
+    sent = _run_websocket_actions([
+        {"action": "run", "core": "missing", "run_id": 18},
+        {"action": "get_state", "core": "pru0"},
+    ])
+    assert sent[0]["type"] == "error"
+    assert sent[1]["type"] == "state" and sent[1]["run_id"] == 18
+    assert sent[2]["type"] == "state" and "run_id" not in sent[2]
+
+
 def test_state_preserves_other_core_fault_until_reset(fresh_sim):
     fault = {"opcode": "LBBO", "address": 12, "error": "Unmapped memory"}
     fresh_sim.cores["pru0"].fault = fault

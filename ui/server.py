@@ -472,7 +472,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({"type": "error", "tag": "core",
                     "errors": [f"core must be one of {list(sim.cores)}, got {core!r}"],
                     "available_cores": list(sim.cores)})
-                await _send_state(websocket, next(iter(sim.cores)))
+                await _send_state(websocket, next(iter(sim.cores)),
+                                  run_id=msg.get("run_id") if action in ("run", "run_multicore") else None)
                 continue
 
             if action == "load":
@@ -730,7 +731,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 if samples:
                     await _send_capture(websocket, core, samples)
                 await _send_state(websocket, core, at_breakpoint=at_breakpoint,
-                                  captured=capture)
+                                  captured=capture, run_id=msg.get("run_id"))
             elif action == "run_multicore":
                 max_steps = int(msg.get("max_steps", 1000))
                 capture = bool(msg.get("capture", False))
@@ -743,7 +744,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         or any(name not in sim.cores for name in partners)):
                     await websocket.send_json({"type": "error", "errors": [
                         f"partners must be other cores of {list(sim.cores)}, got {partners!r}"]})
-                    await _send_state(websocket, core)
+                    await _send_state(websocket, core, run_id=msg.get("run_id"))
                     continue
                 lead_pru = sim.cores[core]
                 partner_prus = [sim.cores[name] for name in partners]
@@ -772,7 +773,8 @@ async def websocket_endpoint(websocket: WebSocket):
                                   captured=capture)
                 for name, at_bp in zip(partners, partner_bp):
                     await _send_state(websocket, name, at_breakpoint=at_bp,
-                                      captured=capture)
+                                      captured=capture,
+                                      run_id=msg.get("run_id") if name == partners[-1] else None)
             elif action == "set_sd_modulator":
                 ch = int(msg.get("channel", 0))
                 params = msg.get("params", {})
@@ -1065,7 +1067,7 @@ async def _send_capture(ws, core, samples):
     })
 
 
-async def _send_state(ws, core, at_breakpoint=False, captured=False):
+async def _send_state(ws, core, at_breakpoint=False, captured=False, run_id=None):
     c = sim.cores[core]
     # R31 display reflects live GPI state (registers.regs[31] is never updated by set_gpi_pin)
     regs = list(c.registers.regs)
@@ -1150,6 +1152,8 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False):
         "xfr_shift_en": sim.xfr.xfr_shift_en,
         "mac": _read_mac(c),
     }
+    if run_id is not None:
+        state["run_id"] = run_id
     await ws.send_json(state)
 
 

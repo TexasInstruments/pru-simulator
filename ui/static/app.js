@@ -12,6 +12,8 @@ let devicePanelCore = "pru0";
 let ssiPresets = {};
 let running = false;
 let runInterval = null;
+let runPending = null;
+let runSequence = 0;
 let simRunning = false;
 let simTimer = null;
 let _flashTimer = null;
@@ -360,6 +362,7 @@ function connect() {
   ws.onclose = () => {
     wsStatus.textContent = "Disconnected";
     wsStatus.className = "error";
+    runPending = null;
     stopRun();
     // Attempt reconnect after 2 s
     setTimeout(connect, 2000);
@@ -374,6 +377,7 @@ function connect() {
     try {
       const msg = JSON.parse(event.data);
       if (msg.type === "state") {
+        if (msg.run_id === runPending) runPending = null;
         if (msg.available_cores) showAvailableCores(msg.available_cores);
         if (msg.iep) showIepClock(msg.iep);
         window.MotorControl?.onState(msg);
@@ -2600,12 +2604,18 @@ document.addEventListener("keydown", (e) => {
 // ---- Run mode -------------------------------------------------------------
 
 function startRun() {
+  if (running) return;
   stopSim();
   running = true;
   setButtonLabel(btnRun, "Stop");
   btnRun.classList.add("btn-reset");
   btnRun.classList.remove("btn-run");
   runInterval = setInterval(() => {
+    // FOC/device chunks can take longer than this timer interval. Wait for the
+    // final state of our chunk so Run and Stop never build up a command queue.
+    if (runPending !== null || !ws || ws.readyState !== WebSocket.OPEN) return;
+    const run_id = ++runSequence;
+    runPending = run_id;
     // While recording, the server samples the graph inside its run loop and
     // ships the batch as a "capture" message (per instruction in perif mode,
     // 100:1 otherwise). The chunk size no longer sets the sample rate, so it
@@ -2614,9 +2624,9 @@ function startRun() {
     const max_steps = 1000;
     if (multiCoreMode) {
       sendAction({ action: "run_multicore", core: "pru0",
-                   partners: mcShown().slice(1), max_steps, capture });
+                   partners: mcShown().slice(1), max_steps, capture, run_id });
     } else {
-      sendAction({ action: "run", core: currentCore, max_steps, capture });
+      sendAction({ action: "run", core: currentCore, max_steps, capture, run_id });
     }
   }, 10);
 }
