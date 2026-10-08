@@ -64,6 +64,47 @@ def test_foc_motor_snapshot_restores_current_pdm_and_period_state():
     assert model.get_state() == expected_state
 
 
+def test_normal_reset_restarts_samples_but_snapshot_restore_keeps_saved_history():
+    model = FocMotorModel(core_clock_hz=1_000_000)
+
+    def periods(count):
+        for cycle in range(count * 100):
+            model.tick(cycle, 7 if cycle % 100 < 30 else 0)
+
+    periods(3)
+    before = model.samples_since(0)
+    assert before["next_index"] == 2
+    snapshot = model.snapshot()
+    periods(3)
+    assert model.samples_since(0)["next_index"] > 2
+    model.restore(snapshot)
+    assert model.samples_since(0) == before
+
+    model.reset()
+    reset = model.samples_since(before["next_index"])
+    assert reset["next_index"] == model.get_state()["sample_index"] == 0
+    assert reset["samples"] == []
+    periods(3)
+    resumed = model.samples_since(0)
+    assert [row[:2] for row in resumed["samples"]] == [[0, 0.0001], [1, 0.0002]]
+    model.restore(snapshot)
+    assert model.samples_since(0) == before
+
+
+@pytest.mark.parametrize("field", ["current_scale_a", "current_limit_a", "core_clock_hz"])
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_nonfinite_foc_attachment_rejected_without_changing_devices_or_leases(field, value):
+    from mcp_server.server import PRUSimulatorMCP
+
+    mcp = PRUSimulatorMCP(config_path="nonexistent.cfg")
+    before = mcp.sim.device_bus.snapshot()
+    mask = mcp.sim.cores["pru0"].io_port.gpo_drive_mask
+    with pytest.raises(ValueError, match=field):
+        mcp.pru_device_attach("foc_motor", config={field: value})
+    assert mcp.sim.device_bus.snapshot() == before
+    assert mcp.sim.cores["pru0"].io_port.gpo_drive_mask == mask
+
+
 def test_sd_channel_clock_change_keeps_attached_foc_pdm_rate_aligned():
     sim = Simulator()
     model = create_device("foc_motor")
