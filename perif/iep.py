@@ -102,15 +102,21 @@ class IepTimer:
         self.reset()
 
     def reset(self) -> None:
-        self.global_cfg = 0
+        # SPRUIM2J Table 14-10907: CMP_INC=5, DEFAULT_INC=5, disabled.
+        self.global_cfg = 0x550
         self.global_status = 0
         self.count = 0                       # 64-bit
         self.cmp_cfg = 0
         self.cmp_status = 0                  # 16 bits, write-1-to-clear
         self.compare = [0] * NUM_COMPARE     # each 64-bit
-        self.cap_cfg = 0
+        # SPRUIM2J Table 14-10925: CAP_ASYNC_EN=0x7f, captures disabled.
+        self.cap_cfg = 0x1FC00
         self.cap_status = 0                  # valid bits, write-1-to-clear
         self.capture = [0] * NUM_CAPTURE     # each 64-bit
+
+    def hardware_reset(self) -> None:
+        """Reset the timer through the simulator's full-reset interface."""
+        self.reset()
 
     # -- configuration views --------------------------------------------
     @property

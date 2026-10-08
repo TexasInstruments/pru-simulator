@@ -208,11 +208,18 @@ class Simulator:
         return bus
 
     def _load_constants(self, config_path: str) -> ConstantTable:
-        """Load constant table from constants_am243x.cfg alongside the project root."""
+        """Load constants from the project root or its config directory."""
         table = ConstantTable()
         project_root = os.path.dirname(os.path.abspath(config_path))
-        constants_path = os.path.join(project_root, "config", "constants_am243x.cfg")
-        if not os.path.exists(constants_path):
+        candidates = (
+            os.path.join(project_root, "config", "constants_am243x.cfg"),
+            os.path.join(project_root, "constants_am243x.cfg"),
+        )
+        constants_path = next(
+            (path for path in candidates if os.path.exists(path)),
+            None,
+        )
+        if constants_path is None:
             return table
         cfg = configparser.ConfigParser()
         cfg.read(constants_path)
@@ -271,7 +278,7 @@ class Simulator:
     def step(self, core: str, count: int = 1) -> dict:
         """Execute *count* instructions on *core*.
 
-        Returns a dict with keys: pc, cycles, stall_cycles, halted.
+        Returns a dict with keys: pc, cycles, stall_cycles, halted, fault.
         """
         pru = self._get_core(core)
         for _ in range(count):
@@ -281,6 +288,7 @@ class Simulator:
             "cycles": pru.counters.cycles,
             "stall_cycles": pru.counters.stall_cycles,
             "halted": pru.halted,
+            "fault": dict(pru.fault) if pru.fault is not None else None,
         }
 
     def step_paced(self, lead: str, follow: str, count: int = 1,
@@ -449,6 +457,7 @@ class Simulator:
         for core in self.cores.values():
             core.reset()
         self.xfr.reset()
+        self.iep.hardware_reset()
 
     def uart_inject(
         self,
@@ -485,7 +494,7 @@ class Simulator:
         """Return a status snapshot for all cores.
 
         Returns a dict mapping each core name to:
-          pc, cycles, stall_cycles, instruction_count, ipc, halted
+          pc, cycles, stall_cycles, instruction_count, ipc, halted, fault
         """
         result: dict[str, dict] = {}
         for name, pru in self.cores.items():
@@ -496,5 +505,6 @@ class Simulator:
                 "instruction_count": pru.counters.instruction_count,
                 "ipc": pru.counters.ipc,
                 "halted": pru.halted,
+                "fault": dict(pru.fault) if pru.fault is not None else None,
             }
         return result

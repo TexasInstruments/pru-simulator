@@ -661,6 +661,84 @@ class TestReset:
         assert core.counters.cycles == 0
 
 
+@pytest.mark.parametrize(
+    ("opcode", "instruction", "constant_base"),
+    [
+        ("LBBO", "ldi r1, 0x3000\nlbbo &r0, r1, 0, 4", False),
+        ("LBCO", "lbco &r0, c3, 0, 4", True),
+        ("SBCO", "sbco &r0, c3, 0, 4", True),
+        ("SBBO", "ldi r1, 0x3000\nsbbo &r0, r1, 0, 4", False),
+    ],
+)
+def test_memory_faults_are_recorded_and_reset_clears_them(
+    opcode, instruction, constant_base
+):
+    core = make_core(f"{instruction}\nhalt")
+    if constant_base:
+        core.constant_table.set(3, 0x3000)
+
+    run_to_halt(core)
+
+    assert core.fault == {
+        "type": "memory",
+        "opcode": opcode,
+        "address": 0x3000,
+        "pc": 0 if constant_base else 1,
+        "error": "No memory region mapped at address 0x00003000",
+    }
+    assert core.halted
+
+    core.reset()
+    assert core.fault is None
+
+
+@pytest.mark.parametrize(
+    "load",
+    [
+        lambda core: core.load_asm("nop\nhalt"),
+        lambda core: core.load_binary([], b"", 0),
+    ],
+    ids=["load_asm", "load_binary"],
+)
+def test_loading_a_program_clears_the_previous_programs_fault(load):
+    """A fault belongs to the program that raised it, so a load drops it.
+
+    Only `fault` is cleared. `halted` and `pc` are deliberately left alone:
+    a halted core staying halted across a load predates the fault field, and
+    changing it is a separate decision.
+    """
+    core = make_core("ldi r1, 0x3000\nlbbo &r0, r1, 0, 4\nhalt")
+    run_to_halt(core)
+    assert core.fault is not None
+
+    assert load(core) == []
+
+    assert core.fault is None
+
+
+@pytest.mark.parametrize(
+    "load",
+    [
+        lambda core: core.load_asm("ldi r1\n"),
+        lambda core: core.load_binary(["not a word"], b"", 0),
+    ],
+    ids=["load_asm", "load_binary"],
+)
+def test_a_failed_load_keeps_the_faulting_program_and_its_fault(load):
+    """A load that fails installs nothing, so the fault still explains the halt."""
+    core = make_core("ldi r1, 0x3000\nlbbo &r0, r1, 0, 4\nhalt")
+    run_to_halt(core)
+    fault = core.fault
+    program = core.instructions
+    assert fault is not None
+
+    assert load(core) != []
+
+    assert core.fault == fault
+    assert core.instructions is program
+    assert core.halted
+
+
 # ---------------------------------------------------------------------------
 # load_asm error handling
 # ---------------------------------------------------------------------------
@@ -799,3 +877,33 @@ class TestWaitBitInstructions:
         for _ in range(10):
             core.step()
         assert core.counters.stall_cycles > 0
+
+    @pytest.mark.parametrize(
+        ("instruction", "wait_value", "release_value", "io_source"),
+        [
+            ("wbs 0", 0, 1, True),
+            ("wbs r3, 0", 0, 1, False),
+            ("wbc 0", 1, 0, True),
+            ("wbc r3, 0", 1, 0, False),
+        ],
+    )
+    def test_assembler_wait_forms_stall_then_release(
+        self, instruction, wait_value, release_value, io_source
+    ):
+        core = make_core(f"{instruction}\nhalt")
+        if io_source:
+            core.io_port.set_gpi_pin(0, bool(wait_value))
+        else:
+            core.registers.write_full(3, wait_value)
+
+        core.step()
+        assert core.pc == 0
+        assert not core.halted
+
+        if io_source:
+            core.io_port.set_gpi_pin(0, bool(release_value))
+        else:
+            core.registers.write_full(3, release_value)
+        core.step()
+
+        assert core.pc == 1
