@@ -10,6 +10,7 @@ class Element {
   addEventListener(name, fn) { this.listeners[name] = fn; }
   setAttribute(name, value) { this.attributes[name] = value; }
   appendChild(child) { this.children.push(child); }
+  contains(element) { return element === this || this.children.some(child => child.contains(element)); }
   replaceChildren(...children) { this.options = children; }
 }
 const elements = new Map();
@@ -17,6 +18,9 @@ const get = id => { if (!elements.has(id)) elements.set(id, new Element()); retu
 const selects = ['core-select', 'mc-partner-select', 'mc-load-core', 'device-core-select'];
 for (const id of selects) get(id).options = ['pru0','rtu0','pru1','rtu1'].map(core => new Element(core));
 const extras = ['rtu0','pru1','rtu1'].map(core => { const e = new Element(); e.dataset.mcExtra = core; return e; });
+const applyRate = new Element();
+get('iep-clock-custom-form').appendChild(get('iep-clock-custom'));
+get('iep-clock-custom-form').appendChild(applyRate);
 const sent = [];
 const context = vm.createContext({ document: { getElementById: get, createElement: () => new Element(),
   querySelectorAll: () => extras, activeElement: null },
@@ -110,3 +114,13 @@ context.showIepClock({ configured_mhz: 200, override_mhz: null,
 assert.equal(get('iep-clock-select').value, 'custom');
 assert.equal(get('iep-clock-custom').value, '275.125');
 assert.equal(get('iep-clock-custom-form').hidden, false);
+
+// Tab from the custom input to Apply, then refresh: the draft remains submittable.
+context.document.activeElement = applyRate;
+context.showIepClock({ configured_mhz: 200, override_mhz: null,
+  external_mhz: 200, clock_mhz: 200, core_clock: false });
+assert.equal(get('iep-clock-select').value, 'custom');
+assert.equal(get('iep-clock-custom').value, '275.125');
+assert.equal(get('iep-clock-custom-form').hidden, false);
+get('iep-clock-custom-form').listeners.submit({ preventDefault() {} });
+assert.equal(sent.at(-1).mhz, 275.125);

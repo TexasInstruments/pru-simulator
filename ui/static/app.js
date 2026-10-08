@@ -2507,7 +2507,7 @@ function showIepClock(iep) {
   const known = [...iepClockSelect.options].some(o => o.value !== 'configured' &&
     o.value !== 'custom' && Number(o.value) === iep.external_mhz);
   const custom = document.getElementById('iep-clock-custom');
-  if (document.activeElement !== custom) {
+  if (!document.getElementById('iep-clock-custom-form').contains(document.activeElement)) {
     iepClockSelect.value = iep.override_mhz == null ? 'configured'
       : known ? String(iep.external_mhz) : 'custom';
     custom.value = String(iep.external_mhz);
