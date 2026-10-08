@@ -1,9 +1,11 @@
 """Focused regressions for DeviceBus cycle and GPIO lifecycle behavior."""
 
+from core.pru_core import PRUCore
 from pru_io.device_model import OPEN_DRAIN, PUSH_PULL, DeviceModel
 from pru_io.io_port import IOPort
 from pru_io.tca9538_device_model import TCA9538Model
 from simulator import Simulator
+from xfr.xfr_bus import XFRBus
 
 _MASK_20 = (1 << 20) - 1
 
@@ -59,6 +61,25 @@ def test_reactive_device_does_not_tick_for_repeated_r30_value():
     assert len(device.calls) == first_changed_value_calls
 
 
+def test_reactive_device_is_settled_by_r30_changes_and_not_by_idle_steps():
+    sim = Simulator()
+    sim.cores["pru0"].io_port.set_gpo_drive_mask(_MASK_20 ^ (1 << 4))
+    device = sim.attach_device("pru0", _PinDevice(4))
+    assert sim.load(
+        "pru0", "nop\n" * 50 + "ldi r30, 1\nldi r30, 1\nldi r30, 0\nhalt\n") == []
+    settled = len(device.calls)
+
+    sim.step("pru0", 50)
+    assert len(device.calls) == settled
+
+    sim.step("pru0")   # R30 0 -> 1
+    assert len(device.calls) == settled + 1
+    sim.step("pru0")   # the same value again
+    assert len(device.calls) == settled + 1
+    sim.step("pru0")   # R30 1 -> 0
+    assert len(device.calls) == settled + 2
+
+
 def test_elapsed_cycles_count_even_without_timed_devices_and_late_attach_uses_time():
     sim = Simulator()
     port = sim.cores["pru0"].io_port
@@ -102,6 +123,47 @@ def test_core_observer_advances_timed_device_for_instruction_and_stall_cycles():
     sim.step("pru0")  # halted no-op must not advance external time
     assert [cycle for cycle, _ in device.calls] == [1, 2, 3, 4, 5, 6, 7]
     assert port._device_cycle == 7
+
+
+class _TickCounter(DeviceModel):
+    """Time-driven model that only counts how often the bus ticked it."""
+
+    name = "tick-counter"
+    nets = {4: PUSH_PULL}
+    time_driven = True
+
+    def __init__(self):
+        self.ticks = 0
+
+    def tick(self, cycle, bus):
+        self.ticks += 1
+        return 0, 0
+
+
+def _ticks_over_steps(core, source, steps):
+    device = core.io_port.attach_device(_TickCounter())
+    baseline = device.ticks
+    assert core.load_asm(source) == []
+    for _ in range(steps):
+        core.step()
+    return device.ticks - baseline
+
+
+def test_time_driven_device_ticks_on_a_bare_core_as_under_a_simulator(monkeypatch):
+    # MS_RAM (memory.cfg) has random read jitter; pin it so the stalls are exact.
+    monkeypatch.setattr("mem.regions.random.randint", lambda low, high: 0)
+    memory = Simulator().memory
+
+    for source, steps, expected in (
+        ("nop\n" * 5 + "halt\n", 5, 5),
+        # ldi32 is two cycles; the 8-word LBBO is 1 + MS_RAM's 40 + 7 more words.
+        ("ldi32 r1, 0x70000000\nlbbo &r2, r1, 0, 32\nhalt\n", 3, 2 + 1 + 40 + 7),
+    ):
+        bare = PRUCore("PRU0", memory, XFRBus(), IOPort())
+        owned = Simulator().cores["pru0"]
+
+        assert _ticks_over_steps(bare, source, steps) == expected
+        assert _ticks_over_steps(owned, source, steps) == expected
 
 
 def test_time_driven_device_ticks_each_elapsed_cycle_and_pin_edges_reach_reactive_models():

@@ -93,6 +93,8 @@ class IOPort:
 
     def set_gpo_drive_mask(self, mask: int) -> None:
         """Set which pins this core is currently driving as GPIO outputs."""
+        if not isinstance(mask, int) or isinstance(mask, bool):
+            raise ValueError("GPIO drive mask must be a 20-bit integer")
         self.gpo_drive_mask = mask & _MASK_20
         if self._device_endpoint is None:
             self.device_bus.set_pru_drive_mask(self.gpo_drive_mask)
@@ -103,7 +105,7 @@ class IOPort:
                 self._device_endpoint, self.gpo_drive_mask,
                 cycle=self._device_cycle)
 
-    def tick_devices(self, cycle: int, time_only: bool = False) -> None:
+    def tick_devices(self, cycle: int) -> None:
         """One bus settle.
 
         Called from `write_r30` when a pin changes. Time-driven models advance
@@ -119,9 +121,6 @@ class IOPort:
         the whole port.
         """
         if not self.device_bus.active:
-            return
-        if time_only:
-            self.advance_devices(1)
             return
         bus = self.device_bus.settle(cycle, self.gpo, port=self._device_endpoint)
         if self._device_endpoint is None:

@@ -68,7 +68,7 @@ TIMING
 The IEP is shared by every configured core and advances to the furthest exact
 core time seen. Core rates come from [device] `pru_clock_mhz` and
 `pru1_clock_mhz`; absent values use the project's 250 MHz starting clock. The
-IEP uses `iep_clock_mhz` (inherited PRU0/core rate when omitted) while ICSS CFG IEPCLK bit 0 is
+IEP uses `iep_clock_mhz` (200 MHz when omitted, the TRM default ICSSG_IEP_CLK rate) while ICSS CFG IEPCLK bit 0 is
 clear, and the PRU0 OCP/core clock while it is set. Rational clock periods are
 represented with integer time units, so fractional MHz values and mixed core
 rates do not accumulate float drift. Memory and wait stalls count as elapsed
@@ -104,6 +104,9 @@ NUM_COMPARE = 16
 # 0x20..0x6C is 0x50 bytes = ten 64-bit pairs.
 NUM_CAPTURE = 10
 IEP_SIZE = 0x100
+# TRM SPRUIM2J §6.4.13.2.4: the IEP counter counts every ICSSG_IEP_CLK cycle at a
+# "default rate of 200 MHz". This is the rate used when `iep_clock_mhz` is not set.
+IEP_DEFAULT_CLOCK_MHZ = 200
 
 _MASK32 = 0xFFFFFFFF
 _MASK64 = 0xFFFFFFFFFFFFFFFF
@@ -154,7 +157,7 @@ class IepTimer:
         self._tick_numerator = 0
         self._tick_denominator = 1
         self._ticks_per_time_unit = 0
-        self.external_clock_hz = _mhz_to_hz(ocp_clock_mhz if clock_mhz is None else clock_mhz)
+        self.external_clock_hz = _mhz_to_hz(IEP_DEFAULT_CLOCK_MHZ if clock_mhz is None else clock_mhz)
         self.ocp_clock_hz = _mhz_to_hz(ocp_clock_mhz)
         if self.external_clock_hz <= 0:
             raise ValueError(f"IEP clock must be positive, got {clock_mhz}")
@@ -271,7 +274,7 @@ class IepTimer:
             raise ValueError("PRU cycle counters cannot be negative")
         timeline = self._core_timelines[core]
         if cycles < timeline.last_cycles:
-            self.rebase_core(core)
+            self.rebase_core(core, cycles)
         timeline.last_cycles = cycles
         core_time_units = self.core_time_units(core, cycles)
         if core_time_units <= self._global_time_units:

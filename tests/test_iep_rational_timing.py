@@ -1,5 +1,7 @@
 from fractions import Fraction
 
+import pytest
+
 from perif.iep import (
     CAP_CFG,
     CAPR0_REG0,
@@ -257,7 +259,8 @@ def test_lbbo_and_wait_stalls_reach_the_cycle_observer():
     sim.step("pru0", 2)
 
     assert elapsed == [1, 3, 1, 1, 1]
-    assert sim.iep.count == 7
+    # 7 core cycles at 250 MHz are 28 ns, which is 5 ticks of the 200 MHz IEP.
+    assert sim.iep.count == 5
 
 
 def test_rtu1_uses_slice_one_local_dram_mapping():
@@ -362,13 +365,13 @@ def test_single_core_reset_rejoins_global_time_and_hardware_reset_restarts_it():
     cycles = sim.cores["pru0"].counters.cycles
     sim.step("pru0", 2)
     assert sim.iep.now_ns == Fraction(48)
-    assert sim.iep.count == 12
+    assert sim.iep.count == 9
 
     sim.cores["pru0"].counters.cycles = cycles
     sim.iep.restore(snapshot)
     sim.step("pru0")
     assert sim.iep.now_ns == Fraction(44)
-    assert sim.iep.count == 11
+    assert sim.iep.count == 8
 
     sim.hard_reset()
     assert sim.iep.now_ns == 0
@@ -407,23 +410,85 @@ def test_direct_core_reset_notifies_shared_timeline():
     assert sim.iep.now_ns == 8
 
 
-def test_omitted_external_clock_inherits_selected_core(tmp_path):
-    for rate in ("250", "300", "333.333"):
-        config = tmp_path / "inherit.cfg"
+def test_backward_cycle_jump_is_absorbed_not_added_to_shared_time():
+    sim = Simulator()
+    _load_loop(sim, "pru0")
+    sim.step("pru0", 20)
+    assert sim.iep.now_ns == 80
+
+    sim.cores["pru0"].counters.cycles = 10    # e.g. UI step-back
+    sim.iep.observe_core_cycles("pru0", 10)
+    assert sim.iep.now_ns == 80               # absorbed, not 80 + 10 cycles
+
+    sim.iep.observe_core_cycles("pru0", 11)
+    assert sim.iep.now_ns == 84               # one 4 ns cycle past the rewind
+
+
+def test_omitted_external_clock_defaults_to_the_trm_200_mhz_for_any_core_rate(tmp_path):
+    # SPRUIM2J 6.4.13.2.4: ICSSG_IEP_CLK has a default rate of 200 MHz.
+    for rate, ticks in (("250", 800), ("300", 666), ("333.333", 600)):
+        config = tmp_path / "default.cfg"
         config.write_text(f"[device]\npru_clock_mhz = {rate}\n")
         sim = Simulator(str(config))
         _load_loop(sim, "pru0")
         sim.iep.global_cfg = 0x11
         sim.step("pru0", 1000)
-        assert sim.iep.external_clock_hz == Fraction(rate) * 1_000_000
-        assert sim.iep.count == 1000
-    assert IepTimer(ocp_clock_mhz="333.333").external_clock_hz == 333333000
-    assert Simulator("missing.cfg").iep.external_clock_hz == 250000000
+        assert sim.iep.external_clock_hz == 200_000_000
+        assert sim.iep.count == ticks
+    assert IepTimer(ocp_clock_mhz="333.333").external_clock_hz == 200_000_000
+    assert Simulator("missing.cfg").iep.external_clock_hz == 200_000_000
+
+
+def test_reset_default_inc_counts_nanoseconds_at_the_default_iep_clock():
+    sim = Simulator()
+    _load_loop(sim, "pru0")
+    # Read-modify-write of the 0x550 reset value, as firmware does: DEFAULT_INC stays 5.
+    _write32(sim, IEP_BASE + GLOBAL_CFG, _read32(sim, IEP_BASE + GLOBAL_CFG) | 1)
+    sim.step("pru0", 100)
+    assert sim.iep.now_ns == Fraction(400)
+    assert sim.iep.count == 400
 
 
 def test_rtu1_is_only_available_on_icssg_targets(tmp_path):
     config = tmp_path / "target.cfg"
+    for target in ("AM243x", "AM64x", "am64x"):
+        config.write_text(f"[device]\ntarget = {target}\n")
+        sim = Simulator(str(config))
+        assert "rtu1" in sim.cores
+        sim.iep.core_time_units("rtu1", 0)
+
     config.write_text("[device]\ntarget = AM263x\n")
+    sim = Simulator(str(config))
+    assert "rtu1" not in sim.cores
+    with pytest.raises(KeyError):   # no orphan RTU1 timeline in the shared IEP
+        sim.iep.core_time_units("rtu1", 0)
+    for core in sim.cores:
+        sim.iep.core_time_units(core, 0)
+
+
+def test_unknown_device_target_is_rejected_instead_of_dropping_rtu1(tmp_path):
+    config = tmp_path / "typo.cfg"
+    for target in ("am234x", "AM2634"):
+        config.write_text(f"[device]\ntarget = {target}\n")
+        with pytest.raises(ValueError) as excinfo:
+            Simulator(str(config))
+        assert repr(target) in str(excinfo.value)
+        assert "AM243x, AM64x, AM263x" in str(excinfo.value)
+
+    # An inline comment, as the design spec writes `target = AM243x    # V4: ...`,
+    # is not part of the target name.
+    config.write_text("[device]\ntarget = am234x    # V4: core=V4, shared_ram=64KB\n")
+    with pytest.raises(ValueError) as excinfo:
+        Simulator(str(config))
+    assert repr("am234x") in str(excinfo.value)
+
+    config.write_text(
+        "[device]\n"
+        "target = AM243x    # V4: core=V4, shared_ram=64KB\n"
+        "# target = AM263x  # V3: core=V3, shared_ram=32KB\n")
+    assert "rtu1" in Simulator(str(config)).cores
+
+    config.write_text("[device]\ntarget = AM263x    # V3: core=V3, shared_ram=32KB\n")
     assert "rtu1" not in Simulator(str(config)).cores
 
 
@@ -468,18 +533,19 @@ def test_bulk_compare_reset_every_tick_is_bounded(monkeypatch):
     assert iep.cmp_status == 3
 
 
-def test_default_equal_rate_stalled_firmware_and_cmp0():
+def test_default_clocks_stalled_firmware_and_cmp0():
     sim = Simulator()
     sim.iep.global_cfg = 0x11
     assert sim.load("pru0", "ldi32 r0, 0x2E000\nldi r1, 0x11\nloop: sbbo &r1, r0, 0, 4\nqba loop\n") == []
     assert sim.step("pru0", 302)["cycles"] == 452
-    assert sim.iep.count == 452
+    # 452 cycles at 250 MHz are 1808 ns, which is 361 ticks of the 200 MHz IEP.
+    assert sim.iep.count == 361
     sim = Simulator()
     _load_loop(sim, "pru0")
     sim.iep.global_cfg = 0x11
     sim.iep.compare[0] = 50
     sim.iep.cmp_cfg = 3
-    sim.step("pru0", 300)
+    sim.step("pru0", 250)
     assert sim.iep.count == 0
     assert sim.iep.cmp_status == 1
 
