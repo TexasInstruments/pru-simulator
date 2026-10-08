@@ -50,6 +50,34 @@ def test_put_config_writes_to_disk(tmp_path, monkeypatch):
     assert "; patched" in cfg_file.read_text()
 
 
+def test_put_config_unknown_target_returns_400_and_keeps_the_live_simulator(
+    tmp_path, monkeypatch
+):
+    import ui.server as srv
+    cfg_file = tmp_path / "memory.cfg"
+    original = client.get("/config").text
+    cfg_file.write_text(original)
+    before = cfg_file.read_bytes()
+    monkeypatch.setattr(srv, "config_path", str(cfg_file))
+    live = Simulator(config_path=str(cfg_file))
+    monkeypatch.setattr(srv, "sim", live)
+    typo = original.replace("target = AM243x", "target = am234x", 1)
+    assert typo != original
+
+    response = client.put("/config", content=typo)
+    assert response.status_code == 400
+    assert "am234x" in response.json()["error"]
+    assert cfg_file.read_bytes() == before
+    assert [p.name for p in tmp_path.iterdir()] == ["memory.cfg"]
+    assert srv.sim is live
+
+    response = client.put("/config", content=original)
+    assert response.status_code == 200
+    assert srv.sim is not live
+    assert cfg_file.read_text() == original
+    assert [p.name for p in tmp_path.iterdir()] == ["memory.cfg"]
+
+
 @pytest.mark.parametrize("replace_clock", [False, True])
 def test_config_replacement_clears_rtu1_step_history(
     tmp_path, monkeypatch, replace_clock
@@ -71,6 +99,29 @@ def test_config_replacement_clears_rtu1_step_history(
 
     assert response.status_code == 200
     assert all(not history for history in srv._history.values())
+
+
+def test_put_config_invalid_leaves_file_history_and_simulator_untouched(
+    tmp_path, monkeypatch
+):
+    import ui.server as srv
+    cfg_file = tmp_path / "memory.cfg"
+    original = client.get("/config").text
+    cfg_file.write_bytes(original.encode("utf-8"))
+    before = cfg_file.read_bytes()
+    monkeypatch.setattr(srv, "config_path", str(cfg_file))
+    live = Simulator(config_path=str(cfg_file))
+    monkeypatch.setattr(srv, "sim", live)
+    monkeypatch.setattr(srv, "_history", {core: [] for core in srv._history})
+    srv._history["pru0"].append({"stale": True})
+
+    response = client.put("/config", content=original + "\n[DRAM0\nbase = 0\n")
+    assert response.status_code == 400
+    assert repr(str(cfg_file))[1:-1] in response.json()["error"]
+    assert cfg_file.read_bytes() == before
+    assert [p.name for p in tmp_path.iterdir()] == ["memory.cfg"]
+    assert srv.sim is live
+    assert srv._history["pru0"] == [{"stale": True}]
 
 
 # ---- WebSocket helpers -------------------------------------------------
@@ -157,6 +208,8 @@ def test_fault_is_reported_in_state_and_restored_by_step_back(fresh_sim):
     sink = WebSocketSink()
     asyncio.run(srv._send_state(sink, "pru0"))
     assert sink.payload["fault"]["opcode"] == "LBBO"
+    assert sink.payload["fault"] == fresh_sim.cores["pru0"].fault
+    assert sink.payload["fault"] is not fresh_sim.cores["pru0"].fault
 
     srv._restore("pru0", snapshot)
     assert fresh_sim.cores["pru0"].fault is None

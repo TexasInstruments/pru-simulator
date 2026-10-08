@@ -6,7 +6,9 @@ import math
 import os
 import pathlib
 import re
+import shutil
 import sys
+import tempfile
 
 # Ensure project root is on path so simulator can be imported
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -175,15 +177,41 @@ async def put_source_file(path: str, request: Request):
     return {"ok": True}
 
 
+def _replace_config(text: str) -> Simulator:
+    """Build a Simulator from *text*, then make *text* the content of config_path.
+
+    The text is validated through a temp file beside config_path (so lookups
+    relative to the config directory resolve the same way) and only replaces
+    config_path once the Simulator built; a bad config leaves the file as it was."""
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=".memory-", suffix=".cfg.tmp",
+        dir=os.path.dirname(os.path.abspath(config_path)),
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        if os.path.exists(config_path):
+            shutil.copymode(config_path, tmp_path)
+        try:
+            new_sim = Simulator(config_path=tmp_path)
+        except Exception as e:
+            # Parser errors quote the file name; report config_path, not the temp file.
+            msg = str(e).replace(repr(tmp_path)[1:-1], repr(config_path)[1:-1])
+            raise ValueError(msg.replace(tmp_path, config_path)) from e
+        os.replace(tmp_path, config_path)
+        return new_sim
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
 @app.put("/config")
 async def put_config(request: Request):
     global sim
     text = (await request.body()).decode("utf-8")
     async with _config_lock:
         try:
-            with open(config_path, "w") as f:
-                f.write(text)
-            sim = Simulator(config_path=config_path)
+            sim = _replace_config(text)
             for history in _history.values():
                 history.clear()
             return {"ok": True}
@@ -238,9 +266,7 @@ async def put_clock_speed(request: Request):
                 text = f.read()
             text = _set_ini_value(text, "device", "pru_clock_mhz", str(mhz))
             text = _set_ini_value(text, "device", "pru1_clock_mhz", str(mhz))
-            with open(config_path, "w") as f:
-                f.write(text)
-            sim = Simulator(config_path=config_path)
+            sim = _replace_config(text)
             for history in _history.values():
                 history.clear()
             return {"ok": True}
@@ -721,7 +747,7 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False):
         "core": core,
         "pc": c.pc,
         "halted": c.halted,
-        "fault": c.fault,
+        "fault": dict(c.fault) if c.fault is not None else None,
         "at_breakpoint": at_breakpoint,
         # True when a "capture" message already carried this chunk's graph
         # samples, so the client must not sample this state push as well.
