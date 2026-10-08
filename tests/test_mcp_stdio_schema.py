@@ -93,3 +93,9 @@ def test_optional_int_mask_is_an_integer():
     schema = tool_schemas()["pru_gpio_drive_mask"]
     assert schema["properties"]["mask"] == {"type": "integer", "default": None}
     assert "mask" not in schema["required"]
+
+
+def test_optional_dict_config_is_an_object():
+    schema = tool_schemas()["pru_device_attach"]
+    assert schema["properties"]["config"] == {"type": "object", "default": None}
+    assert "config" not in schema["required"]

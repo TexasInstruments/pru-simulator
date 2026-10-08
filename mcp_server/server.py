@@ -15,6 +15,8 @@ import typing
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from simulator import Simulator
+from pru_io.device_profiles import create_device, discover_device_profiles
+from pru_io.device_model import PUSH_PULL
 from mcp_server.vcd_export import export_pin_waveform
 
 
@@ -404,6 +406,72 @@ class PRUSimulatorMCP:
         _require_int("address", address)
         self.sim.i2c_attach(core, enabled, address)
         return {"success": True, "core": core, "enabled": enabled, "address": address}
+
+    def pru_device_discover(self) -> dict:
+        """Discover supported generic device profiles and attached devices."""
+        return {
+            "profiles": discover_device_profiles(),
+            "devices": self.sim.device_state()["devices"],
+        }
+
+    def pru_device_attach(self, profile: str, core: str = "pru0",
+                          config: dict | None = None) -> dict:
+        """Attach one validated generic device profile to a core's GPIO pins."""
+        default_core_clock_hz = (
+            self.sim.iep.core_clock_hz(core) if profile == "ssi_encoder" else None
+        )
+        device = create_device(
+            profile, config, default_core_clock_hz=default_core_clock_hz)
+        if any(attached.name == device.name for attached in self.sim.device_bus.devices):
+            raise ValueError(f"device name {device.name!r} is already attached")
+
+        if profile == "ssi_encoder":
+            drive_mask = 1 << device.clock_pin
+            managed_mask = drive_mask | (1 << device.data_pin)
+        else:
+            drive_mask = (1 << device.scl_pin) | (1 << device.sda_pin)
+            managed_mask = drive_mask
+        self.sim.lease_gpio_outputs(core, managed_mask, device,
+                                    drive_mask=drive_mask)
+        self.sim.attach_device(core, device)
+        return {"success": True, "core": core, "device": device.get_state()}
+
+    def pru_device_detach(self, device_name: str) -> dict:
+        """Detach a generic device by name and release its bus ownership."""
+        device = self._get_device(device_name)
+        self.sim.detach_device(device)
+        return {"success": True, "device": device_name}
+
+    def pru_device_state(self) -> dict:
+        """Return attached device state, bus levels, events, and faults."""
+        return self.sim.device_state()
+
+    def pru_device_events(self, device_name: str = "") -> dict:
+        """Read generic bus events, optionally filtered to one device."""
+        if device_name:
+            device = self._get_device(device_name)
+            return {"device": device_name, "events": device.events()}
+        return {"events": self.sim.device_bus.events()}
+
+    def pru_device_faults(self, device_name: str = "") -> dict:
+        """Read generic bus/device faults, optionally filtered to one device."""
+        if device_name:
+            device = self._get_device(device_name)
+            return {
+                "device": device_name,
+                "faults": self.sim.device_bus.faults_for_device(device),
+                "contentions": self.sim.device_bus.contentions_for_device(device),
+            }
+        return {"faults": self.sim.device_bus.faults()}
+
+    def _get_device(self, name: str):
+        matches = [device for device in self.sim.device_bus.devices
+                   if device.name == name]
+        if not matches:
+            raise KeyError(f"No attached device named {name!r}")
+        if len(matches) > 1:
+            raise ValueError(f"more than one attached device is named {name!r}")
+        return matches[0]
 
     def pru_reset(self, core: str = "pru0") -> dict:
         """Reset the specified core to its initial state."""
