@@ -215,7 +215,7 @@ class TestIepThroughFirmware:
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
         from simulator import Simulator
         sim = Simulator(config_path="nonexistent.cfg")
-        sim.constant_table.set(26, 0x0002E000)
+        sim.cores["pru0"].constant_table.set(26, 0x0002E000)
         return sim
 
     def test_poll_on_count_terminates(self):

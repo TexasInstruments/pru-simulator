@@ -190,11 +190,11 @@ class PRUSimulatorMCP:
 
     def pru_step_multicore(self, lead: str = "pru0", follow: str = "pru1",
                            count: int = 1, guard_ns: float = 0.0) -> dict:
-        """Step two cores with peripheral-clock pacing and return both core states.
+        """Step two cores with elapsed-time pacing and return both core states.
 
-        ``guard_ns`` is how far the follow core may trail the lead core.  The
-        MCP default is zero so even short validation programs advance both
-        cores; callers modelling a receiver guard may request a positive lag.
+        ``guard_ns`` is how far the follow core may trail the lead while both
+        Peripheral Interfaces are enabled. Otherwise both cores are paced by
+        exact elapsed core time with no guard.
         """
         _require_int("count", count)
         if isinstance(guard_ns, bool) or not isinstance(guard_ns, (int, float)):
@@ -213,34 +213,45 @@ class PRUSimulatorMCP:
                 "pc": c.pc,
                 "cycles": c.counters.cycles,
                 "halted": c.halted,
+                "fault": dict(c.fault) if c.fault is not None else None,
             }
 
         for _ in range(count):
-            follow_pru = self.sim.cores[follow]
-            follow_cycles = follow_pru.counters.cycles
             self.sim.step_paced(lead, follow, 1, guard_ns=guard_ns)
-            # Peripheral time does not advance for ordinary ALU-only programs.
-            # A user-facing "step both" tool must still retire one instruction
-            # on the follower instead of returning two plausible-looking states
-            # after advancing only the lead core.
-            if (follow_pru.counters.cycles == follow_cycles
-                    and not follow_pru.halted
-                    and follow_pru.pc < len(follow_pru.instructions)):
-                follow_pru.step()
-
             lead_perif = self.sim._perif.get(lead)
             follow_perif = self.sim._perif.get(follow)
-            if lead_perif is not None and follow_perif is not None:
-                target_ns = lead_perif._now_ns - guard_ns
-                if follow_perif._now_ns < target_ns:
-                    return {
-                        "success": False,
-                        "reason": "pacing_catchup_failed",
-                        "target_ns": target_ns,
-                        "follow_ns": follow_perif._now_ns,
-                        "lead": state(lead),
-                        "follow": state(follow),
-                    }
+            use_guard = (
+                lead_perif is not None and follow_perif is not None
+                and lead_perif.enabled and follow_perif.enabled
+            )
+            lead_core = self.sim.cores[lead]
+            follow_core = self.sim.cores[follow]
+            target_units = self.sim.iep.core_time_units(
+                lead, lead_core.counters.cycles
+            ) - (
+                self.sim.iep.nanoseconds_to_units(guard_ns) if use_guard else 0
+            )
+            follow_units = self.sim.iep.core_time_units(
+                follow, follow_core.counters.cycles
+            )
+            if lead_core.fault is not None or follow_core.fault is not None:
+                return {
+                    "success": False,
+                    "reason": "core_fault",
+                    "lead": state(lead),
+                    "follow": state(follow),
+                }
+            if not follow_core.halted and follow_units < target_units:
+                target_ns = float(self.sim.iep.time_units_to_ns(target_units))
+                follow_ns = float(self.sim.iep.time_units_to_ns(follow_units))
+                return {
+                    "success": False,
+                    "reason": "pacing_catchup_failed",
+                    "target_ns": float(target_ns),
+                    "follow_ns": float(follow_ns),
+                    "lead": state(lead),
+                    "follow": state(follow),
+                }
 
         return {
             "success": True,

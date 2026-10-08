@@ -5,13 +5,14 @@ reading memory, and querying I/O state.
 """
 
 import configparser
+import copy
 import os
 import re
 
 from core.pru_core import PRUCore
 from mem.memory_bus import MemoryBus
 from mem.regions import MemoryRegion
-from perif.iep import IepTimer, IEP_SIZE
+from perif.iep import IepTimer, IEP_SIZE, IEP_DEFAULT_CLOCK_MHZ
 from mem.constant_table import ConstantTable
 from xfr.xfr_bus import XFRBus
 from pru_io.io_port import IOPort
@@ -95,31 +96,68 @@ class IepRegisterRegion(MemoryRegion):
         self._iep.write(addr - self.base_addr, data)
 
 
+class IepClockRegisterRegion(MemoryRegion):
+    """ICSS CFG IEPCLK word at C4 + 0x30; bit 0 selects the OCP clock."""
+
+    BASE_ADDR = 0x00026030
+
+    def __init__(self, iep: IepTimer):
+        super().__init__("ICSS_IEPCLK", self.BASE_ADDR, 4, 2, 1, 0)
+        self._iep = iep
+
+    def read(self, addr: int, length: int) -> bytes:
+        self._check_bounds(addr, length)
+        local = addr - self.base_addr
+        return self._iep.iepclk.to_bytes(4, "little")[local : local + length]
+
+    def write(self, addr: int, data: bytes) -> None:
+        self._check_bounds(addr, length=len(data))
+        local = addr - self.base_addr
+        value = bytearray(self._iep.iepclk.to_bytes(4, "little"))
+        value[local : local + len(data)] = data
+        self._iep.write_iepclk(int.from_bytes(value, "little"))
+
+
 class Simulator:
-    """Orchestrates two PRU cores (PRU0, RTU0) sharing a memory bus and XFR bus."""
+    """Orchestrates ICSSG cores sharing memory, XFR, and one IEP timer."""
 
     def __init__(self, config_path: str = "memory.cfg"):
         self.xfr = XFRBus()
         self.memory = self._load_memory(config_path)
         self.constant_table = self._load_constants(config_path)
+        dev = self._get_device_config(config_path)
+        pru_clock = dev.get("pru_clock_mhz", "250")
+        pru1_clock = dev.get("pru1_clock_mhz", pru_clock)
+        iep_clock = dev.get("iep_clock_mhz", IEP_DEFAULT_CLOCK_MHZ)
         io_pru0 = IOPort()
         io_rtu0 = IOPort()
         io_pru1 = IOPort()
+        io_rtu1 = IOPort()
         self.cores: dict[str, PRUCore] = {
-            "pru0": PRUCore("PRU0", self.memory, self.xfr, io_pru0, self.constant_table),
-            "rtu0": PRUCore("RTU0", self.memory, self.xfr, io_rtu0, self.constant_table),
-            "pru1": PRUCore("PRU1", self.memory, self.xfr, io_pru1, self.constant_table,
+            "pru0": PRUCore("PRU0", self.memory, self.xfr, io_pru0, copy.deepcopy(self.constant_table)),
+            "rtu0": PRUCore("RTU0", self.memory, self.xfr, io_rtu0, copy.deepcopy(self.constant_table)),
+            "pru1": PRUCore("PRU1", self.memory, self.xfr, io_pru1, copy.deepcopy(self.constant_table),
+                            dram_swap=True),
+            "rtu1": PRUCore("RTU1", self.memory, self.xfr, io_rtu1, copy.deepcopy(self.constant_table),
                             dram_swap=True),
         }
 
-        # Wire SD filters to each core's IOPort (PRU1 runs on its own clock)
-        dev = self._get_device_config(config_path)
-        pru_clock_mhz = float(dev.get("pru_clock_mhz", "200"))
-        pru1_clock_mhz = float(dev.get("pru1_clock_mhz", str(pru_clock_mhz)))
+        # configparser keeps inline comments, which the design spec uses on target
+        target = dev.get("target", "AM243x").split("#", 1)[0].strip()
+        if target.lower() not in ("am243x", "am64x", "am263x"):
+            raise ValueError(
+                f"Unknown device target {target!r}; "
+                "expected one of AM243x, AM64x, AM263x")
+        if target.lower() == "am263x":
+            del self.cores["rtu1"]
+
+        # Wire SD filters to each core's IOPort (slice 1 runs on its own clock)
+        pru_clock_mhz = float(pru_clock)
+        pru1_clock_mhz = float(pru1_clock)
         self._pru_clock_mhz = pru_clock_mhz
         self._pru1_clock_mhz = pru1_clock_mhz
         core_clocks = {"pru0": pru_clock_mhz, "rtu0": pru_clock_mhz,
-                       "pru1": pru1_clock_mhz}
+                       "pru1": pru1_clock_mhz, "rtu1": pru1_clock_mhz}
         for name, core in self.cores.items():
             core.io_port.sd_filter = SigmaDeltaFilter(pru_clock_mhz=core_clocks[name])
 
@@ -165,10 +203,29 @@ class Simulator:
         self.memory.add_region(GpcfgRegion(self._gpcfg))
 
         # IEP0 timer. Shared by all cores on the ICSSG, like the real peripheral.
-        self.iep = IepTimer()
+        core_clock_rates = {
+            "pru0": pru_clock,
+            "rtu0": pru_clock,
+            "pru1": pru1_clock,
+            "rtu1": pru1_clock,
+        }
+        core_clock_rates = {name: rate for name, rate in core_clock_rates.items()
+                            if name in self.cores}
+        self.iep = IepTimer(
+            clock_mhz=iep_clock,
+            ocp_clock_mhz=pru_clock,
+            core_clocks_mhz=core_clock_rates,
+        )
         self.memory.add_region(IepRegisterRegion(self.iep))
-        for core in self.cores.values():
+        self.memory.add_region(IepClockRegisterRegion(self.iep))
+        for name, core in self.cores.items():
             core.iep = self.iep
+
+            def observe_cycles(elapsed_cycles: int, *, _name=name, _core=core) -> None:
+                self.iep.observe_core_cycles(_name, _core.counters.cycles)
+
+            core.cycle_observer = observe_cycles
+            core.reset_observer = lambda *, _name=name: self.iep.rebase_core(_name)
 
         # Loopback: PRU0 TX channel-N -> PRU1 RX channel-N.
         self._loopback = Loopback(self._perif["pru0"], self._perif["pru1"])
@@ -293,33 +350,42 @@ class Simulator:
 
     def step_paced(self, lead: str, follow: str, count: int = 1,
                    guard_ns: float = 20.0) -> None:
-        """Step *lead* by *count* instructions, pacing *follow* by perif time.
+        """Step *lead* and pace *follow* by elapsed core time."""
+        self.step_paced_many(lead, [follow], count=count, guard_ns=guard_ns)
 
-        After each lead instruction, *follow* is stepped until its perif
-        clock trails lead's by at most *guard_ns* — follow never leads, so
-        an RX on follow only samples line history a TX on lead has already
-        recorded. Falls back to 1:1 instruction interleave when either
-        core has no perif block (e.g. rtu0).
+    def step_paced_many(self, lead: str, followers: list[str], count: int = 1,
+                        guard_ns: float = 20.0) -> None:
+        """Step a lead core and catch each follower up by exact elapsed time.
+
+        When both cores have enabled PERIF blocks, *guard_ns* keeps the follower
+        behind the lead's line history. If either PERIF is absent or disabled,
+        the follower catches up to the lead's exact core time without a guard.
+        PERIF clocks continue to advance while mux-disabled; the mux controls
+        signal routing, and the guard applies only while both routes are active.
         """
         lead_pru = self._get_core(lead)
-        follow_pru = self._get_core(follow)
         lead_perif = self._perif.get(lead)
-        follow_perif = self._perif.get(follow)
-        paced = lead_perif is not None and follow_perif is not None
+        follower_states = [
+            (follower, self._get_core(follower), self._perif.get(follower))
+            for follower in followers
+        ]
+        guard_units = self.iep.nanoseconds_to_units(guard_ns)
         for _ in range(count):
             if not lead_pru.halted and lead_pru.pc < len(lead_pru.instructions):
                 lead_pru.step()
-            if not paced:
-                if not follow_pru.halted and follow_pru.pc < len(follow_pru.instructions):
+            lead_time = self.iep.core_time_units(lead, lead_pru.counters.cycles)
+            for follower, follow_pru, follow_perif in follower_states:
+                use_guard = (
+                    lead_perif is not None and follow_perif is not None
+                    and lead_perif.enabled and follow_perif.enabled
+                )
+                target = lead_time - (guard_units if use_guard else 0)
+                while (
+                    self.iep.core_time_units(follower, follow_pru.counters.cycles) < target
+                    and not follow_pru.halted
+                    and follow_pru.pc < len(follow_pru.instructions)
+                ):
                     follow_pru.step()
-                continue
-            target = lead_perif._now_ns - guard_ns
-            safety = 1000
-            while (follow_perif._now_ns < target and safety > 0
-                   and not follow_pru.halted
-                   and follow_pru.pc < len(follow_pru.instructions)):
-                follow_pru.step()
-                safety -= 1
 
     def registers(self, core: str) -> list[int]:
         """Return the 32 general-purpose register values for *core*."""
@@ -456,8 +522,8 @@ class Simulator:
         """
         for core in self.cores.values():
             core.reset()
-        self.xfr.reset()
         self.iep.hardware_reset()
+        self.xfr.reset()
 
     def uart_inject(
         self,
