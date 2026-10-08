@@ -26,6 +26,7 @@ from perif.gpcfg import MUX_SD
 from pru_io import foc_control, foc_control_abi
 from pru_io.foc_motor_model import FocMotorModel
 from pru_io.device_profiles import discover_device_profiles
+from pru_io.scenarios import SCENARIOS, apply_scenario
 from pru_io.ssi_encoder_model import SSIEncoderModel
 from xfr.xfr_bus import SPAD_BANK0, SPAD_BANK1, SPAD_BANK2, IPC_SPAD
 
@@ -488,6 +489,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         include_paths = [str(candidate_dir)]
                         if lib_dir.exists():
                             include_paths.append(str(lib_dir))
+                        if SOURCE_DIR.resolve() != candidate_dir:
+                            # generated ABI headers live in source/, not in project folders
+                            include_paths.append(str(SOURCE_DIR))
                     except (ValueError, OSError):
                         pass  # Unsafe path — ignore filename, use default include_paths
                 errors = sim.load(core, msg["source"], include_paths)
@@ -713,6 +717,7 @@ async def websocket_endpoint(websocket: WebSocket):
             elif action == "run":
                 max_steps = int(msg.get("max_steps", 1000))
                 capture = bool(msg.get("capture", False))
+                stride = _capture_stride(msg)
                 pru = sim.cores[core]
                 at_breakpoint = False
                 samples = []
@@ -721,7 +726,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     while steps < max_steps and not pru.halted and pru.pc < len(pru.instructions):
                         pru.step()
                         steps += 1
-                        if capture and _capture_due(pru, steps):
+                        if capture and _capture_due(pru, steps, stride):
                             samples.append(_capture_sample(pru))
                         if pru.pc in pru.breakpoints:
                             at_breakpoint = True
@@ -735,6 +740,7 @@ async def websocket_endpoint(websocket: WebSocket):
             elif action == "run_multicore":
                 max_steps = int(msg.get("max_steps", 1000))
                 capture = bool(msg.get("capture", False))
+                stride = _capture_stride(msg)
                 # "partners" runs three or four cores together; "partner" is the
                 # original single follower.
                 partners = msg.get("partners") or [msg.get("partner", "pru1")]
@@ -757,8 +763,8 @@ async def websocket_endpoint(websocket: WebSocket):
                            and lead_pru.pc < len(lead_pru.instructions)):
                         sim.step_paced_many(core, partners, 1)
                         steps += 1
-                        if capture and _capture_due(lead_pru, steps):
-                            samples.append(_capture_sample(lead_pru))
+                        if capture and _capture_due(lead_pru, steps, stride):
+                            samples.append(_capture_sample(lead_pru, partner_prus))
                         if lead_pru.pc in lead_pru.breakpoints:
                             lead_bp = True
                             break
@@ -768,7 +774,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 except ValueError as ve:
                     await websocket.send_json({"type": "error", "errors": [str(ve)]})
                 if samples:
-                    await _send_capture(websocket, core, samples)
+                    await _send_capture(websocket, core, samples, partners)
                 await _send_state(websocket, core, at_breakpoint=lead_bp,
                                   captured=capture)
                 for name, at_bp in zip(partners, partner_bp):
@@ -855,6 +861,23 @@ async def websocket_endpoint(websocket: WebSocket):
                     "type": "device_profiles",
                     "profiles": discover_device_profiles(),
                 })
+            elif action == "scenario_list":
+                await websocket.send_json({
+                    "type": "scenarios",
+                    "scenarios": [scenario.describe() for scenario in SCENARIOS.values()],
+                })
+            elif action == "scenario_load":
+                try:
+                    scenario = apply_scenario(sim, msg.get("name"), _device_api_for_current_sim())
+                    _set_iep_clock(sim.iep.active_clock_mhz)
+                    _clear_history()
+                    await websocket.send_json({"type": "scenario_loaded", **scenario.describe()})
+                except (KeyError, TypeError, ValueError) as exc:
+                    await websocket.send_json({"type": "error", "tag": "scenario",
+                                               "errors": [str(exc)]})
+                    scenario = None
+                for scenario_core in (scenario.cores if scenario else (core,)):
+                    await _send_state(websocket, scenario_core)
             elif action in ("ssi_set_position", "ssi_set_error"):
                 try:
                     name = msg.get("name", "")
@@ -947,6 +970,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     "payload_len": len(payload),
                     "frames": frames,
                 }))
+            else:
+                await websocket.send_json({"type": "error", "tag": "ws",
+                                           "errors": [f"unknown action {action!r}"]})
     except WebSocketDisconnect:
         return
     except Exception as e:
@@ -1012,7 +1038,15 @@ def _io_mode(core, sd_data=None, perif_data=None, mux_sel=None) -> str:
 CAPTURE_STRIDE_GP = 100
 
 
-def _capture_due(c, steps: int) -> bool:
+def _capture_stride(msg: dict) -> int:
+    """Instructions per Signal Graph sample outside peripheral mode (client may ask finer)."""
+    stride = msg.get("stride", CAPTURE_STRIDE_GP)
+    if isinstance(stride, bool) or not isinstance(stride, int):
+        return CAPTURE_STRIDE_GP
+    return max(1, min(stride, CAPTURE_STRIDE_GP))
+
+
+def _capture_due(c, steps: int, stride: int = CAPTURE_STRIDE_GP) -> bool:
     """Whether to take a graph sample after instruction `steps` of this chunk.
 
     Decided per instruction rather than once per chunk because firmware enables
@@ -1023,10 +1057,10 @@ def _capture_due(c, steps: int) -> bool:
     perif = c.io_port.perif
     if perif is not None and perif.enabled:
         return True
-    return steps % CAPTURE_STRIDE_GP == 0
+    return steps % stride == 0
 
 
-def _capture_sample(c) -> list[int]:
+def _capture_sample(c, partners=()) -> list[int]:
     """One Signal Graph sample, taken inside the run loop.
 
     Run executes up to `max_steps` instructions per websocket round-trip, so a
@@ -1036,14 +1070,12 @@ def _capture_sample(c) -> list[int]:
     `perif_duty_cycle_sweep.asm` that draws nothing while SIM (one instruction
     per push) traces it fine.
 
-    Packed into ints (bitmask per lane group) to keep the batch small.
+    Packed into ints (bitmask per lane group) to keep the batch small. A
+    multi-core run appends [r30, gpi bits] for each partner core, so both ends
+    of every wire are plotted.
     """
     perif = c.io_port.perif
-    gpi = c.io_port.get_gpi_pins()
-    gpi_bits = 0
-    for i, v in enumerate(gpi[:20]):
-        if v:
-            gpi_bits |= 1 << i
+    gpi_bits = _gpi_bits(c)
     out_bits = oe_bits = clk_bits = 0
     if perif is not None:
         for i, ch in enumerate(perif.channels[:3]):
@@ -1053,18 +1085,32 @@ def _capture_sample(c) -> list[int]:
                 oe_bits |= 1 << i
             if ch.tx_clk_pin:
                 clk_bits |= 1 << i
-    return [c.counters.instruction_count, c.registers.read_full(30) & 0xFFFFF,
-            gpi_bits, out_bits, oe_bits, clk_bits]
+    sample = [c.counters.instruction_count, c.registers.read_full(30) & 0xFFFFF,
+              gpi_bits, out_bits, oe_bits, clk_bits]
+    for p in partners:
+        sample += [p.registers.read_full(30) & 0xFFFFF, _gpi_bits(p)]
+    return sample
 
 
-async def _send_capture(ws, core, samples):
+def _gpi_bits(c) -> int:
+    bits = 0
+    for i, v in enumerate(c.io_port.get_gpi_pins()[:20]):
+        if v:
+            bits |= 1 << i
+    return bits
+
+
+async def _send_capture(ws, core, samples, partners=None):
     """Ship a run loop's per-instruction Signal Graph samples in one message."""
-    await ws.send_json({
+    msg = {
         "type": "capture",
         "core": core,
         "mode": _io_mode(core),
         "samples": samples,
-    })
+    }
+    if partners:
+        msg["partners"] = partners   # names for the trailing [r30, gpi] pairs
+    await ws.send_json(msg)
 
 
 async def _send_state(ws, core, at_breakpoint=False, captured=False, run_id=None):
@@ -1186,7 +1232,7 @@ def _port_is_free(host, port):
         probe.close()
 
 
-def start_dashboard(host=DEFAULT_HOST, port=DEFAULT_PORT):
+def start_dashboard(host=DEFAULT_HOST, port=DEFAULT_PORT, reload=False):
     import uvicorn
 
     if not _port_is_free(host, port):
@@ -1197,6 +1243,13 @@ def start_dashboard(host=DEFAULT_HOST, port=DEFAULT_PORT):
             f"    PRU_SIM_UI_PORT={port + 1} python ui/server.py"
         )
 
+    if reload:
+        # Dev only: restart the backend on Python edits so it cannot go stale
+        # behind static assets that are re-read from disk on every request.
+        root = str(pathlib.Path(__file__).resolve().parents[1])
+        uvicorn.run("ui.server:app", host=host, port=port, reload=True,
+                    reload_dirs=[root], app_dir=root)
+        return
     uvicorn.run(app, host=host, port=port)
 
 
@@ -1215,9 +1268,14 @@ def _parse_args(argv=None):
         default=int(os.environ.get("PRU_SIM_UI_PORT", DEFAULT_PORT)),
         help=f"bind port (default {DEFAULT_PORT}, env PRU_SIM_UI_PORT)",
     )
+    parser.add_argument(
+        "--reload",
+        action="store_true",
+        help="dev only: restart the server when Python sources change",
+    )
     return parser.parse_args(argv)
 
 
 if __name__ == "__main__":
     args = _parse_args()
-    start_dashboard(host=args.host, port=args.port)
+    start_dashboard(host=args.host, port=args.port, reload=args.reload)

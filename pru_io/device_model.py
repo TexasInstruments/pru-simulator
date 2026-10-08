@@ -603,9 +603,18 @@ class DeviceBus:
         self._core_drive_masks[port] = core_mask
         device_masks = {id(device): self._last_drives.get(id(device), (0, 0))
                         for device in self._port_devices[port]}
-        word = 0
+        # A pin with at most one driver resolves to that driver's value (high
+        # when undriven) and cannot contend; only multi-driver pins need the loop.
+        driven, contested, word = core_mask, 0, gpo & core_mask
+        for mask, values in device_masks.values():
+            contested |= driven & mask
+            word |= values & mask & ~driven
+            driven |= mask
+        word = (word | ~driven) & ~contested & _MASK_20
         for pin in range(20):
             bit = 1 << pin
+            if not contested & bit:
+                continue
             modes = self._port_net_modes[port].get(pin, set())
             drivers = []
             if core_mask & bit:

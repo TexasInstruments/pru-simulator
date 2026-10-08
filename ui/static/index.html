@@ -940,13 +940,13 @@
     .graph-legend {
       display: flex;
       flex-wrap: wrap;
-      gap: 8px;
+      gap: 2px 6px;
       font-size: 10px;
       color: var(--text-dim);
       min-height: 14px;
     }
     .graph-legend-item { display: flex; align-items: center; gap: 3px; }
-    .graph-legend-swatch { width: 16px; height: 2px; border-radius: 1px; }
+    .graph-legend-swatch { width: 12px; height: 2px; border-radius: 1px; }
     .graph-export-row { display: flex; align-items: center; gap: 8px; }
     .graph-sample-count { font-size: 10px; color: var(--text-dim); }
 
@@ -2376,6 +2376,8 @@ Example:
           </div>
           <div class="runtime-device-actions">
             <button class="runtime-device-button primary btn-17 btn-run" id="ssi-attach-button" type="button"><span class="text-container"><span class="text">Attach encoder</span></span></button>
+            <button class="runtime-device-button btn-17" type="button" data-scenario="SSI encoder (single core)" disabled><span class="text-container"><span class="text">Example: single core</span></span></button>
+            <button class="runtime-device-button btn-17" type="button" data-scenario="SSI multi-core (emulator + reader)" disabled><span class="text-container"><span class="text">Example: multi-core</span></span></button>
           </div>
         </section>
         <section class="runtime-device" aria-labelledby="tca-runtime-title">
@@ -2532,6 +2534,7 @@ Example:
           <h2 id="motor-setup-title">Setup</h2>
           <div class="motor-actions">
             <button type="button" id="motor-load" class="motor-button primary btn-17 btn-run"><span class="text-container"><span class="text">Load firmware</span></span></button>
+            <button type="button" class="motor-button btn-17" data-scenario="FOC motor (open loop)" disabled><span class="text-container"><span class="text">Load example</span></span></button>
             <button type="button" id="motor-detach" class="motor-button btn-17" disabled><span class="text-container"><span class="text">Detach motor</span></span></button>
           </div>
           <p class="motor-help">Attaches the <code>foc_motor</code> profile on PRU0 if needed and loads <code>source/foc_open_loop.asm</code>. Use Start to run it.</p>
