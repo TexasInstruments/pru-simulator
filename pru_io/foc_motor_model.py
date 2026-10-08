@@ -110,7 +110,7 @@ class FocMotorModel(DeviceModel):
                              ("current_b_clock_hz", current_b_clock_hz)):
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValueError(f"{field} must be a positive number")
-            if value <= 0:
+            if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{field} must be a positive number")
         if not isinstance(name, str) or not name.strip():
             raise ValueError("name must be a non-empty string")
@@ -139,7 +139,6 @@ class FocMotorModel(DeviceModel):
             clock_hz / Fraction(str(core_clock_hz))
             for clock_hz in self._current_modulator_clock_hz
         ]
-        self._sample_count = 0
         self._apply_physics(physics)
         self._reference_angle_rad = math.pi / 2.0
         self.reset()
@@ -209,6 +208,7 @@ class FocMotorModel(DeviceModel):
         self._cmd_unwrapped = 0.0
         self._cmd_history = deque(maxlen=_HISTORY_PERIODS + 1)
         self._samples = deque(maxlen=SAMPLE_CAPACITY)
+        self._sample_count = 0
 
     def set_current_modulator_clock_hz(self, output: int, clock_hz: float) -> None:
         """Set output 0/1's sampling clock to match its physical SD channel."""
