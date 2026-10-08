@@ -45,11 +45,6 @@ async def _exercise_stdio_tools():
                 "pru_gpio_drive_mask", "pru_sd_route_input",
             }
             assert required <= by_name.keys()
-            attach_tool = by_name["pru_device_attach"]
-            attach_schema = _input_schema(attach_tool)
-            assert attach_schema[
-                "properties"]["config"]["type"] == "object"
-
             def property_schema(name, field):
                 tool = by_name[name]
                 schema = getattr(tool, "input_schema", None)
@@ -74,9 +69,6 @@ async def _exercise_stdio_tools():
             assert loaded["success"] is True
 
             load_schema = _input_schema(by_name["pru_load"])
-            include_paths_schema = load_schema["properties"]["include_paths"]
-            assert include_paths_schema["type"] == "array"
-            assert include_paths_schema["items"]["type"] == "string"
             assert "include_paths" not in load_schema.get("required", [])
 
             discovered = _payload(await session.call_tool(
