@@ -8,7 +8,8 @@ import struct
 import copy
 import random
 import inspect
-from typing import get_args, get_origin
+import types
+import typing
 
 # Allow imports from parent directory when run directly
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -19,41 +20,16 @@ from pru_io.device_model import PUSH_PULL
 from mcp_server.vcd_export import export_pin_waveform
 
 
-def _build_tool_input_schema(method) -> dict:
-    """Build an MCP JSON schema from a wrapper method's signature."""
-    properties = {}
-    required = []
-    sig = inspect.signature(method)
-    for param_name, param in sig.parameters.items():
-        if param_name == "self":
-            continue
-        annotation = param.annotation
-        annotated_type = annotation
-        union_args = get_args(annotation)
-        if type(None) in union_args:
-            annotated_type = next(arg for arg in union_args if arg is not type(None))
+def _require_int(name: str, value) -> None:
+    """Reject bool and non-int values for an integer tool parameter."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{name} must be an integer")
 
-        if get_origin(annotated_type) is list and get_args(annotated_type) == (str,):
-            prop = {"type": "array", "items": {"type": "string"}}
-        else:
-            ptype = "string"
-            if annotated_type is int:
-                ptype = "integer"
-            elif annotated_type is float:
-                ptype = "number"
-            elif annotated_type is bool:
-                ptype = "boolean"
-            elif annotated_type is dict:
-                ptype = "object"
-            prop = {"type": ptype}
 
-        if param.default is inspect.Parameter.empty:
-            required.append(param_name)
-        else:
-            prop["default"] = param.default
-        properties[param_name] = prop
-
-    return {"type": "object", "properties": properties, "required": required}
+def _require_bool(name: str, value) -> None:
+    """Accept only a real bool: strings are truthy and 0/1 are not booleans."""
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be a boolean")
 
 
 class PRUSimulatorMCP:
@@ -62,7 +38,15 @@ class PRUSimulatorMCP:
     def __init__(self, config_path: str = "memory.cfg"):
         self._config_path = config_path
         self.sim = Simulator(config_path)
-        self._device_drive_masks: dict[str, tuple[str, int]] = {}
+
+    def pru_gpio_drive_mask(self, core: str = "pru0", mask: int | None = None) -> dict:
+        """Query or set the twenty GPIO output-enable bits without changing R30."""
+        if mask is not None:
+            if (isinstance(mask, bool) or not isinstance(mask, int)
+                    or not 0 <= mask < (1 << 20)):
+                raise ValueError("GPIO drive mask must be a 20-bit integer")
+            self.sim.set_gpio_drive_mask(core, mask)
+        return {"core": core, "drive_mask": self.sim.io(core)["gpo_drive_mask"]}
 
     def pru_load(self, source: str, core: str = "pru0",
                  include_paths: list[str] | None = None) -> dict:
@@ -192,7 +176,6 @@ class PRUSimulatorMCP:
                 candidate.cores[core].pc = entry_pc
                 self.sim.device_bus.detach_all()
                 self.sim.device_bus.release_all_core_outputs()
-                self._restore_device_output_masks(self.sim)
                 self.sim = candidate
         except (OSError, ValueError, binascii.Error) as exc:
             errors = [f"ELF load failed: {exc}"]
@@ -208,6 +191,7 @@ class PRUSimulatorMCP:
 
     def pru_step(self, core: str = "pru0", count: int = 1) -> dict:
         """Execute count instructions on the specified core."""
+        _require_int("count", count)
         result = self.sim.step(core, count)
         # Add instruction_text from last executed instruction
         c = self.sim.cores[core]
@@ -225,6 +209,9 @@ class PRUSimulatorMCP:
         Peripheral Interfaces are enabled. Otherwise both cores are paced by
         exact elapsed core time with no guard.
         """
+        _require_int("count", count)
+        if isinstance(guard_ns, bool) or not isinstance(guard_ns, (int, float)):
+            raise ValueError("guard_ns must be a number")
         if count < 0:
             raise ValueError("count must be non-negative")
         if guard_ns < 0:
@@ -239,6 +226,7 @@ class PRUSimulatorMCP:
                 "pc": c.pc,
                 "cycles": c.counters.cycles,
                 "halted": c.halted,
+                "fault": dict(c.fault) if c.fault is not None else None,
             }
 
         for _ in range(count):
@@ -259,7 +247,14 @@ class PRUSimulatorMCP:
             follow_units = self.sim.iep.core_time_units(
                 follow, follow_core.counters.cycles
             )
-            if follow_units < target_units:
+            if lead_core.fault is not None or follow_core.fault is not None:
+                return {
+                    "success": False,
+                    "reason": "core_fault",
+                    "lead": state(lead),
+                    "follow": state(follow),
+                }
+            if not follow_core.halted and follow_units < target_units:
                 target_ns = float(self.sim.iep.time_units_to_ns(target_units))
                 follow_ns = float(self.sim.iep.time_units_to_ns(follow_units))
                 return {
@@ -287,6 +282,8 @@ class PRUSimulatorMCP:
         ``pin`` is an alias for GPI; input and output predicates are never ORed.
         A positive ``max_cycles`` is an inclusive budget measured from this call.
         """
+        _require_int("max_steps", max_steps)
+        _require_int("max_cycles", max_cycles)
         if max_steps < 0:
             raise ValueError("max_steps must be non-negative")
         if max_cycles < 0:
@@ -374,6 +371,8 @@ class PRUSimulatorMCP:
 
     def pru_memory(self, addr: int, length: int) -> dict:
         """Read length bytes from shared memory at addr."""
+        _require_int("addr", addr)
+        _require_int("length", length)
         data = self.sim.memory_read(addr, length)
         return {
             "hex_dump": data.hex(),
@@ -386,12 +385,16 @@ class PRUSimulatorMCP:
 
     def pru_set_input(self, core: str = "pru0", pin: int = 0, value: bool = False) -> dict:
         """Set a single GPI pin on the specified core's I/O port."""
+        _require_int("pin", pin)
+        _require_bool("value", value)
         self.sim.set_input(core, pin, value)
         return {"ok": True}
 
     def pru_vcd_export(self, path: str, core: str = "pru0", max_steps: int = 10000,
                        pins: str = "0-19", include_gpi: bool = False) -> dict:
         """Run a loaded core and export selected GPIO pins as deterministic VCD."""
+        _require_int("max_steps", max_steps)
+        _require_bool("include_gpi", include_gpi)
         return export_pin_waveform(
             self.sim, core, path, max_steps=max_steps, pins=pins,
             include_gpi=include_gpi,
@@ -399,6 +402,8 @@ class PRUSimulatorMCP:
 
     def pru_i2c_attach(self, core: str = "pru0", enabled: bool = True, address: int = 0x23) -> dict:
         """Attach or detach a TCA9538 I2C device model on SCL=bit0/SDA=bit1 of the specified core."""
+        _require_bool("enabled", enabled)
+        _require_int("address", address)
         self.sim.i2c_attach(core, enabled, address)
         return {"success": True, "core": core, "enabled": enabled, "address": address}
 
@@ -442,8 +447,8 @@ class PRUSimulatorMCP:
             attached for attached in self.sim.device_bus.devices
             if self.sim.device_bus._device_ports.get(id(attached)) == core
         ]
-        mask_owner = next((name for name, (owner_core, _) in self._device_drive_masks.items()
-                           if owner_core == core), None)
+        mask_owner = next((attached.name for attached in attached_on_core
+                           if getattr(attached, "pru_output_mask", None) is not None), None)
         if mask_owner is not None or (
                 getattr(device, "pru_output_mask", None) is not None
                 and attached_on_core):
@@ -452,30 +457,24 @@ class PRUSimulatorMCP:
                 f"{owner} controls the {core} GPIO output mask and cannot share that core"
             )
 
-        # A push-pull device output owns that pin while attached. Open-drain
-        # lines remain driven by the PRU so I2C masters can pull SDA/SCL low.
-        previous_mask = self.sim.io(core)["gpo_drive_mask"]
-        output_mask = sum(1 << pin for pin, mode in device.nets.items()
-                          if mode == PUSH_PULL)
-        if output_mask:
-            self.sim.lease_gpio_outputs(core, output_mask, device)
+        if profile == "foc_motor":
+            drive_mask = device.pru_output_mask
+            managed_mask = (1 << 20) - 1
+        elif profile == "ssi_encoder":
+            drive_mask = 1 << device.clock_pin
+            managed_mask = drive_mask | (1 << device.data_pin)
+        else:
+            drive_mask = (1 << device.scl_pin) | (1 << device.sda_pin)
+            managed_mask = drive_mask
+        self.sim.lease_gpio_outputs(core, managed_mask, device,
+                                    drive_mask=drive_mask)
         self.sim.attach_device(core, device)
-        device_drive_mask = getattr(device, "pru_output_mask", None)
-        if device_drive_mask is not None:
-            self._device_drive_masks[device.name] = (core, previous_mask)
-            self.sim.set_gpio_drive_mask(core, device_drive_mask)
         return {"success": True, "core": core, "device": device.get_state()}
 
     def pru_device_detach(self, device_name: str) -> dict:
         """Detach a generic device by name and release its bus ownership."""
         device = self._get_device(device_name)
-        core = self.sim.device_bus._device_ports.get(id(device))
         self.sim.detach_device(device)
-        saved_drive = self._device_drive_masks.pop(device_name, None)
-        if saved_drive is not None:
-            drive_core, previous_mask = saved_drive
-            if drive_core == core:
-                self.sim.set_gpio_drive_mask(core, previous_mask)
         return {"success": True, "device": device_name}
 
     def pru_device_configure(self, device_name: str, parameters: dict) -> dict:
@@ -522,11 +521,6 @@ class PRUSimulatorMCP:
             raise ValueError(f"more than one attached device is named {name!r}")
         return matches[0]
 
-    def _restore_device_output_masks(self, sim: Simulator) -> None:
-        for core, mask in self._device_drive_masks.values():
-            sim.set_gpio_drive_mask(core, mask)
-        self._device_drive_masks.clear()
-
     def pru_reset(self, core: str = "pru0") -> dict:
         """Reset the specified core to its initial state."""
         self.sim.reset(core)
@@ -534,6 +528,7 @@ class PRUSimulatorMCP:
 
     def pru_breakpoint(self, core: str = "pru0", address: int = 0) -> dict:
         """Add a breakpoint at the specified address for the specified core."""
+        _require_int("address", address)
         self.sim.cores[core].breakpoints.add(address)
         return {"id": len(self.sim.cores[core].breakpoints)}
 
@@ -553,6 +548,13 @@ class PRUSimulatorMCP:
         Loads assembly source, attaches a UARTFrameGenerator, runs the PRU,
         and returns the received data from DRAM0.
         """
+        for name, value in (("baudrate", baudrate), ("frames", frames), ("pin", pin),
+                            ("dram0_offset", dram0_offset), ("max_steps", max_steps)):
+            _require_int(name, value)
+        if not isinstance(payload, list) or any(
+                isinstance(byte, bool) or not isinstance(byte, int) for byte in payload):
+            raise ValueError("payload must be a list of integers")
+
         # Reset and load
         self.sim.reset(core)
         errors = self.sim.load(core, source)
@@ -600,6 +602,66 @@ class PRUSimulatorMCP:
         return {"cores": self.sim.status()}
 
 
+_JSON_SCALAR_TYPES = {int: "integer", float: "number", bool: "boolean", str: "string"}
+
+
+def _annotation_to_json_schema(annotation) -> dict:
+    """Map a parameter annotation to a JSON Schema fragment.
+
+    ``X | None`` / ``Optional[X]`` advertise the schema of ``X`` (optionality
+    comes from the parameter default, not from the type). ``int | float`` is
+    ``number``; ``list[X]`` is an array of ``X``; ``dict`` is an object. An
+    unannotated parameter keeps the historical ``string``; an annotation we do
+    not recognise is left unconstrained rather than mislabelled as a string.
+    """
+    if annotation is inspect.Parameter.empty:
+        return {"type": "string"}
+    if annotation in _JSON_SCALAR_TYPES:
+        return {"type": _JSON_SCALAR_TYPES[annotation]}
+    origin = typing.get_origin(annotation)
+    if origin is typing.Union or origin is types.UnionType:
+        members = [a for a in typing.get_args(annotation) if a is not type(None)]
+        if not members:
+            return {}
+        if len(members) == 1:
+            return _annotation_to_json_schema(members[0])
+        if all(m in (int, float) for m in members):
+            return {"type": "number"}
+        return {"anyOf": [_annotation_to_json_schema(m) for m in members]}
+    if annotation is list or origin is list:
+        schema = {"type": "array"}
+        args = typing.get_args(annotation)
+        if args:
+            schema["items"] = _annotation_to_json_schema(args[0])
+        return schema
+    if annotation is dict or origin is dict:
+        return {"type": "object"}
+    return {}
+
+
+def _tool_input_schema(method) -> dict:
+    """Build the MCP ``inputSchema`` for a bound ``PRUSimulatorMCP`` method."""
+    # Annotations are real objects here (no ``from __future__ import
+    # annotations`` in this module); eval_str also resolves them if that changes.
+    sig = inspect.signature(method, eval_str=True)
+    properties = {}
+    required = []
+    for param_name, param in sig.parameters.items():
+        if param_name == "self":
+            continue
+        prop = _annotation_to_json_schema(param.annotation)
+        if param.default is inspect.Parameter.empty:
+            required.append(param_name)
+        else:
+            prop["default"] = param.default
+        properties[param_name] = prop
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": required,
+    }
+
+
 def run_stdio_server():
     """Start the MCP stdio server. Requires the 'mcp' SDK to be installed."""
     try:
@@ -610,6 +672,7 @@ def run_stdio_server():
         import asyncio
         import json
 
+        server = Server("pru-simulator")
         mcp_wrapper = PRUSimulatorMCP()
 
         # Build tool list from PRUSimulatorMCP public methods
@@ -620,41 +683,20 @@ def run_stdio_server():
             _TOOLS.append(Tool(
                 name=name,
                 description=method.__doc__ or name,
-                inputSchema=_build_tool_input_schema(method),
+                inputSchema=_tool_input_schema(method),
             ))
 
-        def call_tool_content(name, arguments):
+        @server.list_tools()
+        async def list_tools():
+            return _TOOLS
+
+        @server.call_tool()
+        async def call_tool(name, arguments):
             method = getattr(mcp_wrapper, name, None)
             if method is None:
                 raise ValueError(f"Unknown tool: {name}")
             result = method(**arguments)
-            return TextContent(type="text", text=json.dumps(result, indent=2))
-
-        if "on_list_tools" in inspect.signature(Server).parameters:
-            from mcp.types import CallToolResult, ListToolsResult
-
-            async def list_tools(ctx, params):
-                return ListToolsResult(tools=_TOOLS)
-
-            async def call_tool(ctx, params):
-                return CallToolResult(content=[call_tool_content(
-                    params.name, params.arguments or {})])
-
-            server = Server(
-                "pru-simulator",
-                on_list_tools=list_tools,
-                on_call_tool=call_tool,
-            )
-        else:
-            server = Server("pru-simulator")
-
-            @server.list_tools()
-            async def list_tools():
-                return _TOOLS
-
-            @server.call_tool()
-            async def call_tool(name, arguments):
-                return [call_tool_content(name, arguments)]
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         async def main():
             async with stdio_server() as (read_stream, write_stream):

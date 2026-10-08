@@ -99,3 +99,36 @@ def test_put_clock_speed_rejects_disallowed_value(tmp_path, monkeypatch):
     assert response.status_code == 400
     assert "error" in response.json()
     assert cfg_file.read_text() == original
+
+
+def test_put_clock_speed_invalid_config_leaves_file_and_simulator_untouched(
+    tmp_path, monkeypatch
+):
+    import ui.server as srv
+    cfg_file = tmp_path / "memory.cfg"
+    valid = (
+        "[device]\n"
+        "target = AM243x\n"
+        "pru_clock_mhz = 200\n"
+        "\n"
+        "[DRAM0]\n"
+        "base = 0x00000000\n"
+        "size = 0x2000\n"
+    )
+    cfg_file.write_text(valid)
+    monkeypatch.setattr(srv, "config_path", str(cfg_file))
+    live = srv.Simulator(config_path=str(cfg_file))
+    monkeypatch.setattr(srv, "sim", live)
+    monkeypatch.setattr(srv, "_history", {core: [] for core in srv._history})
+    srv._history["pru0"].append({"stale": True})
+    # The clock edit itself succeeds on this text, but the Simulator cannot load it.
+    cfg_file.write_bytes((valid + "\n[DRAM1\nbase = 0\n").encode("utf-8"))
+    before = cfg_file.read_bytes()
+
+    response = client.put("/config/clock_speed", json={"mhz": 250})
+    assert response.status_code == 400
+    assert repr(str(cfg_file))[1:-1] in response.json()["error"]
+    assert cfg_file.read_bytes() == before
+    assert [p.name for p in tmp_path.iterdir()] == ["memory.cfg"]
+    assert srv.sim is live
+    assert srv._history["pru0"] == [{"stale": True}]

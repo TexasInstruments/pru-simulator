@@ -14,9 +14,13 @@ the error field occupies the low bits of the frame word (offsets are left to
   (p. 5).
 
 The document's tv (< T/2) and Tp (> tm) are master-side constraints and the
-model has no equivalent, so presets do not carry them. Every SICK preset is
-binary; the document says the code is configurable (p. 10) but does not fix a
-default, so binary is an assumption.
+model has no equivalent, so presets do not carry them. Configurable AHS/AHM
+and AFS/AFM families use an explicit binary example, not a vendor-wide default.
+ARS60 uses standard Gray for the illustrated 8192/32768-step SSI variants;
+TTK70 uses Gray position plus two binary error bits (TTK70-AXA0-K02's 24-bit
+position, extended by IM0100079 p. 23's error fields). KH53 uses 24-bit Gray.
+Other ARS60 variants with trimmed Gray are not modeled by these presets.
+Encoding sources are linked in PRESET_SOURCES below.
 
 ``RM08_12BIT_4MHZ`` is the standard simple encoder, not a SICK frame:
 12 bits, natural binary, no error bits, clock <= 4 MHz and tm = 12.5 us. It
@@ -30,9 +34,10 @@ from __future__ import annotations
 _SICK = {"f_max_hz": 2_000_000, "monoflop_us": 20, "encoding": "binary"}
 
 
-def _frame(resolution: int, error_bits: int) -> dict:
+def _frame(resolution: int, error_bits: int, encoding: str = "binary") -> dict:
     return {**_SICK, "resolution": resolution,
-            "position_bits": resolution - error_bits, "error_bits": error_bits}
+            "position_bits": resolution - error_bits, "error_bits": error_bits,
+            "encoding": encoding}
 
 
 PRESETS = {
@@ -46,11 +51,11 @@ PRESETS = {
     "AFS_AFM60_MULTITURN_30BIT": _frame(33, 3),
     "AFS_AFM60_MULTITURN_27BIT": _frame(30, 3),
     "AFS_AFM60S_PRO_SINGLETURN": _frame(21, 3),
-    "AFS_AFM60S_PRO_MULTITURN": _frame(28, 3),
-    "ARS60_SHORT": _frame(13, 0),
-    "ARS60_LONG": _frame(17, 2),
-    "TTK70": _frame(26, 2),
-    "KH53": _frame(24, 0),
+    "AFS_AFM60S_PRO_MULTITURN_EXAMPLE": _frame(28, 3),
+    "ARS60_SHORT": _frame(13, 0, "gray"),
+    "ARS60_LONG": _frame(17, 2, "gray"),
+    "TTK70": _frame(26, 2, "gray"),
+    "KH53": _frame(24, 0, "gray"),
 }
 
 # IM0100079 page of each preset's frame diagram.
@@ -62,11 +67,11 @@ PRESET_SOURCES = {
     "AFS_AFM60_MULTITURN_30BIT": "IM0100079 p. 14",
     "AFS_AFM60_MULTITURN_27BIT": "IM0100079 pp. 14-15",
     "AFS_AFM60S_PRO_SINGLETURN": "IM0100079 p. 17",
-    "AFS_AFM60S_PRO_MULTITURN": "IM0100079 p. 18 (25-bit example)",
-    "ARS60_SHORT": "IM0100079 p. 22",
-    "ARS60_LONG": "IM0100079 p. 22",
-    "TTK70": "IM0100079 p. 23",
-    "KH53": "IM0100079 p. 24",
+    "AFS_AFM60S_PRO_MULTITURN_EXAMPLE": "IM0100079 p. 18 (25-bit example)",
+    "ARS60_SHORT": "IM0100079 p. 22; Gray: https://www.sick.com/media/pdf/8/28/728/dataSheet_ARS60-AAA08192_1031458_en.pdf p. 2",
+    "ARS60_LONG": "IM0100079 p. 22; Gray: https://www.sick.com/media/pdf/6/06/406/dataSheet_ARS60-A4B32768_1031497_zf.pdf p. 2",
+    "TTK70": "IM0100079 p. 23; Gray: https://www.sick.com/media/pdf/0/40/840/dataSheet_TTK70-AXA0-K02_1038033_en.pdf p. 2",
+    "KH53": "IM0100079 p. 24; Gray: https://www.sick.com/media/docs/0/00/600/product_information_kh53_linear_encoders_en_im0011600.pdf p. 3",
 }
 
 

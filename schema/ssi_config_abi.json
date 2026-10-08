@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "shared_base": "0x00010000",
   "config": {
     "offset": "0x0000",
@@ -27,7 +27,8 @@
       {"name": "frame_bits", "offset": "0x04", "type": "u32"},
       {"name": "frame_lo", "offset": "0x08", "type": "u32"},
       {"name": "frame_hi", "offset": "0x0C", "type": "u32"},
-      {"name": "status", "offset": "0x10", "type": "u32"}
+      {"name": "status", "offset": "0x10", "type": "u32"},
+      {"name": "monoflop_ticks", "offset": "0x14", "type": "u32"}
     ]
   }
 }

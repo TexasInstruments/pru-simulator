@@ -25,23 +25,39 @@ def _positive_pole_pairs(pole_pairs) -> int:
     return pole_pairs
 
 
-def speed_rpm_to_q28(rpm: float, pole_pairs: int) -> int:
-    """Mechanical rpm -> per-unit electrical speed (1 pu = 1 kHz electrical)."""
+def _update_rate(update_hz: float) -> float:
+    rate = _finite("update rate", update_hz)
+    if rate <= 0:
+        raise ValueError("update rate must be positive")
+    return rate
+
+
+def update_frequency_hz(iep) -> float:
+    """Actual update rate of the firmware's fixed 12,500-tick period."""
+    return float(iep.active_clock_mhz) * 1_000_000 / 12_500
+
+
+def speed_rpm_to_q28(rpm: float, pole_pairs: int,
+                     *, update_hz: float = CONTROL_UPDATE_HZ) -> int:
+    """Mechanical rpm -> phase increment; omitted rate means the nominal 16 kHz."""
     electrical_hz = _finite("speed", rpm) * _positive_pole_pairs(pole_pairs) / 60.0
-    return round(electrical_hz / abi.SPEED_BASE_ELECTRICAL_HZ * abi.SPEED_Q28_ONE)
+    return round(electrical_hz / _update_rate(update_hz) * 2**32)
 
 
-def speed_q28_to_rpm(value: int, pole_pairs: int) -> float:
-    return (value / abi.SPEED_Q28_ONE * abi.SPEED_BASE_ELECTRICAL_HZ * 60.0
+def speed_q28_to_rpm(value: int, pole_pairs: int,
+                     *, update_hz: float = CONTROL_UPDATE_HZ) -> float:
+    return (value / 2**32 * _update_rate(update_hz) * 60.0
             / _positive_pole_pairs(pole_pairs))
 
 
-def ramp_rpm_s_to_q28(rpm_per_s: float, pole_pairs: int) -> int:
-    """Acceleration in rpm/s -> speed change per 16 kHz control update."""
+def ramp_rpm_s_to_q28(rpm_per_s: float, pole_pairs: int,
+                      *, update_hz: float = CONTROL_UPDATE_HZ) -> int:
+    """Acceleration in rpm/s -> phase-increment change per control update."""
     if _finite("acceleration", rpm_per_s) < 0:
         raise ValueError("acceleration must be zero or positive")
+    rate = _update_rate(update_hz)
     return min(abi.SPEED_Q28_ONE, round(
-        speed_rpm_to_q28(rpm_per_s, pole_pairs) / CONTROL_UPDATE_HZ))
+        rpm_per_s * _positive_pole_pairs(pole_pairs) / 60.0 / rate**2 * 2**32))
 
 
 def voltage_pu_to_q15(value: float) -> int:

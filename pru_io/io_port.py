@@ -34,7 +34,7 @@ class IOPort:
         self.device_bus = DeviceBus()
         self._device_endpoint: str | None = None
         self._device_pin_mask = 0
-        self.gpo_drive_mask: int = _MASK_20
+        self.gpo_drive_mask: int = 0
         self._device_cycle = 0        # last cycle seen, for write-triggered settles
 
     # ------------------------------------------------------------------
@@ -93,6 +93,8 @@ class IOPort:
 
     def set_gpo_drive_mask(self, mask: int) -> None:
         """Set which pins this core is currently driving as GPIO outputs."""
+        if not isinstance(mask, int) or isinstance(mask, bool):
+            raise ValueError("GPIO drive mask must be a 20-bit integer")
         self.gpo_drive_mask = mask & _MASK_20
         if self._device_endpoint is None:
             self.device_bus.set_pru_drive_mask(self.gpo_drive_mask)
@@ -103,7 +105,7 @@ class IOPort:
                 self._device_endpoint, self.gpo_drive_mask,
                 cycle=self._device_cycle)
 
-    def tick_devices(self, cycle: int, time_only: bool = False) -> None:
+    def tick_devices(self, cycle: int) -> None:
         """One bus settle.
 
         Called from `write_r30` when a pin changes. Time-driven models advance
@@ -120,9 +122,6 @@ class IOPort:
         """
         if not self.device_bus.active:
             return
-        if time_only:
-            self.advance_devices(1)
-            return
         bus = self.device_bus.settle(cycle, self.gpo, port=self._device_endpoint)
         if self._device_endpoint is None:
             self._update_device_gpi(bus)
@@ -137,6 +136,8 @@ class IOPort:
         """
         if elapsed_cycles <= 0:
             return
+        if after_cycle is None and self.sd_filter is not None:
+            after_cycle = lambda _cycle, gpi: self.sd_filter.tick(gpi)
         has_time_driven = self.device_bus.has_time_driven(self._device_endpoint)
         if not has_time_driven and after_cycle is None:
             self._device_cycle += elapsed_cycles

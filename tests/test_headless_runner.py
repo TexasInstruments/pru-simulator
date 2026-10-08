@@ -174,3 +174,22 @@ def test_help_does_not_leak_non_json_text_to_stdout():
     assert result.stderr == ""
     assert payload["reason"] == "input_error"
     assert "usage:" in payload["errors"][0]
+
+
+def test_rtu1_headless_selection_and_unsupported_target(tmp_path):
+    source = tmp_path / "rtu.asm"
+    source.write_text("halt\n")
+    result, payload = invoke("--assembly", source, "--core", "rtu1")
+    assert result.returncode == 0
+    assert payload["success"] is True
+    config = tmp_path / "unsupported.cfg"
+    config.write_text("[device]\ntarget = AM263x\n")
+    result, payload = invoke("--assembly", source, "--core", "rtu1", "--config", config)
+    assert result.returncode == 2
+    assert payload["reason"] == "input_error"
+    assert "unavailable" in payload["errors"][0]
+    config.write_text("[device]\ntarget = am234x\n")
+    result, payload = invoke("--assembly", source, "--core", "rtu1", "--config", config)
+    assert result.returncode == 2
+    assert payload["reason"] == "input_error"
+    assert "am234x" in payload["errors"][0]

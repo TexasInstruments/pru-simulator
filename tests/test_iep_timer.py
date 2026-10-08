@@ -45,14 +45,45 @@ def test_counter_does_not_run_until_cnt_enable(iep):
     assert r32(iep, COUNT_REG0) == 10
 
 
-def test_hardware_reset_delegates_to_register_reset(iep):
+@pytest.mark.parametrize("reset_method", ["reset", "hardware_reset"])
+def test_reset_register_literals_from_am243x_trm(iep, reset_method):
+    # AM64x/AM243x TRM SPRUIM2J (April 2026), https://www.ti.com/lit/pdf/spruim2:
+    # p6908 Table 14-10907 GLOBAL_CFG: CMP_INC=5, DEFAULT_INC=5, CNT_ENABLE=0.
+    # p6914 Table 14-10925 CAP_CFG: CAP_ASYNC_EN=0x7f; other defined fields=0.
+    # Reserved fields have reset X; assert only documented fields for these two.
+    # Zero: GLOBAL_STATUS Table 14-10910 p6909; COUNT_LO/HI Tables 14-10919/10922
+    # pp6912–6913; CAP_STATUS Table 14-10928 p6915; CMP_CFG/STATUS Tables
+    # 14-10991/10994 pp6936–6937. Capture pairs pp6916–6935 (CAPR0 Tables
+    # 14-10931/10934) and compare pairs pp6938–6969 (CMP0 Tables 14-10997/11000).
     w32(iep, GLOBAL_CFG, 0x11)
     w32(iep, COUNT_REG0, 17)
+    w32(iep, COUNT_REG1, 9)
+    w32(iep, CMP_CFG, 0x1fffe)
+    for slot in range(16):
+        w32(iep, CMP0_REG0 + 8 * slot, slot + 1)
+        w32(iep, CMP0_REG0 + 8 * slot + 4, 9)
+    iep.cmp_status = 0xffff
+    iep.global_status = 1
+    w32(iep, 0x18, 0x3ff)
+    for slot in range(10):
+        assert iep.capture_event(slot)
 
-    iep.hardware_reset()
+    getattr(iep, reset_method)()
 
-    assert r32(iep, GLOBAL_CFG) == 0
+    assert r32(iep, GLOBAL_CFG) & 0xffff1 == 0x550
+    assert r32(iep, 0x18) & 0xffffff == 0x1fc00
+    assert r32(iep, 0x04) & 1 == 0
     assert r32(iep, COUNT_REG0) == 0
+    assert r32(iep, COUNT_REG1) == 0
+    assert r32(iep, CMP_CFG) & 0x3ffff == 0
+    assert r32(iep, CMP_STATUS) & 0xffff == 0
+    assert r32(iep, 0x1c) & 0x3ff == 0
+    for slot in range(16):
+        assert r32(iep, CMP0_REG0 + 8 * slot) == 0
+        assert r32(iep, CMP0_REG0 + 8 * slot + 4) == 0
+    for slot in range(10):
+        assert r32(iep, 0x20 + 8 * slot) == 0
+        assert r32(iep, 0x24 + 8 * slot) == 0
 
 
 def test_default_inc_is_the_step_size(iep):
@@ -184,7 +215,7 @@ class TestIepThroughFirmware:
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
         from simulator import Simulator
         sim = Simulator(config_path="nonexistent.cfg")
-        sim.constant_table.set(26, 0x0002E000)
+        sim.cores["pru0"].constant_table.set(26, 0x0002E000)
         return sim
 
     def test_poll_on_count_terminates(self):
