@@ -12,7 +12,7 @@ import re
 from core.pru_core import PRUCore
 from mem.memory_bus import MemoryBus
 from mem.regions import MemoryRegion
-from perif.iep import IepTimer, IEP_SIZE
+from perif.iep import IepTimer, IEP_SIZE, IEP_DEFAULT_CLOCK_MHZ
 from mem.constant_table import ConstantTable
 from xfr.xfr_bus import XFRBus
 from pru_io.device_model import DeviceBus, DeviceModel
@@ -129,7 +129,7 @@ class Simulator:
         dev = self._get_device_config(config_path)
         pru_clock = dev.get("pru_clock_mhz", "250")
         pru1_clock = dev.get("pru1_clock_mhz", pru_clock)
-        iep_clock = dev.get("iep_clock_mhz", pru_clock)
+        iep_clock = dev.get("iep_clock_mhz", IEP_DEFAULT_CLOCK_MHZ)
         io_pru0 = IOPort()
         io_rtu0 = IOPort()
         io_pru1 = IOPort()
@@ -143,7 +143,13 @@ class Simulator:
                             dram_swap=True),
         }
 
-        if dev.get("target", "AM243x").lower() not in ("am243x", "am64x"):
+        # configparser keeps inline comments, which the design spec uses on target
+        target = dev.get("target", "AM243x").split("#", 1)[0].strip()
+        if target.lower() not in ("am243x", "am64x", "am263x"):
+            raise ValueError(
+                f"Unknown device target {target!r}; "
+                "expected one of AM243x, AM64x, AM263x")
+        if target.lower() == "am263x":
             del self.cores["rtu1"]
 
         # One resolver owns generic external devices and cross-core GPIO nets.
@@ -210,6 +216,8 @@ class Simulator:
             "pru1": pru1_clock,
             "rtu1": pru1_clock,
         }
+        core_clock_rates = {name: rate for name, rate in core_clock_rates.items()
+                            if name in self.cores}
         self.iep = IepTimer(
             clock_mhz=iep_clock,
             ocp_clock_mhz=pru_clock,
@@ -221,7 +229,6 @@ class Simulator:
             core.iep = self.iep
 
             def observe_cycles(elapsed_cycles: int, *, _name=name, _core=core) -> None:
-                _core.io_port.advance_devices(elapsed_cycles)
                 self.iep.observe_core_cycles(_name, _core.counters.cycles)
 
             core.cycle_observer = observe_cycles

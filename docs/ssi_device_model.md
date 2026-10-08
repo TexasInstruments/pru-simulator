@@ -160,8 +160,15 @@ high. Polling uses ordinary PRU instructions and memory access cycles.
 
 The runtime reuses an enabled free-running IEP with `DEFAULT_INC=1`. An enabled
 timer with another increment, or enabled CMP0 reset, is rejected. A stopped
-timer is enabled with increment one without resetting its count. Changing the
-active IEP clock requires reloading the emulator timeout configuration.
+timer is enabled with increment one without resetting its count, as the last
+step of `load()`, so a `load()` that raises leaves the timer as it found it.
+`close()` puts that enable and increment back as they were, never touching the
+count, but only while both are still as `load()` left them: a timer that was
+already running, or one someone else has since started, stopped or retuned, is
+left alone. Two emulators on one `Simulator` would share the one emulator
+block, so a second `load()` raises until the first is closed and the IEP never
+has two owners. Changing the active IEP clock requires reloading the emulator
+timeout configuration.
 
 ## Run the reader and SSI model
 

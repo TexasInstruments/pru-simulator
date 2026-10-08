@@ -88,6 +88,6 @@ def test_generic_gpio_drive_mask_query_set_and_validation():
     assert mcp.pru_gpio_drive_mask() == {"core": "pru0", "drive_mask": 0}
     assert mcp.pru_gpio_drive_mask("pru1", 7) == {"core": "pru1", "drive_mask": 7}
     assert mcp.pru_gpio_drive_mask("pru1") == {"core": "pru1", "drive_mask": 7}
-    for invalid in (-1, 1 << 20):
+    for invalid in (-1, 1 << 20, True, False):
         with pytest.raises(ValueError):
             mcp.pru_gpio_drive_mask(mask=invalid)

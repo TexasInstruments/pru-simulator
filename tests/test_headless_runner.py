@@ -188,3 +188,8 @@ def test_rtu1_headless_selection_and_unsupported_target(tmp_path):
     assert result.returncode == 2
     assert payload["reason"] == "input_error"
     assert "unavailable" in payload["errors"][0]
+    config.write_text("[device]\ntarget = am234x\n")
+    result, payload = invoke("--assembly", source, "--core", "rtu1", "--config", config)
+    assert result.returncode == 2
+    assert payload["reason"] == "input_error"
+    assert "am234x" in payload["errors"][0]

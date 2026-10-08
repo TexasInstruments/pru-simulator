@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from math import ceil
 from pathlib import Path
+from weakref import WeakSet
 
 from pru_io import ssi_config_abi as abi
 from pru_io.ssi_encoder_model import SSIEncoderModel
@@ -13,6 +14,7 @@ _FIRMWARE = _SOURCE / "ssi_generic_reader" / "ssi_generic_reader.asm"
 _EMULATOR_FIRMWARE = _SOURCE / "ssi_generic_emulator.asm"
 _CLOCK_PIN = 0
 _DATA_PIN = 16
+_EMULATOR_SIMS = WeakSet()  # Simulators with a loaded emulator; it owns the one block
 
 
 class SSIRuntime:
@@ -151,6 +153,8 @@ class SSIEmulatorRuntime:
                        else SSIEncoderModel.from_preset(preset, **options))
         self.monoflop_ticks = ceil(
             self.layout.monoflop_us * self.sim.iep.active_clock_hz / 1_000_000)
+        self._timer_was_cfg = None  # IEP GLOBAL_CFG from before load() enabled it
+        self._loaded = False
 
     def write_config(self) -> None:
         """Pack the current frame into the emulator block in shared memory."""
@@ -160,8 +164,16 @@ class SSIEmulatorRuntime:
             self.monoflop_ticks))
 
     def load(self) -> None:
-        """Write the emulator block and load its assembly."""
+        """Write the emulator block and load its assembly.
+
+        Two emulators on one ``Simulator`` would overwrite each other's block,
+        so a second ``load`` raises until the first has been closed. The shared
+        IEP is enabled last; a ``load`` that raises leaves it as it found it.
+        """
         timer = self.sim.iep
+        if self.sim in _EMULATOR_SIMS and not self._loaded:
+            raise ValueError("another SSI emulator is loaded on this Simulator; "
+                             "they share one emulator block, so close() it first")
         if timer.count_enabled and timer.default_inc != 1:
             raise ValueError("SSI emulator requires IEP DEFAULT_INC=1")
         if timer.cmp0_rst_cnt_en and timer.cmp_enabled(0):
@@ -170,21 +182,44 @@ class SSIEmulatorRuntime:
             self.layout.monoflop_us * timer.active_clock_hz / 1_000_000)
         if not 1 <= self.monoflop_ticks <= 0xFFFFFFFF:
             raise ValueError("SSI emulator IEP timeout must fit a positive u32")
-        if not timer.count_enabled:
-            timer.write32(0x00, (timer.global_cfg & ~0xF0) | 0x11)
         self.write_config()
         self.sim.lease_gpio_outputs(
             self.core, (1 << _CLOCK_PIN) | (1 << _DATA_PIN), self,
             drive_mask=1 << _DATA_PIN)
-        errors = self.sim.load(
-            self.core, _EMULATOR_FIRMWARE.read_text(encoding="utf-8"),
-            include_paths=[str(_EMULATOR_FIRMWARE.parent)])
-        if errors:
-            raise ValueError("SSI emulator assembly failed: " + "; ".join(errors))
+        try:
+            errors = self.sim.load(
+                self.core, _EMULATOR_FIRMWARE.read_text(encoding="utf-8"),
+                include_paths=[str(_EMULATOR_FIRMWARE.parent)])
+            if errors:
+                raise ValueError("SSI emulator assembly failed: " + "; ".join(errors))
+            if not timer.count_enabled:  # last, so no failure above leaves it running
+                self._timer_was_cfg = timer.global_cfg
+                timer.write32(0x00, (timer.global_cfg & ~0xF0) | 0x11)
+        except BaseException:
+            self.sim.device_bus.release_core_outputs(self)
+            raise
+        _EMULATOR_SIMS.add(self.sim)
+        self._loaded = True
 
     def close(self) -> None:
-        """Restore the emulator's leased clock/data GPIO directions."""
+        """Restore the emulator's leased clock/data GPIO directions.
+
+        The IEP is shared, so only a timer that ``load`` enabled is put back
+        (CNT_ENABLE and DEFAULT_INC), and only while both are still as
+        ``load`` left them. A timer that was already running, one someone else
+        has since started, stopped or retuned, and every count, stay as they
+        are. Closing also frees the ``Simulator`` for another emulator.
+        """
         self.sim.device_bus.release_core_outputs(self)
+        if self._timer_was_cfg is not None:
+            timer = self.sim.iep
+            if (timer.global_cfg & 0xF1) == 0x11:
+                timer.write32(0x00, (timer.global_cfg & ~0xF1)
+                              | (self._timer_was_cfg & 0xF1))
+            self._timer_was_cfg = None
+        if self._loaded:
+            _EMULATOR_SIMS.discard(self.sim)
+            self._loaded = False
 
     def set_position(self, position: int) -> None:
         self.layout.set_position(position)

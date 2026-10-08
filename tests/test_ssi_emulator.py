@@ -167,6 +167,203 @@ def test_emulator_enables_stopped_timer_without_resetting_count(sim_config):
     assert cfg["monoflop_ticks"] == 201  # active external IEP is 200 MHz in this branch
 
 
+@pytest.mark.parametrize("prior", [0x550, 0x20, 0x00])
+def test_close_puts_back_a_timer_that_load_enabled_without_touching_count(sim, prior):
+    sim.iep.global_cfg = prior
+    sim.iep.count = 123
+    emulator = SSIEmulatorRuntime(sim)
+    emulator.load()
+    assert sim.iep.count_enabled and sim.iep.default_inc == 1
+    sim.step("pru0", 50)
+    count = sim.iep.count
+    assert count > 123
+    emulator.close()
+    assert sim.iep.global_cfg == prior
+    assert not sim.iep.count_enabled
+    assert sim.iep.count == count
+    sim.step("pru0", 50)
+    assert sim.iep.count == count
+
+
+@pytest.mark.parametrize("cfg", [0x11, 0x511])
+def test_close_leaves_an_already_running_timer_and_its_count_alone(sim, cfg):
+    sim.iep.global_cfg = cfg
+    sim.iep.count = 100
+    emulator = SSIEmulatorRuntime(sim)
+    emulator.load()
+    assert sim.iep.global_cfg == cfg
+    assert sim.iep.count == 100
+    sim.step("pru0", 50)
+    count = sim.iep.count
+    assert count > 100
+    emulator.close()
+    assert sim.iep.global_cfg == cfg
+    assert sim.iep.count == count
+
+
+def test_closing_twice_restores_the_timer_only_once(sim):
+    prior = sim.iep.global_cfg
+    emulator = SSIEmulatorRuntime(sim)
+    emulator.load()
+    emulator.close()
+    assert sim.iep.global_cfg == prior
+    sim.iep.global_cfg = 0x31  # another user starts the timer after close
+    emulator.close()
+    assert sim.iep.global_cfg == 0x31
+
+
+def test_second_close_does_not_stop_a_timer_started_after_the_first(sim):
+    emulator = SSIEmulatorRuntime(sim)
+    emulator.load()
+    emulator.close()
+    sim.iep.global_cfg = 0x511  # another user starts it exactly as load had left it
+    emulator.close()
+    assert sim.iep.global_cfg == 0x511
+
+
+def test_close_without_load_leaves_the_timer_alone(sim):
+    prior = sim.iep.global_cfg
+    SSIEmulatorRuntime(sim).close()
+    assert sim.iep.global_cfg == prior
+
+
+def test_close_after_rejected_load_leaves_the_timer_alone(sim):
+    sim.iep.global_cfg = 0x51
+    emulator = SSIEmulatorRuntime(sim)
+    with pytest.raises(ValueError, match="DEFAULT_INC"):
+        emulator.load()
+    emulator.close()
+    assert sim.iep.global_cfg == 0x51
+
+
+def test_close_after_failed_assembly_leaves_the_timer_as_found(sim, monkeypatch):
+    prior = sim.iep.global_cfg
+    monkeypatch.setattr(sim, "load", lambda *args, **kwargs: ["boom"])
+    emulator = SSIEmulatorRuntime(sim)
+    with pytest.raises(ValueError, match="assembly failed"):
+        emulator.load()
+    assert not sim.iep.count_enabled  # load enables the timer only once nothing can fail
+    emulator.close()
+    assert sim.iep.global_cfg == prior
+
+
+def test_close_puts_back_only_enable_and_increment_not_the_whole_register(sim):
+    sim.iep.global_cfg = 0x10550  # bit 16 set before load
+    emulator = SSIEmulatorRuntime(sim)
+    emulator.load()
+    sim.iep.global_cfg = (sim.iep.global_cfg & ~0xF00) | 0x300  # another caller: CMP_INC=3
+    emulator.close()
+    assert sim.iep.global_cfg == 0x10350  # CMP_INC and bit 16 survive
+    assert not sim.iep.count_enabled
+
+
+@pytest.mark.parametrize("changed", [0x531, 0x510, 0x551],
+                         ids=["increment-3", "stopped", "increment-5"])
+def test_close_leaves_enable_and_increment_a_caller_changed_while_open(sim, changed):
+    emulator = SSIEmulatorRuntime(sim)
+    emulator.load()
+    sim.iep.global_cfg = changed
+    emulator.close()
+    assert sim.iep.global_cfg == changed
+
+
+def test_close_leaves_a_timer_another_caller_started_after_a_hard_reset(sim):
+    emulator = SSIEmulatorRuntime(sim)
+    emulator.load()
+    sim.hard_reset()
+    sim.iep.global_cfg |= 1  # someone else starts the freshly reset timer
+    emulator.close()
+    assert sim.iep.global_cfg == 0x551
+    assert sim.iep.count_enabled
+
+
+def test_second_emulator_on_one_simulator_is_refused_and_the_first_is_undisturbed(sim):
+    first = SSIEmulatorRuntime(sim, core="pru1", resolution=8, position=0xA5)
+    second = SSIEmulatorRuntime(sim, core="pru0", resolution=12, position=0xABC)
+    first.load()
+    loaded_cfg = sim.iep.global_cfg
+    block = sim.memory_read(abi.EMULATOR_ADDRESS, abi.EMULATOR_SIZE)
+    pru0_drive_mask = sim.io("pru0")["gpo_drive_mask"]
+    with pytest.raises(ValueError, match="another SSI emulator"):
+        second.load()
+    assert sim.memory_read(abi.EMULATOR_ADDRESS, abi.EMULATOR_SIZE) == block
+    assert sim.io("pru0")["gpo_drive_mask"] == pru0_drive_mask
+    second.close()  # never loaded, so it puts nothing back and frees nothing
+    assert sim.iep.global_cfg == loaded_cfg
+    with pytest.raises(ValueError, match="another SSI emulator"):
+        second.load()
+    first.close()
+    assert sim.iep.global_cfg == 0x550
+    second.load()  # free again once the first has closed
+    assert sim.iep.count_enabled
+    assert sim.io("pru0")["gpo_drive_mask"] == 1 << 16
+
+
+def test_emulators_on_separate_simulators_do_not_conflict(sim):
+    SSIEmulatorRuntime(sim).load()
+    SSIEmulatorRuntime(Simulator(str(ROOT / "memory.cfg"))).load()
+
+
+@pytest.mark.parametrize("failure, error", [
+    ("unknown core", KeyError), ("lease conflict", ValueError), ("assembly", ValueError)])
+def test_load_that_raises_leaves_the_timer_as_it_found_it(sim, monkeypatch, failure, error):
+    if failure == "lease conflict":
+        sim.lease_gpio_outputs("pru0", 1 << 16, object())  # held as an input
+    if failure == "assembly":
+        monkeypatch.setattr(sim, "load", lambda *args, **kwargs: ["boom"])
+    prior = sim.iep.global_cfg
+    emulator = SSIEmulatorRuntime(sim, core="nope" if failure == "unknown core" else "pru0")
+    with pytest.raises(error):
+        emulator.load()
+    assert sim.iep.global_cfg == prior
+    emulator.close()
+    assert sim.iep.global_cfg == prior
+
+
+def test_load_rejecting_an_oversized_timeout_leaves_a_stopped_timer_alone(sim):
+    prior = sim.iep.global_cfg
+    emulator = SSIEmulatorRuntime(sim, monoflop_us="22000000")
+    with pytest.raises(ValueError, match="u32"):
+        emulator.load()
+    assert sim.iep.global_cfg == prior
+
+
+def test_failed_load_does_not_claim_the_simulator(sim, monkeypatch):
+    monkeypatch.setattr(sim, "load", lambda *args, **kwargs: ["boom"])
+    with pytest.raises(ValueError, match="assembly failed"):
+        SSIEmulatorRuntime(sim).load()
+    monkeypatch.undo()
+    SSIEmulatorRuntime(sim, core="pru1").load()
+
+
+def _assembly_returns_errors(*args, **kwargs):
+    return ["boom"]
+
+
+def _assembly_raises(*args, **kwargs):
+    raise RuntimeError("boom")
+
+
+@pytest.mark.parametrize("fake_load, error, match", [
+    (_assembly_returns_errors, ValueError, "assembly failed"),
+    (_assembly_raises, RuntimeError, "boom"),
+], ids=["errors", "exception"])
+def test_failed_assembly_releases_gpio_lease_before_raising(
+        sim, monkeypatch, fake_load, error, match):
+    sim.set_gpio_drive_mask("pru0", 1 << 5)
+    monkeypatch.setattr(sim, "load", fake_load)
+    with pytest.raises(error, match=match):
+        SSIEmulatorRuntime(sim).load()
+    assert sim.io("pru0")["gpo_drive_mask"] == 1 << 5
+    assert sim.device_bus._lease_owners == {}
+    monkeypatch.undo()
+    emulator = SSIEmulatorRuntime(sim)
+    emulator.load()
+    assert sim.io("pru0")["gpo_drive_mask"] == (1 << 5) | (1 << 16)
+    emulator.close()
+    assert sim.io("pru0")["gpo_drive_mask"] == 1 << 5
+
+
 @pytest.mark.parametrize("ocp, expected", [(False, 301), (True, 251)])
 def test_timeout_rounds_up_selected_iep_source_and_reload_updates_it(sim_config, ocp, expected):
     sim = Simulator(sim_config(pru_clock_mhz=250, iep_clock_mhz=300))

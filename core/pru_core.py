@@ -138,10 +138,16 @@ class PRUCore:
         """Parse assembly source and load instructions.
 
         Returns a list of error strings (empty on success).
+
+        Loading installs instructions only: halted, pc, loop state and
+        registers are left as they were, so reset() the core before running a
+        newly loaded program. A successful load drops the recorded fault; a
+        failed parse leaves the previous program and its fault in place.
         """
         errors: list[str] = []
         try:
             self.instructions = self._parser.parse_text(source, include_paths)
+            self.fault = None  # a fault belongs to the program that raised it
         except Exception as exc:  # noqa: BLE001
             errors.append(str(exc))
         return errors
@@ -151,12 +157,18 @@ class PRUCore:
         """Load pre-compiled binary instructions (from .out ELF).
 
         Returns a list of error strings (empty on success).
+
+        Loading installs instructions only: halted, pc, loop state and
+        registers are left as they were, so reset() the core before running a
+        newly loaded program. A successful load drops the recorded fault; a
+        failed disassembly leaves the previous program and its fault in place.
         """
         from .disassembler import disassemble
         errors: list[str] = []
         try:
             syms = symbols or {}
             self.instructions = disassemble(text_words, syms)
+            self.fault = None
             # Store symbols as labels (name → addr) for the frontend
             self._parser.labels = {name: addr for addr, name in syms.items()}
             if data_bytes:
@@ -614,8 +626,18 @@ class PRUCore:
 
         # ---- Count instruction cycle ------------------------------------
         self.counters.tick()
+        # Time-driven devices advance by the cycles this step consumed, stalls
+        # included, so a core built without a Simulator still ticks them. With
+        # no device attached only the cycle count moves; it stays exact so a
+        # device attached later starts at the right cycle.
+        elapsed_cycles = self.counters.cycles - cycles_before
+        io_port = self.io_port
+        if io_port.device_bus.devices:
+            io_port.advance_devices(elapsed_cycles)
+        else:
+            io_port._device_cycle += elapsed_cycles
         if self.cycle_observer is not None:
-            self.cycle_observer(self.counters.cycles - cycles_before)
+            self.cycle_observer(elapsed_cycles)
 
     def run(self, max_steps: int = 100_000) -> int:
         """Run until halted or max_steps reached. Returns steps executed."""

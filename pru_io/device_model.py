@@ -190,7 +190,8 @@ class DeviceBus:
         """Lease selected GPIO directions, restoring them after the last owner."""
         if core not in self._ports:
             raise KeyError(f"Unknown GPIO endpoint {core!r}")
-        if not isinstance(mask, int) or not 0 <= mask <= _MASK_20:
+        if (isinstance(mask, bool) or not isinstance(mask, int)
+                or not 0 <= mask <= _MASK_20):
             raise ValueError("GPIO lease mask must be a 20-bit integer")
         if (not isinstance(drive_mask, int) or drive_mask < 0
                 or drive_mask & ~mask):
