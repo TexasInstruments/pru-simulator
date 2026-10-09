@@ -3421,6 +3421,7 @@ function updateMCUI(state) {
     cntPc.textContent     = state.pc;
     updatePins(state.io);
     updateSDPanel(state.io);
+    updatePerifPanel(state.io);
     updateI2CPanel(state.io);
     // Update SPAD columns in PRU0 MC reg panel
     if (mcSpadVisible.size > 0) updateMCSpad(state.spad);
