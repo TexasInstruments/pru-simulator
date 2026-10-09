@@ -205,10 +205,34 @@ function saveLayout(mode, tree) {
 function loadLayout(mode) {
   try {
     const raw = localStorage.getItem(`pru-layout-${mode}`);
-    return raw ? JSON.parse(raw) : null;
+    if (!raw) return null;
+    const tree = JSON.parse(raw);
+    if (validLayout(mode, tree)) return tree;
+    const fallback = defaultTree(mode);
+    saveLayout(mode, fallback);
+    return fallback;
   } catch (e) {
     return null;
   }
+}
+
+function validLayout(mode, tree) {
+  const allowed = new Set(getLeafIds(defaultTree(mode)));
+  const seen = new Set();
+  function visit(node) {
+    if (!node || typeof node !== 'object') return false;
+    if (node.type === 'leaf') {
+      if (!allowed.has(node.panelId) || seen.has(node.panelId)) return false;
+      seen.add(node.panelId);
+      return true;
+    }
+    if (node.type !== 'split' || !['h', 'v'].includes(node.dir) ||
+        !Array.isArray(node.children) || node.children.length === 0 ||
+        !Array.isArray(node.sizes) || node.sizes.length !== node.children.length ||
+        !node.sizes.every(size => Number.isFinite(size) && size > 0)) return false;
+    return node.children.every(visit);
+  }
+  return visit(tree) && seen.size === allowed.size;
 }
 
 function loadHiddenPanels(mode) {

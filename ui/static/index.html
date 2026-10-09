@@ -160,7 +160,7 @@
       box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03);
       padding: 5px 10px;
       display: grid;
-      grid-template-columns: max-content minmax(0, 1fr) max-content minmax(300px, 0.9fr);
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) max-content minmax(300px, 0.9fr);
       grid-template-areas:
         "context execution actions status"
         "workspace workspace workspace telemetry";
@@ -198,7 +198,8 @@
       text-transform: uppercase;
     }
     .toolbar-context { grid-area: context; }
-    .toolbar-execution { grid-area: execution; }
+    .toolbar-execution { grid-area: execution; flex-wrap: wrap; row-gap: 4px; }
+    .toolbar-execution > * { flex-shrink: 0; }
     .toolbar-actions { grid-area: actions; }
         .toolbar-context::before { content: "Target"; }
     .toolbar-execution::before { content: "Execute"; }
@@ -230,7 +231,7 @@
     #controls .btn-run:hover:not(:disabled) { background: var(--btn-active); }
     #controls .btn-reset { background: var(--highlight); border-color: var(--brand-red-bright); color: var(--halted); }
     #controls .btn-reset:hover:not(:disabled) { background: var(--btn-hover); }
-    #mc-extra-cores { display: inline-flex; gap: 3px; }
+    #mc-extra-cores { display: inline-flex; flex-wrap: wrap; max-width: 100%; gap: 3px; }
     #mc-extra-cores button { padding: 3px 6px; font-size: 11px; }
     #mc-extra-cores button[aria-pressed="true"] { background: var(--highlight); border-color: var(--accent); }
     #btn-multicore.mc-active { background: var(--highlight); border-color: var(--accent); color: var(--text); }

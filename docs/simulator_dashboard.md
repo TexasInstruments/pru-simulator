@@ -28,6 +28,11 @@ Visibility and layout are remembered separately for single-core and multicore
 modes. At least one panel stays visible. Reset Layout restores the current
 mode's panels and default sizes. The panel ids and the layout version did not
 change, so layouts saved before the reorganisation load as they were.
+Saved layouts are checked before rendering. Empty trees, unknown or duplicated
+panels, missing panels, and invalid split directions or sizes restore that
+mode's default layout. Valid panel arrangements and hidden-panel preferences
+are kept. Execution controls wrap within their toolbar group in multicore mode,
+so Step, Run/Stop and SIM remain reachable beside the core selectors.
 
 Choose PRU0, PRU1, RTU0 or RTU1 in single-core mode. Multicore mode displays PRU0
 and a selected partner. The I/O & Devices view follows the selected core, with
