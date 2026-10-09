@@ -26,7 +26,7 @@ from perif.gpcfg import MUX_SD
 from pru_io import foc_control, foc_control_abi
 from pru_io.foc_motor_model import FocMotorModel
 from pru_io.device_profiles import discover_device_profiles
-from pru_io.scenarios import SCENARIOS, apply_scenario
+from pru_io.scenarios import SCENARIOS, apply_scenario, ssi_demo_state, set_ssi_demo_position
 from pru_io.ssi_encoder_model import SSIEncoderModel
 from xfr.xfr_bus import SPAD_BANK0, SPAD_BANK1, SPAD_BANK2, IPC_SPAD
 
@@ -479,6 +479,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
             if action == "load":
                 _clear_history()
+                sim._scenario = None
                 filename = msg.get("filename")
                 include_paths = None
                 if filename and isinstance(filename, str) and '\\' not in filename and len(filename) <= 300:
@@ -500,6 +501,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await _send_state(websocket, core)
             elif action == "load_elf":
                 _clear_history()
+                sim._scenario = None
                 # ELF binary sent as base64-encoded string
                 elf_b64 = msg.get("data", "")
                 try:
@@ -869,7 +871,6 @@ async def websocket_endpoint(websocket: WebSocket):
             elif action == "scenario_load":
                 try:
                     scenario = apply_scenario(sim, msg.get("name"), _device_api_for_current_sim())
-                    _set_iep_clock(sim.iep.active_clock_mhz)
                     _clear_history()
                     await websocket.send_json({"type": "scenario_loaded", **scenario.describe()})
                 except (KeyError, TypeError, ValueError) as exc:
@@ -878,6 +879,14 @@ async def websocket_endpoint(websocket: WebSocket):
                     scenario = None
                 for scenario_core in (scenario.cores if scenario else (core,)):
                     await _send_state(websocket, scenario_core)
+            elif action == "ssi_demo_position":
+                try:
+                    set_ssi_demo_position(sim, msg.get("position"))
+                    _clear_history()
+                except (KeyError, TypeError, ValueError) as exc:
+                    await websocket.send_json({"type": "error", "tag": "ssi_demo",
+                                               "errors": [str(exc)]})
+                await _send_state(websocket, core)
             elif action in ("ssi_set_position", "ssi_set_error"):
                 try:
                     name = msg.get("name", "")
@@ -1133,6 +1142,9 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False, run_id=None
         "gpi_pins": c.io_port.get_gpi_pins(),
         "gpo_drive_mask": c.io_port.gpo_drive_mask,
     }
+    demo = ssi_demo_state(sim)
+    if demo is not None:
+        io_section["ssi_demo"] = demo
     if sim.device_bus.active:
         device_state = sim.device_state()
         io_section["device_bus"] = device_state

@@ -1393,6 +1393,10 @@
     }
     .runtime-device-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 5px; }
     .runtime-device-heading strong { color: var(--text); font-size: 12px; }
+    .ssi-demo-readouts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 10px 0; }
+    .ssi-demo-readouts dt { font-size: 11px; color: var(--text-dim); }
+    .ssi-demo-readouts dd { margin: 3px 0 0; font: 12px var(--font-mono); overflow-wrap: anywhere; }
+    #ssi-demo-result { margin: 10px 0; }
     .runtime-device-status, .runtime-device-help { margin: 4px 0 7px; color: var(--text-dim); font-size: 10px; line-height: 1.45; }
     .runtime-device-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 6px 8px; }
     .runtime-device-field { min-width: 0; display: flex; flex-direction: column; gap: 3px; color: var(--text-dim); font-size: 10px; font-weight: 700; }
@@ -2340,6 +2344,31 @@ Example:
             <strong id="ssi-runtime-title">SSI encoder</strong>
           </div>
           <p class="runtime-device-status" id="ssi-empty-state" role="status">No SSI encoder attached to this core.</p>
+          <p class="runtime-device-help">Examples replace the current programs, devices and wiring. Core and IEP clock rates are kept. Each example sends a 12-bit binary position, initially 2748 (0xABC), without an error field.</p>
+          <div class="runtime-device-actions">
+            <button class="runtime-device-button btn-17" type="button" data-scenario="SSI encoder (single core)" disabled><span class="text-container"><span class="text">Load reader + model</span></span></button>
+            <button class="runtime-device-button btn-17" type="button" data-scenario="SSI multi-core (emulator + reader)" disabled><span class="text-container"><span class="text">Load encoder + reader</span></span></button>
+          </div>
+          <div id="ssi-demo-result" hidden>
+            <p class="runtime-device-row-detail" id="ssi-demo-wiring"></p>
+            <p class="runtime-device-status" id="ssi-demo-status" role="status"></p>
+            <dl class="ssi-demo-readouts">
+              <div><dt>Requested position</dt><dd id="ssi-demo-requested">—</dd></div>
+              <div><dt>Received position</dt><dd id="ssi-received-position">—</dd></div>
+              <div><dt>Received frames</dt><dd id="ssi-received-count">0</dd></div>
+              <div><dt>Encoder error field</dt><dd id="ssi-received-error">Not present</dd></div>
+              <div><dt>Firmware status (0 = OK)</dt><dd id="ssi-firmware-status">—</dd></div>
+            </dl>
+            <div class="runtime-device-fields">
+              <label class="runtime-device-field" for="ssi-demo-position">Next position (decimal)
+                <input id="ssi-demo-position" type="number" min="0" max="4095" step="1" value="2748" required>
+              </label>
+            </div>
+            <div class="runtime-device-actions">
+              <button class="runtime-device-button btn-17" id="ssi-demo-set-position" type="button" disabled><span class="text-container"><span class="text">Set next position</span></span></button>
+              <button class="runtime-device-button btn-17" id="ssi-demo-waveforms" type="button"><span class="text-container"><span class="text">Show waveforms</span></span></button>
+            </div>
+          </div>
           <div class="runtime-device-fields" id="ssi-attach-fields">
             <label class="runtime-device-field" for="ssi-device-name">Device name
               <input id="ssi-device-name" type="text" value="ssi_encoder" maxlength="48" autocomplete="off" required>
@@ -2376,8 +2405,6 @@ Example:
           </div>
           <div class="runtime-device-actions">
             <button class="runtime-device-button primary btn-17 btn-run" id="ssi-attach-button" type="button"><span class="text-container"><span class="text">Attach encoder</span></span></button>
-            <button class="runtime-device-button btn-17" type="button" data-scenario="SSI encoder (single core)" disabled><span class="text-container"><span class="text">Example: single core</span></span></button>
-            <button class="runtime-device-button btn-17" type="button" data-scenario="SSI multi-core (emulator + reader)" disabled><span class="text-container"><span class="text">Example: multi-core</span></span></button>
           </div>
         </section>
         <section class="runtime-device" aria-labelledby="tca-runtime-title">

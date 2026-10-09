@@ -94,10 +94,9 @@ Cards use the protocol names. Each attaches through the generic
   An encoder with error bits also shows a "Set next error" field, applied like
   the position to the next frame, and its frame events list the decoded error.
   The page sends numbers, so position and error values are limited to 2^53 - 1;
-  use the MCP tools for wider values. The panel does not write the SSI reader's
-  shared-memory config block; load and configure the reader firmware yourself.
-  The FOC example produces 16 kHz PWM at the default 200 MHz IEP clock; the PRU
-  default remains 250 MHz. See [SSI](ssi_device_model.md) for the explicit
+  use the MCP tools for wider values. **Attach encoder** only attaches a model;
+  the two example actions also load the firmware, configure its shared-memory
+  ABI and set GPIO directions. See [SSI](ssi_device_model.md) for the explicit
   manual 300 MHz option and [FOC](foc_open_loop.md) for the firmware and ABI.
 - **I2C expander (TCA9538).** Name, 7-bit address (`0x23` or `35`), SCL and SDA
   pins (both open-drain; defaults 0 and 1), Attach and Detach. The card shows
@@ -110,6 +109,52 @@ Cards use the protocol names. Each attaches through the generic
   decoder works on the GPO0 trace recorded by the Signal Graph, so capture with
   the Signal Graph REC button in the Simulator view first; inject sends frames
   onto GPI0-3 with the same `uart_inject` action as before.
+
+### SSI demos in the dashboard
+
+Start the normal PR6 dashboard and open **I/O & Devices → Devices → SSI encoder**.
+Restart Python and reload the page after updating this branch. Example loads
+replace the session's programs, devices and GPIO wires; they keep core clock
+rates and the selected external IEP rate. They reset hardware registers and
+the step-back history. Loading prepares the example; **Run** starts it.
+
+1. Choose **Load reader + model**, then **Run**. PRU0 runs the ordinary SSI
+   reader against the attached encoder model, using clock GPO0 and data GPI16.
+   **Received position** should become **2748 (0xABC)** and **Received frames**
+   should increase. Enter **1234** in **Next position (decimal)** and press
+   **Set next position**. Requested position changes immediately; received
+   position changes only when the reader publishes a later frame.
+2. Choose **Load encoder + reader**, then **Run**. The dashboard selects only
+   PRU0 and PRU1 in multicore mode. PRU0 runs the reader; PRU1 runs encoder
+   firmware. The setup wires PRU0 GPO0 to PRU1 GPI0 (clock), and PRU1 GPO16 to
+   PRU0 GPI16 (data). The same received values and position setter work here.
+   No host encoder model is attached in this mode.
+3. Press **Show waveforms** to inspect the real clock and data pins in the
+   Simulator Signal Graph. SSI examples enable recording at a two-instruction
+   stride; the multicore graph includes both ends of each wire. Return to
+   **I/O & Devices → Devices** for the decoded readouts. **Stop** stops sending
+   execution chunks; the frame count should then stay still.
+
+Both examples use the RM08 12-bit binary layout, with positions **0–4095**.
+They carry no error bits, so **Encoder error field** reads **Not present**.
+Firmware errors are reported separately by the status text. A partly written
+mailbox displays **Publishing a frame**, with received values hidden until
+publication completes. To start over, load the example again. After changing
+IEP rate, reload the encoder firmware example to recalculate its timeout; a
+hardware reset disables that timer and the status asks for the same reload.
+
+For a common demonstration rate, choose **250 MHz** in the IEP selector before
+loading. This is our software convention, chosen to match the project's usual
+250 MHz core clock; it is not a universal hardware default. The examples do
+not force 200 or 250 MHz. A user may choose any finite positive IEP rate,
+including fractional rates, and a separate core rate. The outstanding parent
+default/inheritance correction is described above.
+
+The **Motor control → Load example** action similarly prepares the FOC firmware
+and motor for Run. It keeps the selected rate and the example's existing 400 rpm
+target and rapid 300000 rpm/s demonstration ramp. It calculates those references
+using the active IEP cadence. Its PWM
+period is 12500 IEP ticks: 250 MHz gives 20 kHz; 200 MHz gives 16 kHz.
 
 Below the cards **Attached devices** lists every device on the selected core,
 not only SSI encoders: name, core, model or profile, wiring and the latest

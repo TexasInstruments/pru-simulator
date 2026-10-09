@@ -382,6 +382,7 @@ function connect() {
         if (msg.run_id === runPending) runPending = null;
         if (msg.available_cores) showAvailableCores(msg.available_cores);
         if (msg.iep) showIepClock(msg.iep);
+        updateSsiDemo(msg.io?.ssi_demo || null);
         window.MotorControl?.onState(msg);
         window.updateWorkspaceEvents?.(msg, multiCoreMode ? mcShown() : [currentCore]);
         if (multiCoreMode) {
@@ -433,6 +434,11 @@ function connect() {
           error.hidden = false;
         }
         else if (msg.tag === "device") showDeviceError(msg.errors);
+        else if (msg.tag === "scenario" || msg.tag === "ssi_demo") {
+          showDeviceError(msg.errors);
+          document.querySelector('[data-workspace-view="io"]')?.click();
+          document.querySelector('[data-io-tab="devices"]')?.click();
+        }
         else if (msg.tag === "motor") window.MotorControl?.onError(msg.errors);
         else {
           showErrors(msg.errors);
@@ -3916,6 +3922,56 @@ function toggleMultiCore() {
 
 // ---- Examples (one-click scenarios) ------------------------------------------
 const scenarioButtons = document.querySelectorAll("[data-scenario]");
+let scenarioGeneration = 0;
+
+function updateSsiDemo(demo) {
+  const result = document.getElementById('ssi-demo-result');
+  if (!result) return;
+  result.hidden = !demo;
+  const button = document.getElementById('ssi-demo-set-position');
+  button.disabled = !demo;
+  if (!demo) return;
+  button.dataset.core = demo.reader_core;
+  document.getElementById('ssi-demo-wiring').textContent = demo.encoder_core
+    ? `${demo.reader_core.toUpperCase()} reader → ${demo.encoder_core.toUpperCase()} encoder firmware: clock pin 0, data pin 16.`
+    : `${demo.reader_core.toUpperCase()} reader → encoder model: clock GPO0, data GPI16.`;
+  const value = document.getElementById('ssi-demo-position');
+  syncSsiSetter(value, demo.requested_position, demo.position_max);
+  document.getElementById('ssi-demo-requested').textContent = String(demo.requested_position);
+  document.getElementById('ssi-received-position').textContent = demo.position == null
+    ? '—' : `${demo.position} (${demo.raw_frame})`;
+  document.getElementById('ssi-received-error').textContent = demo.error_bits === 0
+    ? 'Not present' : String(demo.error ?? '—');
+  document.getElementById('ssi-received-count').textContent = String(demo.frame_count ?? '—');
+  document.getElementById('ssi-firmware-status').textContent = `Reader ${demo.reader_status}` +
+    (demo.encoder_core ? ` / encoder ${demo.emulator_status}` : '');
+  const status = demo.reader_status || demo.emulator_status
+    ? `Firmware status ${demo.reader_status || demo.emulator_status}; reload the example.`
+    : demo.encoder_core && !demo.timer_enabled ? 'IEP disabled; reload the encoder example.'
+    : !demo.coherent ? 'Publishing a frame…'
+    : demo.frame_count ? 'Received frames. Position changes apply to the next frame.'
+    : 'Ready. Press Run to receive frames.';
+  const statusElement = document.getElementById('ssi-demo-status');
+  if (statusElement.textContent !== status) statusElement.textContent = status;
+}
+
+document.getElementById('ssi-demo-position')?.addEventListener('input', event => {
+  event.target.dataset.dirty = 'true';
+  event.target.setCustomValidity('');
+});
+document.getElementById('ssi-demo-set-position')?.addEventListener('click', event => {
+  const input = document.getElementById('ssi-demo-position');
+  const position = input.valueAsNumber;
+  input.setCustomValidity(Number.isInteger(position) && position >= 0 && position <= Number(input.max)
+    ? '' : `Enter a whole position from 0 to ${input.max}.`);
+  if (!input.reportValidity()) return;
+  input.dataset.pending = String(position);
+  clearDeviceError();
+  sendAction({ action: 'ssi_demo_position', core: event.currentTarget.dataset.core, position });
+});
+document.getElementById('ssi-demo-waveforms')?.addEventListener('click', () => {
+  document.querySelector('[data-workspace-view="simulator"]')?.click();
+});
 
 function populateScenarios(scenarios) {
   for (const button of scenarioButtons) {
@@ -3928,6 +3984,7 @@ function populateScenarios(scenarios) {
 for (const button of scenarioButtons) {
   button.addEventListener("click", () => {
     stopRun(); stopSim();
+    clearDeviceError();
     sendAction({ action: "scenario_load", name: button.dataset.scenario });
   });
 }
@@ -3935,6 +3992,13 @@ for (const button of scenarioButtons) {
 // The server has already reset and set up the simulator; bring every view in line.
 async function applyScenario(scenario) {
   stopRun(); stopSim();
+  const generation = ++scenarioGeneration;
+  mcExtras = [];
+  if (currentCore !== scenario.lead) {
+    coreSelect.value = scenario.lead;
+    coreSelect.dispatchEvent(new Event("change"));
+  }
+  devicePanelCore = scenario.lead;
   const partner = scenario.cores.find(core => core !== scenario.lead);
   if (scenario.multicore) {
     if (mcPartner !== partner) {
@@ -3942,13 +4006,11 @@ async function applyScenario(scenario) {
       mcPartnerSelect.dispatchEvent(new Event("change"));
     }
     if (!multiCoreMode) toggleMultiCore();
+    else applyMCCores();
   } else {
     if (multiCoreMode) toggleMultiCore();
-    if (currentCore !== scenario.lead) {
-      coreSelect.value = scenario.lead;
-      coreSelect.dispatchEvent(new Event("change"));
-    }
   }
+  syncDeviceCoreSelect();
   for (const core of scenario.cores) sendAction({ action: "get_state", core });
   const ui = scenario.ui || {};
   captureStride = ui.capture_stride || null;
@@ -3968,12 +4030,17 @@ async function applyScenario(scenario) {
   }
   window.MotorControl?.onConnect();
   document.querySelector(`[data-workspace-view="${ui.view || "simulator"}"]`)?.click();
+  if (ui.view === 'io') document.querySelector('[data-io-tab="devices"]')?.click();
   // Editor tabs: the lead's firmware last so it is the one on screen.
   for (const core of [...scenario.cores].reverse()) {
     const path = scenario.firmware[core];
     try {
       const res = await fetch(`/source/${path}`);
-      if (res.ok) openFileAsTab(path, await res.text());
+      if (res.ok) {
+        const source = await res.text();
+        if (generation !== scenarioGeneration) return;
+        openFileAsTab(path, source);
+      }
     } catch (_) { /* the disassembly panels still show the loaded program */ }
   }
 }

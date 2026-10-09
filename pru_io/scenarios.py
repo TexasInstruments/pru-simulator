@@ -23,13 +23,12 @@ _EMULATOR_FIRMWARE = "ssi_generic_emulator.asm"
 _PRESET = "RM08_12BIT_4MHZ"
 _POSITION = 0xABC
 _CLOCK_DELAY_LOOPS = 20    # 4 MHz encoder limit holds from 200 to 333 MHz cores
-_IEP_CLOCK_MHZ = 200       # the FOC PWM period is counted in IEP ticks
 _PIN_MASK = (1 << 20) - 1
 _CLOCK_PIN = 0
 _DATA_PIN = 16
 # The SSI signals toggle every ~45 instructions, so the graph must sample far
 # more often than its default 1 in 100; 8192 samples span a frame plus its idle.
-_SSI_UI = {"view": "simulator", "capture_stride": 2, "graph_window": 8192,
+_SSI_UI = {"view": "io", "capture_stride": 2, "graph_window": 8192,
            "memory_addr": ssi_abi.MAILBOX_ADDRESS, "memory_length": ssi_abi.MAILBOX_SIZE}
 
 
@@ -51,24 +50,33 @@ class Scenario:
                 "ui": dict(self.ui)}
 
 
-def _ssi_single_core(sim, device_api) -> None:
-    SSIRuntime(sim, core="pru0", position=_POSITION,
-               preset=_PRESET).load(clock_delay_loops=_CLOCK_DELAY_LOOPS)
+def _ssi_single_core(sim, device_api) -> SSIRuntime:
+    reader = SSIRuntime(sim, core="pru0", position=_POSITION, preset=_PRESET)
+    try:
+        reader.load(clock_delay_loops=_CLOCK_DELAY_LOOPS)
+    except Exception:
+        reader.close()
+        raise
+    return reader
 
 
-def _ssi_multicore(sim, device_api) -> None:
+def _ssi_multicore(sim, device_api) -> SSIEmulatorRuntime:
     emulator = SSIEmulatorRuntime(sim, core="pru1", position=_POSITION,
                                   preset=_PRESET,
                                   core_clock_hz=sim.iep.core_clock_hz("pru0"))
-    emulator.load()
-    # Idle past the monoflop time, as SSIRuntime.load does for the single core.
-    idle_delay_loops = ceil(emulator.layout.monoflop_cycles / 2) + 8
-    load_reader(sim, "pru0", emulator.layout.resolution, _CLOCK_DELAY_LOOPS,
-                idle_delay_loops)
-    sim.add_gpio_wire("pru0", _CLOCK_PIN, "pru1", _CLOCK_PIN)
-    sim.add_gpio_wire("pru1", _DATA_PIN, "pru0", _DATA_PIN)
-    sim.set_gpio_drive_mask("pru0", _PIN_MASK & ~(1 << _DATA_PIN))
-    sim.set_gpio_drive_mask("pru1", _PIN_MASK & ~(1 << _CLOCK_PIN))
+    try:
+        emulator.load()
+        # Idle past the monoflop time, as SSIRuntime.load does for the single core.
+        idle_delay_loops = ceil(emulator.layout.monoflop_cycles / 2) + 8
+        load_reader(sim, "pru0", emulator.layout.resolution, _CLOCK_DELAY_LOOPS,
+                    idle_delay_loops)
+        sim.add_gpio_wire("pru0", _CLOCK_PIN, "pru1", _CLOCK_PIN)
+        sim.add_gpio_wire("pru1", _DATA_PIN, "pru0", _DATA_PIN)
+        sim.set_gpio_drive_mask("pru0", _PIN_MASK & ~(1 << _DATA_PIN))
+    except Exception:
+        emulator.close()
+        raise
+    return emulator
 
 
 def _foc_motor(sim, device_api) -> None:
@@ -80,10 +88,11 @@ def _foc_motor(sim, device_api) -> None:
                       include_paths=[str(_SOURCE)])
     if errors:
         raise ValueError("FOC firmware assembly failed: " + "; ".join(errors))
+    update_hz = foc_control.update_frequency_hz(sim.iep)
     foc_control.stage_control(
         sim.memory, enable=1,
-        speed_ref_q28=foc_control.speed_rpm_to_q28(400, pole_pairs),
-        ramp_rate_q28=foc_control.ramp_rpm_s_to_q28(300_000, pole_pairs),
+        speed_ref_q28=foc_control.speed_rpm_to_q28(400, pole_pairs, update_hz=update_hz),
+        ramp_rate_q28=foc_control.ramp_rpm_s_to_q28(300_000, pole_pairs, update_hz=update_hz),
         vq_ref_q15=foc_control.voltage_pu_to_q15(0.25))
 
 
@@ -110,9 +119,16 @@ SCENARIOS = {scenario.name: scenario for scenario in (
 
 def apply_scenario(sim, name: str, device_api) -> Scenario:
     """Reset the simulator and set up scenario ``name``; raises ValueError if unknown."""
-    scenario = SCENARIOS.get(name)
+    scenario = SCENARIOS.get(name) if isinstance(name, str) else None
     if scenario is None:
         raise ValueError(f"unknown scenario {name!r}; available: {list(SCENARIOS)}")
+    if any(core not in sim.cores for core in scenario.cores):
+        raise ValueError(f"scenario requires cores {list(scenario.cores)}")
+    previous = getattr(sim, "_scenario_runtime", None)
+    if previous is not None:
+        previous.close()
+    sim._scenario_runtime = None
+    sim._scenario = None
     for device in list(sim.device_bus.devices):
         device_api.pru_device_detach(device.name)
     for wire in sim.list_gpio_wires():
@@ -126,6 +142,53 @@ def apply_scenario(sim, name: str, device_api) -> Scenario:
         ssi_abi.EMULATOR_ADDRESS + ssi_abi.EMULATOR_SIZE - ssi_abi.CONFIG_ADDRESS))
     sim.memory.write(foc_control_abi.CONTROL_ADDRESS,
                      bytes(foc_control_abi.CONFIG_SIZE))
-    sim.iep.set_clock_mhz(_IEP_CLOCK_MHZ)
-    scenario.setup(sim, device_api)
+    # Hardware reset clears IEP registers, keeping the selected external rate.
+    sim._scenario_runtime = scenario.setup(sim, device_api)
+    sim._scenario = scenario
     return scenario
+
+
+def ssi_demo_state(sim) -> dict | None:
+    """Read the demo reader's mailbox without advancing either PRU.
+
+    The dashboard executes and reads on one thread. An odd sequence still
+    means the reader stopped partway through publication, so hide that frame.
+    Runtime ownership stays with this simulator until the next example load.
+    """
+    scenario = getattr(sim, "_scenario", None)
+    runtime = getattr(sim, "_scenario_runtime", None)
+    if scenario is None or runtime is None:
+        return None
+    is_model = isinstance(runtime, SSIRuntime)
+    if is_model and runtime.encoder not in sim.device_bus.devices:
+        return None
+    layout = runtime.encoder if is_model else runtime.layout
+    mailbox = ssi_abi.unpack_mailbox(sim.memory_read(
+        ssi_abi.MAILBOX_ADDRESS, ssi_abi.MAILBOX_SIZE))
+    coherent = not mailbox["sequence"] & 1
+    raw = mailbox["raw_frame_lo"] | mailbox["raw_frame_hi"] << 32
+    received = coherent and mailbox["frame_count"] > 0
+    position, error = layout.decode_frame(raw) if received else (None, None)
+    emulator_status = None if is_model else runtime.status()
+    return {"name": scenario.name, "reader_core": scenario.lead,
+            "encoder_core": None if is_model else runtime.core,
+            "requested_position": layout.position,
+            "position_max": (1 << layout.position_bits) - 1,
+            "frame_bits": layout.resolution, "error_bits": layout.error_bits,
+            "position": position, "error": error,
+            "raw_frame": f"0x{raw:03X}" if received else None,
+            "frame_count": mailbox["frame_count"] if coherent else None,
+            "coherent": coherent, "reader_status": mailbox["status"],
+            "emulator_status": emulator_status,
+            "timer_enabled": sim.iep.count_enabled}
+
+
+def set_ssi_demo_position(sim, position: int) -> None:
+    """Set the position latched by the next frame in either SSI demo."""
+    if ssi_demo_state(sim) is None:
+        raise ValueError("Load an SSI example before setting its position")
+    runtime = sim._scenario_runtime
+    if isinstance(runtime, SSIRuntime):
+        runtime.encoder.set_position(position)
+    else:
+        runtime.set_position(position)

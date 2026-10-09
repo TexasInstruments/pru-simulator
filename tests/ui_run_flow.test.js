@@ -22,7 +22,7 @@ function dashboard() {
     signalGraph: { recording: false }, mcShown: () => ['pru0', 'rtu0', 'pru1'],
     setButtonLabel: (element, text) => { element.textContent = text; },
     stopSim() {}, setTimeout() {}, showIepClock() {}, showAvailableCores() {},
-    updateMCUI() {},
+    updateMCUI() {}, updateSsiDemo() {},
     updateUI(state) { if (state.halted || state.at_breakpoint) context.stopRun(); },
     setInterval: fn => { const id = ++nextTimer; timers.set(id, fn); return id; },
     clearInterval: id => timers.delete(id),

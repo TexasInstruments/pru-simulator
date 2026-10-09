@@ -131,3 +131,35 @@ def test_ssi_scenarios_idle_the_clock_past_the_monoflop_between_frames(name):
     assert len(idles) >= 2 and max(gaps) < 2 * monoflop
     assert all(gap < monoflop for gap in gaps if gap not in idles)
     assert (len(falls) - 1 - len(idles)) // len(idles) in (12, 13)   # one fall per clock pulse
+
+@pytest.mark.parametrize('name', [SINGLE, MULTI, FOC])
+def test_scenarios_preserve_the_selected_iep_rate(name):
+    sim, api = _new()
+    sim.iep.set_clock_mhz(271.25)
+    apply_scenario(sim, name, api)
+    assert sim.iep.external_clock_hz == 271_250_000
+    if name == FOC:
+        from pru_io import foc_control, foc_control_abi
+        cfg = foc_control_abi.unpack_config(sim.memory_read(
+            foc_control_abi.CONTROL_ADDRESS, foc_control_abi.CONFIG_SIZE))
+        cadence = 271_250_000 / 12500
+        assert cfg['speed_ref_q28'] == foc_control.speed_rpm_to_q28(400, 4, update_hz=cadence)
+        assert cfg['ramp_rate_q28'] == foc_control.ramp_rpm_s_to_q28(300_000, 4, update_hz=cadence)
+
+
+def test_reloading_multicore_releases_the_old_emulator_and_leases():
+    sim, api = _new()
+    for name in (MULTI, MULTI, SINGLE, MULTI):
+        apply_scenario(sim, name, api)
+    assert len(sim.list_gpio_wires()) == 2
+    frames = _frames(sim, 20_000, lambda n: sim.step_paced_many('pru0', ['pru1'], n))
+    assert set(frames.values()) == {0xABC}
+    assert sim.device_bus.faults() == []
+
+@pytest.mark.parametrize('reader_mhz, encoder_mhz', [(333, 200), (200, 333)])
+def test_multicore_demo_with_unequal_core_clocks(sim_config, reader_mhz, encoder_mhz):
+    sim, api = _new(sim_config(pru_clock_mhz=reader_mhz, pru1_clock_mhz=encoder_mhz))
+    apply_scenario(sim, MULTI, api)
+    frames = _frames(sim, 40_000, lambda n: sim.step_paced_many('pru0', ['pru1'], n))
+    assert len(frames) >= 3 and set(frames.values()) == {0xABC}
+    assert sim.device_bus.faults() == []

@@ -25,7 +25,9 @@ def fresh_sim(monkeypatch):
 
 def _load(ws, name, states):
     ws.send_json({"action": "scenario_load", "name": name})
-    return [ws.receive_json() for _ in range(1 + states)]
+    loaded = ws.receive_json()
+    return [loaded, *[ws.receive_json() for _ in range(
+        states if loaded['type'] == 'scenario_loaded' else 1)]]
 
 
 def _mailbox(sim):
@@ -95,12 +97,14 @@ def test_multicore_scenario_refreshes_both_cores_and_runs_together(fresh_sim):
 def test_foc_scenario_fills_the_motor_samples_on_the_first_run(fresh_sim):
     import ui.server as srv
     with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "set_iep_clock", "mhz": 250})
+        ws.receive_json()
         loaded, state = _load(ws, FOC, 1)
         assert loaded["ui"]["view"] == "motor"
         assert state["io"]["foc_config"]["enable"] == 1
         assert state["io"]["sd"]["input_routes"][:2] == [3, 4]
-        assert state["io"]["foc_clocks"]["iep_hz"] == 200e6
-        assert srv._iep_clock_override == 200
+        assert state["io"]["foc_clocks"]["iep_hz"] == 250e6
+        assert srv._iep_clock_override == 250
         for _ in range(120):
             ws.send_json({"action": "run", "core": "pru0", "max_steps": 1000})
             ws.receive_json()
@@ -144,3 +148,46 @@ def test_single_core_capture_shape_is_unchanged(fresh_sim):
             "capture": True, "stride": 2})
     assert "partners" not in capture
     assert all(len(s) == 6 for s in capture["samples"])
+
+@pytest.mark.parametrize('name, states', [(SINGLE, 1), (MULTI, 2)])
+def test_ssi_demo_readout_and_next_position(fresh_sim, name, states):
+    with client.websocket_connect('/ws') as ws:
+        ws.send_json({'action': 'set_iep_clock', 'mhz': 271.25})
+        ws.receive_json()
+        loaded, *initial = _load(ws, name, states)
+        assert loaded['type'] == 'scenario_loaded', loaded
+        demo = initial[0]['io']['ssi_demo']
+        assert demo['requested_position'] == 2748
+        assert demo['position'] is None and demo['frame_count'] == 0
+        assert initial[0]['iep']['override_mhz'] == 271.25
+        run = {'action': 'run_multicore' if states == 2 else 'run',
+               'core': 'pru0', 'partners': ['pru1'], 'max_steps': 20_000}
+        ws.send_json(run)
+        replies = [ws.receive_json() for _ in range(states)]
+        assert replies[0]['io']['ssi_demo']['position'] == 2748
+        assert replies[0]['io']['ssi_demo']['error'] == 0
+        assert replies[0]['io']['ssi_demo']['frame_count'] >= 2
+        ws.send_json({'action': 'ssi_demo_position', 'position': 1234})
+        state = ws.receive_json()
+        assert state['io']['ssi_demo']['requested_position'] == 1234
+        ws.send_json(run)
+        replies = [ws.receive_json() for _ in range(states)]
+        assert replies[0]['io']['ssi_demo']['position'] == 1234
+        assert replies[0]['io']['ssi_demo']['reader_status'] == 0
+        assert all(m['fault'] is None for m in replies)
+        ws.send_json({'action': 'ssi_demo_position', 'position': 4096})
+        assert ws.receive_json()['tag'] == 'ssi_demo'
+        assert ws.receive_json()['io']['ssi_demo']['requested_position'] == 1234
+
+
+def test_demo_hides_torn_mailbox_and_disappears_when_other_firmware_loads(fresh_sim):
+    with client.websocket_connect('/ws') as ws:
+        loaded, state = _load(ws, SINGLE, 1)
+        assert loaded['type'] == 'scenario_loaded', loaded
+        fresh_sim.memory.write(abi.MAILBOX_ADDRESS, (1).to_bytes(4, 'little'))
+        ws.send_json({'action': 'get_state'})
+        demo = ws.receive_json()['io']['ssi_demo']
+        assert demo['coherent'] is False
+        assert demo['position'] is None and demo['frame_count'] is None
+        ws.send_json({'action': 'load', 'source': 'HALT'})
+        assert 'ssi_demo' not in ws.receive_json()['io']
