@@ -130,9 +130,9 @@ send_frame:
     lsr  r5, r11, 2
     and  r5, r5, 0xFF
     ldi  r12, 2
-c1:
+tx_c1:
     and  r6, r31, 0x1C
-    qbeq c1, r6, 0x10
+    qbeq tx_c1, r6, 0x10
     mov  r30.b0, r5
     add  r17, r17, 1
 
@@ -148,9 +148,9 @@ c1:
     lsr  r5, r11, 4
     and  r5, r5, 0xFF
     ldi  r12, 4
-c2:
+tx_c2:
     and  r6, r31, 0x1C
-    qbeq c2, r6, 0x10
+    qbeq tx_c2, r6, 0x10
     mov  r30.b0, r5
     add  r17, r17, 1
 
@@ -162,9 +162,9 @@ c2:
     lsr  r5, r11, 6
     and  r5, r5, 0xFF
     ldi  r12, 6
-c3:
+tx_c3:
     and  r6, r31, 0x1C
-    qbeq c3, r6, 0x10
+    qbeq tx_c3, r6, 0x10
     mov  r30.b0, r5
     add  r17, r17, 1
 
