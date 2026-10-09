@@ -582,6 +582,20 @@ def _read_mac(core) -> dict:
     return {"mode": acc.mac_mode, "acc_carry": acc.acc_carry}
 
 
+def _read_crc(core) -> dict:
+    """Return CRC accelerator status for the given PRUCore."""
+    acc = core.accelerators.get(1)
+    if acc is None:
+        return {"mode": "CRC16", "value": "0000"}
+    if acc.crc32_mode:
+        mode = "CRC32"
+        value = f"{acc.crc_reg:08X}"
+    else:
+        mode = "CRC16-MOD" if acc.mod_en else "CRC16"
+        value = f"{acc.crc_reg:04X}"
+    return {"mode": mode, "value": value}
+
+
 def _read_spad(sim_obj) -> dict:
     """Return scratchpad contents as hex words per bank.
 
@@ -735,6 +749,7 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False):
         "spad": _read_spad(sim),
         "xfr_shift_en": sim.xfr.xfr_shift_en,
         "mac": _read_mac(c),
+        "crc": _read_crc(c),
     }
     await ws.send_json(state)
 

@@ -121,6 +121,7 @@ class Simulator:
         core_clocks = {"pru0": pru_clock_mhz, "rtu0": pru_clock_mhz,
                        "pru1": pru1_clock_mhz}
         for name, core in self.cores.items():
+            core.clock_mhz = core_clocks[name]
             core.io_port.sd_filter = SigmaDeltaFilter(pru_clock_mhz=core_clocks[name])
 
         # Wire SD registers into memory bus (pru0 owns the register region)
@@ -164,8 +165,9 @@ class Simulator:
         self._gpcfg.on_mux_change = _on_mux_change
         self.memory.add_region(GpcfgRegion(self._gpcfg))
 
-        # IEP0 timer. Shared by all cores on the ICSSG, like the real peripheral.
-        self.iep = IepTimer()
+        # IEP0 timer. Shared by all cores on the ICSSG, like the real peripheral,
+        # and clocked independently of them (iep_clock_mhz, default = PRU0 clock).
+        self.iep = IepTimer(clock_mhz=float(dev.get("iep_clock_mhz", str(pru_clock_mhz))))
         self.memory.add_region(IepRegisterRegion(self.iep))
         for core in self.cores.values():
             core.iep = self.iep
@@ -411,6 +413,14 @@ class Simulator:
         for key, val in params.items():
             if hasattr(mod, key):
                 setattr(mod, key, val)
+
+    def set_iep_clock_mhz(self, mhz: float) -> None:
+        """Set the IEP0 clock (ICSSG_IEP_CLK) independently of the PRU clocks.
+
+        Takes effect from the current simulated time; the counter keeps its
+        value. The config equivalent is ``iep_clock_mhz`` under [device].
+        """
+        self.iep.set_clock_mhz(mhz)
 
     def reset(self, core: str) -> None:
         """Reset *core* to its initial state (registers, counters, PC, halted flag)."""

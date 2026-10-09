@@ -1,6 +1,8 @@
 ; =============================================================
 ; crc32_core — reflected CRC-32 (poly 0xEDB88320, init/final 0xFFFFFFFF)
-; Shared by pif_eth_tx.asm and the pif_eth RX firmware.
+; Software fallback for pif_eth_crc32_hw.inc (same contract).  The pif_eth
+; firmware now includes the accelerator version; include this file instead
+; on a core without the CRC16/32 broadside accelerator.
 ; =============================================================
 ; Entry:  r21 = buffer base address, r8 = byte count
 ; Exit:   r20 = final CRC (already inverted), r21 = base + count
