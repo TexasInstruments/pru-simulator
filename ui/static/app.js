@@ -65,6 +65,8 @@ const GRAPH_HEIGHT_STEPS = [80, 140, 200, 280, 400, 560, 720, 960, 1200];
 const signalGraph = {
   recording: false,
   windowSize: 1024,
+  trigPost: -1,   // single-shot perif capture: samples kept since the trigger edge (-1 = waiting)
+  trigPrev: null, // packed out/oe/clk bits of the previous capture sample
   buf: [],        // circular buffer array, length === windowSize
   head: 0,        // next write index
   fill: 0,        // number of valid samples (0..windowSize)
@@ -1236,13 +1238,28 @@ function graphHandleCapture(msg) {
   // would just blur — evicting the transmission before anyone could look at it.
   // Fill once, then stop recording, the way a logic analyzer does. GP-mode
   // captures are decimated 100:1 and keep rolling as before.
+  //
+  // The fill is triggered: samples roll until the first edge on the perif
+  // out / out_en / clk lines, then one full window is kept from there. Firmware
+  // such as pif_eth_100 spends ~2.4k instructions preparing a frame after perif
+  // mode is on, so a fill that started at the first sample would end, and switch
+  // REC off, before the first bit was sent.
   const singleShot = mode === "perif";
   for (const s of (msg.samples || [])) {
-    if (singleShot && signalGraph.fill >= signalGraph.windowSize) {
-      graphSetRecording(false);
-      break;
-    }
     const [step, r30, gpiBits, outBits, oeBits, clkBits] = s;
+    if (singleShot) {
+      const bits = outBits | (oeBits << 3) | (clkBits << 6);
+      if (signalGraph.trigPost < 0 && signalGraph.trigPrev !== null
+          && bits !== signalGraph.trigPrev) {
+        signalGraph.trigPost = 0;
+      }
+      signalGraph.trigPrev = bits;
+      if (signalGraph.trigPost >= signalGraph.windowSize) {
+        graphSetRecording(false);
+        break;
+      }
+      if (signalGraph.trigPost >= 0) signalGraph.trigPost++;
+    }
     graphPushSample({
       step,
       mode,
@@ -1799,6 +1816,10 @@ btnLoad.addEventListener("click", async () => {
 // ---- Signal graph controls -------------------------------------------------
 
 function graphSetRecording(on) {
+  if (on && !signalGraph.recording) {
+    signalGraph.trigPost = -1;     // single-shot trigger: not seen yet
+    signalGraph.trigPrev = null;
+  }
   signalGraph.recording = on;
   const btn = document.getElementById("graph-rec-btn");
   const dot = document.getElementById("graph-rec-dot");
@@ -3423,6 +3444,9 @@ function updateMCUI(state) {
     updateSDPanel(state.io);
     updatePerifPanel(state.io);
     updateI2CPanel(state.io);
+    // Signal graph follows PRU0, the core whose pins the I/O panel shows
+    graphSample(state);
+    drawGraph();
     // Update SPAD columns in PRU0 MC reg panel
     if (mcSpadVisible.size > 0) updateMCSpad(state.spad);
   } else if (core === "rtu0") {
