@@ -1,5 +1,11 @@
 # Handoff — TC7 on AM243x silicon: n=2 symbol errors (2026-10-09)
 
+> **RESOLVED 2026-10-10.** `tx_pushed` was 173 on every frame, so PRU0 pushed
+> everything; silicon drops the last pushed byte at n=2. One trailing zero byte
+> after `flush_pad` in `pif_eth_tx_n2_skipchecks.asm` fixes it: TC7 passes
+> 100/100 at n=2/4/6/8. Test plan and report updated. The notes below are the
+> original debug state, kept for history.
+
 Snapshot of an **unfinished** hardware debug session. Agent memory is per-PC;
 this note travels with the repo. Test plan:
 [`docs/test-plans/2026-09-24-crc-accelerator-hw-test-plan.md`](../test-plans/2026-09-24-crc-accelerator-hw-test-plan.md)

@@ -354,6 +354,14 @@ via the same `codec`/`decoder` golden-reference path used in §4:
 | `pif_eth_tx_n2_skipchecks.asm` | 3 | 83.33 MHz | **FAIL** — BER≈0.68, `tx_overrun=True` |
 | `pif_eth_tx_n2_skipchecks.asm` | 4 | 62.50 MHz | **FAIL** — BER≈0.68, `tx_overrun=True` |
 
+**Silicon (AM243x LP, 250 MHz, 2026-10-10):** n=4/6/8 with the all-checks
+firmware and n=2 with `skipchecks` all pass 100/100 BERT frames, but n=2 only
+with a trailing zero byte after `flush_pad`. Without it the perif TX serializer
+drops the last pushed byte at n=2: the final comma loses its last 4 bits and
+about half the frames show `symbol_errors=1` (data, CRC and BER clean;
+`tx_pushed=173` confirmed PRU0 pushed everything). The simulator does not
+model this. The pad byte is not counted in `tx_pushed`.
+
 ### 8.4 Root cause: the n=2 underrun, and why removing 2 checks fixes it
 
 At n=2 the perif channel drains the TX FIFO deterministically every

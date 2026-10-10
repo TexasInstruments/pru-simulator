@@ -328,6 +328,13 @@ tc2:
     add  r17, r17, 1
 
     jal  r28, flush_pad        ; pad remaining bits to a byte
+    ; Silicon quirk (TC7, AM243x): at n=2 the perif TX serializer drops/
+    ; truncates the LAST pushed byte, cutting the final comma and giving
+    ; symbol_errors=1 on ~half the frames. Push one sacrificial zero byte so
+    ; the truncated byte is padding. Not counted in r17 (tx_pushed stays 173).
+    ldi  r5, 0
+    jal  r27, push_byte
+    sub  r17, r17, 1
     jal  r28, drain_wait       ; let the burst fully serialize
     ldi  r1, 0x0414
     sbbo &r17, r1, 0, 4        ; publish burst pushed count
