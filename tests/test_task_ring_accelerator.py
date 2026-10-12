@@ -13,6 +13,11 @@ The two gates this suite exists to hold, both of which sank earlier attempts:
   ``run()``, no poke.
 * ``TestFifoIsNotTheRing`` -- ``tr_rscr_fifo_occ`` and the ring are distinct
   structures with independently observable state.
+
+``TestSiliconBehaviour`` replays programs that were run on an LP-AM243
+(AM2434, ICSSG0 RTU_PRU0) and asserts the values the device returned.  Where
+silicon and the TRM's worked example disagree, silicon wins and the test says
+so.
 """
 
 import pytest
@@ -26,6 +31,7 @@ from xfr.task_ring_accelerator import (
     MAX_IDS_PER_XOUT,
     SUBMIT_FIFO_DEPTH,
     TR_SIZE_BYTES,
+    tr_copy_cycles,
     XFR2TR_DEVICE_IDS,
     XFR2TR_RING_CFG,
     XFR2TR_SRC_CFG,
@@ -77,6 +83,12 @@ def configure(ring: XFR2TRRing, *, nums: int, tr_size_sel: int = 0) -> None:
     """Apply the 6.4.6.3.3.1 "Initial" step through the documented registers."""
     ring.configure_source({6: SRC_BASE, 7: tr_size_sel})
     ring.configure_ring({6: RING_BASE, 7: nums << 8})
+
+
+def ptr(index: int, tr_size: int = 8) -> int:
+    """``tr_rsrc_wrt_ptr`` for ring slot *index*: silicon reports the
+    absolute address ``tr_rsrc_base + index * tr_size`` (module point 2)."""
+    return RING_BASE + index * tr_size
 
 
 def ring_entry(bus: MemoryBus, index: int, tr_size: int = 8) -> int:
@@ -193,11 +205,16 @@ class TestRegisterMap:
         assert ring.tr_size == 64
 
     def test_0x71_xout_takes_ring_nums_from_r7_bits_19_8(self):
-        """Table 6-112 tr_rsrc_nums is R7[19-8], "0 = 1 TR / 4095 = 4096 TRs"."""
+        """Table 6-112 tr_rsrc_nums is R7[19-8].
+
+        The entry count is SILICON (module point 3): ``nums`` entries, not
+        the "0 = 1 TR" reading of Table 6-112.  ``nums = 0`` is unmeasured
+        and modelled as one entry.
+        """
         ring, _ = make_ring()
         ring.configure_ring({6: RING_BASE, 7: 0xABC << 8})
         assert ring.tr_rsrc_nums == 0xABC
-        assert ring.ring_entries == 0xABC + 1
+        assert ring.ring_entries == 0xABC
 
         ring.configure_ring({6: RING_BASE, 7: 0})
         assert ring.tr_rsrc_nums == 0
@@ -210,10 +227,10 @@ class TestRegisterMap:
         configure(ring, nums=15)
         ring.submit([1, 2])
         drain(ring)
-        assert ring.wrt_ptr == 2
+        assert ring.wrt_ptr == ptr(2)
 
         ring.configure_ring({7: 1 << 1})
-        assert ring.wrt_ptr == 0
+        assert ring.wrt_ptr == ptr(0)
 
     def test_0x71_xout_bit0_is_reserved_and_is_not_the_reset(self):
         """Table 6-112 marks R7[0] of the 0x71 XOUT "Reserved"."""
@@ -222,13 +239,13 @@ class TestRegisterMap:
         configure(ring, nums=15)
         ring.submit([1, 2])
         drain(ring)
-        assert ring.wrt_ptr == 2
+        assert ring.wrt_ptr == ptr(2)
 
         ring.configure_ring({7: 1 << 0})
-        assert ring.wrt_ptr == 2
+        assert ring.wrt_ptr == ptr(2)
 
     def test_reset_bit_leaves_the_submit_fifo_alone(self):
-        """INFERENCE (module note 4): Table 6-112 scopes reset to the pointer.
+        """INFERENCE (module inference 2): Table 6-112 scopes reset to the pointer.
 
         The TRM is silent on the FIFO, so this pins the model's choice, not a
         quotation.
@@ -255,7 +272,8 @@ class TestRegisterMap:
         assert (status >> 8) & 0xF == 5         # five IDs in the submit FIFO
 
     def test_0x71_xin_reports_the_write_pointer_in_r8(self):
-        """Table 6-112: "R8[17-0] 0x71 XIN tr_rsrc_wrt_ptr"."""
+        """Table 6-112: "R8[17-0] 0x71 XIN tr_rsrc_wrt_ptr" -- an absolute
+        ring address on silicon (module point 2)."""
         ring, bus = make_ring()
         fill_source_table(bus)
         configure(ring, nums=15)
@@ -265,7 +283,7 @@ class TestRegisterMap:
 
         payload = view.xin(7, 8)
         assert len(payload) == 8
-        assert int.from_bytes(payload[4:8], "little") == 3
+        assert int.from_bytes(payload[4:8], "little") == ptr(3)
 
     @pytest.mark.parametrize("device_id", [XFR2TR_SRC_CFG, XFR2TR_SUBMIT])
     def test_0x70_and_0x72_have_no_xin_row(self, device_id):
@@ -314,7 +332,7 @@ class TestSubmitPacking:
         assert TaskRingAccelerator._decode_submit(2, (0xF005).to_bytes(2, "little"), 0) == [5]
 
     def test_byte_length_selects_the_id_count_including_odd_counts(self):
-        """DERIVED (module note 2), and required by the 6.4.6.3.3.1 example,
+        """DERIVED (module inference 1), and required by the 6.4.6.3.3.1 example,
         which submits five IDs."""
         payload = b"".join(
             word.to_bytes(4, "little") for word in (0x00010000, 0x00060002, 0x00000003)
@@ -358,39 +376,44 @@ class TestFifoIsNotTheRing:
         ring.submit([5, 6, 7, 8])
         assert ring.fifo_occ == 8
 
-    def test_overflowing_the_submit_fifo_fails_loud(self):
-        """SIMULATOR POLICY (module note 5): the TRM does not document this."""
-        ring, _ = make_ring()
+    def test_overflowing_the_submit_fifo_is_silent_and_overwrites(self):
+        """SILICON (module point 5): no stall, no error -- the write pointer
+        runs on over still-queued slots, and the count aliases mod 16."""
+        ring, bus = make_ring()
+        fill_source_table(bus)
+        configure(ring, nums=31)
         ring.submit([1, 2, 3, 4, 5, 6, 7, 8])
-        with pytest.raises(RuntimeError, match="overflow"):
-            ring.submit([9])
+        ring.submit([9])                      # overwrites queued ID 1
+        assert ring.overflow_events == 1
+        assert ring.fifo_occ == 9
+        drain(ring)
+        # Slot 0 now holds 9; the engine drains slots 0..8 in pointer order.
+        assert [ring_entry(bus, k) for k in range(9)] == [9, 2, 3, 4, 5, 6, 7, 8, 9]
 
     def test_fifo_occupancy_and_ring_write_pointer_are_independent(self):
         """The FIFO empties while the ring fills -- they are not one counter.
 
         A model that derived tr_rscr_fifo_occ from ring occupancy would report
-        8 here instead of 0, and would never show an entry that has left the
-        FIFO but not yet landed.
+        8 here instead of 0.  SILICON (module point 4): an ID leaves the count
+        when its TR lands, so count + landed is always the number submitted.
         """
         ring, bus = make_ring()
         fill_source_table(bus)
-        configure(ring, nums=15)          # a 16-entry ring, far bigger than the FIFO
+        configure(ring, nums=15)          # a 15-entry ring, bigger than the FIFO
         ring.submit([1, 2, 3, 4, 5, 6, 7, 8])
-        assert (ring.fifo_occ, ring.wrt_ptr) == (8, 0)
+        assert (ring.fifo_occ, ring.wrt_ptr) == (8, ptr(0))
 
         trace = []
-        for _ in range(64):
+        for _ in range(128):
             ring.tick()
-            trace.append((ring.fifo_occ, ring.wrt_ptr))
+            trace.append((ring.fifo_occ, ring.wrt_index))
             if not ring.busy:
                 break
 
         # Final state: the FIFO is empty and all eight TRs are in the ring.
-        assert (ring.fifo_occ, ring.wrt_ptr) == (0, 8)
-        # And at some point an ID was in neither structure -- out of the FIFO,
-        # not yet landed.  That is the state Table 6-112's "AND the last write
-        # completed" clause exists to describe.
-        assert any(occ + ptr < 8 for occ, ptr in trace)
+        assert (ring.fifo_occ, ring.wrt_ptr) == (0, ptr(8))
+        assert all(occ + landed == 8 for occ, landed in trace)
+        assert sorted({occ for occ, _ in trace}) == list(range(9))
 
     def test_a_full_fifo_can_coexist_with_a_partly_filled_ring(self):
         ring, bus = make_ring()
@@ -400,7 +423,7 @@ class TestFifoIsNotTheRing:
         drain(ring)
         ring.submit([1, 2, 3, 4, 5, 6, 7, 8])
         assert ring.fifo_occ == 8
-        assert ring.wrt_ptr == 8
+        assert ring.wrt_ptr == ptr(8)
 
 
 class TestAutonomousDrain:
@@ -432,7 +455,7 @@ class TestAutonomousDrain:
         assert steps < 1000
         assert core.task_ring.busy is False
         assert core.task_ring.fifo_occ == 0
-        assert core.task_ring.wrt_ptr == 5
+        assert core.task_ring.wrt_ptr == ptr(5)
 
     def test_the_engine_is_driven_by_core_steps(self):
         """Submitted IDs sit still until the core executes instructions."""
@@ -443,9 +466,9 @@ class TestAutonomousDrain:
         core.task_ring.configure_ring({6: RING_BASE, 7: 15 << 8})
         core.task_ring.submit([4, 5, 6])
 
-        assert core.task_ring.wrt_ptr == 0     # no cycles yet, nothing moved
+        assert core.task_ring.wrt_ptr == ptr(0)   # no cycles yet, nothing moved
         core.run(max_steps=40)
-        assert core.task_ring.wrt_ptr == 3
+        assert core.task_ring.wrt_ptr == ptr(3)
         assert core.task_ring.busy is False
 
     def test_nothing_drains_without_ticks(self):
@@ -456,7 +479,7 @@ class TestAutonomousDrain:
         ring.submit([1, 2, 3])
         for _ in range(100):
             assert ring.fifo_occ == 3
-            assert ring.wrt_ptr == 0
+            assert ring.wrt_ptr == ptr(0)
             assert ring.busy is True
 
     def test_busy_is_one_while_busy_and_zero_when_idle(self):
@@ -470,29 +493,41 @@ class TestAutonomousDrain:
         drain(ring)
         assert ring.busy is False              # drained -> not busy
 
-    def test_busy_stays_set_after_the_fifo_empties_until_the_write_lands(self):
+    def test_busy_stays_set_until_the_last_write_lands(self):
         """Table 6-112: busy "until the FIFO is empty AND the last write
-        completed /data has landed" -- both terms, not just the first."""
+        completed /data has landed".  On silicon the ID being copied still
+        counts in tr_rscr_fifo_occ (module point 4), so busy, a non-zero
+        count and a not-yet-landed TR all clear on the same cycle."""
         ring, bus = make_ring()
         fill_source_table(bus)
         configure(ring, nums=15)
         ring.submit([9])
 
-        saw_empty_fifo_still_busy = False
-        for _ in range(32):
-            ring.tick()
-            if ring.fifo_occ == 0 and ring.wrt_ptr == 0:
-                assert ring.busy is True, (
-                    "the last TR has left the FIFO but has not landed in the "
-                    "ring, so tr_rsrc_busy must still read 1"
-                )
-                saw_empty_fifo_still_busy = True
-            if not ring.busy:
-                break
+        ticks = drain(ring)
+        assert ticks == 1 + tr_copy_cycles(8)
+        assert ring.wrt_ptr == ptr(1)
+        assert (ring.busy, ring.fifo_occ) == (False, 0)
 
-        assert saw_empty_fifo_still_busy
-        assert ring.wrt_ptr == 1
-        assert ring.busy is False
+    def test_copy_cost_is_a_shared_ram_read_plus_write(self):
+        """SILICON (module point 6): (2 + words) + (1 + words) per TR."""
+        assert tr_copy_cycles(8) == 7
+        assert tr_copy_cycles(64) == 35
+
+    def test_memory_stalls_advance_the_engine(self):
+        """The engine counts core cycles, not instructions: a stalled LBBO
+        gives the copy engine its stall cycles too."""
+        bus = make_memory()
+        fill_source_table(bus)
+        core = make_core(
+            SETUP_ASM
+            + "    ldi r2, 1\n    xout 0x72, &r2, 2\n"
+            + "    ldi32 r10, 0x10000\n"
+            + "    lbbo &r0, r10, 0, 32\n"      # 8 words: 1 + 9 stall cycles
+            + "    halt\n",
+            bus=bus,
+        )
+        core.run(max_steps=100)
+        assert core.task_ring.wrt_ptr == ptr(1)
 
     def test_a_wait_for_idle_loop_falls_through_when_nothing_was_submitted(self):
         core = make_core(SETUP_ASM + WAIT_FOR_IDLE_ASM)
@@ -503,12 +538,9 @@ class TestAutonomousDrain:
 class TestCopyEngine:
     """6.4.6.3.3.1 "XFR2TR Programming Model" -- the worked example."""
 
-    def test_write_order_reproduces_the_trm_worked_example(self):
-        """6.4.6.3.3.1: XOUT 0,1,2,6,3 lands as 3,6,2,1,0 in WR slots 0..4.
-
-        The reverse order is INFERRED (module note 3) from the worked example;
-        the TRM never states the FIFO load order normatively.
-        """
+    def test_write_order_is_submission_order(self):
+        """6.4.6.3.3.1 shows XOUT 0,1,2,6,3 landing as 3,6,2,1,0.  SILICON
+        (module point 1) lands it as 0,1,2,6,3, and so does the model."""
         bus = make_memory()
         fill_source_table(bus)
         core = make_core(
@@ -517,10 +549,11 @@ class TestCopyEngine:
         )
         core.run(max_steps=1000)
         assert core.halted
-        assert [ring_entry(bus, slot) for slot in range(5)] == [3, 6, 2, 1, 0]
+        assert [ring_entry(bus, slot) for slot in range(5)] == [0, 1, 2, 6, 3]
 
     def test_second_worked_example_continues_the_write_pointer(self):
-        """6.4.6.3.3.1: XOUT 20,4,7,0,1,2 lands as 2,1,0,7,4,20 in slots 5..10."""
+        """6.4.6.3.3.1's second submit, XOUT 20,4,7,0,1,2, continues at slot 5.
+        SILICON lands it in submission order, not the example's 2,1,0,7,4,20."""
         ring, bus = make_ring()
         fill_source_table(bus, count=32)
         configure(ring, nums=15)
@@ -529,8 +562,8 @@ class TestCopyEngine:
         ring.submit([20, 4, 7, 0, 1, 2])
         drain(ring)
 
-        assert ring.wrt_ptr == 11
-        assert [ring_entry(bus, slot) for slot in range(5, 11)] == [2, 1, 0, 7, 4, 20]
+        assert ring.wrt_ptr == ptr(11)
+        assert [ring_entry(bus, slot) for slot in range(5, 11)] == [20, 4, 7, 0, 1, 2]
 
     def test_the_engine_copies_the_whole_tr_payload(self):
         """The copy is of TR contents, not of an index."""
@@ -555,19 +588,18 @@ class TestCopyEngine:
         assert payload == bytes([5]) * 64
 
     def test_the_write_pointer_wraps_at_the_configured_ring_size(self):
-        """6.4.6.3.3: "1 ring, with wrap around support"; Table 6-112 sizes it
-        with tr_rsrc_nums, 0 = 1 TR."""
+        """6.4.6.3.3: "1 ring, with wrap around support".  SILICON (module
+        point 3): tr_rsrc_nums = 3 wraps after 3 entries."""
         ring, bus = make_ring()
         fill_source_table(bus)
-        configure(ring, nums=3)          # tr_rsrc_nums = 3 -> a 4-entry ring
-        assert ring.ring_entries == 4
-        ring.submit([1, 2, 3, 4, 5, 6])
+        configure(ring, nums=3)
+        assert ring.ring_entries == 3
+        ring.submit([1, 2, 3, 4, 5])
         drain(ring)
 
-        assert ring.wrt_ptr == 6 % 4
-        # Submitted 6,5,4,3,2,1 in drain order; the last two wrapped over the
-        # first two slots.
-        assert [ring_entry(bus, slot) for slot in range(4)] == [2, 1, 4, 3]
+        assert ring.wrt_ptr == ptr(5 % 3)
+        # 4 and 5 wrapped over slots 0 and 1; slot 3 was never written.
+        assert [ring_entry(bus, slot) for slot in range(4)] == [4, 5, 3, 0]
 
     def test_a_copy_outside_mapped_memory_fails_loud(self):
         ring, _ = make_ring()
@@ -576,6 +608,107 @@ class TestCopyEngine:
         ring.submit([1])
         with pytest.raises(RuntimeError, match="XFR2TR copy of TR ID 1"):
             drain(ring)
+
+
+#: Silicon replay programs use the sim's shared RAM for the result area, as
+#: the device runs did, so every SBBO costs what it cost on the board.
+RESULTS = 0x13100
+
+
+def _results(bus: MemoryBus, count: int) -> list[int]:
+    raw, _ = bus.read(RESULTS, 4 * count)
+    return [int.from_bytes(raw[4 * k:4 * k + 4], "little") for k in range(count)]
+
+
+def _submit_asm(ids: list[int]) -> str:
+    """Left-pack *ids* into R2.. and XOUT them, as the device programs did."""
+    padded = ids + [0] * (len(ids) % 2)
+    lines = []
+    for k in range(0, len(padded), 2):
+        lines.append(f"    ldi32 r{2 + k // 2}, 0x{(padded[k + 1] << 16) | padded[k]:08X}")
+    lines.append(f"    xout 0x72, &r2, {2 * len(ids)}")
+    return "\n".join(lines) + "\n"
+
+
+_STORE_STATUS = """
+    xin 0x71, &r7, 8
+    sbbo &r7, r24, 0, 4
+    add r24, r24, 4
+    sbbo &r8, r24, 0, 4
+    add r24, r24, 4
+"""
+
+_SILICON_SETUP = """
+    ldi32 r24, 0x13100
+    ldi32 r6, 0x10000
+    ldi r7, 0
+    xout 0x70, &r6, 8
+    ldi32 r6, 0x11000
+    ldi32 r7, 0xF02
+    xout 0x71, &r6, 8
+"""
+
+
+class TestSiliconBehaviour:
+    """Programs run on an LP-AM243 (AM2434, ICSSG0 RTU_PRU0), replayed here.
+
+    The device runs used source and ring bases 0x14000 / 0x16000; these use
+    the suite's 0x10000 / 0x11000, so pointer values are rebased.  Every
+    other expected value is what the device returned.
+    """
+
+    def _run(self, body: str) -> tuple[PRUCore, MemoryBus]:
+        bus = make_memory()
+        fill_source_table(bus)
+        core = make_core(_SILICON_SETUP + body + WAIT_FOR_IDLE_ASM, bus=bus)
+        core.run(max_steps=5000)
+        assert core.halted
+        return core, bus
+
+    def test_trm_example_lands_in_submission_order(self):
+        _, bus = self._run(
+            _submit_asm([0, 1, 2, 6, 3]) + WAIT_FOR_IDLE_ASM.replace("halt", "")
+            .replace("wait_idle", "w1") + _submit_asm([20, 4, 7, 0, 1, 2])
+        )
+        assert [ring_entry(bus, k) for k in range(11)] == [0, 1, 2, 6, 3, 20, 4, 7, 0, 1, 2]
+
+    def test_eight_ids_land_in_order(self):
+        _, bus = self._run(_submit_asm([1, 2, 3, 4, 5, 6, 7, 8]))
+        assert [ring_entry(bus, k) for k in range(8)] == [1, 2, 3, 4, 5, 6, 7, 8]
+
+    def test_occupancy_trace_after_an_eight_id_submit(self):
+        """Device: occupancy 8,7,6,5,4,3 and pointer +0..+5 entries on six
+        status reads taken 7 cycles apart, starting straight after the XOUT."""
+        _, bus = self._run(_submit_asm([1, 2, 3, 4, 5, 6, 7, 8]) + _STORE_STATUS * 6)
+        words = _results(bus, 12)
+        assert words[0::2] == [0x801, 0x701, 0x601, 0x501, 0x401, 0x301]
+        assert words[1::2] == [ptr(k) for k in range(6)]
+
+    def test_overflow_overwrites_queued_ids(self):
+        """Device (tr_rsrc_nums = 31): 1..8, then 9..16 one status read later.  Occupancy reads 8
+        then 14; 16 TRs land as 1,2,3,12..16,9..16 -- IDs 4..8 lost."""
+        core, bus = self._run(
+            "    ldi32 r6, 0x11000\n    ldi32 r7, 0x1F02\n    xout 0x71, &r6, 8\n"
+            + _submit_asm([1, 2, 3, 4, 5, 6, 7, 8]) + _STORE_STATUS
+            + _submit_asm([9, 10, 11, 12, 13, 14, 15, 16]) + _STORE_STATUS
+        )
+        assert _results(bus, 4) == [0x801, ptr(0), 0xE01, ptr(2)]
+        assert [ring_entry(bus, k) for k in range(16)] == [
+            1, 2, 3, 12, 13, 14, 15, 16, 9, 10, 11, 12, 13, 14, 15, 16
+        ]
+        assert core.task_ring.wrt_ptr == ptr(16)
+        assert core.task_ring.overflow_events == 5
+
+    def test_ring_of_three_wraps_after_three(self):
+        """Device: tr_rsrc_nums = 3; 10,11,12 then 13,14,15 -> pointer back at
+        the base both times and the ring reads 13,14,15."""
+        core, bus = self._run(
+            "    ldi32 r6, 0x11000\n    ldi32 r7, 0x302\n    xout 0x71, &r6, 8\n"
+            + _submit_asm([10, 11, 12]) + WAIT_FOR_IDLE_ASM.replace("halt", "")
+            .replace("wait_idle", "w1") + _submit_asm([13, 14, 15])
+        )
+        assert core.task_ring.wrt_ptr == ptr(0)
+        assert [ring_entry(bus, k) for k in range(3)] == [13, 14, 15]
 
 
 class TestReset:

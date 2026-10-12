@@ -167,6 +167,7 @@ class PRUCore:
         """Execute one instruction."""
         if self.halted or self.pc >= len(self.instructions):
             return
+        cycles_before = self.counters.cycles
 
         # Pre-tick: advance UART frame generator before instruction reads R31
         if self.io_port.uart_generator is not None:
@@ -591,9 +592,11 @@ class PRUCore:
         # SPRUIM2J 6.4.6.3.3: the accelerator itself performs "a local memory
         # copy of fixed (preconfigured) TR receive list to the Send list".
         # Firmware polling tr_rsrc_busy (0x71 XIN, R7[0]) depends on this
-        # advancing; without it the poll never terminates.
+        # advancing; without it the poll never terminates.  The engine runs
+        # for every core cycle this instruction took, memory stalls included
+        # (+1 for the instruction cycle counted just below).
         if self.task_ring is not None:
-            self.task_ring.tick()
+            self.task_ring.tick(self.counters.cycles - cycles_before + 1)
 
         # ---- Count instruction cycle ------------------------------------
         self.counters.tick()

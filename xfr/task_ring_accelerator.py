@@ -35,9 +35,9 @@ Table 6-112 scopes both status fields to the *FIFO*, not to the ring:
       last write completed /data has landed."
     * ``tr_rscr_fifo_occ`` "The number of elements in the submit FIFO."
 
-They are therefore modelled here as two distinct objects: :attr:`_fifo` (the
-8-deep submit FIFO of TR IDs) and the ring, which lives in memory and is
-tracked only by :attr:`wrt_ptr`.  ``fifo_occ`` falls back to zero as the
+They are therefore modelled here as two distinct objects: :attr:`_slots` (the
+8-slot submit FIFO of TR IDs, with its own read and write pointers) and the
+ring, which lives in memory and is tracked only by its write index.  ``fifo_occ`` falls back to zero as the
 engine drains while ``wrt_ptr`` keeps climbing -- see
 ``test_fifo_occupancy_and_ring_write_pointer_are_independent``.
 
@@ -47,48 +47,66 @@ about *completion signalling* to the downstream consumer -- it sits alongside
 mean firmware performs the TR copy; the copy is the accelerator's entire
 purpose per the sentence quoted above.
 
-WHAT THE TRM DOES NOT SAY (inferences, flagged as such)
--------------------------------------------------------
-1. **Copy latency.**  The TRM gives no cycle count for one TR copy.
-   :data:`TR_COPY_CYCLES` is an INFERENCE.  Its only load-bearing property is
-   that it is >= 1, which is what makes the documented "busy until the FIFO is
-   empty AND the last write completed" ordering observable at all.
-2. **How the ID count of one 0x72 XOUT is encoded.**  Table 6-112 places each
+SILICON-MEASURED BEHAVIOUR (LP-AM243, AM2434 ICSSG0 RTU_PRU0)
+-------------------------------------------------------------
+Where the TRM is silent or its worked example disagrees with the device, this
+model follows measurements taken on an LP-AM243 with the source list and the
+ring in ICSSG shared RAM.  Each point is pinned by a test in
+``tests/test_task_ring_accelerator.py`` (class ``TestSiliconBehaviour``).
+
+1. **Landing order is submission order.**  The 6.4.6.3.3.1 worked example
+   shows ``XOUT 0,1,2,6,3`` landing as ``3,6,2,1,0``.  Silicon lands
+   ``0,1,2,6,3``; IDs ``1..8`` land ``1..8``; the second example's
+   ``20,4,7,0,1,2`` lands in that order too.  The example's order is not
+   reproduced.
+2. **``tr_rsrc_wrt_ptr`` is an absolute address.**  ``XIN 0x71`` returns
+   ``tr_rsrc_base + index * tr_size`` in R8 (``0x16000``, ``0x16008``, ...
+   for 8-byte TRs; ``0x17080`` after two 64-byte TRs at ``0x17000``), not the
+   element index that the worked example's "WR address 0,1,2" suggests.
+3. **Ring size.**  With ``tr_rsrc_nums = 3`` silicon wraps after **3**
+   entries, not the 4 that Table 6-112's "0 = 1 TR" encoding implies.  The
+   model uses ``max(tr_rsrc_nums, 1)`` entries; ``tr_rsrc_nums = 0`` was not
+   measured, so treating it as one entry is an INFERENCE.
+4. **The submit FIFO is 8 slots with 4-bit pointers.**  ``tr_rscr_fifo_occ``
+   reads ``(wr - rd) mod 16``, and an ID leaves the count only when its TR
+   has landed, so the TR being copied still counts: straight after an 8-ID
+   XOUT occupancy reads 8, then falls by one per landed TR.
+5. **Overflow is silent.**  Submitting more than fits neither stalls the core
+   nor flags anything: the write pointer runs on and overwrites queued slots.
+   Submitting 1..8 and then 9..16, with two TRs landed and the third being
+   copied, reads occupancy 14 and lands ``1,2,3,12,13,14,15,16,9,10,...,16``:
+   16 TRs, with IDs 4..8 lost.  The model reproduces that exactly and counts
+   each overwrite of a still-queued ID in :attr:`XFR2TRRing.overflow_events`.
+6. **Copy timing.**  One TR costs a shared-RAM read plus a shared-RAM write
+   of ``tr_size`` bytes, ``(2 + words) + (1 + words)`` core cycles (7 for 8
+   bytes, 35 for 64 bytes), back to back, starting :data:`TR_START_CYCLES`
+   after the submitting XOUT.  The ID is latched when its copy starts, which
+   is why ID 3 survived the overflow in point 5.  The engine advances by
+   elapsed core cycles, stalls included.
+
+WHAT NEITHER THE TRM NOR SILICON PINS DOWN (inferences, flagged as such)
+-----------------------------------------------------------------------
+1. **How the ID count of one 0x72 XOUT is encoded.**  Table 6-112 places each
    12-bit ID in its own 16-bit lane (``R2[11-0]``, ``R2[27-16]``,
    ``R3[11-0]`` ...), so byte pair ``2k..2k+1`` of the transfer holds ID *k*
    and a 2N-byte XOUT carries exactly N IDs.  That reading is DERIVED from the
-   lane layout; the TRM states only "1 to 8 IDs per XOUT / Left packed / No
-   holes or offsets" and never names the count encoding.  It is the only
-   reading found that can express the odd ID counts the worked example uses
-   (it submits 5 IDs, which a whole-register length cannot express).
-3. **FIFO load order.**  The worked example in 6.4.6.3.3.1 submits
-   ``XOUT 0,1,2,6,3`` and lands them in the ring as ``3,6,2,1,0`` -- reverse
-   of the submitted order, and its second example agrees.  The feature list
-   nevertheless calls the structure a FIFO.  This model reconciles the two by
-   pushing ID(N-1)..ID0 into a genuine FIFO and draining in FIFO order, which
-   reproduces both examples.  The TRM states neither the load order nor the
-   pop order normatively; the reconciliation is an INFERENCE.
-4. **``tr_rscr_reset`` scope.**  Table 6-112 says "This reset the ring
-   pointer" -- so the write pointer is cleared.  That the submit FIFO is *not*
-   cleared is an inference from the TRM's silence, consistent with
-   6.4.6.3.3.1, which only ever hits reset after "Wait for busy".
-5. **FIFO overflow.**  Undocumented for this block.  (6.4.6.3.2.3.1 documents
-   XOUT stalls for XFRDMA, a different block; nothing licenses copying that
-   behaviour here.)  This model raises rather than silently dropping IDs --
-   SIMULATOR POLICY, in the spirit of the fail-loud unsupported-XFR handling
-   this file's base commit added.
-6. **Base-address qualifiers.**  Table 6-112 annotates ``tr_msrc_base`` with
+   lane layout.  Silicon is consistent with it: 2-, 6-, 10-, 12- and 16-byte
+   submits landed 1, 3, 5, 6 and 8 TRs.
+2. **``tr_rscr_reset`` scope.**  Table 6-112 says "This reset the ring
+   pointer".  Silicon returns the write pointer to the ring base and later TRs
+   overwrite from slot 0.  Reset was only exercised while idle, so leaving the
+   submit FIFO alone is an inference.
+3. **Base-address qualifiers.**  Table 6-112 annotates ``tr_msrc_base`` with
    "Needs to be mode 0x4" and ``tr_rsrc_base`` with "Needs to be mode 0x40 or
    0x08".  Those mode qualifiers are NOT modelled; the 18-bit bases are used
    directly as byte addresses on the core's memory bus.  6.4.6.3.3 places both
    lists in "PRU_ICSSG shared RAM (Data RAM2)".
-7. **Write-pointer units.**  6.4.6.3.3.1 lists successive WR addresses as
-   0,1,2,3,4 then 5,6,7,... for successive TRs, i.e. an element index rather
-   than a byte address.  DERIVED from that example.
-8. **Ring-size rule not enforced.**  Table 6-112 requires ``tr_rsrc_nums`` to
+4. **Ring-size rule not enforced.**  Table 6-112 requires ``tr_rsrc_nums`` to
    be "larger than maximum submitted TRs".  The TRM phrases this as a
    constraint on firmware, not as a hardware check, so nothing here enforces
    it.
+5. **Copy timing outside shared RAM** was not measured; the per-TR cost in
+   point 6 above is applied whatever the bases point at.
 
 Not modelled at all: external memory for TRs or the ring, and the hardware
 doorbell -- both are in the TRM's own not-supported list.
@@ -101,8 +119,6 @@ throughout.
 """
 
 from __future__ import annotations
-
-from collections import deque
 
 from mem.memory_bus import MemoryBus
 from xfr.accelerator import Accelerator
@@ -139,11 +155,24 @@ MAX_RING_ENTRIES = 4096
 #: ``tr_rsrc_wrt_ptr`` in ``R8[17-0]`` -- all 18 bits wide.
 ADDR_MASK = 0x3FFFF
 
-#: INFERRED (module docstring note 1) -- the TRM gives no copy latency.  Core
-#: cycles from an ID leaving the submit FIFO to its TR landing in the ring.
-#: Must be >= 1 for "busy until ... the last write completed /data has landed"
-#: to be distinguishable from "busy until the FIFO is empty".
-TR_COPY_CYCLES = 2
+#: SILICON (module docstring point 4): the 8 submit-FIFO slots are addressed
+#: by 4-bit pointers, so occupancy reads ``(wr - rd) mod 16``.
+FIFO_PTR_MODULUS = 16
+
+#: SILICON (module docstring point 6): core cycles from the submitting XOUT
+#: to the first TR copy starting, when the engine was idle.  Fitted on
+#: LP-AM243.
+TR_START_CYCLES = 1
+
+
+def tr_copy_cycles(tr_size: int) -> int:
+    """SILICON (module docstring point 6): core cycles to copy one TR.
+
+    A shared-RAM read of ``tr_size`` bytes, ``2 + words``, then a write,
+    ``1 + words``: 7 cycles for an 8-byte TR and 35 for a 64-byte TR.
+    """
+    words = tr_size // 4
+    return (2 + words) + (1 + words)
 
 
 class XFR2TRRing:
@@ -166,10 +195,16 @@ class XFR2TRRing:
         # --- Table 6-112, BS ID 0x71 XOUT ---
         self.tr_rsrc_base = 0        # R6[17-0]
         self.tr_rsrc_nums = 0        # R7[19-8] -- 0 => a 1-entry ring
-        # --- Table 6-112, BS ID 0x71 XIN ---
-        self.wrt_ptr = 0             # R8[17-0] tr_rsrc_wrt_ptr
-        # --- 6.4.6.3.3: the 8-level deep submit FIFO, distinct from the ring
-        self._fifo: deque[int] = deque()
+        # --- ring write index; XIN 0x71 R8 reports it as an address
+        self.wrt_index = 0
+        # --- 6.4.6.3.3: the 8-level deep submit FIFO, distinct from the ring.
+        # SILICON: 8 slots addressed by 4-bit read/write pointers.
+        self._slots = [0] * SUBMIT_FIFO_DEPTH
+        self._fifo_wr = 0
+        self._fifo_rd = 0
+        #: Queued IDs overwritten before any copy latched them (silicon drops
+        #: them silently).
+        self.overflow_events = 0
         # --- the single TR copy the engine currently has in flight
         self._in_flight: int | None = None
         self._cycles_left = 0
@@ -183,8 +218,22 @@ class XFR2TRRing:
 
     @property
     def ring_entries(self) -> int:
-        """Ring capacity.  Table 6-112: ``tr_rsrc_nums`` 0 = 1 TR."""
-        return self.tr_rsrc_nums + 1
+        """Ring capacity.
+
+        SILICON (module docstring point 3): ``tr_rsrc_nums`` entries, so
+        ``nums = 3`` wraps after 3 -- not Table 6-112's "0 = 1 TR" reading.
+        ``nums = 0`` is unmeasured and treated as a one-entry ring.
+        """
+        return max(self.tr_rsrc_nums, 1)
+
+    @property
+    def wrt_ptr(self) -> int:
+        """``tr_rsrc_wrt_ptr`` as XIN 0x71 returns it in R8.
+
+        SILICON (module docstring point 2): an absolute ring address,
+        ``tr_rsrc_base + index * tr_size``, not an element index.
+        """
+        return (self.tr_rsrc_base + self.wrt_index * self.tr_size) & ADDR_MASK
 
     @property
     def fifo_occ(self) -> int:
@@ -193,19 +242,23 @@ class XFR2TRRing:
         A property of the FIFO only.  It is deliberately *not* derived from
         the ring: ring occupancy is not an observable this interface exposes
         at all (Table 6-112 gives the ring only ``tr_rsrc_wrt_ptr``).
+
+        SILICON (module docstring point 4): ``(wr - rd) mod 16``, where ``rd``
+        advances when a TR lands, so the TR being copied still counts.  After
+        an overflow the value aliases, as it does on the device.
         """
-        return len(self._fifo)
+        return (self._fifo_wr - self._fifo_rd) % FIFO_PTR_MODULUS
 
     @property
     def busy(self) -> bool:
         """``tr_rsrc_busy`` -- "0h: Not Busy / 1x: Busy".
 
         Table 6-112: "It will be busy until the FIFO is empty AND the last
-        write completed /data has landed."  Both terms are required: the
-        second is what keeps busy asserted after the final ID has left the
-        FIFO but before its TR has landed in the ring.
+        write completed /data has landed."  An ID leaves the FIFO count only
+        once its TR has landed (module docstring point 4), so both terms
+        reduce to a non-zero occupancy.
         """
-        return bool(self._fifo) or self._in_flight is not None
+        return self.fifo_occ != 0
 
     # -- 0x70 / 0x71 XOUT configuration ------------------------------------
 
@@ -226,8 +279,8 @@ class XFR2TRRing:
             self.tr_rsrc_nums = (control >> 8) & TR_RSRC_NUMS_MASK  # R7[19-8]
             if (control >> 1) & 0x1:                                # R7[1]
                 # "This reset the ring pointer".  Pointer only -- the submit
-                # FIFO and any in-flight copy are left alone (docstring 4).
-                self.wrt_ptr = 0
+                # FIFO and any in-flight copy are left alone (inference 2).
+                self.wrt_index = 0
 
     # -- 0x72 XOUT submit --------------------------------------------------
 
@@ -238,39 +291,46 @@ class XFR2TRRing:
                 f"XFR2TR 0x72 XOUT carries 1 to {MAX_IDS_PER_XOUT} TR IDs "
                 f"(SPRUIM2J Table 6-112); got {len(ids)}"
             )
-        if len(self._fifo) + len(ids) > SUBMIT_FIFO_DEPTH:
-            # SIMULATOR POLICY, not silicon: overflow is undocumented for this
-            # block (module docstring note 5).  Fail loud rather than drop.
-            raise RuntimeError(
-                f"XFR2TR submit FIFO overflow: {len(self._fifo)} of "
-                f"{SUBMIT_FIFO_DEPTH} entries occupied, {len(ids)} more "
-                "submitted.  SPRUIM2J does not document XFR2TR FIFO-full "
-                "behaviour, so the simulator refuses rather than guessing; "
-                "poll tr_rscr_fifo_occ (0x71 XIN, R7[11-8]) before the XOUT."
-            )
-        # INFERRED order (module docstring note 3): reversed, so that the
-        # FIFO-order drain reproduces the 6.4.6.3.3.1 worked example in which
-        # XOUT 0,1,2,6,3 lands in the ring as 3,6,2,1,0.
-        for tr_id in reversed(ids):
-            self._fifo.append(tr_id & TR_ID_MASK)
+        was_idle = not self.busy
+        for tr_id in ids:
+            # SILICON (module docstring point 5): no stall and no error when
+            # full -- the write pointer runs on and overwrites queued slots.
+            # The slot about to be written still holds an ID that no copy has
+            # latched yet: that ID is lost.  (The ID being copied still counts
+            # in fifo_occ but is already latched, so overwriting it is safe.)
+            if self.fifo_occ - (self._in_flight is not None) >= SUBMIT_FIFO_DEPTH:
+                self.overflow_events += 1
+            self._slots[self._fifo_wr % SUBMIT_FIFO_DEPTH] = tr_id & TR_ID_MASK
+            self._fifo_wr = (self._fifo_wr + 1) % FIFO_PTR_MODULUS
+        if was_idle and self.busy:
+            self._in_flight = None
+            self._cycles_left = TR_START_CYCLES
 
     # -- the autonomous copy engine ----------------------------------------
 
-    def tick(self) -> None:
-        """Advance the TR copy engine by one core cycle.
+    def tick(self, cycles: int = 1) -> None:
+        """Advance the TR copy engine by *cycles* core cycles.
 
-        Called from ``PRUCore.step()``.  This is what makes the accelerator
-        autonomous: firmware submits IDs and polls ``tr_rsrc_busy``, and the
-        ring drains because time passes -- not because anything else pokes it.
+        Called from ``PRUCore.step()`` with the cycles the instruction took,
+        stalls included.  This is what makes the accelerator autonomous:
+        firmware submits IDs and polls ``tr_rsrc_busy``, and the ring drains
+        because time passes -- not because anything else pokes it.
         """
-        if self._in_flight is not None:
+        for _ in range(cycles):
+            if not self.busy:
+                return
             self._cycles_left -= 1
-            if self._cycles_left <= 0:
+            if self._cycles_left > 0:
+                continue
+            if self._in_flight is not None:
                 self._land(self._in_flight)
+                self._fifo_rd = (self._fifo_rd + 1) % FIFO_PTR_MODULUS
                 self._in_flight = None
-        if self._in_flight is None and self._fifo:
-            self._in_flight = self._fifo.popleft()
-            self._cycles_left = TR_COPY_CYCLES
+            if self.busy:
+                # Start the next copy back to back, latching its ID now
+                # (SILICON, module docstring point 6).
+                self._in_flight = self._slots[self._fifo_rd % SUBMIT_FIFO_DEPTH]
+                self._cycles_left = tr_copy_cycles(self.tr_size)
 
     def _land(self, tr_id: int) -> None:
         """Copy one TR from the source list into the ring and bump wrt_ptr.
@@ -281,7 +341,7 @@ class XFR2TRRing:
         """
         size = self.tr_size
         src = self.tr_msrc_base + tr_id * size
-        dst = self.tr_rsrc_base + self.wrt_ptr * size
+        dst = self.tr_rsrc_base + self.wrt_index * size
         try:
             payload, _stalls = self._memory.read(src, size)
             self._memory.write(dst, payload)
@@ -293,7 +353,7 @@ class XFR2TRRing:
                 "6-112); 6.4.6.3.3 places both lists in PRU_ICSSG shared RAM."
             ) from exc
         # "1 ring, with wrap around support" -- wrap at the configured size.
-        self.wrt_ptr = (self.wrt_ptr + 1) % self.ring_entries
+        self.wrt_index = (self.wrt_index + 1) % self.ring_entries
 
 
 class TaskRingAccelerator(Accelerator):
