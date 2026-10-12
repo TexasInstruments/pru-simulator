@@ -132,6 +132,11 @@ class PRUCore:
             WR_ID0: XFR2VBUSWriteAccelerator(self.vbus_memory, WR_ID0),
             WR_ID1: XFR2VBUSWriteAccelerator(self.vbus_memory, WR_ID1),
         }
+        # Accelerators whose state changes with time (XFR2VBUS read latency,
+        # WR_BUSY) expose advance(cycles); step() feeds them core cycles.
+        self._timed_accelerators = tuple(
+            acc for acc in self.accelerators.values() if hasattr(acc, "advance")
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -184,6 +189,7 @@ class PRUCore:
         """Execute one instruction."""
         if self.halted or self.pc >= len(self.instructions):
             return
+        cycles_before = self.counters.cycles
 
         # Pre-tick: advance UART frame generator before instruction reads R31
         if self.io_port.uart_generator is not None:
@@ -622,6 +628,13 @@ class PRUCore:
         # poll never terminates.
         if self.iep is not None:
             self.iep.tick()
+
+        # ---- Advance timed XFR accelerators -----------------------------
+        # Every core cycle this instruction took, memory stalls included (+1
+        # for the instruction cycle counted just below).
+        elapsed = self.counters.cycles - cycles_before + 1
+        for acc in self._timed_accelerators:
+            acc.advance(elapsed)
 
         # ---- Count instruction cycle ------------------------------------
         self.counters.tick()

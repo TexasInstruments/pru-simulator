@@ -12,6 +12,32 @@ independent hardware channels ("2 x XFR2VBUS RX threads" + "2 x XFR2VBUS TX
 threads", line 7321-7322) sharing nothing but the backing VBUS memory; each
 gets its own accelerator instance and private state, the same pattern
 BSwapAccelerator uses for its three device IDs.
+
+SILICON-MEASURED TIMING AND STATUS (LP-AM243, AM2434 ICSSG0 PRU0, MSRAM)
+-------------------------------------------------------------------------
+Programs run on an LP-AM243 against MSRAM fixed four behaviours the TRM leaves
+open.  Each is pinned by ``TestSiliconBehaviour`` in
+``tests/test_xfr2vbus_accelerator.py``.
+
+1. **Read latency.**  A read is in flight for :func:`read_latency_cycles`
+   core cycles after the XOUT that submits it (or the RD_DATA pop that
+   re-issues it in RD_AUTO mode).  While in flight, status reads ``0x0B``
+   (RD_BUSY, RD_CMD_FL, RD_MST_REQ); once the data has landed it reads
+   ``0x05`` (RD_BUSY, RD_DATA_FL).  The latency is MSRAM's on this device;
+   other targets and devices differ (AM261x MSRAM is several times slower),
+   so it is a constructor argument.
+2. **An early XIN of RD_DATA is harmless.**  An XIN of RD_DATA while no data
+   has landed returns the channel's data register as it stands -- the last
+   data that landed -- and consumes nothing.  open-pru's FFT relies on this:
+   it XINs RD_DATA straight after enabling RD_AUTO, and silicon then still
+   delivers the first block to the next XIN.
+3. **Combined setup.**  ``XOUT 0x60, &r18, 8`` writes RD_AUTO/RD_SIZE (R18.b0)
+   and RD_ADDR (R19) in one instruction and is accepted, with the
+   configuration applied before the read is submitted.  R18.b1..b3 are
+   ignored.
+4. **WR_BUSY.**  R20[0] reads 1 for :data:`WR_BUSY_CYCLES` core cycles after
+   a data-bearing write XOUT.  The write itself still lands in backing
+   memory immediately (simplification: the VBUSM write is not delayed).
 """
 
 from __future__ import annotations
@@ -26,6 +52,29 @@ WR_ID1 = 0x63
 
 _DATA_FIRST_REG = 2
 _DATA_LAST_REG = 17  # inclusive; R2..R9 is the 32B window, R2..R17 is 64B
+
+# R18 read status bits (TRM Table 6-107).
+RD_BUSY = 0x01
+RD_CMD_FL = 0x02
+RD_DATA_FL = 0x04
+RD_MST_REQ = 0x08
+#: SILICON (module docstring point 1): status while a read is in flight.
+RD_STATUS_IN_FLIGHT = RD_BUSY | RD_CMD_FL | RD_MST_REQ
+#: SILICON: status once the data has landed and not yet been popped.
+RD_STATUS_DATA_READY = RD_BUSY | RD_DATA_FL
+
+#: SILICON (module docstring point 1): core cycles from the submitting XOUT
+#: to RD_DATA_FL, per read size, for AM243x MSRAM.  Fitted on LP-AM243.
+AM243X_MSRAM_READ_LATENCY = {4: 18, 32: 20, 64: 24}
+
+#: SILICON (module docstring point 4): core cycles WR_BUSY stays set after a
+#: write XOUT.  Fitted on LP-AM243 against MSRAM.
+WR_BUSY_CYCLES = 4
+
+
+def read_latency_cycles(size: int) -> int:
+    """AM243x MSRAM read latency for a *size*-byte XFR2VBUS read."""
+    return AM243X_MSRAM_READ_LATENCY[size]
 
 
 def _split_addr48(lo: bytearray, hi: bytearray) -> int:
@@ -76,15 +125,23 @@ class XFR2VBUSWriteAccelerator(Accelerator):
     _VALID_SPLIT_SIZES = (1, 4, 8, 32, 64)
     _VALID_COMBINED_SIZES = (32, 64)
 
-    def __init__(self, memory: MemoryBus, device_id: int) -> None:
+    def __init__(self, memory: MemoryBus, device_id: int,
+                 busy_cycles: int = WR_BUSY_CYCLES) -> None:
         self._memory = memory
         self.DEVICE_ID = device_id
+        self.busy_cycles = busy_cycles
         self._addr_lo = bytearray(4)
         self._addr_hi = bytearray(2)
+        self._busy_left = 0
 
     def reset(self) -> None:
         self._addr_lo = bytearray(4)
         self._addr_hi = bytearray(2)
+        self._busy_left = 0
+
+    def advance(self, cycles: int) -> None:
+        """Let *cycles* core cycles pass (called from ``PRUCore.step``)."""
+        self._busy_left = max(0, self._busy_left - cycles)
 
     def _validate_size(self, size: int, *, combined: bool) -> None:
         """Raise unless `size` is legal for the given XOUT flow shape.
@@ -115,16 +172,14 @@ class XFR2VBUSWriteAccelerator(Accelerator):
         )
 
     def xin(self, start_reg: int, length: int, start_byte: int = 0) -> bytes:
-        # ALL modes: R20[0] WR_BUSY (Table 6-106). The simulator retires a
-        # write synchronously inside xout() below, so by the time software
-        # can poll this the command/data FIFOs it reflects are always
-        # drained — see docs/xfr2vbus-trm-model-table.md "Simplifications".
+        # ALL modes: R20[0] WR_BUSY (Table 6-106).  SILICON (module docstring
+        # point 4): set for busy_cycles after a write.
         if start_reg != 20:
             raise ValueError(
                 f"XFR2VBUS write device 0x{self.DEVICE_ID:02X} only exposes "
                 f"WR_BUSY via XIN &R20 (TRM Table 6-106); got R{start_reg}.b{start_byte}"
             )
-        return bytes(length)
+        return int(self._busy_left > 0).to_bytes(4, "little")[:length].ljust(length, b"\0")
 
     def xout(self, start_reg: int, data: bytes, start_byte: int = 0) -> None:
         if not data:
@@ -178,6 +233,8 @@ class XFR2VBUSWriteAccelerator(Accelerator):
                 f"{size}-byte aligned (TRM section 6.4.6.3.1.4)"
             )
         self._memory.write(addr, bytes(payload))
+        # INFERENCE: a write issued while still busy queues behind the first.
+        self._busy_left += self.busy_cycles
 
     def xchg(self, start_reg: int, data: bytes, start_byte: int = 0) -> bytes:
         raise ValueError(
@@ -199,29 +256,51 @@ class XFR2VBUSReadAccelerator(Accelerator):
     # see docs/xfr2vbus-trm-model-table.md "Corrections".
     _SIZE_BYTES = {0: 4, 2: 32, 3: 64}
 
-    def __init__(self, memory: MemoryBus, device_id: int) -> None:
+    #: The channel's RD_DATA register is the 64-byte R2..R17 window.
+    _DATA_REG_BYTES = 64
+
+    def __init__(self, memory: MemoryBus, device_id: int,
+                 latency=read_latency_cycles) -> None:
         self._memory = memory
         self.DEVICE_ID = device_id
-        self._addr_lo = bytearray(4)
-        self._addr_hi = bytearray(2)
-        self._auto = False
-        self._size_code = 0
-        self._buffer: bytes | None = None
+        self.latency = latency
+        self.reset()
 
     def reset(self) -> None:
         self._addr_lo = bytearray(4)
         self._addr_hi = bytearray(2)
         self._auto = False
         self._size_code = 0
-        self._buffer = None
+        # Last data that landed.  SILICON (module docstring point 2): an XIN
+        # of RD_DATA before new data lands returns this, unconsumed.
+        self._data_reg = bytes(self._DATA_REG_BYTES)
+        self._data_ready = False         # RD_DATA_FL
+        self._pending: bytes | None = None  # read in flight
+        self._cycles_left = 0
 
     @property
     def _busy(self) -> bool:
-        # R18[0] RD_BUSY = (RD_CMD_FIFO_LEVEL!=0) or (RD_DATA_FIFO_LEVEL!=0).
-        # The read is fetched synchronously in _issue_read() below, so the
-        # command-FIFO term is always 0 by the time this is observable; only
-        # "unread data still latched" can make this true.
-        return self._buffer is not None
+        # R18[0] RD_BUSY = (RD_CMD_FIFO_LEVEL!=0) or (RD_DATA_FIFO_LEVEL!=0):
+        # a read in flight, or landed data not yet popped.
+        return self._pending is not None or self._data_ready
+
+    def advance(self, cycles: int) -> None:
+        """Let *cycles* core cycles pass (called from ``PRUCore.step``)."""
+        if self._pending is None:
+            return
+        self._cycles_left -= cycles
+        if self._cycles_left <= 0:
+            data = self._pending
+            self._data_reg = data + self._data_reg[len(data):]
+            self._pending = None
+            self._data_ready = True
+
+    def _status(self) -> int:
+        if self._pending is not None:
+            return RD_STATUS_IN_FLIGHT
+        if self._data_ready:
+            return RD_STATUS_DATA_READY
+        return 0
 
     def xin(self, start_reg: int, length: int, start_byte: int = 0) -> bytes:
         if start_reg == self._CONFIG_REG:
@@ -230,22 +309,20 @@ class XFR2VBUSReadAccelerator(Accelerator):
                     f"XFR2VBUS read device 0x{self.DEVICE_ID:02X}: status is read from "
                     f"&R18.b0 (TRM Table 6-107); got &R18.b{start_byte}"
                 )
-            # RD_BUSY(0), RD_CMD_FL(1)=0 always, RD_DATA_FL(2), RD_MST_REQ(3)=0 always —
-            # see docs/xfr2vbus-trm-model-table.md "Simplifications".
-            busy = int(self._busy)
-            status = busy | (busy << 2)
-            return status.to_bytes(length, "little")
+            # RD_BUSY(0), RD_CMD_FL(1), RD_DATA_FL(2), RD_MST_REQ(3): SILICON
+            # (module docstring point 1).
+            return self._status().to_bytes(4, "little")[:length].ljust(length, b"\0")
         if _DATA_FIRST_REG <= start_reg <= _DATA_LAST_REG and start_byte == 0:
-            if self._buffer is None:
-                raise ValueError(
-                    f"XFR2VBUS read device 0x{self.DEVICE_ID:02X}: XIN RD_DATA with no read "
-                    "pending (RD_DATA_FL=0); XOUT RD_ADDR first (TRM section 6.4.6.3.1.6)"
-                )
+            result = self._data_reg[:length].ljust(length, b"\0")
+            if not self._data_ready:
+                # SILICON (module docstring point 2): nothing has landed, so
+                # the XIN returns the data register as it stands and pops
+                # nothing -- including straight after RD_AUTO is enabled.
+                return result
             # "XIN of the read data will fully pop the data, independent of
-            # XIN size" (TRM lines 7360, 7376) — the whole buffer is
-            # discarded even if length < len(self._buffer).
-            result = self._buffer[:length]
-            self._buffer = None
+            # XIN size" (TRM lines 7360, 7376) — RD_DATA_FL clears even if
+            # length is shorter than the read.
+            self._data_ready = False
             if self._auto:
                 # TRM Table 6-107 R18[0] RD_AUTO: "every RD_DATA pop will
                 # cause a new read command and read address to increment by
@@ -263,27 +340,22 @@ class XFR2VBUSReadAccelerator(Accelerator):
 
     def xout(self, start_reg: int, data: bytes, start_byte: int = 0) -> None:
         if start_reg == self._CONFIG_REG:
-            if start_byte != 0 or len(data) != 1:
+            if start_byte != 0:
                 raise ValueError(
-                    f"XFR2VBUS read device 0x{self.DEVICE_ID:02X}: RD_AUTO/RD_SIZE is a "
-                    f"single byte at &R18.b0 (TRM Table 6-107); got &R18.b{start_byte}, "
-                    f"{len(data)} byte(s)"
+                    f"XFR2VBUS read device 0x{self.DEVICE_ID:02X}: RD_AUTO/RD_SIZE is "
+                    f"&R18.b0 (TRM Table 6-107); got &R18.b{start_byte}"
                 )
-            byte = data[0]
-            auto = bool(byte & 0x1)
-            size_code = (byte >> 1) & 0x3
-            if size_code not in self._SIZE_BYTES:
+            if len(data) > 12:
                 raise ValueError(
-                    f"XFR2VBUS read device 0x{self.DEVICE_ID:02X}: RD_SIZE={size_code} "
-                    "(0b01) is Reserved (TRM Table 6-107)"
+                    f"XFR2VBUS read device 0x{self.DEVICE_ID:02X}: an XOUT from &R18 "
+                    "reaches at most R20 (RD_ADDR upper); got "
+                    f"{len(data)} bytes (TRM Table 6-107)"
                 )
-            if auto and size_code == 0:
-                raise ValueError(
-                    f"XFR2VBUS read device 0x{self.DEVICE_ID:02X}: RD_AUTO does not support "
-                    "4 Byte mode (TRM section 6.4.6.3.1.3)"
-                )
-            self._auto = auto
-            self._size_code = size_code
+            self._configure(data[0])
+            if len(data) > 4:
+                # SILICON (module docstring point 3): config and RD_ADDR in
+                # one XOUT, as open-pru's FFT does.  R18.b1..b3 are ignored.
+                self.xout(self._ADDR_LOW_REG, data[4:], 0)
             return
 
         if start_reg in (self._ADDR_LOW_REG, self._ADDR_HIGH_REG):
@@ -315,6 +387,23 @@ class XFR2VBUSReadAccelerator(Accelerator):
             f"(&R18) or RD_ADDR (&R19, &R20) (TRM Table 6-107); got &R{start_reg}.b{start_byte}"
         )
 
+    def _configure(self, byte: int) -> None:
+        """R18.b0: RD_AUTO (bit 0) and RD_SIZE (bits 2:1), TRM Table 6-107."""
+        auto = bool(byte & 0x1)
+        size_code = (byte >> 1) & 0x3
+        if size_code not in self._SIZE_BYTES:
+            raise ValueError(
+                f"XFR2VBUS read device 0x{self.DEVICE_ID:02X}: RD_SIZE={size_code} "
+                "(0b01) is Reserved (TRM Table 6-107)"
+            )
+        if auto and size_code == 0:
+            raise ValueError(
+                f"XFR2VBUS read device 0x{self.DEVICE_ID:02X}: RD_AUTO does not support "
+                "4 Byte mode (TRM section 6.4.6.3.1.3)"
+            )
+        self._auto = auto
+        self._size_code = size_code
+
     def xchg(self, start_reg: int, data: bytes, start_byte: int = 0) -> bytes:
         raise ValueError(
             f"XFR2VBUS read device 0x{self.DEVICE_ID:02X} has no XCHG access type "
@@ -325,8 +414,9 @@ class XFR2VBUSReadAccelerator(Accelerator):
         if self._busy:
             raise ValueError(
                 f"XFR2VBUS read device 0x{self.DEVICE_ID:02X}: RD_ADDR written while "
-                "RD_BUSY=1 (undrained RD_DATA); XIN RD_DATA before submitting a new "
-                "read address (TRM section 6.4.6.3.1.6 \"Wait RD_BUSY = 0h\")"
+                "RD_BUSY=1 (read in flight or RD_DATA not popped); wait for "
+                "RD_BUSY = 0 before submitting a new read address (TRM section "
+                "6.4.6.3.1.6 \"Wait RD_BUSY = 0h\")"
             )
         size = self._SIZE_BYTES[self._size_code]
         addr = _split_addr48(self._addr_lo, self._addr_hi)
@@ -336,4 +426,7 @@ class XFR2VBUSReadAccelerator(Accelerator):
                 f"{size}-byte aligned (TRM section 6.4.6.3.1.2)"
             )
         data, _stalls = self._memory.read(addr, size)
-        self._buffer = data
+        # SILICON (module docstring point 1): the data lands after the read
+        # latency; advance() delivers it.
+        self._pending = bytes(data)
+        self._cycles_left = self.latency(size)

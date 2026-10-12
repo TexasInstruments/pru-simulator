@@ -3,7 +3,9 @@ WR_ID0/WR_ID1 0x62/0x63).
 
 See docs/xfr2vbus-trm-model-table.md for the field-by-field TRM citations
 this suite is written against (AM64x/AM243x TRM SPRUIM2J section 6.4.6.3.1,
-Tables 6-106/6-107).
+Tables 6-106/6-107).  ``TestSiliconBehaviour`` replays programs run on an
+LP-AM243 (AM2434, ICSSG0 PRU0, reading MSRAM) and asserts what the device
+returned.
 """
 
 import struct
@@ -15,8 +17,12 @@ from mem.memory_bus import MemoryBus
 from mem.regions import MemoryRegion
 from pru_io.io_port import IOPort
 from xfr.xfr2vbus_accelerator import (
+    AM243X_MSRAM_READ_LATENCY,
     RD_ID0,
     RD_ID1,
+    RD_STATUS_DATA_READY,
+    RD_STATUS_IN_FLIGHT,
+    WR_BUSY_CYCLES,
     WR_ID0,
     WR_ID1,
     XFR2VBUSReadAccelerator,
@@ -45,6 +51,19 @@ def make_core(asm: str = "halt\n", vbus: MemoryBus | None = None) -> PRUCore:
 
 def reg(core: PRUCore, n: int) -> int:
     return core.registers.read_full(n)
+
+
+def land(acc) -> None:
+    """Let enough core cycles pass for any read in flight to land."""
+    acc.advance(max(AM243X_MSRAM_READ_LATENCY.values()))
+
+
+#: Poll RD status until RD_DATA_FL (R18[2]) is set -- the TRM's read flow.
+WAIT_RD_DATA_FL = """
+wait_rd:
+    xin 96, &r18, 1
+    qbbc wait_rd, r18, 2
+"""
 
 
 # ===========================================================================
@@ -205,11 +224,19 @@ class TestWriteChannel:
         with pytest.raises(ValueError, match="neither WR_DATA"):
             acc.xout(20, b"\x00" * 4)
 
-    def test_wr_busy_reads_zero_after_synchronous_write(self):
+    def test_wr_busy_is_set_after_a_write_then_clears(self):
+        """SILICON: WR_BUSY (R20[0]) reads 1 straight after a write and clears
+        WR_BUSY_CYCLES core cycles later.  The data is already in memory."""
         vbus = make_vbus()
         acc = XFR2VBUSWriteAccelerator(vbus, WR_ID0)
         acc.xout(10, struct.pack("<I", VBUS_BASE))
+        assert acc.xin(20, 1) == b"\x00"          # address-only XOUT: no write
         acc.xout(2, b"\xFF" * 4)
+        assert acc.xin(20, 1) == b"\x01"
+        assert vbus.read(VBUS_BASE, 4)[0] == b"\xFF" * 4
+        acc.advance(WR_BUSY_CYCLES - 1)
+        assert acc.xin(20, 1) == b"\x01"
+        acc.advance(1)
         assert acc.xin(20, 1) == b"\x00"
 
     def test_wr_busy_only_exposed_on_r20(self):
@@ -249,6 +276,7 @@ class TestReadChannel:
         self._seed(vbus, VBUS_BASE, b"\xDE\xAD\xBE\xEF")
         acc = XFR2VBUSReadAccelerator(vbus, RD_ID0)
         acc.xout(19, struct.pack("<I", VBUS_BASE))  # RD_ADDR, default RD_SIZE=4B
+        land(acc)
         assert acc.xin(2, 4) == b"\xDE\xAD\xBE\xEF"
 
     def test_assembly_32byte_read(self):
@@ -260,11 +288,13 @@ class TestReadChannel:
             "xout 96, &r18.b0, 1",
             "ldi32 r19, 0x00100000",
             "xout 96, &r19, 4",     # submits the read
+            WAIT_RD_DATA_FL,
             "xin 96, &r2, 32",
             "halt",
         ]
         core = make_core("\n".join(lines), vbus=vbus)
-        core.run(20)
+        core.run(100)
+        assert core.halted
         result = bytearray()
         for r in range(2, 10):
             result += struct.pack("<I", reg(core, r))
@@ -279,11 +309,13 @@ class TestReadChannel:
             "xout 96, &r18.b0, 1",
             "ldi32 r19, 0x00100000",
             "xout 96, &r19, 4",
+            WAIT_RD_DATA_FL,
             "xin 96, &r2, 64",
             "halt",
         ]
         core = make_core("\n".join(lines), vbus=vbus)
-        core.run(20)
+        core.run(100)
+        assert core.halted
         result = bytearray()
         for r in range(2, 18):
             result += struct.pack("<I", reg(core, r))
@@ -296,22 +328,25 @@ class TestReadChannel:
         acc = XFR2VBUSReadAccelerator(vbus, RD_ID0)
         acc.xout(18, bytes([0b100]))  # RD_SIZE=2 (32 Bytes)
         acc.xout(19, struct.pack("<I", VBUS_BASE))
+        land(acc)
         first4 = acc.xin(2, 4)
         assert first4 == bytes(range(4))
         # buffer is fully popped: a second command must be submitted, RD_DATA_FL
         # cannot still be occupied with the remaining 28 bytes.
         assert acc.xin(18, 1) == b"\x00"  # RD_BUSY/RD_DATA_FL both clear
 
-    def test_status_bits_rd_busy_and_rd_data_fl_set_together(self):
+    def test_status_in_flight_then_data_ready_then_idle(self):
+        """SILICON: 0x0B (RD_BUSY, RD_CMD_FL, RD_MST_REQ) while the read is in
+        flight, 0x05 (RD_BUSY, RD_DATA_FL) once it lands, 0 after the pop."""
         vbus = make_vbus()
         self._seed(vbus, VBUS_BASE, b"\x00" * 4)
         acc = XFR2VBUSReadAccelerator(vbus, RD_ID0)
         acc.xout(19, struct.pack("<I", VBUS_BASE))
-        status = acc.xin(18, 1)[0]
-        assert status & 0b0001, "RD_BUSY (bit 0) must be set while data is unread"
-        assert status & 0b0100, "RD_DATA_FL (bit 2) must be set while data is unread"
-        assert not (status & 0b0010), "RD_CMD_FL (bit 1) must be clear (synchronous fetch)"
-        assert not (status & 0b1000), "RD_MST_REQ (bit 3) must be clear (data already latched)"
+        assert acc.xin(18, 1)[0] == RD_STATUS_IN_FLIGHT == 0x0B
+        acc.advance(AM243X_MSRAM_READ_LATENCY[4] - 1)
+        assert acc.xin(18, 1)[0] == RD_STATUS_IN_FLIGHT
+        acc.advance(1)
+        assert acc.xin(18, 1)[0] == RD_STATUS_DATA_READY == 0x05
         acc.xin(2, 4)
         assert acc.xin(18, 1) == b"\x00"
 
@@ -324,6 +359,7 @@ class TestReadChannel:
         acc = XFR2VBUSReadAccelerator(vbus, RD_ID0)
         acc.xout(18, bytes([size_code << 1]))
         acc.xout(19, struct.pack("<I", VBUS_BASE))
+        land(acc)
         expected = {0: 4, 2: 32, 3: 64}[size_code]
         assert acc.xin(2, expected) == bytes(range(expected))
 
@@ -346,8 +382,11 @@ class TestReadChannel:
         acc = XFR2VBUSReadAccelerator(vbus, RD_ID0)
         acc.xout(18, bytes([0b101]))  # RD_AUTO=1, RD_SIZE=2 (32 Bytes)
         acc.xout(19, struct.pack("<I", VBUS_BASE))
+        land(acc)
         assert acc.xin(2, 32) == bytes(range(32))
         # the pop above must have already issued the next command at +0x20
+        assert acc.xin(18, 1)[0] == RD_STATUS_IN_FLIGHT
+        land(acc)
         assert acc.xin(2, 32) == bytes(range(100, 132))
 
     def test_backpressure_rejects_new_rd_addr_while_undrained(self):
@@ -358,11 +397,22 @@ class TestReadChannel:
         with pytest.raises(ValueError, match="RD_BUSY=1"):
             acc.xout(19, struct.pack("<I", VBUS_BASE + 4))
 
-    def test_xin_rd_data_without_pending_command_is_rejected(self):
+    def test_xin_rd_data_before_data_lands_returns_the_old_register(self):
+        """SILICON: an XIN of RD_DATA with RD_DATA_FL = 0 returns the data
+        register as it stands (the last data that landed) and pops nothing."""
         vbus = make_vbus()
+        self._seed(vbus, VBUS_BASE, b"\x11" * 4)
+        self._seed(vbus, VBUS_BASE + 4, b"\x22" * 4)
         acc = XFR2VBUSReadAccelerator(vbus, RD_ID0)
-        with pytest.raises(ValueError, match="no read pending"):
-            acc.xin(2, 4)
+        assert acc.xin(2, 4) == b"\x00" * 4          # nothing ever landed
+        acc.xout(19, struct.pack("<I", VBUS_BASE))
+        land(acc)
+        assert acc.xin(2, 4) == b"\x11" * 4
+        acc.xout(19, struct.pack("<I", VBUS_BASE + 4))
+        assert acc.xin(2, 4) == b"\x11" * 4          # early: old data, no pop
+        assert acc.xin(18, 1)[0] == RD_STATUS_IN_FLIGHT
+        land(acc)
+        assert acc.xin(2, 4) == b"\x22" * 4
 
     def test_read_requires_size_aligned_address(self):
         vbus = make_vbus()
@@ -392,8 +442,109 @@ class TestReadChannel:
         acc1 = XFR2VBUSReadAccelerator(vbus, RD_ID1)
         acc0.xout(19, struct.pack("<I", VBUS_BASE))
         acc1.xout(19, struct.pack("<I", VBUS_BASE + 4))
+        land(acc0)
+        land(acc1)
         assert acc0.xin(2, 4) == b"\x01" * 4
         assert acc1.xin(2, 4) == b"\x02" * 4
+
+
+# ===========================================================================
+# Silicon replay: LP-AM243 (AM2434), ICSSG0 PRU0, reads from MSRAM
+# ===========================================================================
+
+#: The device runs read MSRAM at 0x70170000 + off; these read the suite's
+#: VBUS region instead, filled with the same pattern (word i = 0xC0DE0000+i).
+PATTERN = struct.pack("<128I", *[0xC0DE0000 + i for i in range(128)])
+
+#: The status/poll sequence the device programs used after the read XOUT:
+#: one status XIN, then a 6-cycle poll loop until RD_DATA_FL=1, RD_MST_REQ=0.
+STATUS_THEN_POLL = """
+    xin 96, &r18, 1
+    and r21, r18, 0xFF
+    sbbo &r21, r24, 0, 4
+    add r24, r24, 4
+    ldi r22, 0
+    zero &r29, 4
+rp:
+    xin 96, &r18, 1
+    and r21, r18, 0xFF
+    or r29, r29, r21
+    qbbc rw, r21, 2
+    qbbc rd, r21, 3
+rw:
+    add r22, r22, 1
+    qbgt rp, r22, r28
+rd:
+    sbbo &r22, r24, 0, 4
+    add r24, r24, 4
+    sbbo &r29, r24, 0, 4
+    add r24, r24, 4
+"""
+
+
+class TestSiliconBehaviour:
+    def _run(self, body: str) -> tuple[PRUCore, list[int]]:
+        vbus = make_vbus()
+        vbus.write(VBUS_BASE, PATTERN)
+        core = make_core("    ldi r24, 0x100\n    ldi32 r28, 0x4000\n" + body + "    halt\n", vbus=vbus)
+        core.run(2000)
+        assert core.halted
+        raw, _ = core.memory.read(0x100, 64)
+        return core, list(struct.unpack("<16I", bytes(raw)))
+
+    @pytest.mark.parametrize("size,code,polls", [(4, 0x0, 2), (32, 0x4, 2), (64, 0x6, 3)])
+    def test_combined_setup_read_latency_and_data(self, size, code, polls):
+        """Device: XOUT 0x60, &r18, 8 is accepted; status 0x0B straight after,
+        then 2 / 2 / 3 polls of the 6-cycle loop before RD_DATA_FL for
+        4 / 32 / 64 bytes; the statuses seen OR to 0x0F; data matches."""
+        last = {4: 2, 32: 9, 64: 17}[size]
+        _, out = self._run(
+            f"    ldi r18, {code}\n    ldi32 r19, 0x{VBUS_BASE:X}\n    xout 96, &r18, 8\n"
+            + STATUS_THEN_POLL
+            + f"    xin 96, &r2, {size}\n    sbbo &r2, r24, 0, 4\n    add r24, r24, 4\n"
+            f"    sbbo &r{last}, r24, 0, 4\n"
+        )
+        assert out[:5] == [0x0B, polls, 0x0F, 0xC0DE0000, 0xC0DE0000 + size // 4 - 1]
+
+    def test_early_xin_returns_old_data_and_pops_nothing(self):
+        """Device: XIN RD_DATA straight after the XOUT returns the previous
+        data (here the first read's) and the new data arrives later."""
+        _, out = self._run(
+            f"    ldi r18, 0x4\n    ldi32 r19, 0x{VBUS_BASE:X}\n    xout 96, &r18, 8\n"
+            "w1:\n    xin 96, &r18, 1\n    qbbc w1, r18, 2\n    xin 96, &r2, 32\n"
+            f"    ldi32 r19, 0x{VBUS_BASE + 0x20:X}\n    xout 96, &r19, 4\n"
+            "    xin 96, &r2, 32\n    sbbo &r2, r24, 0, 4\n    add r24, r24, 4\n"
+            + STATUS_THEN_POLL
+            + "    xin 96, &r2, 32\n    sbbo &r2, r24, 0, 4\n"
+        )
+        assert out[0] == 0xC0DE0000          # old data, not consumed
+        assert out[1] == 0x0B                # still in flight
+        assert out[4] == 0xC0DE0008          # the new block, intact
+
+    def test_auto_mode_drain_right_after_enable_does_not_skip_a_block(self):
+        """open-pru FFT pattern: enable RD_AUTO, XIN RD_DATA at once.  Device:
+        the drain pops nothing, so the first polled block is block 0."""
+        body = (f"    ldi r18, 0x5\n    ldi32 r19, 0x{VBUS_BASE:X}\n    xout 96, &r18, 8\n"
+                "    xin 96, &r2, 32\n")
+        for k in range(3):
+            body += (STATUS_THEN_POLL.replace("rp", f"rp{k}").replace("rw", f"rw{k}").replace("rd", f"rd{k}")
+                     .replace("rd{k}:".format(k=k), f"rd{k}:")
+                     + "    xin 96, &r2, 32\n    sbbo &r2, r24, 0, 4\n    add r24, r24, 4\n")
+        _, out = self._run(body)
+        blocks = [out[k * 4 + 3] for k in range(3)]
+        assert blocks == [0xC0DE0000, 0xC0DE0008, 0xC0DE0010]
+
+    def test_wr_busy_seen_straight_after_a_write(self):
+        """Device: WR_BUSY reads 1 on the XIN after a 32-byte combined write
+        and 0 on the poll five cycles later."""
+        _, out = self._run(
+            f"    ldi r17, 0\n    ldi32 r10, 0x{VBUS_BASE + 0x400:X}\n    ldi r11, 0\n"
+            "    xout 98, &r2, 40\n    xin 98, &r20, 1\n    and r21, r20, 0xFF\n"
+            "    sbbo &r21, r24, 0, 4\n    add r24, r24, 4\n    ldi r22, 0\n"
+            "wp:\n    xin 98, &r20, 1\n    qbbc wd, r20, 0\n    add r22, r22, 1\n    qbgt wp, r22, r28\n"
+            "wd:\n    sbbo &r22, r24, 0, 4\n"
+        )
+        assert out[:2] == [1, 0]
 
 
 # ===========================================================================

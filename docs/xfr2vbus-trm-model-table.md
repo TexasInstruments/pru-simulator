@@ -47,7 +47,7 @@ pattern `BSwapAccelerator` uses for its three device IDs.
 | R19-R18 | XOUT | WR_ADDR | 48-bit; R19=upper 16, R18=lower 32 (matches the read table's explicit `R20:R19` high:low ordering) | `_addr_hi`/`_addr_lo`, partial-byte-preserving |
 | R9-R2 (32B mode) | XOUT | WR_DATA | "Size restrictions" list (lines 7421-7426): 1B, 4B aligned, 32B aligned, no holes; the R11-R10 WR_ADDR note (line 7438) separately says a combined XOUT "needs to be the full 32 bytes" | split-flow size validated against `{1,4,8,32,64}`, combined-flow against `{32,64}` — see **"Split vs. combined write sizes"** below for why this table's own list and §6.4.6.3.1.6's list are each right for a different flow shape |
 | R11-R10 | XOUT | WR_ADDR | 48-bit; R11=upper16, R10=lower32 | same latch as R19/R18 — see "Corrections" |
-| R20[0] (ALL modes) | XIN | WR_BUSY | 1 = (WR_CMD_FIFO≠0) or (WR_DATA_FIFO≠0) | always 0 post-write — see "Simplifications" |
+| R20[0] (ALL modes) | XIN | WR_BUSY | 1 = (WR_CMD_FIFO≠0) or (WR_DATA_FIFO≠0) | 1 for `WR_BUSY_CYCLES` core cycles after a write (silicon-measured) — see "Silicon measurements" |
 
 ### Split vs. combined write sizes (Table 6-106 vs. §6.4.6.3.1.6)
 
@@ -102,27 +102,27 @@ through `xout()`).
 
 | PRU register | Access | Field | TRM notes | Model |
 |---|---|---|---|---|
-| R17-R2 | XIN | RD_DATA | fully pops regardless of XIN length (line 7360, 7376) | `xin()` slices `_buffer[:length]`, always clears `_buffer` |
+| R17-R2 | XIN | RD_DATA | fully pops regardless of XIN length (line 7360, 7376) | returns `_data_reg[:length]`; pops (clears RD_DATA_FL) only if data has landed — an early XIN returns the old register and pops nothing (silicon) |
 | R18[0] | XOUT | RD_AUTO | 0→1 must write RD_ADDR; 4-byte mode unsupported in auto (line 7482) | `_auto`; rejects `auto and size_code==0` |
 | R18[2:1] | XOUT | RD_SIZE | 0h=4B, 1h=Reserved, 2h=32B, 3h=64B (lines 7483-7488) | `_SIZE_BYTES = {0:4, 2:32, 3:64}`; `1` raises |
-| R18[0] | XIN | RD_BUSY | (RD_CMD_FIFO≠0) or (RD_DATA_FIFO≠0) | `bool(_buffer is not None)` |
-| R18[1] | XIN | RD_CMD_FL | 0=Empty, 1=Occupied, pops only once data has arrived | always 0 — see "Simplifications" |
-| R18[2] | XIN | RD_DATA_FL | 0=Empty, 1=Occupied | same value as RD_BUSY here |
-| R18[3] | XIN | RD_MST_REQ | 1 = last data still in flight | always 0 — see "Simplifications" |
-| R20:R19 | XOUT | RD_ADDR | 48-bit; R20=upper16, R19=lower32; writing R19 submits the command | writing R19 triggers `_issue_read()`; writing R20 alone only updates the latch |
+| R18[0] | XIN | RD_BUSY | (RD_CMD_FIFO≠0) or (RD_DATA_FIFO≠0) | read in flight or landed data not yet popped |
+| R18[1] | XIN | RD_CMD_FL | 0=Empty, 1=Occupied, pops only once data has arrived | 1 while the read is in flight (silicon: status 0x0B) |
+| R18[2] | XIN | RD_DATA_FL | 0=Empty, 1=Occupied | 1 once the data has landed, until popped (silicon: status 0x05) |
+| R18[3] | XIN | RD_MST_REQ | 1 = last data still in flight | 1 while the read is in flight |
+| R20:R19 | XOUT | RD_ADDR | 48-bit; R20=upper16, R19=lower32; writing R19 submits the command | writing R19 triggers `_issue_read()`; writing R20 alone only updates the latch; one XOUT from `&R18` may carry config + address (silicon, open-pru FFT idiom) |
 
 ## Hardware behaviour (§6.4.6.3.1.1-.4, lines 7350-7382)
 
 * One command in the command FIFO, one 64-byte buffer, per direction, per
   channel (line 7325, 7330, 7355, 7358, 7378, 7381). Modelled: one `_addr`
-  latch and (read side) one `_buffer` slot per accelerator instance — never a
-  queue.
+  latch and (read side) one 64-byte data register per accelerator instance —
+  never a queue.
 * "XIN of the read data will fully pop the data, independent of XIN size"
-  (line 7360, 7376). Modelled exactly: `xin()` always discards `_buffer`
-  after slicing, even if `length < len(_buffer)`.
+  (line 7360, 7376). Modelled: a pop clears RD_DATA_FL even if
+  `length` is shorter than the read.
 * Read-side back-pressure: the programming model requires "Wait RD_BUSY = 0h"
   before submitting a new address (line 7545). Modelled: `_issue_read()`
-  raises `ValueError` if `_buffer` is still occupied — this is the "existing
+  raises `ValueError` if a read is in flight or unpopped — this is the "existing
   core hold mechanism" instruction from the brief read narrowly: `step()` is
   untouched, so the accelerator cannot itself stall the PC; a firmware image
   that violates the documented wait is a real protocol violation and fails
@@ -156,31 +156,41 @@ through `xout()`).
   development: an earlier version classified R10/R11 as WR_ADDR
   unconditionally and silently dropped 8 bytes of a 64-byte combined write.
 
+## Silicon measurements (LP-AM243, AM2434 ICSSG0 PRU0, MSRAM)
+
+The TRM gives no XFR2VBUS timing. Programs run on an LP-AM243 against MSRAM
+fixed the following; `TestSiliconBehaviour` in
+`tests/test_xfr2vbus_accelerator.py` replays them.
+
+* **Read latency.** RD_DATA_FL rises `AM243X_MSRAM_READ_LATENCY[size]` core
+  cycles after the XOUT that submits the read, or after the pop that
+  re-issues it in RD_AUTO mode. Until then status reads `0x0B` (RD_BUSY,
+  RD_CMD_FL, RD_MST_REQ); afterwards `0x05` (RD_BUSY, RD_DATA_FL). The
+  latency is a constructor argument because it belongs to the target memory
+  and device (AM261x MSRAM measured several times slower).
+* **Early XIN.** An XIN of RD_DATA while RD_DATA_FL = 0 returns the data
+  register unchanged (the last data that landed) and pops nothing. open-pru's
+  FFT issues exactly such an XIN straight after enabling RD_AUTO; on silicon
+  the first block is still delivered to the next XIN.
+* **Combined read setup.** `XOUT 0x60, &r18, 8` writes RD_AUTO/RD_SIZE and
+  RD_ADDR together and is accepted; config applies before the read is
+  submitted. R18.b1..b3 are ignored.
+* **WR_BUSY.** Reads 1 straight after a write XOUT and 0 within a few cycles
+  (`WR_BUSY_CYCLES`).
+* **8-byte split write** is legal and writes exactly 8 bytes, confirming the
+  split/combined reading above.
+
 ## Simplifications (labelled simulator-only, not TRM claims)
 
-* **WR_BUSY reads 0 immediately after every write.** The simulator retires a
-  VBUSM write synchronously inside `xout()`, in a single Python call with no
-  modelled bus latency — there is no elapsed-cycle window in which a "command
-  in flight" state could ever be observed. This is consistent with the TRM's
-  own note that "external bandwidth is very high... all egress commands and
-  data should get sent without head of line blocking" (line 7351-7352); the
-  only thing not modelled is "based on arbitration some delay is possible"
-  (line 7353), which this simulator has no VBUSM contention model for at all.
-* **RD_CMD_FL and RD_MST_REQ always read 0.** Both describe the interval
-  between issuing a read command and its data arriving. The simulator fetches
-  read data synchronously inside `_issue_read()` (called from the `xout()`
-  that submits RD_ADDR), so by the time software can poll R18 the data has
-  already landed — "last data has been latched" (RD_MST_REQ=0) and "it only
-  pops the read command FIFO after the read data has arrived" (RD_CMD_FL=0)
-  are both trivially true at every observable point.
-* **"Wait WR_BUSY=0h OR RD_DATA_FL=1h" (line 7547) between issuing RD_ADDR and
-  XIN'ing RD_DATA** is unconditionally satisfied by construction (RD_DATA_FL
-  is already 1 by the time `xout()` returns), so no explicit wait state is
-  modelled.
+* **Writes land in backing memory immediately.** WR_BUSY is timed, but the
+  VBUSM write itself is not delayed; a read issued during the busy window
+  sees the new data.
+* **A write issued while WR_BUSY = 1 queues behind the first** (its busy time
+  adds on). Not measured.
 * No VBUSM/CBASS0 fullness or arbitration state is modelled at all (line
   7351: "The only blocking condition is caused when the VBUSM command/data
   FIFO is full"); this repo has no cross-core external-bus contention model
-  to hook into.
+  to hook into, so the fixed read latency does not grow under load.
 
 ## Backing memory
 
