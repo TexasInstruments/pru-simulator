@@ -31,6 +31,8 @@ from xfr.task_ring_accelerator import (
     MAX_IDS_PER_XOUT,
     SUBMIT_FIFO_DEPTH,
     TR_SIZE_BYTES,
+    BUSY_TAIL_CYCLES,
+    TR_START_CYCLES,
     tr_copy_cycles,
     XFR2TR_DEVICE_IDS,
     XFR2TR_RING_CFG,
@@ -496,17 +498,20 @@ class TestAutonomousDrain:
     def test_busy_stays_set_until_the_last_write_lands(self):
         """Table 6-112: busy "until the FIFO is empty AND the last write
         completed /data has landed".  On silicon the ID being copied still
-        counts in tr_rscr_fifo_occ (module point 4), so busy, a non-zero
-        count and a not-yet-landed TR all clear on the same cycle."""
+        counts in tr_rscr_fifo_occ (module point 4), and busy outlasts the
+        landing by BUSY_TAIL_CYCLES (module point 6)."""
         ring, bus = make_ring()
         fill_source_table(bus)
         configure(ring, nums=15)
         ring.submit([9])
 
-        ticks = drain(ring)
-        assert ticks == 1 + tr_copy_cycles(8)
-        assert ring.wrt_ptr == ptr(1)
-        assert (ring.busy, ring.fifo_occ) == (False, 0)
+        landed_at = TR_START_CYCLES + tr_copy_cycles(8)
+        for _ in range(landed_at):
+            assert ring.busy and ring.fifo_occ == 1
+            ring.tick()
+        assert (ring.wrt_ptr, ring.fifo_occ, ring.busy) == (ptr(1), 0, True)
+        assert drain(ring) == BUSY_TAIL_CYCLES
+        assert ring.busy is False
 
     def test_copy_cost_is_a_shared_ram_read_plus_write(self):
         """SILICON (module point 6): (2 + words) + (1 + words) per TR."""
@@ -698,6 +703,57 @@ class TestSiliconBehaviour:
         ]
         assert core.task_ring.wrt_ptr == ptr(16)
         assert core.task_ring.overflow_events == 5
+
+    @pytest.mark.parametrize("ids,size64,iters", [
+        ([5], False, [2, 2, 2, 2]),
+        ([10, 11, 12], False, [6, 6, 5, 5]),
+        (list(range(1, 9)), False, [15, 14, 14, 14]),
+        ([2, 0], True, [18, 18, 18, 17]),
+    ])
+    def test_drain_time_to_one_cycle(self, ids, size64, iters):
+        """Device: a 4-cycle busy poll started 0..3 NOPs after the submit
+        counts these iterations (identical on two runs), which pins the drain
+        time -- start, per-TR copy cost and the busy tail -- to one cycle."""
+        got = []
+        for ph in range(4):
+            bus = make_memory()
+            fill_source_table(bus, count=32, tr_size=64 if size64 else 8)
+            core = make_core(
+                _SILICON_SETUP.replace("ldi r7, 0\n", f"ldi r7, {int(size64)}\n")
+                + "    ldi r22, 0\n    ldi32 r28, 0x4000\n" + _submit_asm(ids) + "    nop\n" * ph
+                + "tp:\n    xin 0x71, &r7, 4\n    qbbc td, r7, 0\n    add r22, r22, 1\n"
+                "    qbgt tp, r22, r28\ntd:\n    halt\n",
+                bus=bus,
+            )
+            core.run(max_steps=5000)
+            assert core.halted
+            got.append(core.registers.read_full(22))
+        assert got == iters
+
+    @pytest.mark.parametrize("nums,ids,ptr_index,slots", [
+        (0, [1, 2, 3], 0, [3]),
+        (1, [1, 2, 3], 0, [3]),
+        (2, [1, 2, 3, 4, 5], 1, [5, 4]),
+    ])
+    def test_small_rings(self, nums, ids, ptr_index, slots):
+        """Device: nums 0 and 1 both behave as a one-entry ring; nums 2 as
+        two entries."""
+        core, bus = self._run(
+            f"    ldi32 r6, 0x11000\n    ldi32 r7, 0x{(nums << 8) | 2:X}\n    xout 0x71, &r6, 8\n"
+            + _submit_asm(ids)
+        )
+        assert core.task_ring.wrt_ptr == ptr(ptr_index)
+        assert [ring_entry(bus, k) for k in range(len(slots))] == slots
+
+    def test_ring_of_fifteen_holds_fifteen(self):
+        """Device: nums = 15 and 16 TRs -> the 16th lands in slot 0 and the
+        pointer ends one entry in."""
+        core, bus = self._run(
+            _submit_asm([1, 2, 3, 4, 5, 6, 7, 8]) + WAIT_FOR_IDLE_ASM.replace("halt", "")
+            .replace("wait_idle", "w1") + _submit_asm([9, 10, 11, 12, 13, 14, 15, 16])
+        )
+        assert core.task_ring.wrt_ptr == ptr(1)
+        assert [ring_entry(bus, k) for k in range(15)] == [16] + list(range(2, 16))
 
     def test_ring_of_three_wraps_after_three(self):
         """Device: tr_rsrc_nums = 3; 10,11,12 then 13,14,15 -> pointer back at

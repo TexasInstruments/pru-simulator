@@ -80,7 +80,9 @@ ring in ICSSG shared RAM.  Each point is pinned by a test in
 6. **Copy timing.**  One TR costs a shared-RAM read plus a shared-RAM write
    of ``tr_size`` bytes, ``(2 + words) + (1 + words)`` core cycles (7 for 8
    bytes, 35 for 64 bytes), back to back, starting :data:`TR_START_CYCLES`
-   after the submitting XOUT.  The ID is latched when its copy starts, which
+   after the submitting XOUT.  ``tr_rsrc_busy`` clears
+   :data:`BUSY_TAIL_CYCLES` after the last TR lands; the pointer and the count
+   are already final by then.  The ID is latched when its copy starts, which
    is why ID 3 survived the overflow in point 5.  The engine advances by
    elapsed core cycles, stalls included.
 
@@ -107,6 +109,11 @@ WHAT NEITHER THE TRM NOR SILICON PINS DOWN (inferences, flagged as such)
    it.
 5. **Copy timing outside shared RAM** was not measured; the per-TR cost in
    point 6 above is applied whatever the bases point at.
+6. **Known residual.**  In two of the device programs the firmware stored
+   status words to shared RAM while the ring drained; there silicon went idle
+   one 4-cycle poll earlier than this model.  Every other drain measured (40,
+   including four phase offsets per case and a repeat run) matches to the
+   cycle, so the interaction is not modelled.
 
 Not modelled at all: external memory for TRs or the ring, and the hardware
 doorbell -- both are in the TRM's own not-supported list.
@@ -164,6 +171,11 @@ FIFO_PTR_MODULUS = 16
 #: LP-AM243.
 TR_START_CYCLES = 1
 
+#: SILICON (module docstring point 6): tr_rsrc_busy stays set this many core
+#: cycles after the last TR lands, while the pointer and count are already
+#: final.
+BUSY_TAIL_CYCLES = 1
+
 
 def tr_copy_cycles(tr_size: int) -> int:
     """SILICON (module docstring point 6): core cycles to copy one TR.
@@ -208,6 +220,7 @@ class XFR2TRRing:
         # --- the single TR copy the engine currently has in flight
         self._in_flight: int | None = None
         self._cycles_left = 0
+        self._busy_tail = 0
 
     # -- Table 6-112 observables -------------------------------------------
 
@@ -256,9 +269,10 @@ class XFR2TRRing:
         Table 6-112: "It will be busy until the FIFO is empty AND the last
         write completed /data has landed."  An ID leaves the FIFO count only
         once its TR has landed (module docstring point 4), so both terms
-        reduce to a non-zero occupancy.
+        reduce to a non-zero occupancy -- plus, on silicon, one more cycle
+        after the last landing (module docstring point 6).
         """
-        return self.fifo_occ != 0
+        return self.fifo_occ != 0 or self._busy_tail > 0
 
     # -- 0x70 / 0x71 XOUT configuration ------------------------------------
 
@@ -291,7 +305,7 @@ class XFR2TRRing:
                 f"XFR2TR 0x72 XOUT carries 1 to {MAX_IDS_PER_XOUT} TR IDs "
                 f"(SPRUIM2J Table 6-112); got {len(ids)}"
             )
-        was_idle = not self.busy
+        was_idle = self.fifo_occ == 0
         for tr_id in ids:
             # SILICON (module docstring point 5): no stall and no error when
             # full -- the write pointer runs on and overwrites queued slots.
@@ -302,7 +316,7 @@ class XFR2TRRing:
                 self.overflow_events += 1
             self._slots[self._fifo_wr % SUBMIT_FIFO_DEPTH] = tr_id & TR_ID_MASK
             self._fifo_wr = (self._fifo_wr + 1) % FIFO_PTR_MODULUS
-        if was_idle and self.busy:
+        if was_idle and self.fifo_occ:
             self._in_flight = None
             self._cycles_left = TR_START_CYCLES
 
@@ -317,8 +331,11 @@ class XFR2TRRing:
         because time passes -- not because anything else pokes it.
         """
         for _ in range(cycles):
-            if not self.busy:
-                return
+            if self.fifo_occ == 0:
+                self._busy_tail = max(0, self._busy_tail - 1)
+                if not self._busy_tail:
+                    return
+                continue
             self._cycles_left -= 1
             if self._cycles_left > 0:
                 continue
@@ -326,7 +343,9 @@ class XFR2TRRing:
                 self._land(self._in_flight)
                 self._fifo_rd = (self._fifo_rd + 1) % FIFO_PTR_MODULUS
                 self._in_flight = None
-            if self.busy:
+                if self.fifo_occ == 0:
+                    self._busy_tail = BUSY_TAIL_CYCLES
+            if self.fifo_occ:
                 # Start the next copy back to back, latching its ID now
                 # (SILICON, module docstring point 6).
                 self._in_flight = self._slots[self._fifo_rd % SUBMIT_FIFO_DEPTH]
