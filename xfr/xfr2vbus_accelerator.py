@@ -20,8 +20,8 @@ open.  Each is pinned by ``TestSiliconBehaviour`` in
 ``tests/test_xfr2vbus_accelerator.py``.
 
 1. **Read latency.**  A read is in flight for :func:`read_latency_cycles`
-   core cycles after the XOUT that submits it (or the RD_DATA pop that
-   re-issues it in RD_AUTO mode).  While in flight, status reads ``0x0B``
+   core cycles after the XOUT that submits it, one cycle more when an
+   RD_DATA pop re-issues it in RD_AUTO mode.  While in flight, status reads ``0x0B``
    (RD_BUSY, RD_CMD_FL, RD_MST_REQ); once the data has landed it reads
    ``0x05`` (RD_BUSY, RD_DATA_FL).  The latency is MSRAM's on this device;
    other targets and devices differ (AM261x MSRAM is several times slower),
@@ -69,7 +69,12 @@ AM243X_MSRAM_READ_LATENCY = {4: 18, 32: 20, 64: 24}
 
 #: SILICON (module docstring point 4): core cycles WR_BUSY stays set after a
 #: write XOUT.  Fitted on LP-AM243 against MSRAM.
-WR_BUSY_CYCLES = 4
+WR_BUSY_CYCLES = 2
+
+#: SILICON (module docstring point 1): a read re-issued by an RD_DATA pop in
+#: RD_AUTO mode lands one cycle later than one submitted by XOUT -- the new
+#: command leaves the cycle after the pop.
+AUTO_REISSUE_EXTRA_CYCLES = 1
 
 
 def read_latency_cycles(size: int) -> int:
@@ -332,6 +337,7 @@ class XFR2VBUSReadAccelerator(Accelerator):
                 self._addr_lo[:] = (next_addr & 0xFFFFFFFF).to_bytes(4, "little")
                 self._addr_hi[:] = ((next_addr >> 32) & 0xFFFF).to_bytes(2, "little")
                 self._issue_read()
+                self._cycles_left += AUTO_REISSUE_EXTRA_CYCLES
             return result
         raise ValueError(
             f"XFR2VBUS read device 0x{self.DEVICE_ID:02X}: XIN only supports RD_DATA "

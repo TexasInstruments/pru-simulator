@@ -163,8 +163,9 @@ fixed the following; `TestSiliconBehaviour` in
 `tests/test_xfr2vbus_accelerator.py` replays them.
 
 * **Read latency.** RD_DATA_FL rises `AM243X_MSRAM_READ_LATENCY[size]` core
-  cycles after the XOUT that submits the read, or after the pop that
-  re-issues it in RD_AUTO mode. Until then status reads `0x0B` (RD_BUSY,
+  cycles after the XOUT that submits the read (`{4: 18, 32: 20, 64: 24}`
+  for MSRAM), and one cycle more after the pop that re-issues it in RD_AUTO
+  mode. Until then status reads `0x0B` (RD_BUSY,
   RD_CMD_FL, RD_MST_REQ); afterwards `0x05` (RD_BUSY, RD_DATA_FL). The
   latency is a constructor argument because it belongs to the target memory
   and device (AM261x MSRAM measured several times slower).
@@ -175,8 +176,8 @@ fixed the following; `TestSiliconBehaviour` in
 * **Combined read setup.** `XOUT 0x60, &r18, 8` writes RD_AUTO/RD_SIZE and
   RD_ADDR together and is accepted; config applies before the read is
   submitted. R18.b1..b3 are ignored.
-* **WR_BUSY.** Reads 1 straight after a write XOUT and 0 within a few cycles
-  (`WR_BUSY_CYCLES`).
+* **WR_BUSY.** Reads 1 on the XIN straight after a write XOUT and 0 one
+  cycle later (`WR_BUSY_CYCLES` = 2), for 32- and 64-byte writes alike.
 * **8-byte split write** is legal and writes exactly 8 bytes, confirming the
   split/combined reading above.
 

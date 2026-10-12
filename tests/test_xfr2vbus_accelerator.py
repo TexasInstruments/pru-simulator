@@ -547,6 +547,65 @@ class TestSiliconBehaviour:
         assert out[:2] == [1, 0]
 
 
+    # 4-cycle poll loop (XIN, QBBx, ADD, QBGT) started 0..3 NOPs after the
+    # command: the iteration counts across the four phases pin the latency to
+    # one cycle.  Values are what the LP-AM243 returned.
+    TIGHT = """
+tp:
+    xin {xid}, &{reg}, 1
+    {qb} td, {reg}, {bit}
+    add r22, r22, 1
+    qbgt tp, r22, r28
+td:
+    sbbo &r22, r24, 0, 4
+    add r24, r24, 4
+"""
+
+    @pytest.mark.parametrize("size,code,iters", [
+        (4, 0x0, [5, 4, 4, 4]), (32, 0x4, [5, 5, 5, 4]), (64, 0x6, [6, 6, 6, 5])])
+    def test_read_latency_to_one_cycle(self, size, code, iters):
+        got = []
+        for ph in range(4):
+            _, out = self._run(
+                f"    ldi r18, {code}\n    ldi32 r19, 0x{VBUS_BASE:X}\n    ldi r22, 0\n"
+                "    xout 96, &r18, 8\n" + "    nop\n" * ph
+                + self.TIGHT.format(xid=96, reg="r18", qb="qbbs", bit=2)
+            )
+            got.append(out[0])
+        assert got == iters
+
+    def test_auto_reissue_lands_one_cycle_later_than_xout(self):
+        """Device: after a pop in RD_AUTO mode the next 32-byte block polls
+        5, 4, 4, 4 times across phases 0..3 -- 21 cycles, not 20."""
+        got = []
+        for ph in range(4):
+            _, out = self._run(
+                f"    ldi r18, 0x5\n    ldi32 r19, 0x{VBUS_BASE:X}\n    ldi r22, 0\n"
+                "    xout 96, &r18, 8\n"
+                + self.TIGHT.format(xid=96, reg="r18", qb="qbbs", bit=2).replace("tp", "ta").replace("td", "tb")
+                + "    ldi r22, 0\n    xin 96, &r2, 32\n" + "    nop\n" * ph
+                + "    sbbo &r2, r24, 0, 4\n    add r24, r24, 4\n"
+                + self.TIGHT.format(xid=96, reg="r18", qb="qbbs", bit=2)
+            )
+            got.append(out[2])
+        assert got == [5, 4, 4, 4]
+
+    @pytest.mark.parametrize("size", [32, 64])
+    def test_wr_busy_is_visible_for_one_poll_only(self, size):
+        """Device: WR_BUSY is seen by an XIN on the cycle after the write and
+        by none later (busy iterations 1, 0, 0, 0 across phases)."""
+        xout = (f"    ldi r17, 0\n    ldi32 r10, 0x{VBUS_BASE + 0x400:X}\n    ldi r11, 0\n"
+                "    ldi r22, 0\n    xout 98, &r2, 40\n") if size == 32 else (
+                f"    ldi32 r18, 0x{VBUS_BASE + 0x400:X}\n    ldi r19, 0\n"
+                "    ldi r22, 0\n    xout 98, &r2, 72\n")
+        got = []
+        for ph in range(4):
+            _, out = self._run(xout + "    nop\n" * ph
+                               + self.TIGHT.format(xid=98, reg="r20", qb="qbbc", bit=0))
+            got.append(out[0])
+        assert got == [1, 0, 0, 0]
+
+
 # ===========================================================================
 # Registration is load-bearing (mutation proving PR #30's fail-loud path
 # still applies to a genuinely unmodelled ID, and that removing the
