@@ -5,7 +5,8 @@
 ; Streams one Ethernet frame per perif "burst".  For each frame the firmware
 ;   1. (BERT mode) fills the payload with an xorshift32 PRNG, or (preloaded
 ;      mode) uses the payload the host placed in DRAM0,
-;   2. computes the CRC-32 FCS in firmware and appends it,
+;   2. computes the CRC-32 FCS on the CRC16/32 broadside accelerator
+;      (XFR device 1) and appends it,
 ;   3. 8b/10b-encodes every octet through a 256-entry LUT in DRAM0 (LBCO from
 ;      c24), tracking running disparity, packs the 10-bit symbols MSB-first
 ;      into bytes and feeds channel-0's TX FIFO (refilling at FIFO-not-full),
@@ -35,7 +36,7 @@
 ;   r29 main->{prng_fill,crc32_compute,send_frame}
 ;   r28 send_frame->{emit_comma,flush_pad,drain_wait}
 ;   r26 ->push_symbol   r27 push_symbol->push_byte
-;   r26 is reused by crc32_compute->crc32_core (pif_eth_crc32.inc); safe because
+;   r26 is reused by crc32_compute->crc32_core (pif_eth_crc32_hw.inc); safe because
 ;   crc32_compute runs before send_frame, so no push_symbol return is live then.
 ; =============================================================
 
@@ -120,7 +121,8 @@ pf_done:
 ; -------------------------------------------------------------
 ; crc32_compute: CRC-32 over payload_len bytes at 0x0500, append the
 ;   4 FCS bytes little-endian at 0x0500+payload_len. ret r29
-;   The inner loop lives in pif_eth_crc32.inc (shared with the RX firmware).
+;   crc32_core lives in pif_eth_crc32_hw.inc (shared with the RX firmware)
+;   and runs on the CRC16/32 broadside accelerator; it saves/restores r29.
 ;   r26 is free here: it is only used as push_symbol's return register
 ;   inside send_frame, which runs after this.
 ; -------------------------------------------------------------
@@ -236,4 +238,4 @@ drain_wait:
     qbne drain_wait, r6, 0
     jmp  r28
 
-    .include "pif_eth_crc32.inc"
+    .include "pif_eth_crc32_hw.inc"

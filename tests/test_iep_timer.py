@@ -393,3 +393,135 @@ def test_an_out_of_range_slot_is_rejected():
     iep = _running_iep()
     with pytest.raises(ValueError):
         iep.capture_event(NUM_CAPTURE)
+
+
+# ---------------------------------------------------------------------------
+# Timing: the IEP runs on its own clock, driven by simulated time
+# ---------------------------------------------------------------------------
+# Previously every instruction on every core ticked the IEP once, so stall
+# cycles were lost and two cores stepping together ran it at twice the rate.
+
+import os                                                          # noqa: E402
+import sys                                                         # noqa: E402
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from simulator import Simulator                                    # noqa: E402
+
+_ENABLE = "\n".join([
+    "ldi32 r1, 0x0002E000",
+    "ldi32 r0, 0x11",
+    "sbbo &r0, r1, 0, 4",          # CNT_ENABLE, DEFAULT_INC=1
+])
+
+
+def _cfg(tmp_path, **device):
+    lines = ["[device]"] + [f"{k} = {v}" for k, v in device.items()] + [
+        "[DRAM0]", "base = 0x0", "size = 0x2000",
+        "read_latency = 5", "write_latency = 0", "jitter = 0",
+    ]
+    path = tmp_path / "memory.cfg"
+    path.write_text("\n".join(lines) + "\n")
+    return str(path)
+
+
+def _step_until_enabled(sim, core="pru0"):
+    for _ in range(20):
+        if sim.iep.count_enabled:
+            return
+        sim.step(core, 1)
+    raise AssertionError("firmware never enabled the IEP")
+
+
+def _cycles(sim, core="pru0"):
+    return sim.status()[core]["cycles"]
+
+
+def _spin_sim(cfg, pru1=True):
+    sim = Simulator(config_path=cfg)
+    assert sim.load("pru0", _ENABLE + "\nspin:\n    jmp spin") == []
+    if pru1:
+        assert sim.load("pru1", "spin:\n    jmp spin") == []
+    return sim
+
+
+def test_iep_counts_stall_cycles_not_instructions(tmp_path):
+    """Each LBBO from a 5-cycle DRAM costs 6 core cycles; the IEP sees all 6."""
+    sim = Simulator(config_path=_cfg(tmp_path, pru_clock_mhz=200))
+    assert sim.load("pru0", _ENABLE + "\n" + "\n".join(
+        ["ldi r2, 0"] + ["lbbo &r3, r2, 0, 4"] * 10 + ["halt"])) == []
+    _step_until_enabled(sim)
+    start_count, start_cycles = sim.iep.count, _cycles(sim)
+    steps = 0
+    while not sim.step("pru0", 1)["halted"]:
+        steps += 1
+    cycles = _cycles(sim) - start_cycles
+    assert cycles >= steps + 10 * 5          # every load stalled 5 cycles
+    assert sim.iep.count - start_count == cycles
+
+
+def test_two_cores_stepping_together_do_not_double_the_rate(tmp_path):
+    sim = _spin_sim(_cfg(tmp_path, pru_clock_mhz=250, pru1_clock_mhz=250))
+    _step_until_enabled(sim)
+    start = sim.iep.count
+    for _ in range(1000):
+        sim.step("pru0", 1)
+        sim.step("pru1", 1)
+    assert sim.iep.count - start == 1000
+
+
+def test_paced_multicore_run_advances_at_the_iep_clock(tmp_path):
+    sim = _spin_sim(_cfg(tmp_path, pru_clock_mhz=250, pru1_clock_mhz=250))
+    _step_until_enabled(sim)
+    start_count, start_ns = sim.iep.count, sim.iep.now_ns
+    sim.step_paced("pru0", "pru1", 2000)
+    elapsed_ns = sim.iep.now_ns - start_ns
+    assert sim.iep.count - start_count == round(elapsed_ns * 250 / 1000)
+
+
+@pytest.mark.parametrize("core_mhz,iep_mhz,steps,expected", [
+    (200, 100, 1000, 500),        # IEP at half the core clock
+    (250, 500, 1000, 2000),       # IEP faster than the core
+    (250, 333, 250, 333),         # 1 us of core time -> 333 IEP edges
+    (333, 250, 333, 250),
+])
+def test_iep_clock_is_independent_of_the_pru_clock(tmp_path, core_mhz, iep_mhz,
+                                                  steps, expected):
+    cfg = _cfg(tmp_path, pru_clock_mhz=core_mhz, iep_clock_mhz=iep_mhz)
+    sim = _spin_sim(cfg, pru1=False)
+    _step_until_enabled(sim)
+    start = sim.iep.count
+    sim.step("pru0", steps)
+    assert abs((sim.iep.count - start) - expected) <= 1
+
+
+def test_iep_clock_defaults_to_the_pru0_clock(tmp_path):
+    sim = Simulator(config_path=_cfg(tmp_path, pru_clock_mhz=250, pru1_clock_mhz=200))
+    assert sim.iep.clock_mhz == 250
+
+
+def test_iep_clock_can_be_changed_at_runtime_without_a_jump(tmp_path):
+    sim = _spin_sim(_cfg(tmp_path, pru_clock_mhz=200), pru1=False)
+    _step_until_enabled(sim)
+    sim.step("pru0", 100)
+    mid = sim.iep.count
+    sim.set_iep_clock_mhz(100)
+    assert sim.iep.count == mid
+    sim.step("pru0", 100)                    # 500 ns at 100 MHz = 50 edges
+    assert sim.iep.count - mid == 50
+
+
+def test_core_reset_does_not_freeze_the_iep(tmp_path):
+    sim = _spin_sim(_cfg(tmp_path, pru_clock_mhz=200), pru1=False)
+    _step_until_enabled(sim)
+    sim.step("pru0", 500)
+    before = sim.iep.count
+    sim.reset("pru0")                        # cycles restart at 0
+    sim.step("pru0", 10)
+    assert sim.iep.count - before == _cycles(sim) >= 10
+
+
+def test_invalid_iep_clock_is_rejected():
+    with pytest.raises(ValueError):
+        IepTimer(clock_mhz=0)
+    with pytest.raises(ValueError):
+        IepTimer().set_clock_mhz(-1)

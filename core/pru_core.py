@@ -29,6 +29,7 @@ from xfr.xfr_bus import XFRBus, IPC_SPAD, SPAD_BANK0, SPAD_BANK1, SPAD_BANK2
 from pru_io.io_port import IOPort
 from xfr.accelerator import Accelerator
 from xfr.mac_accelerator import MACAccelerator
+from xfr.crc_accelerator import CRCAccelerator
 from xfr.bswap_accelerator import (
     BSWAP_4_8,
     BSWAP_4_16,
@@ -97,6 +98,7 @@ class PRUCore:
         self.registers = RegisterFile()
         self.counters = CycleCounters()
         self.iep = None          # set by Simulator when an IEP is present
+        self.clock_mhz: float = 200.0   # set by Simulator from the config
         self.memory = memory
         self.xfr = xfr
         self.io_port = io_port
@@ -119,6 +121,7 @@ class PRUCore:
         self._branch = BranchUnit()
         self.accelerators: dict[int, Accelerator] = {
             MACAccelerator.DEVICE_ID: MACAccelerator(self.registers),
+            CRCAccelerator.DEVICE_ID: CRCAccelerator(self.registers),
             BSWAP_BYTE_ORDER: BSwapAccelerator(self.registers, BSWAP_BYTE_ORDER),
             BSWAP_4_8: BSwapAccelerator(self.registers, BSWAP_4_8),
             BSWAP_4_16: BSwapAccelerator(self.registers, BSWAP_4_16),
@@ -598,15 +601,17 @@ class PRUCore:
         if self.io_port.perif is not None:
             self.io_port.perif.advance_cycles(self.counters.cycles)
 
-        # ---- Advance the IEP timer (if attached) ------------------------
-        # One ICSSG_IEP_CLK edge per core cycle. Firmware that polls
-        # IEP_COUNT_REG0 in a loop depends on this advancing; without it the
-        # poll never terminates.
-        if self.iep is not None:
-            self.iep.tick()
-
         # ---- Count instruction cycle ------------------------------------
         self.counters.tick()
+
+        # ---- Advance the IEP timer (if attached) ------------------------
+        # The IEP runs on its own clock, so it is driven by this core's
+        # elapsed time (stall cycles included), not by instruction count.
+        # Firmware that polls IEP_COUNT_REG0 in a loop depends on this
+        # advancing; without it the poll never terminates.
+        if self.iep is not None:
+            self.iep.advance_core(self.name,
+                                  self.counters.cycles * 1000.0 / self.clock_mhz)
 
     def run(self, max_steps: int = 100_000) -> int:
         """Run until halted or max_steps reached. Returns steps executed."""

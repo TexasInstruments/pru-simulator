@@ -63,6 +63,27 @@ than against this model. What IS faithful, and what firmware actually depends
 on, is the latch semantics: enable gating, first-vs-last, and a valid bit that
 software clears.
 
+TIMING
+
+The IEP runs on its own clock (ICSSG_IEP_CLK), not on any PRU core's
+instruction stream. `clock_mhz` sets that rate; the Simulator reads it from the
+`iep_clock_mhz` key in the config's [device] section and defaults it to the
+PRU0 clock. One `tick()` is one IEP clock edge.
+
+Cores drive time forward through `advance_core(core, core_ns)`, reporting their
+elapsed time in nanoseconds (cycles, stall cycles included, over the core's own
+clock). The IEP is shared by every core on the ICSSG, so its timeline follows
+the core that is furthest ahead and emits one edge per IEP clock period up to
+that point. Two cores stepping together therefore advance it once, not twice.
+Consequences worth knowing:
+
+  * A core that is stepped far behind another sees the leading core's counter
+    value - it reads "the future". `Simulator.step_paced` keeps cores within a
+    few ns of each other, which is what timing-sensitive two-core runs need.
+  * A core whose time goes backwards (its cycle counter was reset) restarts
+    from the IEP's current time rather than freezing the counter until it
+    catches up.
+
 Not modelled: shadow mode (IEP_CMP_CFG_REG[17] SHADOW_EN), slow compensation,
 sync/EHRPWM counter reset, interrupt routing, and the pin/event routing that
 decides WHICH external signal drives capture event n - here the event is raised
@@ -98,7 +119,18 @@ class IepTimer:
     evaluates the enabled compares against the new count.
     """
 
-    def __init__(self):
+    def __init__(self, clock_mhz: float = 200.0):
+        if clock_mhz <= 0:
+            raise ValueError(f"IEP clock must be positive, got {clock_mhz}")
+        self.clock_mhz = float(clock_mhz)
+        # Timeline state: survives register reset() so a core reset or an
+        # IEP register reset never rewinds simulated time.
+        self._now_ns = 0.0                   # furthest core time seen
+        self._edges = 0                      # IEP clock edges emitted so far
+        self._origin_ns = 0.0                # time at the last clock change
+        self._origin_edges = 0               # edges emitted at that time
+        self._core_base: dict[str, float] = {}
+        self._core_last: dict[str, float] = {}
         self.reset()
 
     def reset(self) -> None:
@@ -159,6 +191,46 @@ class IepTimer:
         return True
 
     # -- timeline --------------------------------------------------------
+    @property
+    def now_ns(self) -> float:
+        return self._now_ns
+
+    def set_clock_mhz(self, clock_mhz: float) -> None:
+        """Change the IEP clock from now on; edges already emitted stay put."""
+        if clock_mhz <= 0:
+            raise ValueError(f"IEP clock must be positive, got {clock_mhz}")
+        self._origin_ns = self._now_ns
+        self._origin_edges = self._edges
+        self.clock_mhz = float(clock_mhz)
+
+    def advance_core(self, core: str, core_ns: float) -> int:
+        """Bring the IEP up to *core*'s elapsed time; return edges emitted.
+
+        *core_ns* is that core's own elapsed time since its last reset. The
+        IEP timeline is the maximum over all cores, so this only emits edges
+        when *core* is the one furthest ahead.
+        """
+        last = self._core_last.get(core)
+        if last is None:
+            self._core_base[core] = 0.0             # cores start together at 0
+        elif core_ns < last:
+            self._core_base[core] = self._now_ns    # core was reset
+        self._core_last[core] = core_ns
+        t = self._core_base[core] + core_ns
+        if t <= self._now_ns:
+            return 0
+        self._now_ns = t
+        # The 1e-6 guards against a period like 1000/333.33 landing a hair
+        # short of an exact edge through float rounding.
+        target = self._origin_edges + int(
+            (t - self._origin_ns) * self.clock_mhz / 1000.0 + 1e-6)
+        n = target - self._edges
+        self._edges = target
+        if self.count_enabled:
+            for _ in range(n):
+                self.tick()
+        return n
+
     def tick(self) -> None:
         """Advance one ICSSG_IEP_CLK cycle."""
         if not self.count_enabled:
@@ -268,4 +340,6 @@ class IepTimer:
             "cmp_cfg": self.cmp_cfg,
             "cmp_status": self.cmp_status,
             "compare": list(self.compare),
+            "clock_mhz": self.clock_mhz,
+            "now_ns": self._now_ns,
         }
