@@ -13,7 +13,7 @@ V4 ISA) and **AM263x** (PRU-ICSS, V3 ISA).
 
 These are simulator-side capabilities, not features of the PRU hardware itself.
 
-- **Interactive dashboard** — register panel, memory panel, IO pin control, disassembly view
+- **Interactive dashboard** — register panel, memory panel, IO pin control, disassembly view; Simulator, Devices and Events views with persistent panel visibility and dark/high-contrast themes. See [dashboard controls](docs/simulator_dashboard.md)
 - **ELF binary loading** — load compiled .out files directly (TI PRU CGT ELF32) with automatic disassembly
 - **Step-back** — reverse any instruction; full machine state including SD filter is restored
 - **Signal graph** — digital logic analyzer for GPO/GPI pin transitions
@@ -22,7 +22,7 @@ These are simulator-side capabilities, not features of the PRU hardware itself.
 - **Device bus** — attach external device models (`DeviceModel`) to any core's GPIO pins and wire pins between cores. A shared `DeviceBus` resolves open-drain nets as wired-AND and reports push-pull contention as a fault instead of last-writer-wins; devices expose `events()` and `faults()` for checking firmware
 - **SSI encoder model and reader** — independent binary/Gray encoder `DeviceModel` with up to 64-bit frames, error fields and 12 SICK encoder presets, clock-rate and monoflop faults, generated shared-memory ABI, and PRU1 reader and PRU0 emulator examples. See [SSI device model and reader](docs/ssi_device_model.md)
 - **UART decoder** — bit-bang UART decode in the IO panel (8N1, auto-detect bit period)
-- **Multi-core simulation & debug view** — PRU_ICSSG supports simultaneous simulation & debugging of up to 3 PRU cores; PRU-ICSS supports simultaneous simulation & debugging of both PRU cores
+- **Multi-core simulation & debug view** — PRU_ICSSG supports simultaneous simulation & debugging of up to 4 PRU cores (PRU0, RTU0, PRU1, RTU1), shown as PRU0 plus a selected partner; PRU-ICSS supports simultaneous simulation & debugging of both PRU cores
 - **Tiling window manager** — drag, split, collapse/expand, and persist panel layouts
 - **MCP server** — AI assistant integration via Model Context Protocol
 
@@ -111,7 +111,7 @@ pru_simulator/
 ├── tools/              Headless runner, ABI code generators, perif drift report
 ├── ui/
 │   ├── server.py       FastAPI WebSocket server
-│   └── static/         Dashboard HTML/JS (index.html, app.js, layout.js)
+│   └── static/         Dashboard HTML/JS (index.html, app.js, layout.js, workspace.js)
 ├── xfr/                XFR scratchpad + MAC accelerator
 ├── memory.cfg          Default memory configuration (AM243x)
 ├── requirements.txt
@@ -195,9 +195,16 @@ standalone experiments and may require optional packages (for example,
 
 ## Version
 
-v0.3.0 — hover over **PRU SIM** in the dashboard header to confirm.
+v0.3.1 — hover over **PRU SIM** in the dashboard header to confirm.
 
 ### Changelog
+
+**v0.3.1**
+- **Dashboard workspace views** — the toolbar switches between **Simulator** (generic debugging: source, editor, registers, memory, graph panels and an I/O Pins panel reduced to the GP-mux selector, the R30/R31 grids and the GPIO loopback; a core memory fault shows as a red band), **I/O & Devices** without resetting or stopping execution. A glider slides under the active tab. Panels can be hidden from the Panels buttons, and visibility and layout are remembered separately for single-core and multicore modes. Reset Layout restores the defaults. View, sub-tab, panel visibility and the new Dark/High-contrast themes are stored as local browser preferences. The Dark theme restores the red-brand dashboard design (labelled Target/Execute/Session/Status header groups, a segmented view switcher, icon panel toggles, raised/inset panel chrome, themed graphs, a hover wipe on the neutral toolbar buttons); High contrast keeps the same layout at WCAG AA contrast. See [docs/simulator_dashboard.md](docs/simulator_dashboard.md).
+- **I/O & Devices view** — three sub-tabs. **Devices** has an SSI encoder card (any core; presets up to 64-bit frames with an error field; set position and error for the next frame), an I2C expander card that attaches the `tca9538` profile and shows its register and pin state, and the UART decoder and RX inject controls, plus a list of every device attached to the core. **Peripherals** holds the sigma-delta and Peripheral Interface cards (inactive notice when the GP mux does not select them). **Events** shows device frame/fault events, bus contention and core memory faults from the live simulator state, so it stays consistent across reset and step-back (up to 500 events and 100 faults). A badge on the tab counts new faults until Events is opened. It uses the same device API as MCP; there are no protocol-specific run shortcuts. The old I/O Pins "Attach TCA9538" button is removed; the `i2c_attach` action and `pru_i2c_attach` tool still work but are deprecated in favour of the `tca9538` device profile.
+- **Wipe on every text button, IEP clock selector, three/four-core view** — the hover wipe now covers the panel, memory, breakpoint, device and dialog buttons, not only the header toolbar (toggles, tabs and icon buttons keep their own hover). A header selector sets the IEP counter clock (200/225/250/300/333 MHz) of the running simulator without touching `memory.cfg`. Multicore mode can show three or four cores at once (`+RTU0`/`+PRU1`/`+RTU1`, a 2x2 layout for four), and Run/Step/Reset/SIM act on all of them (`run_multicore` takes a `partners` list). The I/O Pins tile is taller by default so R30 and R31 both show. See [docs/simulator_dashboard.md](docs/simulator_dashboard.md).
+- **RTU1 selectable** — single-core mode can show PRU0, PRU1, RTU0 or RTU1, and multicore mode pairs PRU0 with any of the other three.
+- **MCP over SDK stdio** — tests load the SSI reader firmware through the SDK stdio transport and verify SSI frames end to end.
 
 **v0.3.0**
 - **SSI encoder device model** (`pru_io/ssi_encoder_model.py`) — an independent, time-driven `DeviceModel` with binary or Gray output, 1-64 bit frames, an optional error field and twelve frame presets (the standard 12-bit 4 MHz encoder from the RM08 data sheet, plus SICK encoder families from the SICK SSI Interface Description, IM0100079) that reports faults rather than producing a plausible waveform from wrong firmware: clock above `f_max_hz`, incomplete words (monoflop timeout), and extra clock pulses. The edge convention follows SICK IM0100079 section 2.2: the first falling edge latches the position, each rising edge presents the next bit MSB first, and Tm runs from the last falling edge.

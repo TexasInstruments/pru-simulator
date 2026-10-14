@@ -1,8 +1,10 @@
 """Tests for dashboard REST endpoints."""
 import asyncio
+import json
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 from ui.server import app
 from simulator import Simulator
 
@@ -229,3 +231,313 @@ def test_fault_is_reported_in_state_and_restored_by_step_back(fresh_sim):
 
     srv._restore("pru0", snapshot)
     assert fresh_sim.cores["pru0"].fault is None
+
+
+class _ActionWebSocket:
+    def __init__(self, actions):
+        self._actions = iter(actions)
+        self.sent = []
+
+    async def accept(self):
+        pass
+
+    async def receive_text(self):
+        try:
+            return json.dumps(next(self._actions))
+        except StopIteration:
+            raise WebSocketDisconnect(code=1000)
+
+    async def send_json(self, payload):
+        self.sent.append(payload)
+
+
+def _run_websocket_actions(actions):
+    import ui.server as srv
+
+    websocket = _ActionWebSocket(actions)
+    asyncio.run(srv.websocket_endpoint(websocket))
+    return websocket.sent
+
+
+@pytest.mark.parametrize("action,partners", [
+    ("run", None),
+    ("run_multicore", ["rtu0", "pru1"]),
+    ("run_multicore", ["nope"]),
+])
+def test_run_completion_identifies_only_the_final_state(fresh_sim, action, partners):
+    for core in fresh_sim.cores:
+        assert fresh_sim.load(core, "loop:\nadd r0, r0, 1\njmp loop") == []
+    request = {"action": action, "core": "pru0", "max_steps": 100,
+               "capture": True, "run_id": 17}
+    if partners is not None:
+        request["partners"] = partners
+    sent = _run_websocket_actions([
+        request, {"action": "get_state", "core": "pru0"},
+    ])
+    completed = [message for message in sent if message.get("run_id") == 17]
+    assert len(completed) == 1
+    assert completed[0]["type"] == "state"
+    assert completed[0]["core"] == ("pru1" if partners == ["rtu0", "pru1"] else "pru0")
+    assert completed[0] is sent[-2], "completion follows every state/capture/error in its chunk"
+    assert "run_id" not in sent[-1], "ordinary state pushes cannot acknowledge a run"
+
+
+def test_invalid_run_core_returns_a_completion_and_keeps_the_socket(fresh_sim):
+    sent = _run_websocket_actions([
+        {"action": "run", "core": "missing", "run_id": 18},
+        {"action": "get_state", "core": "pru0"},
+    ])
+    assert sent[0]["type"] == "error"
+    assert sent[1]["type"] == "state" and sent[1]["run_id"] == 18
+    assert sent[2]["type"] == "state" and "run_id" not in sent[2]
+
+
+def test_state_preserves_other_core_fault_until_reset(fresh_sim):
+    fault = {"opcode": "LBBO", "address": 12, "error": "Unmapped memory"}
+    fresh_sim.cores["pru0"].fault = fault
+    sent = _run_websocket_actions([
+        {"action": "get_state", "core": "pru0"},
+        {"action": "get_state", "core": "rtu1"},
+        {"action": "reset", "core": "pru0"},
+    ])
+    assert sent[0]["core_faults"] == {"pru0": fault}
+    assert sent[1]["fault"] is None
+    assert sent[1]["core_faults"] == {"pru0": fault}
+    assert sent[2]["core_faults"] == {}
+
+
+def test_websocket_attaches_updates_and_detaches_ssi_encoder(fresh_sim):
+    import ui.server as srv
+
+    for history in srv._history.values():
+        history.append({"stale": True})
+    srv._history_order.append(("pru1", {"stale": True}))
+
+    sent = _run_websocket_actions([
+        {"action": "device_attach", "core": "pru1", "profile": "ssi_encoder",
+         "config": {"name": "axis", "clock_pin": 0, "data_pin": 8,
+                    "position": 17, "resolution": 8}},
+        {"action": "ssi_set_position", "core": "pru1", "name": "axis",
+         "position": 42},
+        {"action": "device_detach", "core": "pru1", "name": "axis"},
+    ])
+
+    attached = next(message for message in sent if message.get("type") == "state")
+    device = attached["io"]["device_bus"]["devices"][0]
+    assert device["core"] == "pru1"
+    assert device["position"] == 17
+    assert fresh_sim.device_bus.devices == []
+    assert fresh_sim.io("pru1")["gpo_drive_mask"] == 0
+    assert all(not history for history in srv._history.values())
+    assert srv._history_order == []
+
+    detached = [message for message in sent if message.get("type") == "state"][-1]
+    assert "device_bus" not in detached["io"]
+
+
+def test_websocket_lists_ssi_presets_for_the_device_panel(fresh_sim):
+    sent = _run_websocket_actions([{"action": "device_discover", "core": "pru1"}])
+
+    profiles = next(message for message in sent
+                    if message.get("type") == "device_profiles")["profiles"]
+    presets = profiles["ssi_encoder"]["presets"]
+    assert len(presets) == 12
+    assert presets["AFS_AFM60_MULTITURN_30BIT"]["resolution"] == 33
+    assert presets["TTK70"]["error_bits"] == 2
+
+
+def test_websocket_attaches_ssi_preset_and_sets_position_and_error(fresh_sim):
+    import ui.server as srv
+
+    srv._history["pru1"].append({"stale": True})
+    sent = _run_websocket_actions([
+        {"action": "device_attach", "core": "pru1", "profile": "ssi_encoder",
+         "config": {"name": "axis", "preset": "AFS_AFM60_SINGLETURN",
+                    "position": 0x2AAAA, "error_value": 1}},
+        {"action": "ssi_set_error", "core": "pru1", "name": "axis", "error": 5},
+        {"action": "ssi_set_position", "core": "pru1", "name": "axis",
+         "position": 7},
+    ])
+
+    assert not any(message.get("type") == "error" for message in sent)
+    states = [message for message in sent if message.get("type") == "state"]
+    first = states[0]["io"]["device_bus"]["devices"][0]
+    assert (first["preset"], first["resolution"], first["error_bits"],
+            first["error"]) == ("AFS_AFM60_SINGLETURN", 21, 3, 1)
+    last = states[-1]["io"]["device_bus"]["devices"][0]
+    assert (last["error"], last["position"]) == (5, 7)
+    assert fresh_sim.device_bus.get_device("axis").pack_frame(7, 5) == (7 << 3) | 5
+    assert not srv._history["pru1"]
+
+
+def test_websocket_rejects_invalid_ssi_error_updates(fresh_sim):
+    sent = _run_websocket_actions([
+        {"action": "device_attach", "core": "pru1", "profile": "ssi_encoder",
+         "config": {"name": "axis", "resolution": 8, "error_bits": 2,
+                    "error_value": 1}},
+        {"action": "device_attach", "core": "pru1", "profile": "ssi_encoder",
+         "config": {"name": "plain", "data_pin": 9, "resolution": 8}},
+        {"action": "ssi_set_error", "core": "pru1", "name": "axis", "error": 4},
+        {"action": "ssi_set_error", "core": "pru1", "name": "plain", "error": 1},
+        {"action": "ssi_set_error", "core": "pru0", "name": "axis", "error": 1},
+        {"action": "ssi_set_error", "core": "pru1", "name": "missing", "error": 1},
+        {"action": "ssi_set_error", "core": "pru1", "name": "axis"},
+    ])
+
+    errors = [message for message in sent if message.get("type") == "error"]
+    assert len(errors) == 5
+    assert all(error["tag"] == "device" for error in errors)
+    assert fresh_sim.device_bus.get_device("axis").error == 1
+    assert fresh_sim.device_bus.get_device("plain").error == 0
+
+
+@pytest.mark.parametrize('mhz', [333.333, 0.125, 251.5])
+def test_custom_iep_clock_preserves_counters_and_time(fresh_sim, monkeypatch, mhz):
+    import ui.server as srv
+    monkeypatch.setattr(srv, '_iep_clock_override', None)
+    fresh_sim.load('pru0', 'nop\nhalt')
+    fresh_sim.step('pru0')
+    before = (fresh_sim.iep.count, fresh_sim.iep.global_time_units, fresh_sim.cores['pru0'].counters.cycles)
+    sent = _run_websocket_actions([{'action': 'set_iep_clock', 'mhz': mhz}])
+    assert [p['type'] for p in sent] == ['state']
+    assert sent[0]['iep']['override_mhz'] == mhz
+    assert sent[0]['iep']['configured_mhz'] == 200
+    assert sent[0]['iep']['external_mhz'] == mhz
+    assert before == (fresh_sim.iep.count, fresh_sim.iep.global_time_units, fresh_sim.cores['pru0'].counters.cycles)
+
+
+@pytest.mark.parametrize('mhz', [True, '250', float('nan'), float('inf'), 0, -1])
+def test_invalid_iep_clock_is_non_mutating(fresh_sim, monkeypatch, mhz):
+    import ui.server as srv
+    monkeypatch.setattr(srv, '_iep_clock_override', None)
+    before = fresh_sim.iep.snapshot()
+    sent = _run_websocket_actions([{'action': 'set_iep_clock', 'mhz': mhz}])
+    assert sent[0]['type'] == 'error'
+    assert sent[0]['tag'] == 'iep'
+    assert fresh_sim.iep.snapshot() == before
+    assert srv._iep_clock_override is None
+
+
+def test_iep_configured_reset_retains_source_and_session_step_back(fresh_sim, monkeypatch):
+    import ui.server as srv
+    monkeypatch.setattr(srv, '_iep_clock_override', None)
+    fresh_sim.iep.set_clock_mhz(211.25)
+    fresh_sim.iep.write_iepclk(1)
+    fresh_sim.load('pru0', 'nop\nhalt')
+    sent = _run_websocket_actions([
+        {'action': 'step'}, {'action': 'set_iep_clock', 'mhz': 333.333},
+        {'action': 'step_back'}, {'action': 'set_iep_clock', 'mhz': None},
+        {'action': 'reset'}, {'action': 'hard_reset'},
+    ])
+    assert not any(p['type'] == 'error' for p in sent)
+    assert sent[1]['iep']['core_clock'] is True
+    assert sent[1]['iep']['clock_mhz'] == 250
+    assert all(p['iep']['external_mhz'] == 333.333 for p in sent[2:6])
+    assert sent[6]['iep']['external_mhz'] == 211.25
+    assert sent[6]['iep']['override_mhz'] is None
+    assert sent[6]['iep']['core_clock'] is True
+    assert sent[-1]['iep']['external_mhz'] == 211.25
+
+
+def test_gpio_direction_control_preserves_r30_and_reports_ownership(fresh_sim):
+    sent = _run_websocket_actions([
+        {'action': 'set_register', 'index': 30, 'value': 15},
+        {'action': 'set_gpio_drive_mask', 'mask': 7},
+        {'action': 'device_attach', 'profile': 'ssi_encoder',
+         'config': {'data_pin': 16}},
+        {'action': 'set_gpio_drive_mask', 'mask': 0},
+        {'action': 'get_state'},
+    ])
+    assert sent[1]['io']['gpo_drive_mask'] == 7
+    assert sent[1]['registers'][30] == '0x0000000F'
+    errors = [p for p in sent if p['type'] == 'error' and p.get('tag') == 'gpio']
+    assert len(errors) == 1
+    assert sent[-1]['io']['gpo_drive_mask'] == sent[2]['io']['gpo_drive_mask']
+    assert sent[-1]['registers'][30] == '0x0000000F'
+
+
+@pytest.mark.parametrize('mask', [True, -1, 1 << 20, 1.2, '7', None])
+def test_gpio_direction_rejects_invalid_masks(fresh_sim, mask):
+    sent = _run_websocket_actions([{'action': 'set_gpio_drive_mask', 'mask': mask}])
+    assert sent[0]['type'] == 'error'
+    assert sent[0]['tag'] == 'gpio'
+    assert fresh_sim.cores['pru0'].io_port.gpo_drive_mask == 0
+
+
+def test_unavailable_core_request_keeps_socket_and_advertises_actual_cores(fresh_sim):
+    del fresh_sim.cores['rtu1']
+    sent = _run_websocket_actions([
+        {'action': 'get_state', 'core': 'rtu1'}, {'action': 'get_state', 'core': 'pru0'},
+        {'action': 'run_multicore', 'partners': ['rtu1']},
+    ])
+    assert sent[0]['type'] == 'error'
+    assert sent[1]['type'] == 'state'
+    assert sent[1]['core'] == 'pru0'
+    assert sent[1]['available_cores'] == ['pru0', 'rtu0', 'pru1']
+    assert any(p['type'] == 'error' and 'partners' in p['errors'][0] for p in sent)
+
+
+def test_iep_override_survives_core_reload_saved_config_clears_it(tmp_path, monkeypatch):
+    import ui.server as srv
+    cfg = tmp_path / 'memory.cfg'
+    # Insert into the actual device section, not whichever section ends the file.
+    original = srv._set_ini_value(client.get('/config').text, 'device', 'iep_clock_mhz', '211.25')
+    cfg.write_text(original)
+    monkeypatch.setattr(srv, 'config_path', str(cfg))
+    monkeypatch.setattr(srv, 'sim', Simulator(str(cfg)))
+    monkeypatch.setattr(srv, '_iep_clock_override', None)
+    srv._set_iep_clock(333.333)
+    assert client.put('/config/clock_speed', json={'mhz': 300}).status_code == 200
+    assert float(srv.sim.iep.external_clock_hz / 1e6) == 333.333
+    assert srv._configured_iep_mhz() == 211.25
+    srv._set_iep_clock(None)
+    assert float(srv.sim.iep.external_clock_hz / 1e6) == 211.25
+    srv._set_iep_clock(250)
+    assert client.put('/config', content=original).status_code == 200
+    assert srv._iep_clock_override is None
+    assert float(srv.sim.iep.external_clock_hz / 1e6) == 211.25
+
+
+def test_am263x_state_advertises_only_supported_cores(tmp_path, monkeypatch):
+    import ui.server as srv
+    cfg = tmp_path / 'memory.cfg'
+    cfg.write_text(srv._set_ini_value(client.get('/config').text, 'device', 'target', 'AM263x'))
+    monkeypatch.setattr(srv, 'sim', Simulator(str(cfg)))
+    sent = _run_websocket_actions([{'action': 'get_state'},
+                                  {'action': 'load', 'core': 'rtu1', 'source': 'halt'},
+                                  {'action': 'get_state'}])
+    assert sent[0]['available_cores'] == ['pru0', 'rtu0', 'pru1']
+    assert sent[1]['type'] == 'error'
+    assert sent[-1]['type'] == 'state'
+
+
+def test_configured_reset_uses_backend_policy_when_iep_rate_is_omitted(tmp_path, monkeypatch):
+    import ui.server as srv
+    cfg = tmp_path / 'memory.cfg'
+    original = client.get('/config').text
+    import re
+    original = re.sub(r'^iep_clock_mhz\s*=.*\n', '', original, flags=re.M)
+    cfg.write_text(original)
+    monkeypatch.setattr(srv, 'config_path', str(cfg))
+    monkeypatch.setattr(srv, 'sim', Simulator(str(cfg)))
+    monkeypatch.setattr(srv, '_iep_clock_override', None)
+    configured = float(srv.sim.iep.external_clock_hz / 1_000_000)
+    srv._set_iep_clock(333.333)
+    srv._set_iep_clock(None)
+    assert float(srv.sim.iep.external_clock_hz / 1_000_000) == configured
+    assert client.put('/config/clock_speed', json={'mhz': 300}).status_code == 200
+    assert float(srv.sim.iep.external_clock_hz / 1_000_000) == float(Simulator(str(cfg)).iep.external_clock_hz / 1_000_000)
+
+
+def test_ws_ssi_attach_then_load_current_abi_firmware_keeps_session(fresh_sim):
+    from pathlib import Path
+    source = Path('source/ssi_generic_emulator.asm').read_text()
+    sent = _run_websocket_actions([
+        {'action': 'device_attach', 'core': 'pru1', 'profile': 'ssi_encoder'},
+        {'action': 'load', 'core': 'pru1', 'filename': 'ssi_generic_emulator.asm', 'source': source},
+        {'action': 'step', 'core': 'pru1'},
+    ])
+    assert not any(p['type'] == 'error' for p in sent)
+    assert sent[-1]['instructions']
+    assert sent[-1]['fault'] is None
+    assert sent[-1]['io']['device_bus']['devices'][0]['name'] == 'ssi_encoder'

@@ -16,12 +16,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import base64
 
-from fastapi import FastAPI, Request, WebSocket
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from simulator import Simulator
+from mcp_server.server import PRUSimulatorMCP
 from core.branch import LoopState
 from perif.gpcfg import MUX_SD
+from pru_io.device_profiles import discover_device_profiles
+from pru_io.scenarios import SCENARIOS, apply_scenario, ssi_demo_state, set_ssi_demo_position
+from pru_io.ssi_encoder_model import SSIEncoderModel
 from xfr.xfr_bus import SPAD_BANK0, SPAD_BANK1, SPAD_BANK2, IPC_SPAD
 
 app = FastAPI(title="PRU Simulator Dashboard")
@@ -49,7 +53,42 @@ def _safe_source_subpath(path: str) -> pathlib.Path | None:
         return None
     return candidate
 sim = Simulator(config_path=config_path)
+_device_api = PRUSimulatorMCP(config_path=config_path, simulator=sim)
 _config_lock = asyncio.Lock()
+
+
+def _reject_legacy_i2c_conflict(core: str) -> None:
+    """The legacy I2C slot owns R30/R31 bits 0/1; refuse it next to a device on them."""
+    for device in sim.device_bus.devices:
+        if (sim.device_bus.core_for_device(device) == core
+                and {0, 1} & set(device.nets)):
+            raise ValueError(
+                f"legacy I2C attach uses {core} pins 0 and 1, which device "
+                f"{device.name!r} already uses; detach it first")
+
+
+def _reject_i2c_pin_conflict(core: str, profile: object, config: object) -> None:
+    """Refuse a device that drives pins the legacy I2C attach already owns."""
+    if sim.cores[core].io_port.i2c_device is None:
+        return
+    spec = discover_device_profiles().get(profile)
+    if not isinstance(spec, dict):
+        return  # unknown profile: pru_device_attach reports it
+    values = {**spec["defaults"], **(config if isinstance(config, dict) else {})}
+    if {values.get(key) for key in spec.get("outputs", {})} & {0, 1}:
+        # Spelled-out acronyms (ssi, sd) take "an" like vowels do.
+        article = "an" if profile.startswith(("a", "e", "i", "o", "u", "ssi", "sd")) else "a"
+        raise ValueError(
+            f"the legacy I2C attach already owns {core} pins 0 and 1; "
+            f"detach it before attaching {article} {profile} device on those pins")
+
+
+def _device_api_for_current_sim() -> PRUSimulatorMCP:
+    global _device_api
+    if _device_api.sim is not sim:
+        _device_api = PRUSimulatorMCP(config_path=config_path, simulator=sim)
+    return _device_api
+
 
 # ---- Step history (for step-back) ----------------------------------------
 _MAX_HISTORY = 500
@@ -176,6 +215,7 @@ def _restore(core: str, snap: dict) -> None:
             sim.memory.regions[i]._data[:] = region_data
     if snap.get("iep") is not None:
         sim.iep.restore(snap["iep"])
+        _apply_iep_override()
     if snap.get("device_bus") is not None:
         sim.device_bus.restore(snap["device_bus"])
     if snap.get("xfr") is not None:
@@ -282,11 +322,12 @@ def _replace_config(text: str) -> Simulator:
 
 @app.put("/config")
 async def put_config(request: Request):
-    global sim
+    global sim, _iep_clock_override
     text = (await request.body()).decode("utf-8")
     async with _config_lock:
         try:
             sim = _replace_config(text)
+            _iep_clock_override = None   # a saved config speaks for itself
             _clear_history()
             return {"ok": True}
         except Exception as e:
@@ -294,6 +335,35 @@ async def put_config(request: Request):
 
 
 ALLOWED_CLOCK_MHZ = {200, 225, 250, 300, 333}
+
+# IEP counter clock chosen in the dashboard. Runtime only: memory.cfg's
+# iep_clock_mhz is never written. None means "the configured default".
+IEP_CLOCK_CHOICES_MHZ = (200, 225, 250, 300, 333)
+_iep_clock_override = None
+
+
+def _configured_iep_mhz() -> float:
+    """Keep the backend's configured external rate before applying an override."""
+    return getattr(sim, "_ui_configured_iep_mhz", float(sim.iep.external_clock_hz / 1_000_000))
+
+
+def _set_iep_clock(mhz) -> None:
+    """Switch only the external IEP clock; None restores the configured rate."""
+    global _iep_clock_override
+    if mhz is not None and (isinstance(mhz, bool) or not isinstance(mhz, (int, float))
+                            or not math.isfinite(mhz) or mhz <= 0):
+        raise ValueError("IEP clock must be a finite positive number in MHz")
+    configured = _configured_iep_mhz()
+    sim.iep.set_clock_mhz(configured if mhz is None else mhz)
+    sim._ui_configured_iep_mhz = configured
+    _iep_clock_override = mhz
+
+
+def _apply_iep_override() -> None:
+    """Preserve the session choice across rebuilds and history restoration."""
+    configured = _configured_iep_mhz()
+    sim._ui_configured_iep_mhz = configured
+    sim.iep.set_clock_mhz(configured if _iep_clock_override is None else _iep_clock_override)
 
 
 def _set_ini_value(text: str, section: str, key: str, value: str) -> str:
@@ -341,6 +411,7 @@ async def put_clock_speed(request: Request):
             text = _set_ini_value(text, "device", "pru_clock_mhz", str(mhz))
             text = _set_ini_value(text, "device", "pru1_clock_mhz", str(mhz))
             sim = _replace_config(text)
+            _apply_iep_override()
             _clear_history()
             return {"ok": True}
         except Exception as e:
@@ -357,8 +428,17 @@ async def websocket_endpoint(websocket: WebSocket):
             action = msg.get("action")
             core = msg.get("core", "pru0")
 
+            if not isinstance(core, str) or core not in sim.cores:
+                await websocket.send_json({"type": "error", "tag": "core",
+                    "errors": [f"core must be one of {list(sim.cores)}, got {core!r}"],
+                    "available_cores": list(sim.cores)})
+                await _send_state(websocket, next(iter(sim.cores)),
+                                  run_id=msg.get("run_id") if action in ("run", "run_multicore") else None)
+                continue
+
             if action == "load":
                 _clear_history()
+                sim._scenario = None
                 filename = msg.get("filename")
                 include_paths = None
                 if filename and isinstance(filename, str) and '\\' not in filename and len(filename) <= 300:
@@ -369,6 +449,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         include_paths = [str(candidate_dir)]
                         if lib_dir.exists():
                             include_paths.append(str(lib_dir))
+                        if SOURCE_DIR.resolve() != candidate_dir:
+                            # generated ABI headers live in source/, not in project folders
+                            include_paths.append(str(SOURCE_DIR))
                     except (ValueError, OSError):
                         pass  # Unsafe path — ignore filename, use default include_paths
                 errors = sim.load(core, msg["source"], include_paths)
@@ -377,6 +460,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await _send_state(websocket, core)
             elif action == "load_elf":
                 _clear_history()
+                sim._scenario = None
                 # ELF binary sent as base64-encoded string
                 elf_b64 = msg.get("data", "")
                 try:
@@ -431,6 +515,37 @@ async def websocket_endpoint(websocket: WebSocket):
                 sim.set_input(core, msg["pin"], bool(msg["value"]))
                 await _send_state(websocket, core)
             elif action == "get_state":
+                await _send_state(websocket, core)
+            elif action == "set_gpio_drive_mask":
+                try:
+                    # Full-mask clients replace all directions; dashboard pin
+                    # intents toggle one pin against the current authoritative mask.
+                    if "pin" in msg:
+                        if "mask" in msg:
+                            raise ValueError("provide either GPIO pin or drive mask, not both")
+                        pin = msg["pin"]
+                        if (isinstance(pin, bool) or not isinstance(pin, int)
+                                or not 0 <= pin < 20):
+                            raise ValueError("GPIO pin must be an integer from 0 to 19")
+                        mask = sim.cores[core].io_port.gpo_drive_mask ^ (1 << pin)
+                    else:
+                        mask = msg.get("mask")
+                    if (isinstance(mask, bool) or not isinstance(mask, int)
+                            or not 0 <= mask < (1 << 20)):
+                        raise ValueError("GPIO drive mask must be a 20-bit integer")
+                    for (owner_core, pin), lease in sim.device_bus.snapshot()["output_leases"].items():
+                        if owner_core == core and bool(mask & (1 << pin)) != lease["drive_output"]:
+                            raise ValueError(f"GPIO {pin} direction is owned; detach its device before changing it")
+                    sim.set_gpio_drive_mask(core, mask)
+                    _clear_history()
+                except ValueError as ve:
+                    await websocket.send_json({"type": "error", "tag": "gpio", "errors": [str(ve)]})
+                await _send_state(websocket, core)
+            elif action == "set_iep_clock":
+                try:
+                    _set_iep_clock(msg.get("mhz"))
+                except ValueError as ve:
+                    await websocket.send_json({"type": "error", "tag": "iep", "errors": [str(ve)]})
                 await _send_state(websocket, core)
             elif action == "read_memory":
                 addr = int(msg.get("addr", 0))
@@ -563,6 +678,7 @@ async def websocket_endpoint(websocket: WebSocket):
             elif action == "run":
                 max_steps = int(msg.get("max_steps", 1000))
                 capture = bool(msg.get("capture", False))
+                stride = _capture_stride(msg)
                 pru = sim.cores[core]
                 at_breakpoint = False
                 samples = []
@@ -571,7 +687,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     while steps < max_steps and not pru.halted and pru.pc < len(pru.instructions):
                         pru.step()
                         steps += 1
-                        if capture and _capture_due(pru, steps):
+                        if capture and _capture_due(pru, steps, stride):
                             samples.append(_capture_sample(pru))
                         if pru.pc in pru.breakpoints:
                             at_breakpoint = True
@@ -581,41 +697,59 @@ async def websocket_endpoint(websocket: WebSocket):
                 if samples:
                     await _send_capture(websocket, core, samples)
                 await _send_state(websocket, core, at_breakpoint=at_breakpoint,
-                                  captured=capture)
+                                  captured=capture, run_id=msg.get("run_id"))
             elif action == "run_multicore":
                 max_steps = int(msg.get("max_steps", 1000))
                 capture = bool(msg.get("capture", False))
-                partner = msg.get("partner", "pru1")
+                stride = _capture_stride(msg)
+                # "partners" runs three or four cores together; "partner" is the
+                # original single follower.
+                partners = msg.get("partners") or [msg.get("partner", "pru1")]
+                if (not isinstance(partners, list)
+                        or not all(isinstance(name, str) for name in partners)
+                        or len(set(partners)) != len(partners) or core in partners
+                        or any(name not in sim.cores for name in partners)):
+                    await websocket.send_json({"type": "error", "errors": [
+                        f"partners must be other cores of {list(sim.cores)}, got {partners!r}"]})
+                    await _send_state(websocket, core, run_id=msg.get("run_id"))
+                    continue
                 lead_pru = sim.cores[core]
-                partner_pru = sim.cores[partner]
-                lead_bp = partner_bp = False
+                partner_prus = [sim.cores[name] for name in partners]
+                lead_bp = False
+                partner_bp = [False] * len(partners)
                 samples = []
                 try:
                     steps = 0
                     while (steps < max_steps and not lead_pru.halted
                            and lead_pru.pc < len(lead_pru.instructions)):
-                        sim.step_paced(core, partner, 1)
+                        sim.step_paced_many(core, partners, 1)
                         steps += 1
-                        if capture and _capture_due(lead_pru, steps):
-                            samples.append(_capture_sample(lead_pru))
+                        if capture and _capture_due(lead_pru, steps, stride):
+                            samples.append(_capture_sample(lead_pru, partner_prus))
                         if lead_pru.pc in lead_pru.breakpoints:
                             lead_bp = True
                             break
-                        if partner_pru.pc in partner_pru.breakpoints:
-                            partner_bp = True
+                        partner_bp = [p.pc in p.breakpoints for p in partner_prus]
+                        if any(partner_bp):
                             break
                 except ValueError as ve:
                     await websocket.send_json({"type": "error", "errors": [str(ve)]})
                 if samples:
-                    await _send_capture(websocket, core, samples)
+                    await _send_capture(websocket, core, samples, partners)
                 await _send_state(websocket, core, at_breakpoint=lead_bp,
                                   captured=capture)
-                await _send_state(websocket, partner, at_breakpoint=partner_bp,
-                                  captured=capture)
+                for name, at_bp in zip(partners, partner_bp):
+                    await _send_state(websocket, name, at_breakpoint=at_bp,
+                                      captured=capture,
+                                      run_id=msg.get("run_id") if name == partners[-1] else None)
             elif action == "set_sd_modulator":
                 ch = int(msg.get("channel", 0))
                 params = msg.get("params", {})
-                sim.set_sd_modulator(core, ch, **params)
+                try:
+                    sim.set_sd_modulator(core, ch, **params)
+                except (TypeError, ValueError) as exc:
+                    await websocket.send_json({"type": "error", "tag": "device",
+                                               "errors": [str(exc)]})
                 await _send_state(websocket, core)
             elif action == "write_sd_register":
                 addr = int(msg.get("addr", 0))
@@ -647,7 +781,88 @@ async def websocket_endpoint(websocket: WebSocket):
                 }))
                 await _send_state(websocket, core)
             elif action == "i2c_attach":
-                sim.i2c_attach(core, bool(msg.get("enabled", False)), int(msg.get("address", 0x23)))
+                # Deprecated: the dashboard attaches a TCA9538 through the
+                # generic device_attach (profile "tca9538"). Kept for old clients.
+                enabled = bool(msg.get("enabled", False))
+                try:
+                    if enabled:
+                        _reject_legacy_i2c_conflict(core)
+                    sim.i2c_attach(core, enabled, int(msg.get("address", 0x23)))
+                except (TypeError, ValueError) as exc:
+                    await websocket.send_json({"type": "error", "tag": "device",
+                                               "errors": [str(exc)]})
+                await _send_state(websocket, core)
+            elif action == "device_attach":
+                try:
+                    _reject_i2c_pin_conflict(core, msg.get("profile", ""), msg.get("config"))
+                    _device_api_for_current_sim().pru_device_attach(
+                        profile=msg.get("profile", ""), core=core,
+                        config=msg.get("config"),
+                    )
+                    _clear_history()
+                except (KeyError, TypeError, ValueError) as exc:
+                    await websocket.send_json({"type": "error", "tag": "device",
+                                               "errors": [str(exc)]})
+                await _send_state(websocket, core)
+            elif action == "device_detach":
+                try:
+                    name = msg.get("name", "")
+                    device = sim.device_bus.get_device(name)
+                    attached_core = sim.device_bus.core_for_device(device)
+                    if attached_core != core:
+                        raise ValueError(f"device {name!r} is attached to {attached_core}")
+                    _device_api_for_current_sim().pru_device_detach(name)
+                    _clear_history()
+                except (KeyError, TypeError, ValueError) as exc:
+                    await websocket.send_json({"type": "error", "tag": "device",
+                                               "errors": [str(exc)]})
+                await _send_state(websocket, core)
+            elif action == "device_discover":
+                await websocket.send_json({
+                    "type": "device_profiles",
+                    "profiles": discover_device_profiles(),
+                })
+            elif action == "scenario_list":
+                await websocket.send_json({
+                    "type": "scenarios",
+                    "scenarios": [scenario.describe() for scenario in SCENARIOS.values()],
+                })
+            elif action == "scenario_load":
+                try:
+                    scenario = apply_scenario(sim, msg.get("name"), _device_api_for_current_sim())
+                    _clear_history()
+                    await websocket.send_json({"type": "scenario_loaded", **scenario.describe()})
+                except (KeyError, TypeError, ValueError) as exc:
+                    await websocket.send_json({"type": "error", "tag": "scenario",
+                                               "errors": [str(exc)]})
+                    scenario = None
+                for scenario_core in (scenario.cores if scenario else (core,)):
+                    await _send_state(websocket, scenario_core)
+            elif action == "ssi_demo_position":
+                try:
+                    set_ssi_demo_position(sim, msg.get("position"))
+                    _clear_history()
+                except (KeyError, TypeError, ValueError) as exc:
+                    await websocket.send_json({"type": "error", "tag": "ssi_demo",
+                                               "errors": [str(exc)]})
+                await _send_state(websocket, core)
+            elif action in ("ssi_set_position", "ssi_set_error"):
+                try:
+                    name = msg.get("name", "")
+                    device = sim.device_bus.get_device(name)
+                    attached_core = sim.device_bus.core_for_device(device)
+                    if attached_core != core:
+                        raise ValueError(f"device {name!r} is attached to {attached_core}")
+                    if not isinstance(device, SSIEncoderModel):
+                        raise ValueError(f"device {name!r} is not an SSI encoder")
+                    if action == "ssi_set_position":
+                        device.set_position(msg.get("position"))
+                    else:
+                        device.set_error(msg.get("error"))
+                    _clear_history()
+                except (KeyError, TypeError, ValueError) as exc:
+                    await websocket.send_json({"type": "error", "tag": "device",
+                                               "errors": [str(exc)]})
                 await _send_state(websocket, core)
             elif action == "uart_inject":
                 pin = int(msg.get("pin", 0))
@@ -670,6 +885,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     "payload_len": len(payload),
                     "frames": frames,
                 }))
+            else:
+                await websocket.send_json({"type": "error", "tag": "ws",
+                                           "errors": [f"unknown action {action!r}"]})
+    except WebSocketDisconnect:
+        return
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -733,7 +953,15 @@ def _io_mode(core, sd_data=None, perif_data=None, mux_sel=None) -> str:
 CAPTURE_STRIDE_GP = 100
 
 
-def _capture_due(c, steps: int) -> bool:
+def _capture_stride(msg: dict) -> int:
+    """Instructions per Signal Graph sample outside peripheral mode (client may ask finer)."""
+    stride = msg.get("stride", CAPTURE_STRIDE_GP)
+    if isinstance(stride, bool) or not isinstance(stride, int):
+        return CAPTURE_STRIDE_GP
+    return max(1, min(stride, CAPTURE_STRIDE_GP))
+
+
+def _capture_due(c, steps: int, stride: int = CAPTURE_STRIDE_GP) -> bool:
     """Whether to take a graph sample after instruction `steps` of this chunk.
 
     Decided per instruction rather than once per chunk because firmware enables
@@ -744,10 +972,10 @@ def _capture_due(c, steps: int) -> bool:
     perif = c.io_port.perif
     if perif is not None and perif.enabled:
         return True
-    return steps % CAPTURE_STRIDE_GP == 0
+    return steps % stride == 0
 
 
-def _capture_sample(c) -> list[int]:
+def _capture_sample(c, partners=()) -> list[int]:
     """One Signal Graph sample, taken inside the run loop.
 
     Run executes up to `max_steps` instructions per websocket round-trip, so a
@@ -757,14 +985,12 @@ def _capture_sample(c) -> list[int]:
     `perif_duty_cycle_sweep.asm` that draws nothing while SIM (one instruction
     per push) traces it fine.
 
-    Packed into ints (bitmask per lane group) to keep the batch small.
+    Packed into ints (bitmask per lane group) to keep the batch small. A
+    multi-core run appends [r30, gpi bits] for each partner core, so both ends
+    of every wire are plotted.
     """
     perif = c.io_port.perif
-    gpi = c.io_port.get_gpi_pins()
-    gpi_bits = 0
-    for i, v in enumerate(gpi[:20]):
-        if v:
-            gpi_bits |= 1 << i
+    gpi_bits = _gpi_bits(c)
     out_bits = oe_bits = clk_bits = 0
     if perif is not None:
         for i, ch in enumerate(perif.channels[:3]):
@@ -774,21 +1000,35 @@ def _capture_sample(c) -> list[int]:
                 oe_bits |= 1 << i
             if ch.tx_clk_pin:
                 clk_bits |= 1 << i
-    return [c.counters.instruction_count, c.registers.read_full(30) & 0xFFFFF,
-            gpi_bits, out_bits, oe_bits, clk_bits]
+    sample = [c.counters.instruction_count, c.registers.read_full(30) & 0xFFFFF,
+              gpi_bits, out_bits, oe_bits, clk_bits]
+    for p in partners:
+        sample += [p.registers.read_full(30) & 0xFFFFF, _gpi_bits(p)]
+    return sample
 
 
-async def _send_capture(ws, core, samples):
+def _gpi_bits(c) -> int:
+    bits = 0
+    for i, v in enumerate(c.io_port.get_gpi_pins()[:20]):
+        if v:
+            bits |= 1 << i
+    return bits
+
+
+async def _send_capture(ws, core, samples, partners=None):
     """Ship a run loop's per-instruction Signal Graph samples in one message."""
-    await ws.send_json({
+    msg = {
         "type": "capture",
         "core": core,
         "mode": _io_mode(core),
         "samples": samples,
-    })
+    }
+    if partners:
+        msg["partners"] = partners   # names for the trailing [r30, gpi] pairs
+    await ws.send_json(msg)
 
 
-async def _send_state(ws, core, at_breakpoint=False, captured=False):
+async def _send_state(ws, core, at_breakpoint=False, captured=False, run_id=None):
     c = sim.cores[core]
     # R31 display reflects live GPI state (registers.regs[31] is never updated by set_gpi_pin)
     regs = list(c.registers.regs)
@@ -808,8 +1048,12 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False):
         "gpi_pins": c.io_port.get_gpi_pins(),
         "gpo_drive_mask": c.io_port.gpo_drive_mask,
     }
+    demo = ssi_demo_state(sim)
+    if demo is not None:
+        io_section["ssi_demo"] = demo
     if sim.device_bus.active:
-        io_section["device_bus"] = sim.device_state()
+        device_state = sim.device_state()
+        io_section["device_bus"] = device_state
     if sd_data is not None:
         io_section["sd"] = sd_data
     if perif_data is not None:
@@ -819,10 +1063,13 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False):
         io_section["i2c"] = i2c_data
     state = {
         "type": "state",
+        "available_cores": list(sim.cores),
         "core": core,
         "pc": c.pc,
         "halted": c.halted,
         "fault": dict(c.fault) if c.fault is not None else None,
+        "core_faults": {name: dict(pru.fault) for name, pru in sim.cores.items()
+                        if pru.fault is not None},
         "at_breakpoint": at_breakpoint,
         # True when a "capture" message already carried this chunk's graph
         # samples, so the client must not sample this state push as well.
@@ -835,12 +1082,22 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False):
         "instruction_count": c.counters.instruction_count,
         "ipc": round(c.counters.ipc, 3),
         "io": io_section,
+        "iep": {
+            "clock_mhz": float(sim.iep.active_clock_mhz),
+            "external_mhz": float(sim.iep.external_clock_hz / 1_000_000),
+            "core_clock": bool(sim.iep.iepclk & sim.iep.IEPCLK_OCP_EN),
+            "choices_mhz": list(IEP_CLOCK_CHOICES_MHZ),
+            "configured_mhz": _configured_iep_mhz(),
+            "override_mhz": _iep_clock_override,
+        },
         "instructions": [{"addr": i.address, "text": i.source_text} for i in c.instructions],
         "labels": dict(c._parser.labels),   # name -> word address
         "spad": _read_spad(sim),
         "xfr_shift_en": sim.xfr.xfr_shift_en,
         "mac": _read_mac(c),
     }
+    if run_id is not None:
+        state["run_id"] = run_id
     await ws.send_json(state)
 
 
@@ -873,7 +1130,7 @@ def _port_is_free(host, port):
         probe.close()
 
 
-def start_dashboard(host=DEFAULT_HOST, port=DEFAULT_PORT):
+def start_dashboard(host=DEFAULT_HOST, port=DEFAULT_PORT, reload=False):
     import uvicorn
 
     if not _port_is_free(host, port):
@@ -884,6 +1141,13 @@ def start_dashboard(host=DEFAULT_HOST, port=DEFAULT_PORT):
             f"    PRU_SIM_UI_PORT={port + 1} python ui/server.py"
         )
 
+    if reload:
+        # Dev only: restart the backend on Python edits so it cannot go stale
+        # behind static assets that are re-read from disk on every request.
+        root = str(pathlib.Path(__file__).resolve().parents[1])
+        uvicorn.run("ui.server:app", host=host, port=port, reload=True,
+                    reload_dirs=[root], app_dir=root)
+        return
     uvicorn.run(app, host=host, port=port)
 
 
@@ -902,9 +1166,14 @@ def _parse_args(argv=None):
         default=int(os.environ.get("PRU_SIM_UI_PORT", DEFAULT_PORT)),
         help=f"bind port (default {DEFAULT_PORT}, env PRU_SIM_UI_PORT)",
     )
+    parser.add_argument(
+        "--reload",
+        action="store_true",
+        help="dev only: restart the server when Python sources change",
+    )
     return parser.parse_args(argv)
 
 
 if __name__ == "__main__":
     args = _parse_args()
-    start_dashboard(host=args.host, port=args.port)
+    start_dashboard(host=args.host, port=args.port, reload=args.reload)

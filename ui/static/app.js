@@ -8,26 +8,42 @@
 let ws = null;
 let prevRegisters = new Array(32).fill("0x00000000");
 let currentCore = "pru0";
+let devicePanelCore = "pru0";
+let ssiPresets = {};
 let running = false;
 let runInterval = null;
+let runPending = null;
+let runSequence = 0;
 let simRunning = false;
 let simTimer = null;
 let _flashTimer = null;
 let clientBreakpoints = new Set();
 let _lastSourceKey = '';
+let captureStride = null;   // Signal Graph sample interval requested by the loaded example
 
 // ---- Multi-core state ------------------------------------------------------
 let multiCoreMode = false;
 let mcPartner = "rtu0";            // second core shown in multi-core view
-let mcPrevRegs = {
-  pru0: new Array(32).fill("0x00000000"),
-  rtu0: new Array(32).fill("0x00000000"),
-  pru1: new Array(32).fill("0x00000000"),
-};
-let mcLastSourceKey = { pru0: '', rtu0: '', pru1: '' };
-let mcBreakpoints   = { pru0: new Set(), rtu0: new Set(), pru1: new Set() };
-let mcHaltedState   = { pru0: false, rtu0: false, pru1: false };
-let mcBreakState    = { pru0: false, rtu0: false, pru1: false };
+let availableCores = ["pru0"];
+let mcExtras = [];                 // optional third and fourth cores (RTU0/PRU1/RTU1)
+// Per-slot state. Slot i holds the i-th shown core (pru0, partner, extra, extra);
+// the slot names are the DOM id fragments, see PruChrome.mcCores.
+const mcFreshRegs = () => new Array(32).fill("0x00000000");
+let mcPrevRegs = { pru0: mcFreshRegs(), rtu0: mcFreshRegs(), x2: mcFreshRegs(), x3: mcFreshRegs() };
+let mcLastSourceKey = { pru0: '', rtu0: '', x2: '', x3: '' };
+let mcBreakpoints   = { pru0: new Set(), rtu0: new Set(), x2: new Set(), x3: new Set() };
+let mcHaltedState   = { pru0: false, rtu0: false, x2: false, x3: false };
+let mcBreakState    = { pru0: false, rtu0: false, x2: false, x3: false };
+const mcShown = () => PruChrome.mcCores(mcPartner, mcExtras, availableCores);
+const mcSlotOf = core => PruChrome.mcSlot(mcShown(), core);
+const mcCoreOfSlot = slot => mcShown()[PruChrome.MC_SLOTS.indexOf(slot)];
+function mcResetSlot(slot) {
+  mcPrevRegs[slot] = mcFreshRegs();
+  mcLastSourceKey[slot] = '';
+  mcBreakpoints[slot] = new Set();
+  mcHaltedState[slot] = false;
+  mcBreakState[slot] = false;
+}
 let mcSpadVisible   = new Set();   // SPAD banks visible in PRU0 MC reg panel
 let mcPrevSpad      = {};          // key -> Array for change detection
 
@@ -108,6 +124,7 @@ const btnConfig       = document.getElementById("btn-config");
 const configModal     = document.getElementById("config-modal");
 const configTextarea  = document.getElementById("config-textarea");
 const pruSpeedSelect  = document.getElementById("pru-speed-select");
+const iepClockSelect  = document.getElementById("iep-clock-select");
 const configError     = document.getElementById("config-error");
 const btnConfigSave   = document.getElementById("btn-config-save");
 const btnConfigCancel = document.getElementById("btn-config-cancel");
@@ -316,6 +333,7 @@ function initUI() {
   initSpadState();
   buildRegTable();
   buildPinGrid(gpoGrid, 20, "gpo", null);
+  buildGpioDirectionControls();
   buildPinGrid(gpiGrid, 20, "gpi", handleGpiClick);
   initLayout('sc');
   initEditorTabs();
@@ -331,11 +349,12 @@ function connect() {
     wsStatus.textContent = "Connected";
     wsStatus.className = "connected";
     if (multiCoreMode) {
-      sendAction({ action: "get_state", core: "pru0" });
-      sendAction({ action: "get_state", core: mcPartner });
+      for (const core of mcShown()) sendAction({ action: "get_state", core });
     } else {
       sendAction({ action: "get_state", core: currentCore });
     }
+    sendAction({ action: "device_discover" });
+    sendAction({ action: "scenario_list" });
     refreshMemory();
     refreshMemory2();
     loadRegions();
@@ -344,6 +363,7 @@ function connect() {
   ws.onclose = () => {
     wsStatus.textContent = "Disconnected";
     wsStatus.className = "error";
+    runPending = null;
     stopRun();
     // Attempt reconnect after 2 s
     setTimeout(connect, 2000);
@@ -358,6 +378,11 @@ function connect() {
     try {
       const msg = JSON.parse(event.data);
       if (msg.type === "state") {
+        if (msg.run_id === runPending) runPending = null;
+        if (msg.available_cores) showAvailableCores(msg.available_cores);
+        if (msg.iep) showIepClock(msg.iep);
+        updateSsiDemo(msg.io?.ssi_demo || null);
+        window.updateWorkspaceEvents?.(msg, multiCoreMode ? mcShown() : [currentCore]);
         if (multiCoreMode) {
           updateMCUI(msg);
         } else if (!msg.core || msg.core === currentCore) {
@@ -376,9 +401,15 @@ function connect() {
           st.textContent = "\u2713 Armed: " + msg.payload_len + " bytes \u00D7 " +
             msg.frames + " frame" + (msg.frames > 1 ? "s" : "") +
             " \u00B7 trigger cycle " + msg.trigger_cycle + " \u00B7 run to receive";
-          st.style.color = "#6a9955";
+          st.style.color = "var(--green)";
           st.style.display = "";
         }
+      } else if (msg.type === "device_profiles") {
+        populateSsiPresets(msg.profiles);
+      } else if (msg.type === "scenarios") {
+        populateScenarios(msg.scenarios);
+      } else if (msg.type === "scenario_loaded") {
+        applyScenario(msg);
       } else if (msg.type === "perif_ok") {
         const st = document.getElementById("perif-lb-status");
         if (st) {
@@ -388,7 +419,25 @@ function connect() {
         }
       } else if (msg.type === "error") {
         if (msg.tag && msg.tag.startsWith("graph-")) graphMarkChannelError(msg.tag);
-        else showErrors(msg.errors);
+        else if (msg.tag === "gpio") {
+          const error = document.getElementById('gpio-drive-error');
+          error.textContent = msg.errors.join('; ');
+          error.hidden = false;
+        }
+        else if (msg.tag === "iep") {
+          const error = document.getElementById('iep-clock-error');
+          error.textContent = msg.errors.join('; ');
+          error.hidden = false;
+        }
+        else if (msg.tag === "device") showDeviceError(msg.errors);
+        else if (msg.tag === "scenario" || msg.tag === "ssi_demo") {
+          showDeviceError(msg.errors);
+          document.querySelector('[data-workspace-view="io"]')?.click();
+          document.querySelector('[data-io-tab="devices"]')?.click();
+        }
+        else {
+          showErrors(msg.errors);
+        }
       }
     } catch (e) {
       console.error("Failed to parse message", e);
@@ -449,10 +498,11 @@ function updateUI(state) {
   updateSource(state.instructions, state.pc, state.labels || {});
 
   // IO pins
-  updatePins(state.io);
+  updatePins(state.io, state.core);
   updateSDPanel(state.io);
   updatePerifPanel(state.io);
   updateI2CPanel(state.io);
+  updateDevicePanel(state.io, state.core || currentCore);
 
   // Signal graph sample
   graphSample(state);
@@ -629,8 +679,36 @@ function updateSource(instructions, pc, labels) {
   renderBpBar("", currentCore, clientBreakpoints);
 }
 
-function updatePins(io) {
+function buildGpioDirectionControls() {
+  const container = document.getElementById('gpio-drive-controls');
+  for (let pin = 0; pin < 20; pin++) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.addEventListener('click', () => {
+      document.getElementById('gpio-drive-error').hidden = true;
+      sendAction({ action: 'set_gpio_drive_mask', core: container.dataset.core || currentCore,
+        pin });
+    });
+    container.appendChild(button);
+  }
+}
+
+function updateGpioDirections(io, core = currentCore) {
+  const container = document.getElementById('gpio-drive-controls');
+  const mask = io.gpo_drive_mask || 0;
+  container.dataset.mask = String(mask);
+  container.dataset.core = core;
+  [...container.children].forEach((button, pin) => {
+    const driving = !!(mask & (1 << pin));
+    button.textContent = `${pin}: ${driving ? 'Drive' : 'Release'}`;
+    button.setAttribute('aria-pressed', String(driving));
+    button.setAttribute('aria-label', `GPIO ${pin}: ${driving ? 'driving; release pin' : 'released; drive pin'}`);
+  });
+}
+
+function updatePins(io, core = currentCore) {
   if (!io) return;
+  updateGpioDirections(io, core);
 
   (io.gpo_pins || []).forEach((val, i) => {
     const pin = document.getElementById(`pin-gpo-${i}`);
@@ -652,25 +730,29 @@ function updatePins(io) {
 const _ACC_SEL_NAMES = ['sinc3', 'sinc2', 'sinc1'];
 const _CLK_SEL_NAMES = ['r31[16]', 'own', 'shared', 'rsvd'];
 
+function setPeripheralActive(cardId, active, muxName) {
+  const card = document.getElementById(cardId);
+  if (!card) return;
+  card.dataset.active = String(active);
+  const name = card.querySelector('.periph-mux-name');
+  if (name) name.textContent = muxName;
+}
+
+const _MUX_NAMES = { gpio: 'GPIO', perif: 'Peripheral Interface', sd: 'SD (Sigma-Delta)' };
+
 function updateSDPanel(io) {
   const sdSection = document.getElementById('sd-interface');
   if (!sdSection) return;
 
-  const gpioSections = document.querySelectorAll(
-    '#io-panel .io-section:not(.sd-interface):not(.perif-interface):not(.io-mux-row):not(.i2c-interface)'
-  );
-
-  if (!io || io.mode !== 'sd') {
+  // The R30/R31 grids stay in every mux mode; this card only shows its
+  // controls when the GP mux selects SD, otherwise an "inactive" notice.
+  const active = !!io && io.mode === 'sd';
+  setPeripheralActive('periph-sd-card', active, _MUX_NAMES[io && io.mode] || 'GPIO');
+  if (!active) {
     sdSection.style.display = 'none';
-    // GPIO sections visible only in GPIO mode; in perif mode the perif panel owns the view.
-    const showGpio = !io || io.mode === 'gpio';
-    gpioSections.forEach(s => { s.style.display = showGpio ? '' : 'none'; });
     return;
   }
-
-  // Switch to SD view
   sdSection.style.display = '';
-  gpioSections.forEach(s => { s.style.display = 'none'; });
 
   const sd = io.sd;
   if (!sd) return;
@@ -682,9 +764,9 @@ function updateSDPanel(io) {
   // R30 decode
   const r30El = document.getElementById('sd-r30-decode');
   if (r30El) {
-    r30El.innerHTML = '<span style="color:#ce93d8;">R30:</span> ' +
+    r30El.innerHTML = '<span style="color:var(--accent);">R30:</span> ' +
       `<span class="sd-r30-field">[29:26] ch_sel=<b>${sd.ch_sel}</b></span>` +
-      `<span class="sd-r30-field">[25] sd_en=<b style="color:#66bb6a;">${sd.sd_en ? 1 : 0}</b></span>` +
+      `<span class="sd-r30-field">[25] sd_en=<b style="color:var(--green);">${sd.sd_en ? 1 : 0}</b></span>` +
       `<span class="sd-r30-field">[24] snoop=<b>${sd.snoop ? 1 : 0}</b></span>` +
       `<span class="sd-r30-field">[23] data_sel=<b>${sd.data_sel ? 1 : 0}</b></span>`;
   }
@@ -699,8 +781,8 @@ function updateSDPanel(io) {
       const cfg = ch.config || {};
       const accName = _ACC_SEL_NAMES[cfg.acc_sel || 0] || 'sinc3';
       const clkName = _CLK_SEL_NAMES[cfg.clk_sel || 0] || 'own';
-      const titleColor = ch.selected ? '#4fc3f7' : '#888';
-      const dotColor = ch.valid ? '#66bb6a' : '#666';
+      const titleColor = ch.selected ? 'var(--accent)' : 'var(--text-dim)';
+      const dotColor = ch.valid ? 'var(--green)' : 'var(--gray)';
       card.innerHTML = `
         <div class="sd-channel-title" style="color:${titleColor};">
           CH ${ch.id} <span style="color:${dotColor};">●</span>${ch.selected ? ' <span style="font-size:9px;">★</span>' : ''}
@@ -710,8 +792,8 @@ function updateSDPanel(io) {
         <div class="sd-acc-row">acc2: <span class="sd-acc-val">0x${(ch.acc2 || 0).toString(16).toUpperCase().padStart(4,'0')}</span></div>
         <div class="sd-acc-row">acc3: <span class="sd-acc-val">0x${(ch.acc3 || 0).toString(16).toUpperCase().padStart(6,'0')}</span></div>
         <div class="sd-status">
-          <div style="color:${ch.valid ? '#ffb74d' : '#555'};">ovf=${ch.ovf ? 1 : 0} valid=<b style="color:${ch.valid ? '#66bb6a' : '#666'};">${ch.valid ? 1 : 0}</b></div>
-          <div style="color:#fff;">data=0x${(ch.shadow_acc3 || 0).toString(16).toUpperCase().padStart(7,'0')}</div>
+          <div style="color:${ch.valid ? 'var(--accent)' : 'var(--text-dim)'};">ovf=${ch.ovf ? 1 : 0} valid=<b style="color:${ch.valid ? 'var(--green)' : 'var(--gray)'};">${ch.valid ? 1 : 0}</b></div>
+          <div style="color:var(--text);">data=0x${(ch.shadow_acc3 || 0).toString(16).toUpperCase().padStart(7,'0')}</div>
         </div>`;
       chContainer.appendChild(card);
     });
@@ -795,22 +877,12 @@ function updateSDPanel(io) {
       chipsEl.appendChild(btn);
     });
   }
-
-  // GPIO switch link
-  const switchEl = document.getElementById('sd-switch-gpio');
-  if (switchEl) {
-    switchEl.onclick = (e) => {
-      e.preventDefault();
-      sdSection.style.display = 'none';
-      gpioSections.forEach(s => { s.style.display = ''; });
-    };
-  }
 }
 
 // ---- Peripheral Interface (3-channel) panel --------------------------------
 
 function _fifoHex(arr) {
-  if (!arr || !arr.length) return '<span style="color:#555;">empty</span>';
+  if (!arr || !arr.length) return '<span style="color:var(--text-dim);">empty</span>';
   return arr.map(b => '0x' + b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
 }
 
@@ -820,7 +892,7 @@ function updatePerifPanel(io) {
 
   // RTU0 has no GPCFG GP-mux (TRM) — hide the mux row for it.
   const muxRow = document.getElementById('io-mux-row');
-  if (muxRow) muxRow.style.display = (currentCore === 'rtu0') ? 'none' : '';
+  if (muxRow) muxRow.style.display = currentCore.startsWith('rtu') ? 'none' : '';
 
   // Keep the GP-mux selector in sync (unless the user is interacting with it).
   const muxSel = document.getElementById('io-mux-sel');
@@ -828,9 +900,14 @@ function updatePerifPanel(io) {
   if (muxSel && document.activeElement !== muxSel) {
     muxSel.value = (io && io.mux_sel != null) ? String(io.mux_sel) : '0';
   }
-  if (muxNote) muxNote.textContent = io ? ('mode: ' + io.mode) : '';
+  if (muxNote) {
+    muxNote.textContent = !io ? '' : (io.mode === 'gpio' ? 'mode: gpio'
+      : `mode: ${io.mode} (controls in I/O & Devices \u203a Peripherals)`);
+  }
 
-  if (!io || io.mode !== 'perif') { sec.style.display = 'none'; return; }
+  const active = !!io && io.mode === 'perif';
+  setPeripheralActive('periph-pi-card', active, _MUX_NAMES[io && io.mode] || 'GPIO');
+  if (!active) { sec.style.display = 'none'; return; }
   sec.style.display = '';
 
   const p = io.perif;
@@ -846,7 +923,7 @@ function updatePerifPanel(io) {
   const dec = document.getElementById('perif-r30-decode');
   if (dec) {
     const sh = p.shared || {};
-    dec.innerHTML = '<span style="color:#ce93d8;">shared:</span> ' +
+    dec.innerHTML = '<span style="color:var(--accent);">shared:</span> ' +
       `<span class="perif-r30-field">tx_clk_sel=<b>${sh.tx_clk_sel ?? 0}</b></span>` +
       `<span class="perif-r30-field">tx_div=<b>${sh.tx_div_factor ?? 0}</b></span>` +
       `<span class="perif-r30-field">rx_clk_sel=<b>${sh.rx_clk_sel ?? 0}</b></span>` +
@@ -959,13 +1036,42 @@ function updatePerifPanel(io) {
   }
 }
 
-// ---- TCA9538 I2C IO expander panel -----------------------------------------
+// ---- TCA9538 I2C IO expander ------------------------------------------------
 
+const _hex2 = v => `0x${v.toString(16).toUpperCase().padStart(2, '0')}`;
+
+// Parse "0x23" / "35" into a 7-bit I2C address, or null when it is not one.
+function parseI2CAddress(text) {
+  const match = /^(?:0[xX]([0-9a-fA-F]{1,2})|([0-9]{1,3}))$/.exec(String(text).trim());
+  if (!match) return null;
+  const value = match[1] !== undefined ? parseInt(match[1], 16) : parseInt(match[2], 10);
+  return value <= 0x7F ? value : null;
+}
+
+// Eight pin boxes, P0 first, each showing its level as a digit (not colour only).
+function renderI2CLeds(container, levels) {
+  container.replaceChildren();
+  levels.forEach((level, i) => {
+    const led = document.createElement('div');
+    led.className = 'i2c-led' + (level ? ' on' : '');
+    led.setAttribute('role', 'img');
+    led.setAttribute('aria-label', `P${i} ${level ? 'high' : 'low or not driven'}`);
+    led.title = `P${i}`;
+    led.textContent = level ? '1' : '0';
+    container.appendChild(led);
+  });
+}
+
+function i2cTransactionText(t) {
+  const regStr = t.reg === null || t.reg === undefined ? '--' : _hex2(t.reg);
+  const dataStr = t.data === null || t.data === undefined ? '--' : _hex2(t.data);
+  return `addr=0x${t.address.toString(16).toUpperCase()} reg=${regStr} data=${dataStr} ${t.ack ? 'ACK' : 'NACK'}`;
+}
+
+// Legacy attach (i2c_attach / pru_i2c_attach, deprecated): state.io.i2c.
 function updateI2CPanel(io) {
   const section = document.getElementById('i2c-interface');
   if (!section) return;
-
-  document.getElementById('i2c-attach-btn')?.classList.toggle('active', !!(io && io.i2c));
 
   const i2c = io && io.i2c;
   if (!i2c || !i2c.saw_start) {
@@ -977,28 +1083,278 @@ function updateI2CPanel(io) {
   const infoEl = document.getElementById('i2c-mode-info');
   if (infoEl) {
     infoEl.textContent = `addr=0x${i2c.address.toString(16).toUpperCase()} ` +
-      `CONFIG=0x${i2c.config_reg.toString(16).toUpperCase().padStart(2, '0')}`;
+      `CONFIG=${_hex2(i2c.config_reg)}`;
   }
 
   const ledContainer = document.getElementById('i2c-leds');
   if (ledContainer) {
-    ledContainer.innerHTML = '';
     const driven = i2c.output_reg & (~i2c.config_reg & 0xFF);
-    for (let i = 0; i < 8; i++) {
-      const led = document.createElement('div');
-      led.className = 'i2c-led' + (((driven >> i) & 1) ? ' on' : '');
-      led.title = `P${i}`;
-      ledContainer.appendChild(led);
-    }
+    renderI2CLeds(ledContainer, Array.from({ length: 8 }, (_, i) => (driven >> i) & 1));
   }
 
   const logEl = document.getElementById('i2c-log');
-  if (logEl && i2c.last_transaction) {
-    const t = i2c.last_transaction;
-    const regStr = t.reg === null || t.reg === undefined ? '--' : `0x${t.reg.toString(16).toUpperCase().padStart(2, '0')}`;
-    const dataStr = t.data === null || t.data === undefined ? '--' : `0x${t.data.toString(16).toUpperCase().padStart(2, '0')}`;
-    logEl.textContent = `addr=0x${t.address.toString(16).toUpperCase()} reg=${regStr} data=${dataStr} ${t.ack ? 'ACK' : 'NACK'}`;
+  if (logEl && i2c.last_transaction) logEl.textContent = i2cTransactionText(i2c.last_transaction);
+}
+
+// TCA9538 card in Devices: the first expander attached to the selected core.
+function updateTcaCard(tcaDevices, core) {
+  const empty = document.getElementById('tca-empty-state');
+  const state = document.getElementById('tca-state');
+  const detachButton = document.getElementById('tca-detach-button');
+  if (!empty || !state) return;
+  const device = tcaDevices[0];
+  empty.textContent = device
+    ? `${device.name} attached to ${core} at 0x${device.address.toString(16).toUpperCase()} ` +
+      `(SCL pin ${device.scl_pin}, SDA pin ${device.sda_pin}).`
+    : `No TCA9538 attached to ${core}.`;
+  if (detachButton) {
+    detachButton.hidden = !device;
+    detachButton.dataset.name = device ? device.name : '';
   }
+  state.hidden = !device;
+  if (!device) return;
+  renderI2CLeds(document.getElementById('tca-leds'), device.levels || []);
+  const driven = (device.driven_mask || 0) === 0
+    ? 'all pins are inputs (CONFIG 0xFF), none driven' : `driven pins mask ${_hex2(device.driven_mask)}`;
+  document.getElementById('tca-registers').textContent =
+    `OUTPUT=${_hex2(device.output_reg)}  POLARITY=${_hex2(device.polarity_reg)}  ` +
+    `CONFIG=${_hex2(device.config_reg)}  \u00b7 ${driven}\n` +
+    `${device.events || 0} bus event${device.events === 1 ? '' : 's'} \u00b7 ` +
+    `${device.faults || 0} fault${device.faults === 1 ? '' : 's'} \u00b7 state ${device.protocol_state}`;
+  document.getElementById('tca-log').textContent = device.last_transaction
+    ? i2cTransactionText(device.last_transaction) : 'No transaction yet.';
+}
+
+function showDeviceError(errors) {
+  const errorEl = document.getElementById('device-error');
+  if (!errorEl) {
+    showErrors(errors);
+    return;
+  }
+  errorEl.textContent = Array.isArray(errors) ? errors.join('\n') : String(errors || 'Device action failed');
+  errorEl.hidden = false;
+}
+
+function clearDeviceError() {
+  const errorEl = document.getElementById('device-error');
+  if (!errorEl) return;
+  errorEl.textContent = '';
+  errorEl.hidden = true;
+}
+
+function updateDevicePanel(io, core) {
+  const panel = document.getElementById('device-runtime-panel');
+  if (!panel || !io) return;
+
+  const incomingCore = core || currentCore;
+  if (multiCoreMode && incomingCore !== devicePanelCore) return;
+  devicePanelCore = incomingCore;
+  const bus = io && io.device_bus ? io.device_bus : {};
+  const devices = Array.isArray(bus.devices) ? bus.devices : [];
+  const events = Array.isArray(bus.events) ? bus.events : [];
+  const faults = Array.isArray(bus.faults) ? bus.faults : [];
+  const list = document.getElementById('ssi-device-list');
+
+  const coreDevices = devices.filter(device => device.core === devicePanelCore);
+  const isSsiDevice = device => Number.isInteger(device.clock_pin) && Number.isInteger(device.data_pin);
+  const ssiDevices = coreDevices.filter(isSsiDevice);
+  updateTcaCard(coreDevices.filter(device => device.model === 'tca9538'), devicePanelCore);
+  const empty = document.getElementById('ssi-empty-state');
+  if (empty) {
+    empty.textContent = ssiDevices.length
+      ? `${ssiDevices.length} SSI encoder${ssiDevices.length === 1 ? '' : 's'} attached to ${devicePanelCore}.`
+      : `No SSI encoder attached to ${devicePanelCore}.`;
+  }
+  if (list) {
+    const existingRows = new Map(
+      Array.from(list.children, row => [row.dataset.deviceName, row])
+    );
+    const nextRows = [];
+    for (const device of coreDevices) {
+      let row = existingRows.get(device.name);
+      if (row && row.dataset.kind !== (isSsiDevice(device) ? 'ssi' : 'generic')) {
+        row.remove();
+        row = undefined;
+        existingRows.delete(device.name);
+      }
+      if (!isSsiDevice(device)) {
+        if (row) existingRows.delete(device.name);
+        nextRows.push(updateGenericDeviceRow(row, device, faults));
+        continue;
+      }
+      if (row) {
+        existingRows.delete(device.name);
+      } else {
+        row = document.createElement('div');
+        row.className = 'runtime-device-row';
+        row.dataset.deviceName = device.name;
+        row.dataset.kind = 'ssi';
+
+        const title = document.createElement('div');
+        title.className = 'runtime-device-row-title';
+        row.appendChild(title);
+
+        const detail = document.createElement('div');
+        detail.className = 'runtime-device-row-detail';
+        detail.dataset.role = 'detail';
+        row.appendChild(detail);
+
+        for (const [key, text] of [['position', 'Set next position'], ['error', 'Set next error']]) {
+          const label = document.createElement('label');
+          label.className = `runtime-device-field runtime-device-${key}-field`;
+          label.dataset.role = `${key}-field`;
+          label.textContent = text;
+          const input = document.createElement('input');
+          input.type = 'number';
+          input.min = '0';
+          input.step = '1';
+          input.required = true;
+          input.dataset[key] = 'true';
+          input.addEventListener('input', () => {
+            input.dataset.dirty = 'true';
+            delete input.dataset.pending;
+          });
+          label.appendChild(input);
+          row.appendChild(label);
+        }
+
+        const actions = document.createElement('div');
+        actions.className = 'runtime-device-actions';
+        for (const [action, label] of [['set-position', 'Set position'], ['set-error', 'Set error'], ['detach', 'Detach']]) {
+          const button = document.createElement('button');
+          button.className = 'runtime-device-button btn-17';
+          button.type = 'button';
+          setButtonLabel(button, label);
+          button.dataset.deviceAction = action;
+          actions.appendChild(button);
+        }
+        row.appendChild(actions);
+      }
+
+      row.querySelector('.runtime-device-row-title').textContent = device.name;
+      const detail = row.querySelector('[data-role="detail"]');
+      detail.textContent = `CLK GPO ${device.clock_pin} · DATA GPI ${device.data_pin} · ` +
+        `${device.preset ? `${device.preset} · ` : ''}` +
+        `${device.resolution}-bit ${device.encoding} · position ${device.position} · ` +
+        `${device.error_bits ? `error ${device.error} · ` : ''}` +
+        `${device.frames_captured || 0} frame${device.frames_captured === 1 ? '' : 's'} · ` +
+        `${device.bits_clocked || 0}/${device.resolution} bits (${device.state || 'idle'})`;
+
+      const deviceEvents = events.filter(event => event.device === device.name);
+      const lastFrame = deviceEvents.slice().reverse().find(event => event.kind === 'frame');
+      let frame = row.querySelector('[data-role="frame"]');
+      if (!frame) {
+        frame = document.createElement('div');
+        frame.className = 'runtime-device-row-detail';
+        frame.dataset.role = 'frame';
+        row.insertBefore(frame, row.querySelector('.runtime-device-field'));
+      }
+      frame.hidden = !lastFrame;
+      if (lastFrame) {
+        const frameError = lastFrame.error === undefined ? '' : ` (error ${lastFrame.error})`;
+        frame.textContent = `Latest frame: ${lastFrame.position}${frameError} at cycle ${lastFrame.cycle}`;
+      }
+      const lastFaultEvent = deviceEvents.slice().reverse().find(event => event.kind === 'fault');
+      const lastFault = faults.slice().reverse().find(message => message.startsWith(`${device.name}:`));
+      let fault = row.querySelector('[data-role="fault"]');
+      if (!fault) {
+        fault = document.createElement('div');
+        fault.className = 'runtime-device-error';
+        fault.dataset.role = 'fault';
+        row.insertBefore(fault, row.querySelector('.runtime-device-field'));
+      }
+      fault.hidden = !lastFaultEvent && !lastFault;
+      if (lastFaultEvent || lastFault) {
+        fault.textContent = `Latest fault: ${lastFaultEvent ? lastFaultEvent.message : lastFault.slice(device.name.length + 1).trim()}`;
+      }
+
+      syncSsiSetter(row.querySelector('input[data-position]'), device.position,
+        ssiFieldMax(device.position_bits || device.resolution));
+      const hasError = device.error_bits > 0;
+      row.querySelector('[data-role="error-field"]').hidden = !hasError;
+      row.querySelector('button[data-device-action="set-error"]').hidden = !hasError;
+      if (hasError) {
+        syncSsiSetter(row.querySelector('input[data-error]'), device.error,
+          ssiFieldMax(device.error_bits));
+      }
+      for (const button of row.querySelectorAll('button[data-device-action]')) {
+        button.dataset.name = device.name;
+      }
+      nextRows.push(row);
+    }
+    existingRows.forEach(row => row.remove());
+    nextRows.forEach((row, index) => {
+      const current = list.children[index];
+      if (current !== row) list.insertBefore(row, current || null);
+    });
+  }
+}
+
+// One row for any attached device that is not an SSI encoder (TCA9538, ...).
+function updateGenericDeviceRow(row, device, faults) {
+  if (!row) {
+    row = document.createElement('div');
+    row.className = 'runtime-device-row';
+    row.dataset.deviceName = device.name;
+    row.dataset.kind = 'generic';
+    const title = document.createElement('div');
+    title.className = 'runtime-device-row-title';
+    row.appendChild(title);
+    const detail = document.createElement('div');
+    detail.className = 'runtime-device-row-detail';
+    detail.dataset.role = 'detail';
+    row.appendChild(detail);
+    const fault = document.createElement('div');
+    fault.className = 'runtime-device-error';
+    fault.dataset.role = 'fault';
+    row.appendChild(fault);
+    const actions = document.createElement('div');
+    actions.className = 'runtime-device-actions';
+    row.appendChild(actions);
+  }
+  const isTca = device.model === 'tca9538';
+  row.querySelector('.runtime-device-row-title').textContent = device.name;
+  row.querySelector('[data-role="detail"]').textContent = isTca
+    ? `I2C expander (tca9538) \u00b7 ${device.core} \u00b7 address 0x${device.address.toString(16).toUpperCase()} \u00b7 ` +
+      `SCL pin ${device.scl_pin} \u00b7 SDA pin ${device.sda_pin} \u00b7 OUTPUT=${_hex2(device.output_reg)} ` +
+      `CONFIG=${_hex2(device.config_reg)}`
+    : `${device.model || 'device'} \u00b7 ${device.core}`;
+  const lastFault = faults.slice().reverse().find(message => message.startsWith(`${device.name}:`));
+  const fault = row.querySelector('[data-role="fault"]');
+  fault.hidden = !lastFault;
+  fault.textContent = lastFault ? `Latest fault (${device.faults} total): ${lastFault.slice(device.name.length + 1).trim()}` : '';
+  const actions = row.querySelector('.runtime-device-actions');
+  const wanted = ['detach'];
+  if (actions.children.length !== wanted.length) {
+    actions.replaceChildren();
+    for (const action of wanted) {
+      const button = document.createElement('button');
+      button.className = 'runtime-device-button btn-17';
+      button.type = 'button';
+      setButtonLabel(button, 'Detach');
+      button.dataset.deviceAction = action;
+      actions.appendChild(button);
+    }
+  }
+  for (const button of actions.children) button.dataset.name = device.name;
+  return row;
+}
+
+// The UI sends numbers, so wide fields are limited to 2^53 - 1.
+function ssiFieldMax(bits) {
+  return Math.min(2 ** bits - 1, Number.MAX_SAFE_INTEGER);
+}
+
+function syncSsiSetter(input, value, max) {
+  input.min = '0';
+  input.max = String(max);
+  input.step = '1';
+  input.required = true;
+  if (input.dataset.pending === String(value)) {
+    delete input.dataset.pending;
+    delete input.dataset.dirty;
+  }
+  if (input.dataset.dirty !== 'true') input.value = String(value);
 }
 
 // ---- Signal graph — buffer -------------------------------------------------
@@ -1192,6 +1548,7 @@ function graphSample(state) {
  *
  * Wire format is packed ints, see _capture_sample() in ui/server.py:
  *   [step, r30(20 bits), gpi bits, perif out bits, out_en bits, clk bits]
+ * A multi-core run appends [r30, gpi bits] per name in msg.partners.
  */
 function graphHandleCapture(msg) {
   if (!signalGraph.recording) return;
@@ -1208,9 +1565,13 @@ function graphHandleCapture(msg) {
       break;
     }
     const [step, r30, gpiBits, outBits, oeBits, clkBits] = s;
+    const pins = bits => Array.from({ length: 20 }, (_, i) => (bits >> i) & 1);
     graphPushSample({
       step,
       mode,
+      core: msg.core,
+      peers: (msg.partners || []).map((name, k) => (
+        { name, gpo: pins(s[6 + 2 * k]), gpi: pins(s[7 + 2 * k]) })),
       gpo: Array.from({ length: 20 }, (_, i) => (r30 >> i) & 1),
       gpi: Array.from({ length: 20 }, (_, i) => (gpiBits >> i) & 1),
       perif: [0, 1, 2].map(i => (outBits >> i) & 1),
@@ -1266,6 +1627,18 @@ function drawGraph() {
   drawMemGraph();
 }
 
+// Canvas colours come from the theme tokens in index.html (read at draw time).
+function graphThemeColor(name, fallback) {
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return value || fallback;
+}
+
+// Both themes change the tokens, so every themed canvas is redrawn.
+document.addEventListener("pru-theme-changed", () => {
+  drawGraph();
+  if (typeof fillWaveCanvas !== "undefined" && fillWaveCanvas) drawWavePreview();
+});
+
 function drawDigitalGraph() {
   const canvas = document.getElementById("signal-graph-canvas");
   if (!canvas) return;
@@ -1277,13 +1650,13 @@ function drawDigitalGraph() {
   const ctx = canvas.getContext("2d");
 
   // Background
-  ctx.fillStyle = "#141414";
+  ctx.fillStyle = graphThemeColor("--graph-bg", "#1b2127");
   ctx.fillRect(0, 0, W, H);
 
   const samples = graphGetSamples();
 
   // Faint vertical grid lines (8 divisions)
-  ctx.strokeStyle = "#222";
+  ctx.strokeStyle = graphThemeColor("--graph-grid", "#35414b");
   ctx.lineWidth = 1;
   for (let gx = 1; gx < 8; gx++) {
     const x = (gx / 8) * W;
@@ -1299,16 +1672,29 @@ function drawDigitalGraph() {
   const activeDig = [];
   if (samples.length >= 2) {
     if (!perifMode) {
-      for (let i = 0; i < 20; i++) {
-        const vals = samples.map(s => s.gpo[i] || 0);
-        if (vals.some(v => v !== vals[0])) {
-          activeDig.push({ label: `GPO ${i}`, color: GRAPH_GPO_COLORS[i], data: vals });
-        }
+      // A multi-core capture plots every core's pins, prefixed by core name so
+      // PRU0 GPI 16 and PRU1 GPO 16 (two ends of one wire) read apart.
+      const last = samples[samples.length - 1];
+      const cores = [{ tag: "", of: s => s }];
+      if (last.peers && last.peers.length) {
+        cores[0].tag = `${last.core.toUpperCase()} `;
+        last.peers.forEach((p, k) => cores.push({
+          tag: `${p.name.toUpperCase()} `, of: s => (s.peers && s.peers[k]) || {} }));
       }
-      for (let i = 0; i < 20; i++) {
-        const vals = samples.map(s => s.gpi[i] || 0);
-        if (vals.some(v => v !== vals[0])) {
-          activeDig.push({ label: `GPI ${i}`, color: GRAPH_GPI_COLORS[i], data: vals });
+      for (const kind of ["gpo", "gpi"]) {
+        for (const c of cores) {
+          for (let i = 0; i < 20; i++) {
+            const data = samples.map(s => (c.of(s)[kind] || [])[i] || 0);
+            // Multi-core: a GPI that is sample-for-sample its own core's GPO
+            // is just the readback of a pin it drives; the GPO lane shows it.
+            // Any disagreement (contention, outside driver) keeps the lane.
+            const own = cores.length > 1 && kind === "gpi" &&
+              samples.every((s, j) => data[j] === ((c.of(s).gpo || [])[i] || 0));
+            if (!own && data.some(v => v !== data[0])) {
+              activeDig.push({ label: `${c.tag}${kind.toUpperCase()} ${i}`,
+                color: (kind === "gpo" ? GRAPH_GPO_COLORS : GRAPH_GPI_COLORS)[i], data });
+            }
+          }
         }
       }
     }
@@ -1357,7 +1743,7 @@ function drawDigitalGraph() {
           ctx.lineTo(xm, ch.data[i - 1] ? yHigh : yLow);
           ctx.lineTo(xm, y);
         }
-        ctx.lineTo(x, y);
+        if (v !== ch.data[i - 1] || i === N - 1) ctx.lineTo(x, y);   // flat runs add no vertex
       });
       ctx.stroke();
       ctx.fillStyle = ch.color;
@@ -1381,11 +1767,11 @@ function drawMemGraph() {
   const ctx = canvas.getContext("2d");
 
   // Background
-  ctx.fillStyle = "#141414";
+  ctx.fillStyle = graphThemeColor("--graph-bg", "#1b2127");
   ctx.fillRect(0, 0, W, H);
 
   // Faint vertical grid lines (8 divisions)
-  ctx.strokeStyle = "#222";
+  ctx.strokeStyle = graphThemeColor("--graph-grid", "#35414b");
   ctx.lineWidth = 1;
   for (let gx = 1; gx < 8; gx++) {
     const x = (gx / 8) * W;
@@ -1411,7 +1797,7 @@ function drawMemGraph() {
     const yH    = rowH - 1;
 
     if (ri > 0) {
-      ctx.strokeStyle = "#2a2a2a"; ctx.lineWidth = 1;
+      ctx.strokeStyle = graphThemeColor("--graph-grid-strong", "#4b5863"); ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(0, yBase); ctx.lineTo(W, yBase); ctx.stroke();
     }
 
@@ -1421,7 +1807,7 @@ function drawMemGraph() {
 
     const snap = ch.snapshot;
     if (!snap || snap.length < 2) {
-      ctx.fillStyle = "#444";
+      ctx.fillStyle = graphThemeColor("--graph-placeholder", "#9da9b3");
       ctx.fillText("waiting…", 28, yBase + yH * 0.6);
       return;
     }
@@ -1436,7 +1822,7 @@ function drawMemGraph() {
       : v.toString();
 
     // Y-axis labels
-    ctx.fillStyle = "#555";
+    ctx.fillStyle = graphThemeColor("--graph-label", "#c0c7cd");
     ctx.font = "8px Consolas, monospace";
     if (flat) {
       ctx.fillText(`= ${fmtV(vMin)}`, 28, yBase + yH * 0.5 + 4);
@@ -1646,22 +2032,23 @@ coreSelect.addEventListener("change", () => {
     sendAction({ action: 'set_loopback', core: currentCore, group: g, enabled: false });
   }
   // Detach any I2C device left attached on the core we're leaving
+  // (legacy i2c_attach; the dashboard itself attaches a tca9538 device model)
   sendAction({ action: 'i2c_attach', core: currentCore, enabled: false });
-  document.getElementById('i2c-attach-btn')?.classList.remove('active');
   currentCore = coreSelect.value;
+  devicePanelCore = currentCore;
   prevRegisters = new Array(32).fill("0x00000000");
   document.querySelectorAll('#loopback-strip .lb-btn').forEach(b => b.classList.remove('active'));
   initSpadState();
   sourceList.innerHTML = "";
   sendAction({ action: "get_state", core: currentCore });
+  syncDeviceCoreSelect();
   updateCtableForCore();
 });
 
 btnStep.addEventListener("click", () => {
   stopRun(); stopSim();
   if (multiCoreMode) {
-    sendAction({ action: "step", core: "pru0", count: 1 });
-    sendAction({ action: "step", core: mcPartner, count: 1 });
+    for (const core of mcShown()) sendAction({ action: "step", core, count: 1 });
   } else {
     sendAction({ action: "step", core: currentCore, count: 1 });
   }
@@ -1681,9 +2068,8 @@ btnReset.addEventListener("click", () => {
   clearErrors();
   prevRegisters = new Array(32).fill("0x00000000");
   if (multiCoreMode) {
-    mcPrevRegs = { pru0: new Array(32).fill("0x00000000"), rtu0: new Array(32).fill("0x00000000") };
-    sendAction({ action: "reset", core: "pru0" });
-    sendAction({ action: "reset", core: mcPartner });
+    for (const slot of PruChrome.MC_SLOTS) mcPrevRegs[slot] = mcFreshRegs();
+    for (const core of mcShown()) sendAction({ action: "reset", core });
   } else {
     sendAction({ action: "reset", core: currentCore });
   }
@@ -1694,9 +2080,9 @@ btnHardReset.addEventListener("click", () => {
   clearErrors();
   prevRegisters = new Array(32).fill("0x00000000");
   if (multiCoreMode) {
-    mcPrevRegs = { pru0: new Array(32).fill("0x00000000"), rtu0: new Array(32).fill("0x00000000") };
+    for (const slot of PruChrome.MC_SLOTS) mcPrevRegs[slot] = mcFreshRegs();
     sendAction({ action: "hard_reset", core: "pru0" });
-    sendAction({ action: "get_state", core: mcPartner });
+    for (const core of mcShown().slice(1)) sendAction({ action: "get_state", core });
   } else {
     sendAction({ action: "hard_reset", core: currentCore });
   }
@@ -1749,9 +2135,9 @@ btnLoad.addEventListener("click", async () => {
 
   if (multiCoreMode) {
     const targetCore = mcLoadCore.value || "pru0";
-    mcPrevRegs[targetCore] = new Array(32).fill("0x00000000");
-    mcLastSourceKey[targetCore] = '';
-    const srcList = document.getElementById(`mc-${targetCore}-source-list`);
+    const slot = mcSlotOf(targetCore);
+    if (slot) { mcPrevRegs[slot] = mcFreshRegs(); mcLastSourceKey[slot] = ''; }
+    const srcList = document.getElementById(`mc-${slot}-source-list`);
     if (srcList) srcList.innerHTML = "";
     sendAction({ action: "load", core: targetCore, source, filename });
   } else {
@@ -1926,25 +2312,25 @@ btnFile.addEventListener("click", async () => {
 
   const menu = document.createElement("div");
   menu.id = "_src-menu";
-  menu.style.cssText = "position:fixed;background:#252526;border:1px solid #3c3c3c;border-radius:4px;z-index:2000;min-width:200px;max-height:300px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,.6);font-size:12px;";
+  menu.style.cssText = "position:fixed;background:var(--panel-raised);border:1px solid var(--border-strong);border-radius:6px;z-index:2000;min-width:200px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px var(--shadow);font-size:12px;";
   const rect = btnFile.getBoundingClientRect();
   menu.style.left = rect.left + "px";
   menu.style.top  = (rect.bottom + 4) + "px";
 
   // "Browse..." item at top — opens native file picker for .asm/.out files
   const browseItem = document.createElement("div");
-  browseItem.style.cssText = "padding:6px 12px;cursor:pointer;color:#569cd6;border-bottom:1px solid #3c3c3c;font-style:italic;";
+  browseItem.style.cssText = "padding:6px 12px;cursor:pointer;color:var(--accent);border-bottom:1px solid var(--border);font-style:italic;";
   browseItem.textContent = "Browse file system...";
-  browseItem.addEventListener("mouseover", () => browseItem.style.background = "#094771");
+  browseItem.addEventListener("mouseover", () => browseItem.style.background = "var(--highlight)");
   browseItem.addEventListener("mouseout",  () => browseItem.style.background = "");
   browseItem.addEventListener("click", () => { menu.remove(); fileInput.click(); });
   menu.appendChild(browseItem);
 
   allFiles.forEach(path => {
     const item = document.createElement("div");
-    item.style.cssText = "padding:6px 12px;cursor:pointer;color:#d4d4d4;";
+    item.style.cssText = "padding:6px 12px;cursor:pointer;color:var(--text);";
     item.textContent = path;
-    item.addEventListener("mouseover", () => item.style.background = "#094771");
+    item.addEventListener("mouseover", () => item.style.background = "var(--highlight)");
     item.addEventListener("mouseout",  () => item.style.background = "");
     item.addEventListener("click", async () => {
       menu.remove();
@@ -2066,16 +2452,16 @@ btnOpenProject.addEventListener("click", async () => {
 
   const menu = document.createElement("div");
   menu.id = "_proj-menu";
-  menu.style.cssText = "position:fixed;background:#252526;border:1px solid #3c3c3c;border-radius:4px;z-index:2000;min-width:200px;max-height:300px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,.6);font-size:12px;";
+  menu.style.cssText = "position:fixed;background:var(--panel-raised);border:1px solid var(--border-strong);border-radius:6px;z-index:2000;min-width:200px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px var(--shadow);font-size:12px;";
   const rect = btnOpenProject.getBoundingClientRect();
   menu.style.left = rect.left + "px";
   menu.style.top  = (rect.bottom + 4) + "px";
 
   projectNames.forEach(projName => {
     const item = document.createElement("div");
-    item.style.cssText = "padding:6px 12px;cursor:pointer;color:#d4d4d4;";
+    item.style.cssText = "padding:6px 12px;cursor:pointer;color:var(--text);";
     item.textContent = projName;
-    item.addEventListener("mouseover", () => item.style.background = "#094771");
+    item.addEventListener("mouseover", () => item.style.background = "var(--highlight)");
     item.addEventListener("mouseout",  () => item.style.background = "");
     item.addEventListener("click", async () => {
       menu.remove();
@@ -2119,7 +2505,7 @@ configModal.addEventListener("click", (e) => {
 btnConfigSave.addEventListener("click", async () => {
   configError.textContent      = "";
   btnConfigSave.disabled       = true;
-  btnConfigSave.textContent    = "Saving...";
+  setButtonLabel(btnConfigSave, "Saving...");
   try {
     const res  = await fetch("/config", { method: "PUT", body: configTextarea.value });
     const data = await res.json();
@@ -2136,9 +2522,49 @@ btnConfigSave.addEventListener("click", async () => {
     configError.textContent = String(e);
   } finally {
     btnConfigSave.disabled    = false;
-    btnConfigSave.textContent = "Save \u0026 Reload";
+    setButtonLabel(btnConfigSave, "Save \u0026 Reload");
   }
 });
+
+// ---- IEP counter clock selector ----------------------------------------------
+// Runtime only: the server applies it to the live IepTimer and never writes memory.cfg.
+
+function showIepClock(iep) {
+  const known = [...iepClockSelect.options].some(o => o.value !== 'configured' &&
+    o.value !== 'custom' && Number(o.value) === iep.external_mhz);
+  const custom = document.getElementById('iep-clock-custom');
+  if (!document.getElementById('iep-clock-custom-form').contains(document.activeElement)) {
+    iepClockSelect.value = iep.override_mhz == null ? 'configured'
+      : known ? String(iep.external_mhz) : 'custom';
+    custom.value = String(iep.external_mhz);
+  }
+  document.getElementById('iep-clock-custom-form').hidden = iepClockSelect.value !== 'custom';
+  document.getElementById('iep-clock-status').textContent =
+    `Active ${iep.clock_mhz} MHz (${iep.core_clock ? 'core' : 'external'} source) · ` +
+    `Configured ${iep.configured_mhz} MHz · External ${iep.external_mhz} MHz`;
+}
+
+iepClockSelect.addEventListener("change", () => {
+  document.getElementById('iep-clock-error').hidden = true;
+  const custom = iepClockSelect.value === 'custom';
+  document.getElementById('iep-clock-custom-form').hidden = !custom;
+  if (custom) document.getElementById('iep-clock-custom').focus();
+  else sendAction({ action: 'set_iep_clock',
+    mhz: iepClockSelect.value === 'configured' ? null : Number(iepClockSelect.value) });
+});
+document.getElementById('iep-clock-custom-form').addEventListener('submit', event => {
+  event.preventDefault();
+  const mhz = Number(document.getElementById('iep-clock-custom').value);
+  const error = document.getElementById('iep-clock-error');
+  error.hidden = true;
+  if (!Number.isFinite(mhz) || mhz <= 0) {
+    error.textContent = 'Enter a finite positive IEP rate in MHz';
+    error.hidden = false;
+    return;
+  }
+  sendAction({ action: 'set_iep_clock', mhz });
+});
+// ---- end IEP counter clock selector ----
 
 // ---- PRU core speed selector ------------------------------------------------
 
@@ -2200,12 +2626,18 @@ document.addEventListener("keydown", (e) => {
 // ---- Run mode -------------------------------------------------------------
 
 function startRun() {
+  if (running) return;
   stopSim();
   running = true;
-  btnRun.textContent = "Stop";
+  setButtonLabel(btnRun, "Stop");
   btnRun.classList.add("btn-reset");
   btnRun.classList.remove("btn-run");
   runInterval = setInterval(() => {
+    // Device chunks can take longer than this timer interval. Wait for the
+    // final state of our chunk so Run and Stop never build up a command queue.
+    if (runPending !== null || !ws || ws.readyState !== WebSocket.OPEN) return;
+    const run_id = ++runSequence;
+    runPending = run_id;
     // While recording, the server samples the graph inside its run loop and
     // ships the batch as a "capture" message (per instruction in perif mode,
     // 100:1 otherwise). The chunk size no longer sets the sample rate, so it
@@ -2214,9 +2646,9 @@ function startRun() {
     const max_steps = 1000;
     if (multiCoreMode) {
       sendAction({ action: "run_multicore", core: "pru0",
-                   partner: mcPartner, max_steps, capture });
+                   partners: mcShown().slice(1), max_steps, capture, run_id, stride: captureStride });
     } else {
-      sendAction({ action: "run", core: currentCore, max_steps, capture });
+      sendAction({ action: "run", core: currentCore, max_steps, capture, run_id, stride: captureStride });
     }
   }, 10);
 }
@@ -2224,7 +2656,7 @@ function startRun() {
 function stopRun() {
   if (!running) return;
   running = false;
-  btnRun.textContent = "Run";
+  setButtonLabel(btnRun, "Run");
   btnRun.classList.add("btn-run");
   btnRun.classList.remove("btn-reset");
   if (runInterval !== null) {
@@ -2236,14 +2668,13 @@ function stopRun() {
 function startSim() {
   stopRun();
   simRunning = true;
-  btnSim.textContent = "Stop SIM";
+  setButtonLabel(btnSim, "Stop SIM");
   btnSim.classList.add("btn-reset");
   btnSim.classList.remove("btn-sim");
   const ms = Math.round((parseFloat(simIntervalInput.value) || 1.0) * 1000);
   simTimer = setInterval(() => {
     if (multiCoreMode) {
-      sendAction({ action: "step", core: "pru0", count: 1 });
-      sendAction({ action: "step", core: mcPartner, count: 1 });
+      for (const core of mcShown()) sendAction({ action: "step", core, count: 1 });
     } else {
       sendAction({ action: "step", core: currentCore, count: 1 });
     }
@@ -2253,7 +2684,7 @@ function startSim() {
 function stopSim() {
   if (!simRunning) return;
   simRunning = false;
-  btnSim.textContent = "SIM";
+  setButtonLabel(btnSim, "SIM");
   btnSim.classList.remove("btn-reset");
   btnSim.classList.add("btn-sim");
   if (simTimer !== null) {
@@ -2289,22 +2720,143 @@ document.querySelectorAll('#loopback-strip .lb-btn').forEach(btn => {
   btn.addEventListener('click', () => onLoopbackToggle(btn));
 });
 
-// ---- I2C attach toggle (TCA9538) -------------------------------------------
+function sendDeviceAction(action) {
+  clearDeviceError();
+  sendAction(action);
+}
 
-function onI2CAttachToggle(btn) {
-  const enabled = !btn.classList.contains('active');
-  btn.classList.toggle('active', enabled);
-  sendAction({ action: 'i2c_attach', core: currentCore, enabled, address: 0x23 });
-  if (!enabled) {
-    const section = document.getElementById('i2c-interface');
-    if (section) section.style.display = 'none';
+function deviceNumberValue(id) {
+  const input = document.getElementById(id);
+  if (!input || !input.checkValidity()) {
+    input?.reportValidity();
+    return null;
+  }
+  return input.valueAsNumber;
+}
+
+function populateSsiPresets(profiles) {
+  const select = document.getElementById('ssi-preset');
+  const presets = profiles && profiles.ssi_encoder && profiles.ssi_encoder.presets;
+  if (!select || !presets) return;
+  ssiPresets = presets;
+  while (select.options.length > 1) select.remove(1);
+  for (const name of Object.keys(presets)) {
+    const option = document.createElement('option');
+    option.value = name;
+    option.textContent = name;
+    select.appendChild(option);
   }
 }
 
-const _i2cAttachBtn = document.getElementById('i2c-attach-btn');
-if (_i2cAttachBtn) {
-  _i2cAttachBtn.addEventListener('click', () => onI2CAttachToggle(_i2cAttachBtn));
-}
+document.getElementById('ssi-preset')?.addEventListener('change', event => {
+  const preset = ssiPresets[event.target.value];
+  if (!preset) return;
+  document.getElementById('ssi-resolution').value = String(preset.resolution);
+  document.getElementById('ssi-error-bits').value = String(preset.error_bits);
+  document.getElementById('ssi-encoding').value = preset.encoding;
+});
+
+document.getElementById('ssi-attach-button')?.addEventListener('click', () => {
+  const nameInput = document.getElementById('ssi-device-name');
+  if (!nameInput.checkValidity()) {
+    nameInput.reportValidity();
+    return;
+  }
+  const clockPin = deviceNumberValue('ssi-clock-pin');
+  const dataPin = deviceNumberValue('ssi-data-pin');
+  const positionInput = document.getElementById('ssi-position');
+  const errorBitsInput = document.getElementById('ssi-error-bits');
+  const errorValueInput = document.getElementById('ssi-error-value');
+  const resolution = deviceNumberValue('ssi-resolution');
+  const errorBits = deviceNumberValue('ssi-error-bits');
+  for (const input of [positionInput, errorBitsInput, errorValueInput]) input.setCustomValidity('');
+  if (clockPin === null || dataPin === null || resolution === null || errorBits === null ||
+      !positionInput.checkValidity() || !errorValueInput.checkValidity()) {
+    (positionInput.checkValidity() ? errorValueInput : positionInput).reportValidity();
+    return;
+  }
+  const positionBits = resolution - errorBits;
+  if (positionBits < 1) {
+    errorBitsInput.setCustomValidity('Error bits must leave at least one position bit.');
+    errorBitsInput.reportValidity();
+    return;
+  }
+  for (const [input, bits, label] of [[positionInput, positionBits, 'Position'],
+                                      [errorValueInput, errorBits, 'Error value']]) {
+    if (input.valueAsNumber > ssiFieldMax(bits)) {
+      input.setCustomValidity(`${label} must be at most ${ssiFieldMax(bits)}.`);
+      input.reportValidity();
+      return;
+    }
+  }
+  const config = {
+    name: nameInput.value.trim(),
+    clock_pin: clockPin,
+    data_pin: dataPin,
+    position: positionInput.valueAsNumber,
+    resolution,
+    position_bits: positionBits,
+    error_bits: errorBits,
+    error_value: errorValueInput.valueAsNumber,
+    encoding: document.getElementById('ssi-encoding').value,
+  };
+  const preset = document.getElementById('ssi-preset').value;
+  if (preset) config.preset = preset;
+  sendDeviceAction({
+    action: 'device_attach',
+    core: devicePanelCore,
+    profile: 'ssi_encoder',
+    config,
+  });
+});
+
+document.getElementById('tca-attach-button')?.addEventListener('click', () => {
+  const nameInput = document.getElementById('tca-device-name');
+  const addressInput = document.getElementById('tca-address');
+  const address = parseI2CAddress(addressInput.value);
+  addressInput.setCustomValidity(address === null ? 'Enter a 7-bit address such as 0x23 (0-127).' : '');
+  if (!nameInput.checkValidity()) { nameInput.reportValidity(); return; }
+  if (address === null) { addressInput.reportValidity(); return; }
+  const sclPin = deviceNumberValue('tca-scl-pin');
+  const sdaPin = deviceNumberValue('tca-sda-pin');
+  if (sclPin === null || sdaPin === null) return;
+  sendDeviceAction({
+    action: 'device_attach',
+    core: devicePanelCore,
+    profile: 'tca9538',
+    config: { name: nameInput.value.trim(), address, scl_pin: sclPin, sda_pin: sdaPin },
+  });
+});
+
+document.getElementById('tca-detach-button')?.addEventListener('click', event => {
+  const name = event.currentTarget.dataset.name;
+  if (name) sendDeviceAction({ action: 'device_detach', core: devicePanelCore, name });
+});
+
+document.getElementById('ssi-device-list')?.addEventListener('click', event => {
+  const button = event.target.closest('button[data-device-action]');
+  if (!button) return;
+  const name = button.dataset.name;
+  if (button.dataset.deviceAction === 'detach') {
+    sendDeviceAction({ action: 'device_detach', core: devicePanelCore, name });
+    return;
+  }
+  const field = button.dataset.deviceAction === 'set-error' ? 'error' : 'position';
+  const row = button.closest('.runtime-device-row');
+  const input = row && row.querySelector(`input[data-${field}]`);
+  if (!input || !input.checkValidity()) {
+    input?.reportValidity();
+    return;
+  }
+  sendDeviceAction({
+    action: `ssi_set_${field}`,
+    core: devicePanelCore,
+    name,
+    [field]: input.valueAsNumber,
+  });
+  input.dataset.pending = String(input.valueAsNumber);
+  input.dataset.dirty = 'true';
+});
 
 // ---- Memory panel ---------------------------------------------------------
 
@@ -2474,7 +3026,7 @@ function editWord2(el, absoluteAddr, wordSize) {
   const maxLen = wordSize * 2;
   const oldVal = el.textContent;
   const input = document.createElement("input");
-  input.style.cssText = `width:${Math.max(56, maxLen * 8)}px;font-size:13px;text-align:center;background:#1a1a1a;color:#fff;border:1px solid var(--accent);padding:0;font-family:inherit;`;
+  input.style.cssText = `width:${Math.max(56, maxLen * 8)}px;font-size:13px;text-align:center;background:var(--panel-inset);color:var(--text);border:1px solid var(--accent);padding:0;font-family:inherit;`;
   input.value = oldVal;
   input.maxLength = maxLen;
   el.textContent = "";
@@ -2543,7 +3095,7 @@ function drawWavePreview() {
   fillWaveCanvas.height = H;
 
   const ctx = fillWaveCanvas.getContext("2d");
-  ctx.fillStyle = "#1a1a1a";
+  ctx.fillStyle = graphThemeColor("--graph-bg", "#1b2127");
   ctx.fillRect(0, 0, W, H);
 
   // ---- Compute y range from current parameters ----------------------------
@@ -2571,13 +3123,13 @@ function drawWavePreview() {
   // ---- Y reference lines --------------------------------------------------
   ctx.lineWidth = 1;
   for (const [py, bright] of [[yTopPx, false], [midY, true], [yBotPx, false]]) {
-    ctx.strokeStyle = bright ? "#3c3c3c" : "#262626";
+    ctx.strokeStyle = bright ? graphThemeColor("--graph-grid-strong", "#4b5863") : graphThemeColor("--graph-grid", "#35414b");
     ctx.beginPath(); ctx.moveTo(Y_MAR, py); ctx.lineTo(W, py); ctx.stroke();
   }
 
   // ---- Y-axis labels -------------------------------------------------------
   ctx.font      = "9px Consolas, monospace";
-  ctx.fillStyle = "#858585";
+  ctx.fillStyle = graphThemeColor("--graph-label", "#c0c7cd");
   ctx.textAlign = "right";
   ctx.fillText(fmtYLabel(yMax), Y_MAR - 4, yTopPx + 4);
   ctx.fillText(fmtYLabel(yMid), Y_MAR - 4, midY   + 3);
@@ -2585,7 +3137,7 @@ function drawWavePreview() {
 
   // ---- Waveform -----------------------------------------------------------
   const cycles = parseFloat(fillWaveCycles.value) || 1;
-  ctx.strokeStyle = "#569cd6";
+  ctx.strokeStyle = graphThemeColor("--graph-wave", "#ff7c84");
   ctx.lineWidth   = 1.5;
   ctx.beginPath();
   for (let xi = 0; xi < WAVE_W; xi++) {
@@ -2606,13 +3158,13 @@ function drawWavePreview() {
   const nTicks = 5;
 
   ctx.font      = "9px Consolas, monospace";
-  ctx.fillStyle = "#858585";
+  ctx.fillStyle = graphThemeColor("--graph-label", "#c0c7cd");
   for (let i = 0; i <= nTicks; i++) {
     const frac  = i / nTicks;
     const px    = Y_MAR + Math.round(frac * WAVE_W);
     const label = Math.round(frac * nElems).toString();
 
-    ctx.strokeStyle = "#555";
+    ctx.strokeStyle = graphThemeColor("--graph-grid-strong", "#4b5863");
     ctx.lineWidth   = 1;
     ctx.beginPath(); ctx.moveTo(px + 0.5, WAVE_H); ctx.lineTo(px + 0.5, WAVE_H + 3); ctx.stroke();
 
@@ -2847,7 +3399,7 @@ function editWord(el, absoluteAddr, wordSize) {
   const maxLen = wordSize * 2;
   const oldVal = el.textContent;
   const input = document.createElement("input");
-  input.style.cssText = `width:80px;font-size:13px;text-align:center;background:#1a1a1a;color:#fff;border:1px solid var(--accent);padding:0;font-family:inherit;`;
+  input.style.cssText = `width:80px;font-size:13px;text-align:center;background:var(--panel-inset);color:var(--text);border:1px solid var(--accent);padding:0;font-family:inherit;`;
   input.value = oldVal;
   input.maxLength = maxLen;
   el.textContent = "";
@@ -2882,7 +3434,7 @@ function editWord(el, absoluteAddr, wordSize) {
 function editRegister(valEl, index) {
   const oldVal = valEl.textContent;
   const input = document.createElement("input");
-  input.style.cssText = "width:88px;font-size:13px;text-align:right;background:#1a1a1a;color:#fff;border:1px solid var(--accent);padding:0 2px;font-family:inherit;";
+  input.style.cssText = "width:88px;font-size:13px;text-align:right;background:var(--panel-inset);color:var(--text);border:1px solid var(--accent);padding:0 2px;font-family:inherit;";
   input.value = oldVal.slice(2);  // strip leading "0x"
   input.maxLength = 8;
   valEl.textContent = "";
@@ -2994,7 +3546,7 @@ const ctableDivider   = document.getElementById("ctable-divider");
 
 btnCtableToggle.addEventListener("click", () => {
   const open = ctableSection.classList.toggle("open");
-  btnCtableToggle.textContent = open ? "C-Table ▲" : "C-Table";
+  setButtonLabel(btnCtableToggle, open ? "C-Table ▲" : "C-Table");
   ctableDivider.style.display = open ? "" : "none";
   if (open && !document.getElementById("ctable-tbody").hasChildNodes()) {
     buildCtable();
@@ -3180,31 +3732,120 @@ document.getElementById("btn-reset-layout").addEventListener("click", resetLayou
 
 // ---- Multi-core partner (second core in the MC view: RTU0 or PRU1) --------
 const mcPartnerSelect = document.getElementById("mc-partner-select");
+const mcExtraCores    = document.getElementById("mc-extra-cores");
+const deviceCoreSelect = document.getElementById('device-core-select');
+const deviceCoreSelectWrap = document.getElementById('device-core-select-wrap');
+
+function showAvailableCores(cores) {
+  if (JSON.stringify(availableCores) === JSON.stringify(cores)) return;
+  stopRun(); stopSim();
+  availableCores = cores;
+  const previousCore = currentCore;
+  if (!cores.includes(currentCore)) currentCore = cores[0];
+  if (!cores.includes(mcPartner)) mcPartner = cores.find(core => core !== 'pru0');
+  mcExtras = mcExtras.filter(core => cores.includes(core) && core !== mcPartner);
+  if (!cores.includes(devicePanelCore)) devicePanelCore = currentCore;
+  for (const select of [coreSelect, mcPartnerSelect, mcLoadCore, deviceCoreSelect]) {
+    for (const option of select.options) {
+      option.hidden = !cores.includes(option.value);
+      option.disabled = option.hidden;
+    }
+    if (!cores.includes(select.value)) select.value = select === mcPartnerSelect ? mcPartner : currentCore;
+  }
+  coreSelect.value = currentCore;
+  mcPartnerSelect.value = mcPartner;
+  for (const button of document.querySelectorAll('#mc-extra-cores button')) {
+    button.hidden = !cores.includes(button.dataset.mcExtra);
+    button.disabled = button.hidden || button.dataset.mcExtra === mcPartner;
+  }
+  syncDeviceCoreSelect();
+  if (multiCoreMode) applyMCCores();
+  else applyMCPartnerLabels();
+  if (previousCore !== currentCore) sendAction({ action: 'get_state', core: currentCore });
+}
+
+function syncDeviceCoreSelect() {
+  if (!deviceCoreSelect || !deviceCoreSelectWrap) return;
+  const partnerOption = deviceCoreSelect.options[1];
+  partnerOption.value = mcPartner;
+  partnerOption.textContent = mcPartner.toUpperCase();
+  partnerOption.hidden = !availableCores.includes(mcPartner);
+  partnerOption.disabled = partnerOption.hidden;
+  deviceCoreSelectWrap.hidden = !multiCoreMode;
+  if (multiCoreMode) {
+    if (devicePanelCore !== 'pru0' && devicePanelCore !== mcPartner) {
+      devicePanelCore = 'pru0';
+    }
+    deviceCoreSelect.value = devicePanelCore;
+  } else {
+    deviceCoreSelect.value = currentCore;
+  }
+}
+
+deviceCoreSelect?.addEventListener('change', () => {
+  devicePanelCore = deviceCoreSelect.value;
+  sendAction({ action: 'get_state', core: devicePanelCore });
+});
 
 function applyMCPartnerLabels() {
-  const label = mcPartner === "pru1" ? "PRU1" : "RTU0";
+  const label = mcPartner.toUpperCase();
   const srcTitle = document.getElementById("mc-partner-source-title");
   const regTitle = document.getElementById("mc-partner-reg-title");
   const cntLabel = document.getElementById("cnt-p1-label");
   if (srcTitle) srcTitle.textContent = `${label} Source`;
   if (regTitle) regTitle.textContent = `${label} Registers`;
   if (cntLabel) cntLabel.textContent = label;
+  mcExtras.forEach((core, i) => {
+    const slot = PruChrome.MC_SLOTS[i + 2];
+    document.getElementById(`mc-${slot}-source-title`).textContent = `${core.toUpperCase()} Source`;
+    document.getElementById(`mc-${slot}-reg-title`).textContent = `${core.toUpperCase()} Registers`;
+  });
+  // The partner is always shown, so its own toggle is pressed and locked.
+  document.querySelectorAll("#mc-extra-cores button").forEach(btn => {
+    const core = btn.dataset.mcExtra;
+    btn.disabled = !availableCores.includes(core) || core === mcPartner;
+    btn.setAttribute("aria-pressed", String(core === mcPartner || mcExtras.includes(core)));
+  });
 }
+
+// Rebuild the multi-core view after the set of shown cores changed.
+function applyMCCores() {
+  mcExtras = PruChrome.mcExtras(mcPartner, mcExtras, availableCores);
+  applyMCPartnerLabels();
+  for (const slot of PruChrome.MC_SLOTS) mcResetSlot(slot);
+  mcShown().forEach((_, i) => buildMCRegTable(PruChrome.MC_SLOTS[i]));
+  switchLayoutMode(PruChrome.mcMode(mcShown().length));
+  for (const core of mcShown()) sendAction({ action: "get_state", core });
+}
+
+document.querySelectorAll("#mc-extra-cores button").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const core = btn.dataset.mcExtra;
+    stopRun(); stopSim();
+    mcExtras = mcExtras.includes(core) ? mcExtras.filter(c => c !== core) : [...mcExtras, core];
+    if (multiCoreMode) applyMCCores();
+    else applyMCPartnerLabels();
+  });
+});
 
 mcPartnerSelect.addEventListener("change", () => {
   stopRun(); stopSim();
+  const previousPartner = mcPartner;
   mcPartner = mcPartnerSelect.value;
+  if (devicePanelCore === previousPartner) devicePanelCore = mcPartner;
+  syncDeviceCoreSelect();
+  mcExtras = PruChrome.mcExtras(mcPartner, mcExtras, availableCores);
   applyMCPartnerLabels();
   if (multiCoreMode) {
-    // Reset the partner DOM slot and re-request state for the new core.
-    mcPrevRegs.rtu0 = new Array(32).fill("0x00000000");
-    mcLastSourceKey.rtu0 = '';
-    mcBreakpoints.rtu0 = new Set();
-    mcHaltedState.rtu0 = false;
-    mcBreakState.rtu0 = false;
-    buildMCRegTable("rtu0");
-    sendAction({ action: "get_state", core: "pru0" });
-    sendAction({ action: "get_state", core: mcPartner });
+    if (mcExtras.length || currentMode !== PruChrome.mcMode(mcShown().length)) {
+      applyMCCores();   // the extras' slots follow the partner, or the layout shrinks
+    } else {
+      // Reset the partner DOM slot and re-request state for the new core.
+      mcResetSlot("rtu0");
+      buildMCRegTable("rtu0");
+      sendAction({ action: "get_state", core: "pru0" });
+      sendAction({ action: "get_state", core: mcPartner });
+    }
   }
 });
 
@@ -3213,9 +3854,12 @@ function toggleMultiCore() {
   stopRun(); stopSim();
 
   if (multiCoreMode) {
+    devicePanelCore = 'pru0';
+    syncDeviceCoreSelect();
     coreSelect.style.display = "none";
     mcLoadCore.style.display = "";
     mcPartnerSelect.style.display = "";
+    mcExtraCores.style.display = "";
     applyMCPartnerLabels();
     btnMulticore.classList.add("mc-active");
 
@@ -3234,21 +3878,17 @@ function toggleMultiCore() {
       mcPrevSpad[b.key] = new Array(b.count).fill("0x00000000");
     }
 
-    // Build register tables for both cores
-    buildMCRegTable("pru0");
-    buildMCRegTable("rtu0");
-
-    // Switch to MC layout
-    switchLayoutMode("mc");
-
-    // Request state for both cores
-    sendAction({ action: "get_state", core: "pru0" });
-    sendAction({ action: "get_state", core: mcPartner });
+    // Build register tables, switch to the MC layout for the shown cores and
+    // request state for each of them
+    applyMCCores();
 
   } else {
+    devicePanelCore = currentCore;
+    syncDeviceCoreSelect();
     coreSelect.style.display = "";
     mcLoadCore.style.display = "none";
     mcPartnerSelect.style.display = "none";
+    mcExtraCores.style.display = "none";
     btnMulticore.classList.remove("mc-active");
 
     // Restore SC counter layout
@@ -3265,6 +3905,130 @@ function toggleMultiCore() {
     switchLayoutMode("sc");
 
     sendAction({ action: "get_state", core: currentCore });
+  }
+}
+
+// ---- Examples (one-click scenarios) ------------------------------------------
+const scenarioButtons = document.querySelectorAll("[data-scenario]");
+let scenarioGeneration = 0;
+
+function updateSsiDemo(demo) {
+  const result = document.getElementById('ssi-demo-result');
+  if (!result) return;
+  result.hidden = !demo;
+  const button = document.getElementById('ssi-demo-set-position');
+  button.disabled = !demo;
+  if (!demo) return;
+  button.dataset.core = demo.reader_core;
+  document.getElementById('ssi-demo-wiring').textContent = demo.encoder_core
+    ? `${demo.reader_core.toUpperCase()} reader → ${demo.encoder_core.toUpperCase()} encoder firmware: clock pin 0, data pin 16.`
+    : `${demo.reader_core.toUpperCase()} reader → encoder model: clock GPO0, data GPI16.`;
+  const value = document.getElementById('ssi-demo-position');
+  syncSsiSetter(value, demo.requested_position, demo.position_max);
+  document.getElementById('ssi-demo-requested').textContent = String(demo.requested_position);
+  document.getElementById('ssi-received-position').textContent = demo.position == null
+    ? '—' : `${demo.position} (${demo.raw_frame})`;
+  document.getElementById('ssi-received-error').textContent = demo.error_bits === 0
+    ? 'Not present' : String(demo.error ?? '—');
+  document.getElementById('ssi-received-count').textContent = String(demo.frame_count ?? '—');
+  document.getElementById('ssi-firmware-status').textContent = `Reader ${demo.reader_status}` +
+    (demo.encoder_core ? ` / encoder ${demo.emulator_status}` : '');
+  const status = demo.reader_status || demo.emulator_status
+    ? `Firmware status ${demo.reader_status || demo.emulator_status}; reload the example.`
+    : demo.encoder_core && !demo.timer_enabled ? 'IEP disabled; reload the encoder example.'
+    : !demo.coherent ? 'Publishing a frame…'
+    : demo.frame_count ? 'Received frames. Position changes apply to the next frame.'
+    : 'Ready. Press Run to receive frames.';
+  const statusElement = document.getElementById('ssi-demo-status');
+  if (statusElement.textContent !== status) statusElement.textContent = status;
+}
+
+document.getElementById('ssi-demo-position')?.addEventListener('input', event => {
+  event.target.dataset.dirty = 'true';
+  event.target.setCustomValidity('');
+});
+document.getElementById('ssi-demo-set-position')?.addEventListener('click', event => {
+  const input = document.getElementById('ssi-demo-position');
+  const position = input.valueAsNumber;
+  input.setCustomValidity(Number.isInteger(position) && position >= 0 && position <= Number(input.max)
+    ? '' : `Enter a whole position from 0 to ${input.max}.`);
+  if (!input.reportValidity()) return;
+  input.dataset.pending = String(position);
+  clearDeviceError();
+  sendAction({ action: 'ssi_demo_position', core: event.currentTarget.dataset.core, position });
+});
+document.getElementById('ssi-demo-waveforms')?.addEventListener('click', () => {
+  document.querySelector('[data-workspace-view="simulator"]')?.click();
+});
+
+function populateScenarios(scenarios) {
+  for (const button of scenarioButtons) {
+    const scenario = scenarios.find(item => item.name === button.dataset.scenario);
+    button.disabled = !scenario;
+    button.title = scenario ? scenario.description : "Example not offered by the server (restart it?)";
+  }
+}
+
+for (const button of scenarioButtons) {
+  button.addEventListener("click", () => {
+    stopRun(); stopSim();
+    clearDeviceError();
+    sendAction({ action: "scenario_load", name: button.dataset.scenario });
+  });
+}
+
+// The server has already reset and set up the simulator; bring every view in line.
+async function applyScenario(scenario) {
+  stopRun(); stopSim();
+  const generation = ++scenarioGeneration;
+  mcExtras = [];
+  if (currentCore !== scenario.lead) {
+    coreSelect.value = scenario.lead;
+    coreSelect.dispatchEvent(new Event("change"));
+  }
+  devicePanelCore = scenario.lead;
+  const partner = scenario.cores.find(core => core !== scenario.lead);
+  if (scenario.multicore) {
+    if (mcPartner !== partner) {
+      mcPartnerSelect.value = partner;
+      mcPartnerSelect.dispatchEvent(new Event("change"));
+    }
+    if (!multiCoreMode) toggleMultiCore();
+    else applyMCCores();
+  } else {
+    if (multiCoreMode) toggleMultiCore();
+  }
+  syncDeviceCoreSelect();
+  for (const core of scenario.cores) sendAction({ action: "get_state", core });
+  const ui = scenario.ui || {};
+  captureStride = ui.capture_stride || null;
+  document.getElementById("graph-clear-btn").click();   // no samples from the previous example
+  if (ui.capture_stride) {
+    document.getElementById("graph-win-sel").value = String(ui.graph_window);
+    graphResizeWindow(ui.graph_window);
+    graphSetRecording(true);
+    drawGraph();
+  }
+  if (ui.memory_addr !== undefined) {
+    memAddrInput.value = "0x" + ui.memory_addr.toString(16).padStart(8, "0").toUpperCase();
+    memLenInput.value = String(ui.memory_length);
+    memAutoRefreshBox.checked = true;
+    memAutoRefresh = true;
+    refreshMemory();
+  }
+  document.querySelector(`[data-workspace-view="${ui.view || "simulator"}"]`)?.click();
+  if (ui.view === 'io') document.querySelector('[data-io-tab="devices"]')?.click();
+  // Editor tabs: the lead's firmware last so it is the one on screen.
+  for (const core of [...scenario.cores].reverse()) {
+    const path = scenario.firmware[core];
+    try {
+      const res = await fetch(`/source/${path}`);
+      if (res.ok) {
+        const source = await res.text();
+        if (generation !== scenarioGeneration) return;
+        openFileAsTab(path, source);
+      }
+    } catch (_) { /* the disassembly panels still show the loaded program */ }
   }
 }
 
@@ -3298,7 +4062,7 @@ function buildMCRegTable(core) {
     tr.innerHTML = html;
     const valCell = tr.querySelector(".reg-val");
     const regIdx = i;
-    valCell.addEventListener("dblclick", () => editMCRegister(valCell, core, regIdx));
+    valCell.addEventListener("dblclick", () => editMCRegister(valCell, mcCoreOfSlot(core), regIdx));
     tbody.appendChild(tr);
   }
 }
@@ -3306,7 +4070,7 @@ function buildMCRegTable(core) {
 function editMCRegister(valEl, core, index) {
   const oldVal = valEl.textContent;
   const input = document.createElement("input");
-  input.style.cssText = "width:88px;font-size:13px;text-align:right;background:#1a1a1a;color:#fff;border:1px solid var(--accent);padding:0 2px;font-family:inherit;";
+  input.style.cssText = "width:88px;font-size:13px;text-align:right;background:var(--panel-inset);color:var(--text);border:1px solid var(--accent);padding:0 2px;font-family:inherit;";
   input.value = oldVal.slice(2);
   input.maxLength = 8;
   valEl.textContent = "";
@@ -3334,10 +4098,9 @@ function editMCRegister(valEl, core, index) {
 }
 
 function updateMCUI(state) {
-  if (state.core !== "pru0" && state.core !== mcPartner) return;   // core not shown
-  // The second MC panel's DOM ids are the "rtu0" slot; the partner core
-  // (RTU0 or PRU1) renders into it.
-  const core = state.core === "pru0" ? "pru0" : "rtu0";
+  // Each shown core renders into its slot's panels (see PruChrome.mcCores).
+  const core = mcSlotOf(state.core);
+  if (!core) return;   // core not shown
 
   // PC badge in panel title
   const pcBadge = document.getElementById(`mc-${core}-pc`);
@@ -3376,7 +4139,7 @@ function updateMCUI(state) {
     cntInstrs.textContent = state.instruction_count;
     cntIpc.textContent    = state.ipc.toFixed(3);
     cntPc.textContent     = state.pc;
-    updatePins(state.io);
+    updatePins(state.io, state.core);
     updateSDPanel(state.io);
     updateI2CPanel(state.io);
     // Update SPAD columns in PRU0 MC reg panel
@@ -3386,6 +4149,8 @@ function updateMCUI(state) {
     document.getElementById("cnt-rtu-stalls").textContent = state.stall_cycles;
     document.getElementById("cnt-rtu-pc").textContent     = state.pc;
   }
+
+  if (state.core === devicePanelCore) updateDevicePanel(state.io, state.core);
 
   memAutoOnStateChange();
 }
@@ -3410,8 +4175,9 @@ function updateMCSpad(spad) {
 }
 
 function updateMCStatus() {
-  const anyBreak  = mcBreakState.pru0  || mcBreakState.rtu0;
-  const anyHalted = mcHaltedState.pru0 || mcHaltedState.rtu0;
+  const slots = mcShown().map((_, i) => PruChrome.MC_SLOTS[i]);
+  const anyBreak  = slots.some(slot => mcBreakState[slot]);
+  const anyHalted = slots.some(slot => mcHaltedState[slot]);
   if (anyBreak) {
     statusBadge.textContent = "BREAK";
     statusBadge.className   = "halted";
@@ -3505,32 +4271,24 @@ function updateMCSource(core, instructions, pc, labels) {
     currentLine.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }
 
-  // "rtu0" is this panel's fixed DOM slot; the core actually loaded into it
-  // (RTU0 or PRU1) is whatever mcPartner currently points at.
-  const realCore = core === "pru0" ? "pru0" : mcPartner;
-  renderBpBar(`mc-${core}-`, realCore, mcBreakpoints[core]);
+  // The slot's DOM ids are fixed; the core it shows is whichever is chosen.
+  renderBpBar(`mc-${core}-`, mcCoreOfSlot(core), mcBreakpoints[core]);
 }
 
 // Breakpoint toggle via dblclick on MC source panels
-document.getElementById("mc-pru0-source-panel").addEventListener("dblclick", (e) => {
-  const li = e.target.closest("li[id^='mc-pru0-src-line-']");
-  if (!li) return;
-  const addr = parseInt(li.id.replace("mc-pru0-src-line-", ""), 10);
-  if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: "pru0", addr });
-});
-
-document.getElementById("mc-rtu0-source-panel").addEventListener("dblclick", (e) => {
-  const li = e.target.closest("li[id^='mc-rtu0-src-line-']");
-  if (!li) return;
-  const addr = parseInt(li.id.replace("mc-rtu0-src-line-", ""), 10);
-  if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: mcPartner, addr });
-});
+for (const slot of PruChrome.MC_SLOTS) {
+  document.getElementById(`mc-${slot}-source-panel`).addEventListener("dblclick", (e) => {
+    const li = e.target.closest(`li[id^='mc-${slot}-src-line-']`);
+    if (!li) return;
+    const addr = parseInt(li.id.replace(`mc-${slot}-src-line-`, ""), 10);
+    if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: mcCoreOfSlot(slot), addr });
+  });
+}
 
 // ---- Init -----------------------------------------------------------------
 
 wireBpBar("", () => currentCore);
-wireBpBar("mc-pru0-", () => "pru0");
-wireBpBar("mc-rtu0-", () => mcPartner);
+for (const slot of PruChrome.MC_SLOTS) wireBpBar(`mc-${slot}-`, () => mcCoreOfSlot(slot));
 
 initUI();
 connect();
@@ -3553,16 +4311,13 @@ document.addEventListener("keydown", (e) => {
   if (e.key === " ") {
     e.preventDefault();
     if (multiCoreMode) {
-      const pru0Line = document.querySelector("#mc-pru0-source-list li.current-pc");
-      if (pru0Line) {
-        const addr = parseInt(pru0Line.id.replace("mc-pru0-src-line-", ""), 10);
-        if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: "pru0", addr });
-      }
-      const partnerLine = document.querySelector("#mc-rtu0-source-list li.current-pc");
-      if (partnerLine) {
-        const addr = parseInt(partnerLine.id.replace("mc-rtu0-src-line-", ""), 10);
-        if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: mcPartner, addr });
-      }
+      mcShown().forEach((core, i) => {
+        const slot = PruChrome.MC_SLOTS[i];
+        const line = document.querySelector(`#mc-${slot}-source-list li.current-pc`);
+        if (!line) return;
+        const addr = parseInt(line.id.replace(`mc-${slot}-src-line-`, ""), 10);
+        if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core, addr });
+      });
     } else {
       const pcLine = sourceList.querySelector("li.current-pc");
       if (!pcLine) return;
@@ -3573,8 +4328,7 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     stopRun(); stopSim();
     if (multiCoreMode) {
-      sendAction({ action: "step", core: "pru0", count: 1 });
-      sendAction({ action: "step", core: mcPartner, count: 1 });
+      for (const core of mcShown()) sendAction({ action: "step", core, count: 1 });
     } else {
       sendAction({ action: "step", core: currentCore, count: 1 });
     }
@@ -3582,8 +4336,7 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     stopRun(); stopSim();
     if (multiCoreMode) {
-      sendAction({ action: "step_back", core: mcPartner });
-      sendAction({ action: "step_back", core: "pru0" });
+      for (const core of [...mcShown()].reverse()) sendAction({ action: "step_back", core });
     } else {
       sendAction({ action: "step_back", core: currentCore });
     }
@@ -3721,7 +4474,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
 
     if (!bytes || bytes.length === 0) {
       statusEl.textContent = "\u2717 Invalid payload \u2014 enter space-separated hex bytes or ASCII text";
-      statusEl.style.color = "#f38ba8";
+      statusEl.style.color = "var(--halted)";
       statusEl.style.display = "";
       return;
     }
@@ -3730,7 +4483,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     const baudMb = parseFloat(baudStr);
     if (isNaN(baudMb) || baudMb <= 0 || baudMb > 10) {
       statusEl.textContent = "\u2717 Baud must be between 0.01 and 10.00 Mb";
-      statusEl.style.color = "#f38ba8";
+      statusEl.style.color = "var(--halted)";
       statusEl.style.display = "";
       return;
     }
@@ -3739,7 +4492,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     const framesVal = parseInt(document.getElementById("uart-inj-frames").value, 10);
     if (isNaN(framesVal) || framesVal < 1 || framesVal > 100) {
       statusEl.textContent = "\u2717 Frames must be between 1 and 100";
-      statusEl.style.color = "#f38ba8";
+      statusEl.style.color = "var(--halted)";
       statusEl.style.display = "";
       return;
     }
@@ -3756,7 +4509,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     });
 
     statusEl.textContent = "\u231B Arming...";
-    statusEl.style.color = "#888";
+    statusEl.style.color = "var(--text-dim)";
     statusEl.style.display = "";
   });
 })();
@@ -3769,4 +4522,11 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     const mux = parseInt(sel.value, 10) || 0;
     sendAction({ action: "gpcfg_write", core: currentCore, mux_sel: mux });
   });
+  // Peripherals-tab links: switch the GP mux (the selector follows the next state).
+  for (const [id, mux] of [["sd-switch-gpio", 0], ["sd-switch-sd", 3], ["pi-switch-pi", 1]]) {
+    document.getElementById(id)?.addEventListener("click", (e) => {
+      e.preventDefault();
+      sendAction({ action: "gpcfg_write", core: currentCore, mux_sel: mux });
+    });
+  }
 })();

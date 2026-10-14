@@ -85,6 +85,35 @@ class TCA9538Model(DeviceModel):
     def faults(self) -> list[str]:
         return list(self._faults)
 
+    def get_state(self) -> dict:
+        """UI-facing summary: wiring, registers, driven output levels, counts.
+
+        The chip model is write-only (no Input Port register), so the eight
+        "LED" levels are the output pins the PRU has enabled: output_reg on
+        every pin whose config bit is 0 (output). Input-configured pins are
+        reported as not driven.
+        """
+        chip = self.device.get_state()
+        driven = ~chip["config_reg"] & 0xFF
+        levels = chip["output_reg"] & driven
+        return {
+            "name": self.name,
+            "model": "tca9538",
+            "faults": len(self._faults),
+            "address": self.address,
+            "scl_pin": self.scl_pin,
+            "sda_pin": self.sda_pin,
+            "output_reg": chip["output_reg"],
+            "polarity_reg": chip["polarity_reg"],
+            "config_reg": chip["config_reg"],
+            "driven_mask": driven,
+            "levels": [(levels >> bit) & 1 for bit in range(8)],
+            "protocol_state": self.device.state,
+            "saw_start": chip["saw_start"],
+            "last_transaction": chip["last_transaction"],
+            "events": len(self._events),
+        }
+
     def reset(self) -> None:
         """Reset protocol state and clear findings while keeping the device attached."""
         self.device = TCA9538Device(address=self.address)
