@@ -11,10 +11,12 @@ from math import ceil
 from pathlib import Path
 from typing import Callable
 
+from pru_io import foc_control, foc_control_abi
 from pru_io import ssi_config_abi as ssi_abi
 from pru_io.ssi_runtime import SSIEmulatorRuntime, SSIRuntime, load_reader
 
 _SOURCE = Path(__file__).resolve().parents[1] / "source"
+_FOC_FIRMWARE = "foc_open_loop.asm"
 _READER_FIRMWARE = "ssi_generic_reader/ssi_generic_reader.asm"
 _EMULATOR_FIRMWARE = "ssi_generic_emulator.asm"
 
@@ -77,6 +79,23 @@ def _ssi_multicore(sim, device_api) -> SSIEmulatorRuntime:
     return emulator
 
 
+def _foc_motor(sim, device_api) -> None:
+    motor = device_api.pru_device_attach(profile="foc_motor", core="pru0")
+    pole_pairs = motor["device"]["parameters"]["pole_pairs"]
+    sd = sim.cores["pru0"].io_port.sd_filter
+    sd.route_inputs([3, 4] + sd.input_routes[2:])   # motor current pins -> SD0/SD1
+    errors = sim.load("pru0", (_SOURCE / _FOC_FIRMWARE).read_text(encoding="utf-8"),
+                      include_paths=[str(_SOURCE)])
+    if errors:
+        raise ValueError("FOC firmware assembly failed: " + "; ".join(errors))
+    update_hz = foc_control.update_frequency_hz(sim.iep)
+    foc_control.stage_control(
+        sim.memory, enable=1,
+        speed_ref_q28=foc_control.speed_rpm_to_q28(400, pole_pairs, update_hz=update_hz),
+        ramp_rate_q28=foc_control.ramp_rpm_s_to_q28(300_000, pole_pairs, update_hz=update_hz),
+        vq_ref_q15=foc_control.voltage_pu_to_q15(0.25))
+
+
 SCENARIOS = {scenario.name: scenario for scenario in (
     Scenario(
         "SSI encoder (single core)",
@@ -90,6 +109,11 @@ SCENARIOS = {scenario.name: scenario for scenario in (
         {"pru0": _READER_FIRMWARE, "pru1": _EMULATOR_FIRMWARE},
         {**_SSI_UI, "graph_window": 4096},  # its graph panel is narrow: fewer samples, wider pulses
         _ssi_multicore),
+    Scenario(
+        "FOC motor (open loop)",
+        "Open-loop FOC firmware on PRU0 driving a simulated PMSM at 400 rpm.",
+        ("pru0",), "pru0", False, {"pru0": _FOC_FIRMWARE}, {"view": "motor"},
+        _foc_motor),
 )}
 
 
@@ -116,6 +140,8 @@ def apply_scenario(sim, name: str, device_api) -> Scenario:
             sim.set_loopback(core, group, False)
     sim.memory.write(ssi_abi.CONFIG_ADDRESS, bytes(
         ssi_abi.EMULATOR_ADDRESS + ssi_abi.EMULATOR_SIZE - ssi_abi.CONFIG_ADDRESS))
+    sim.memory.write(foc_control_abi.CONTROL_ADDRESS,
+                     bytes(foc_control_abi.CONFIG_SIZE))
     # Hardware reset clears IEP registers, keeping the selected external rate.
     sim._scenario_runtime = scenario.setup(sim, device_api)
     sim._scenario = scenario

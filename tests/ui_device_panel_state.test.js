@@ -52,14 +52,23 @@ const harness = new Function('document', 'setButtonLabel', `
   return { updateDevicePanel, ssiFieldMax, syncSsiSetter, parseI2CAddress };
 `)(document, chrome.setButtonLabel);
 
+// The FOC motor is controlled from the Motor control view; the device panel
+// must tolerate a motor in the bus state without touching any FOC element.
+harness.updateDevicePanel({ device_bus: { devices: [
+  { model: 'pmsm', name: 'foc_motor', core: 'pru0', phase_currents_a: [] }] } }, 'pru0');
+
 const list = nodes.get('ssi-device-list');
+assert.deepEqual(list.children.map(row => [row.dataset.deviceName, row.dataset.kind]), [['foc_motor', 'generic']],
+  'the list shows every device on the core, not only SSI encoders');
+assert.deepEqual(list.children[0].querySelector('.runtime-device-actions').children.map(b => b.dataset.deviceAction),
+  ['open-motor', 'detach']);
 
 // A TCA9538 gets a row and fills its card (levels, registers, detach target).
 const tca = { model: 'tca9538', name: 'io', core: 'pru0', address: 0x23, scl_pin: 0, sda_pin: 1,
   output_reg: 0x05, polarity_reg: 0, config_reg: 0xF0, driven_mask: 0x0F, levels: [1, 0, 1, 0, 0, 0, 0, 0],
   protocol_state: 'IDLE', events: 2, faults: 1, last_transaction: { address: 0x23, reg: 1, data: 5, ack: true } };
 harness.updateDevicePanel({ device_bus: { devices: [tca], faults: ['io: SDA changed while SCL high'] } }, 'pru0');
-assert.deepEqual(list.children.map(row => row.dataset.deviceName), ['io'], 'the TCA row appears');
+assert.deepEqual(list.children.map(row => row.dataset.deviceName), ['io'], 'the motor row left, the TCA row arrived');
 assert.match(list.children[0].querySelector('[data-role="detail"]').textContent, /address 0x23.*SCL pin 0.*SDA pin 1/);
 assert.match(list.children[0].querySelector('[data-role="fault"]').textContent, /SDA changed while SCL high/);
 assert.match(nodes.get('tca-empty-state').textContent, /io attached to pru0 at 0x23/);
@@ -92,4 +101,4 @@ harness.syncSsiSetter(setter, 6, 7);
 assert.equal(setter.value, '6', 'an acknowledged SSI setter follows the backend again');
 assert.equal(setter.dataset.dirty, undefined);
 
-console.log('Device panel reports TCA state and keeps SSI setters in sync with the backend');
+console.log('Device panel ignores the FOC motor and keeps SSI setters in sync with the backend');

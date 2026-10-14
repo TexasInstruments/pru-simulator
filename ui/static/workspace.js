@@ -6,7 +6,7 @@
   const buttons = Array.from(document.querySelectorAll('[data-workspace-view]'));
   const subtabs = Array.from(document.querySelectorAll('[data-io-tab]'));
   const views = { simulator: document.getElementById('main'),
-    io: document.getElementById('io-view') };
+    io: document.getElementById('io-view'), motor: document.getElementById('motor-view') };
   const panes = { devices: document.getElementById('devices-view'),
     peripherals: document.getElementById('peripherals-view'),
     events: document.getElementById('events-view') };

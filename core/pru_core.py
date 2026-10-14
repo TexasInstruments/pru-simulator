@@ -616,10 +616,6 @@ class PRUCore:
                     # Loop finished
                     self.loop_state = None
 
-        # ---- Advance SD filter clock (if attached) ----------------------
-        if self.io_port.sd_filter is not None:
-            self.io_port.sd_filter.tick()
-
         # ---- Advance Peripheral Interface timeline (if attached) --------
         if self.io_port.perif is not None:
             self.io_port.perif.advance_cycles(self.counters.cycles)
@@ -632,10 +628,7 @@ class PRUCore:
         # device attached later starts at the right cycle.
         elapsed_cycles = self.counters.cycles - cycles_before
         io_port = self.io_port
-        if io_port.device_bus.devices:
-            io_port.advance_devices(elapsed_cycles)
-        else:
-            io_port._device_cycle += elapsed_cycles
+        io_port.advance_devices(elapsed_cycles)
         if self.cycle_observer is not None:
             self.cycle_observer(elapsed_cycles)
 

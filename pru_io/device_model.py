@@ -129,6 +129,14 @@ class DeviceModel(abc.ABC):
         """UI-facing summary. Deliberately coarser than snapshot()."""
         return {"name": self.name, "faults": len(self.faults())}
 
+    def configure(self, parameters: dict) -> dict:
+        """Change run-time parameters; return the values now in effect.
+
+        Validation is all-or-nothing: a rejected change leaves the device
+        untouched. Devices without run-time parameters keep this default.
+        """
+        raise ValueError(f"device {self.name!r} has no run-time parameters")
+
 
 class DeviceBus:
     """Resolves the PRU's outputs against every attached device's drive.

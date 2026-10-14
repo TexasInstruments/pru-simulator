@@ -1,8 +1,9 @@
 # Simulator dashboard
 
-The dashboard keeps firmware inspection and the things wired to the pins
-in separate views while using the same simulator session. The workspace
-toolbar has two tabs: **Simulator** and **I/O & Devices**. Switching views does not reset or stop execution. A glider slides
+The dashboard keeps firmware inspection, the things wired to the pins and the
+motor example in separate views while using the same simulator session. The
+workspace toolbar has three tabs: **Simulator**, **I/O & Devices** and **Motor
+control**. Switching views does not reset or stop execution. A glider slides
 under the active tab (see [Motion](#motion)).
 
 ## Simulator
@@ -101,7 +102,7 @@ Cards use the protocol names. Each attaches through the generic
   use the MCP tools for wider values. **Attach encoder** only attaches a model;
   the two example actions also load the firmware, configure its shared-memory
   ABI and set GPIO directions. See [SSI](ssi_device_model.md) for the explicit
-  manual 300 MHz option and the firmware and ABI.
+  manual 300 MHz option and [FOC](foc_open_loop.md) for the firmware and ABI.
 - **I2C expander (TCA9538).** Name, 7-bit address (`0x23` or `35`), SCL and SDA
   pins (both open-drain; defaults 0 and 1), Attach and Detach. The card shows
   the eight output pins as boxes with a 0/1 digit (an input-configured pin
@@ -154,9 +155,16 @@ not force 200 or 250 MHz. A user may choose any finite positive IEP rate,
 including fractional rates, and a separate core rate. This example setting
 does not change the omitted external IEP default of 200 MHz.
 
+The **Motor control → Load example** action similarly prepares the FOC firmware
+and motor for Run. It keeps the selected rate and the example's existing 400 rpm
+target and rapid 300000 rpm/s demonstration ramp. It calculates those references
+using the active IEP cadence. Its PWM
+period is 12500 IEP ticks: 250 MHz gives 20 kHz; 200 MHz gives 16 kHz.
+
 Below the cards **Attached devices** lists every device on the selected core,
 not only SSI encoders: name, core, model or profile, wiring and the latest
-fault, with Detach. SSI rows keep the position and error setters. A refused attach (a bad address, a
+fault, with Detach. SSI rows keep the position and error setters; the FOC motor
+row has an "Open Motor control" button. A refused attach (a bad address, a
 duplicate name, or a pin conflict, see below) is shown in the card's alert.
 
 **Legacy I2C attach.** The old *Attach TCA9538* button of the I/O Pins panel is
@@ -186,13 +194,63 @@ including reset and step-back, rather than retaining a separate history that
 could disagree with it. The display includes up to 500 events and 100 fault
 messages.
 
+## Motor control
+
+The Motor control tab is always in the toolbar (a dot marks that a motor is
+attached). The view drives the open-loop V/f example described in
+[FOC](foc_open_loop.md); it has no execution loop of its own.
+
+- **Setup.** *Load firmware* attaches the `foc_motor` profile on PRU0 if needed,
+  opens and loads `source/foc_open_loop.asm` through the normal Load action and
+  stages the reference form (disabled). *Detach motor* removes the model. The
+  two SD channel selects apply physical SD input routes (for example GPI3/GPI4
+  to sample the PDM current outputs); they are independent of the controller.
+- **References.** Speed (rpm), Vd and Vq (per unit of the DC bus, linear limit
+  0.577) and acceleration (rpm/s). *Apply* stages the values; the firmware adopts
+  them at its next control update. *Start* enables the controller and starts the
+  dashboard's ordinary **Run** loop, so breakpoints, the Signal Graph capture and
+  step-back keep working; *Stop* stops that loop and clears `enable` (the PWM
+  output goes neutral once the firmware runs again). The form follows the backend
+  only until you stage values yourself. Start refuses to run when another core
+  is selected.
+- **Motor physics.** Rs, Ls, flux linkage (Ke), pole pairs, J, B, load torque and
+  Vdc, applied live to the running plant; *Defaults* restores the profile
+  defaults. Values the model rejects (non-positive resistance, pole pairs
+  outside 1 to 64, and so on) show an error and change nothing.
+- **Readouts.** Requested, ramped (commanded) and rotor speed; commanded and rotor
+  electrical angle and the angle error; duties and alpha/beta from the PWM pins;
+  phase and d/q currents; PWM rate; PRU and IEP clocks; the firmware status word
+  and handshake; plant simulation time. The ramped speed and the commanded angle
+  are derived from the pins (the angle of the measured voltage vector minus the
+  Vd/Vq reference angle that Apply sets as a display-only offset); only the rotor
+  quantities come from the plant state.
+- **Plots.** A rotor dial (commanded needle dashed, rotor needle solid), duty
+  cycles, phase currents, the alpha/beta voltage vector, speed and Id/Iq. They
+  draw the per-PWM-period samples the server returns for "samples since index N"
+  (at most 2,048 kept in the page, 1,024 held by the model); a paused firmware
+  produces no new samples and the plots stay as they were.
+
+WebSocket actions (PRU0): `foc_set_reference` (`speed_rpm`, `vd_pu`, `vq_pu`,
+`accel_rpm_s`, optional `enable`), `foc_enable`, `foc_set_motor`
+(`parameters`), `foc_state` (`since`, answered with a `foc_samples` message) and
+`foc_apply` (ABI fields plus the two SD routes). Errors come back with
+`tag: "motor"`. Each change clears the step-back history, like the SSI setters;
+step-back otherwise restores the plant and its sample ring with the rest of the
+simulator state.
+
+The simulator spends most of its time on the device bus: with the motor attached
+it runs about 40,000 PRU cycles per second (a 16 kHz period is 15,625 cycles),
+so tens of milliseconds of motor time take minutes of wall time. The plots fill
+at that pace.
+
 ## Look and themes
 
 The default **Dark** theme is the red-brand operator workbench: raised and inset
 surfaces, a red accent (`--accent`, `--brand-red`), outlined uppercase toolbar
 buttons with a filled red **Run**, and panels with a red bar before an uppercase
 title. The header is split into labelled groups (Target, Execute, Session,
-Status, Theme), a segmented view switcher (Simulator, I/O & Devices), a **Panels** row of icon toggle buttons, and a Telemetry strip. Below
+Status, Theme), a segmented view switcher (Simulator, I/O & Devices, Motor
+control), a **Panels** row of icon toggle buttons, and a Telemetry strip. Below
 about 1760 px the groups flow and wrap instead of sharing fixed columns. UI text
 uses the `Segoe UI Variable` / `Inter` / system sans stack and code, registers
 and memory use `Cascadia Code` / `Consolas`; no web fonts are loaded, so the page
@@ -203,7 +261,7 @@ and brighter borders. Both themes are sets of CSS custom properties at the top
 of `ui/static/index.html` (`:root` for Dark, `:root[data-theme="contrast"]` for
 High contrast), and `tests/test_ui_design_tokens.py` checks that High contrast
 defines every token and that the main text/background pairs meet WCAG AA (4.5:1).
-The signal graph, memory graph, memory-fill preview read
+The signal graph, memory graph, memory-fill preview and Motor control plots read
 their colours from the `--graph-*` tokens when they draw and redraw when the
 theme changes.
 
@@ -230,7 +288,7 @@ shift) and are switched off when the browser asks for reduced motion.
   reduced motion moves it instantly. In forced-colours (Windows high contrast)
   mode the active tab is marked by an outline and underline instead of shadows.
 - **Button wipe.** Hovering a neutral text button (the toolbar's Multi-core, Step, SIM,
-  Config, Reset Layout, Help, and the panel, memory, breakpoint, device,
+  Config, Reset Layout, Help, and the panel, memory, breakpoint, device, motor
   and dialog buttons) sweeps two skewed `--wipe` coloured shapes across
   the pill while the label inverts (`mix-blend-mode: difference`) and rolls
   once; the label ends as dark text on `--wipe`. The filled and danger buttons
@@ -269,3 +327,7 @@ dashboard sends pin intents, so clicks made before state feedback accumulate
 in arrival order; two clicks on the same pin cancel. Both forms enforce device
 direction leases and leave R30 unchanged. Errors return the `gpio` tag followed
 by current state.
+
+FOC speed and acceleration conversions, clean staged fields, and requested
+RPM readouts use the active IEP rate divided by the firmware's fixed 12500-tick
+period. User edits remain intact during clock updates.

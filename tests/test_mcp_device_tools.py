@@ -30,7 +30,7 @@ def test_generic_discovery_attach_state_and_detach_preserve_output_ownership():
     initial_mask = mcp.sim.io("pru1")["gpo_drive_mask"]
 
     discovery = mcp.pru_device_discover()
-    assert set(discovery["profiles"]) == {"ssi_encoder", "tca9538"}
+    assert set(discovery["profiles"]) == {"ssi_encoder", "tca9538", "foc_motor"}
 
     attached = mcp.pru_device_attach(
         core="pru1", profile="ssi_encoder",
@@ -130,6 +130,96 @@ def test_overlapping_ssi_outputs_stay_released_until_last_device_detaches():
 
     mcp.pru_device_detach("axis_b")
     assert mcp.sim.io("pru0")["gpo_drive_mask"] == initial_mask
+
+
+def test_foc_motor_attach_owns_only_pru0_pwm_and_current_pins():
+    mcp = fresh_mcp()
+    initial_mask = mcp.sim.io("pru0")["gpo_drive_mask"]
+
+    attached = mcp.pru_device_attach(profile="foc_motor")
+
+    assert attached["success"] is True
+    assert mcp.sim.io("pru0")["gpo_drive_mask"] == 0x7
+    assert mcp.sim.device_bus.devices[0].nets == {3: "push_pull", 4: "push_pull"}
+    assert mcp.pru_device_state()["contentions"] == 0
+
+    mcp.pru_device_detach("foc_motor")
+    assert mcp.sim.io("pru0")["gpo_drive_mask"] == initial_mask
+
+
+def test_foc_motor_owns_its_core_output_mask_exclusively():
+    mcp = fresh_mcp()
+    mcp.pru_device_attach(profile="foc_motor")
+
+    with pytest.raises(ValueError, match="cannot share that core"):
+        mcp.pru_device_attach(profile="ssi_encoder", config={"name": "axis"})
+
+    assert [device.name for device in mcp.sim.device_bus.devices] == ["foc_motor"]
+    assert mcp.sim.io("pru0")["gpo_drive_mask"] == 0x7
+
+    mcp.pru_device_detach("foc_motor")
+
+    other = fresh_mcp()
+    other.pru_device_attach(profile="ssi_encoder", config={"name": "axis"})
+    with pytest.raises(ValueError, match="cannot share that core"):
+        other.pru_device_attach(profile="foc_motor")
+    assert [device.name for device in other.sim.device_bus.devices] == ["axis"]
+
+
+def test_foc_can_reattach_after_restoring_a_pre_attachment_bus_snapshot():
+    mcp = fresh_mcp()
+    before = mcp.sim.device_bus.snapshot()
+    mcp.pru_device_attach("foc_motor")
+    mcp.sim.device_bus.restore(before)
+    assert mcp.pru_device_attach("foc_motor")["success"]
+
+
+def test_restored_foc_attachment_still_owns_its_core_exclusively():
+    mcp = fresh_mcp()
+    mcp.pru_device_attach("foc_motor")
+    attached = mcp.sim.device_bus.snapshot()
+    mcp.pru_device_detach("foc_motor")
+    mcp.sim.device_bus.restore(attached)
+    with pytest.raises(ValueError, match="cannot share that core"):
+        mcp.pru_device_attach("ssi_encoder", config={"name": "axis"})
+    mcp.pru_device_detach("foc_motor")
+    assert mcp.pru_gpio_drive_mask()["drive_mask"] == 0
+
+
+def test_foc_motor_profile_uses_configured_pru_clock(sim_config):
+    mcp = PRUSimulatorMCP(config_path=sim_config(pru_clock_mhz=250,
+                                                 iep_clock_mhz=200))
+    mcp.pru_device_attach(profile="foc_motor")
+
+    assert mcp.sim.device_bus.devices[0].core_clock_hz == 250_000_000
+
+
+def test_foc_motor_profile_uses_active_sd_modulator_clocks():
+    mcp = fresh_mcp()
+    mcp.sim.set_sd_modulator("pru0", 0, sd_clock_mhz=10.0)
+    mcp.sim.set_sd_modulator("pru0", 1, sd_clock_mhz=25.0)
+
+    mcp.pru_device_attach(profile="foc_motor")
+    motor = mcp.sim.device_bus.devices[0]
+
+    assert motor.current_a_clock_hz == 10_000_000
+    assert motor.current_b_clock_hz == 25_000_000
+
+
+def test_foc_motor_profile_rejects_non_object_config():
+    mcp = fresh_mcp()
+    with pytest.raises(ValueError, match="device profile config must be an object"):
+        mcp.pru_device_attach(profile="foc_motor", config="invalid")
+
+
+def test_sd_route_mcp_tool_samples_a_real_pin_and_can_restore_default():
+    mcp = fresh_mcp()
+    routed = mcp.pru_sd_route_input(channel=0, pin=3)
+    assert routed == {"channel": 0, "pin": 3}
+    assert mcp.sim.sd_state("pru0")["input_routes"][0] == 3
+
+    mcp.pru_sd_route_input(channel=0, pin=-1)
+    assert mcp.sim.sd_state("pru0")["input_routes"][0] is None
 
 
 def test_tca_profile_keeps_sda_and_scl_owned_as_open_drain_master_lines():

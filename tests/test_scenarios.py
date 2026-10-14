@@ -6,12 +6,12 @@ import pytest
 
 from mcp_server.server import PRUSimulatorMCP
 from pru_io import ssi_config_abi as abi
+from pru_io.foc_motor_model import FocMotorModel
 from pru_io.scenarios import SCENARIOS, apply_scenario
 from simulator import Simulator
 
 ROOT = Path(__file__).parents[1]
-SINGLE = "SSI encoder (single core)"
-MULTI = "SSI multi-core (emulator + reader)"
+SINGLE, MULTI, FOC = SCENARIOS
 
 
 def _new(config=None):
@@ -38,6 +38,7 @@ def _frames(sim, steps, step):
 def test_scenarios_declare_their_metadata():
     assert SCENARIOS[SINGLE].cores == ("pru0",) and not SCENARIOS[SINGLE].multicore
     assert SCENARIOS[MULTI].cores == ("pru0", "pru1") and SCENARIOS[MULTI].multicore
+    assert SCENARIOS[FOC].ui["view"] == "motor"
     assert all(scenario.lead in scenario.cores for scenario in SCENARIOS.values())
 
 
@@ -77,11 +78,31 @@ def test_multicore_reader_receives_frames_from_the_emulator_core():
     assert sim.cores["pru1"].counters.cycles > 0 and not sim.cores["pru1"].halted
 
 
+def test_foc_scenario_produces_pwm_and_phase_currents():
+    sim, api = _new()
+    apply_scenario(sim, FOC, api)
+    core = sim.cores["pru0"]
+    motor = next(d for d in sim.device_bus.devices if isinstance(d, FocMotorModel))
+    pwm_states = set()
+
+    for _ in range(80_000):
+        core.step()
+        pwm_states.add(core.io_port.gpo & 7)
+
+    state = motor.get_state()
+    assert len(pwm_states) > 2
+    assert state["pwm_periods"] >= 3
+    assert any(abs(current) > 0.5 for current in state["phase_currents_a"])
+    assert state["rotor_speed_rpm"] > 0
+    assert core.io_port.sd_filter.input_routes[:2] == [3, 4]
+    assert sim.device_bus.faults() == []
+
+
 def test_scenarios_can_be_applied_one_after_another_on_the_same_simulator():
     sim, api = _new()
-    for name in (SINGLE, MULTI, SINGLE):
+    for name in (FOC, SINGLE, MULTI, SINGLE, FOC):
         apply_scenario(sim, name, api)
-    assert [d.name for d in sim.device_bus.devices] == ["ssi_encoder"]
+    assert [d.name for d in sim.device_bus.devices] == ["foc_motor"]
     assert sim.list_gpio_wires() == []
     apply_scenario(sim, MULTI, api)
     assert sim.device_bus.devices == [] and len(sim.list_gpio_wires()) == 2
@@ -111,12 +132,19 @@ def test_ssi_scenarios_idle_the_clock_past_the_monoflop_between_frames(name):
     assert all(gap < monoflop for gap in gaps if gap not in idles)
     assert (len(falls) - 1 - len(idles)) // len(idles) in (12, 13)   # one fall per clock pulse
 
-@pytest.mark.parametrize('name', [SINGLE, MULTI])
+@pytest.mark.parametrize('name', [SINGLE, MULTI, FOC])
 def test_scenarios_preserve_the_selected_iep_rate(name):
     sim, api = _new()
     sim.iep.set_clock_mhz(271.25)
     apply_scenario(sim, name, api)
     assert sim.iep.external_clock_hz == 271_250_000
+    if name == FOC:
+        from pru_io import foc_control, foc_control_abi
+        cfg = foc_control_abi.unpack_config(sim.memory_read(
+            foc_control_abi.CONTROL_ADDRESS, foc_control_abi.CONFIG_SIZE))
+        cadence = 271_250_000 / 12500
+        assert cfg['speed_ref_q28'] == foc_control.speed_rpm_to_q28(400, 4, update_hz=cadence)
+        assert cfg['ramp_rate_q28'] == foc_control.ramp_rpm_s_to_q28(300_000, 4, update_hz=cadence)
 
 
 def test_reloading_multicore_releases_the_old_emulator_and_leases():

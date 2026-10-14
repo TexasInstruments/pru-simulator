@@ -418,15 +418,50 @@ class PRUSimulatorMCP:
     def pru_device_attach(self, profile: str, core: str = "pru0",
                           config: dict | None = None) -> dict:
         """Attach one validated generic device profile to a core's GPIO pins."""
+        profile_info = discover_device_profiles().get(profile)
+        clock_field = profile_info.get("sim_clock_field") if profile_info else None
+        if clock_field and (config is None or isinstance(config, dict)
+                            and clock_field not in config):
+            if config is None:
+                config = {}
+            config = {**config,
+                      clock_field: float(self.sim.iep.core_clock_hz(core))}
         default_core_clock_hz = (
             self.sim.iep.core_clock_hz(core) if profile == "ssi_encoder" else None
         )
         device = create_device(
             profile, config, default_core_clock_hz=default_core_clock_hz)
+        supported_cores = profile_info.get("supported_cores") if profile_info else None
+        if supported_cores is not None and core not in supported_cores:
+            raise ValueError(f"{profile} is only supported on {', '.join(supported_cores)}")
+        if profile == "foc_motor":
+            sd = self.sim.cores[core].io_port.sd_filter
+            for channel in range(2):
+                clock_hz = float(sd.modulators[channel].sd_clock_mhz) * 1_000_000
+                clock_field = ("current_a_clock_hz", "current_b_clock_hz")[channel]
+                if config is None or clock_field not in config:
+                    device.set_current_modulator_clock_hz(channel, clock_hz)
+            self.sim._sync_sd_device_clocks(core, devices=[device])
         if any(attached.name == device.name for attached in self.sim.device_bus.devices):
             raise ValueError(f"device name {device.name!r} is already attached")
+        attached_on_core = [
+            attached for attached in self.sim.device_bus.devices
+            if self.sim.device_bus.core_for_device(attached) == core
+        ]
+        mask_owner = next((attached.name for attached in attached_on_core
+                           if getattr(attached, "pru_output_mask", None) is not None), None)
+        if mask_owner is not None or (
+                getattr(device, "pru_output_mask", None) is not None
+                and attached_on_core):
+            owner = mask_owner or profile
+            raise ValueError(
+                f"{owner} controls the {core} GPIO output mask and cannot share that core"
+            )
 
-        if profile == "ssi_encoder":
+        if profile == "foc_motor":
+            drive_mask = device.pru_output_mask
+            managed_mask = (1 << 20) - 1
+        elif profile == "ssi_encoder":
             drive_mask = 1 << device.clock_pin
             managed_mask = drive_mask | (1 << device.data_pin)
         else:
@@ -442,6 +477,12 @@ class PRUSimulatorMCP:
         device = self._get_device(device_name)
         self.sim.detach_device(device)
         return {"success": True, "device": device_name}
+
+    def pru_device_configure(self, device_name: str, parameters: dict) -> dict:
+        """Change an attached device's run-time parameters (all or nothing)."""
+        device = self._get_device(device_name)
+        applied = device.configure(parameters)
+        return {"success": True, "device": device_name, "parameters": applied}
 
     def pru_device_state(self) -> dict:
         """Return attached device state, bus levels, events, and faults."""
@@ -464,6 +505,13 @@ class PRUSimulatorMCP:
                 "contentions": self.sim.device_bus.contentions_for_device(device),
             }
         return {"faults": self.sim.device_bus.faults()}
+
+    def pru_sd_route_input(self, channel: int, pin: int = -1) -> dict:
+        """Route an SD channel to a physical GPI pin; pin=-1 restores its modulator."""
+        sd = self.sim.cores["pru0"].io_port.sd_filter
+        selected_pin = None if pin == -1 else pin
+        sd.route_input(channel, selected_pin)
+        return {"channel": channel, "pin": selected_pin}
 
     def _get_device(self, name: str):
         return self.sim.device_bus.get_device(name)

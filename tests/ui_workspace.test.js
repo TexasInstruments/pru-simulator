@@ -36,12 +36,12 @@ class Element {
   get offsetWidth() { return this.box?.width ?? 0; }
   querySelector() { return null; }
 }
-const ids = ['main', 'io-view', 'devices-view', 'peripherals-view', 'events-view',
+const ids = ['main', 'io-view', 'devices-view', 'peripherals-view', 'events-view', 'motor-view',
   'panel-visibility', 'panel-visibility-buttons', 'device-runtime-panel', 'workspace-theme',
   'device-event-log', 'io-subtabs', 'core-fault-banner', 'io-fault-badge'];
 const elements = new Map(ids.map(id => [id, new Element()]));
 elements.get('io-fault-badge').children = [new Element(), new Element()];
-const buttons = ['simulator', 'io'].map((name, index) => {
+const buttons = ['simulator', 'io', 'motor'].map((name, index) => {
   const button = new Element(); button.dataset.workspaceView = name;
   button.box = { left: index * 100, width: 100 }; return button;
 });
@@ -52,7 +52,7 @@ const subtabs = ['devices', 'peripherals', 'events'].map((name, index) => {
 const viewSwitch = new Element();
 const listeners = {};
 const rafQueue = [];
-const storage = new Map([['pru-workspace-view', 'motor']]);
+const storage = new Map();
 const document = {
   documentElement: new Element(),
   getElementById: id => elements.get(id), querySelector: () => viewSwitch,
@@ -91,7 +91,7 @@ listeners['pru-workspace-view-changed'] = event => viewEvents.push([event.detail
 // First paint: Simulator view, no glider transition armed yet.
 assert.equal(elements.get('main').hidden, false);
 assert.equal(elements.get('io-view').hidden, true);
-assert.equal(storage.get('pru-workspace-view'), 'simulator', 'a saved unavailable view falls back to Simulator');
+assert.equal(elements.get('motor-view').hidden, true);
 assert.equal(buttons[0].attributes['aria-pressed'], 'true');
 assert.equal(viewSwitch.dataset.ready, undefined, 'no glider animation on first paint');
 assert.equal(viewSwitch.props['--glider-x'], '0px');
@@ -139,6 +139,16 @@ assert.deepEqual(visiblePanes(), ['events-view']);
 assert.equal(key(subtabs[2], 'a'), false, 'unrelated keys keep their default action');
 assert.deepEqual(visiblePanes(), ['events-view']);
 
+// Motor control hides the I/O view; coming back keeps the sub-tab.
+buttons[2].listeners.click();
+assert.equal(elements.get('motor-view').hidden, false, 'Motor control view is reachable');
+assert.equal(elements.get('io-view').hidden, true);
+assert.equal(elements.get('main').hidden, true);
+assert.equal(storage.get('pru-workspace-view'), 'motor');
+assert.deepEqual(viewEvents.at(-1), ['motor', 'events'], 'view changes are announced so canvases can redraw');
+buttons[1].listeners.click();
+assert.equal(elements.get('motor-view').hidden, true);
+assert.deepEqual(visiblePanes(), ['events-view'], 'the sub-tab is remembered');
 buttons[0].listeners.click();
 assert.equal(elements.get('main').hidden, false);
 assert.equal(elements.get('panel-visibility').hidden, false);

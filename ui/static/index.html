@@ -405,6 +405,7 @@
       position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
       overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
     }
+    #motor-nav-button.has-motor::after { content: ' \25CF'; color: var(--accent); }
 
     #workspace-secondary {
       display: flex;
@@ -1405,14 +1406,14 @@
       font: inherit; font-weight: 400; font-variant-numeric: tabular-nums;
     }
     .runtime-device-actions { display: flex; align-items: center; gap: 6px; margin-top: 7px; flex-wrap: wrap; }
-    .runtime-device-button {
+    .runtime-device-button, .motor-button {
       min-height: 28px; padding: 4px 10px; background: var(--btn); color: var(--text);
       border: 1px solid var(--border-strong); border-radius: 5px; font: inherit; font-size: 11px; font-weight: 700;
     }
-    .runtime-device-button:hover:not(:disabled) { background: var(--btn-hover); border-color: var(--accent); }
-    .runtime-device-button.primary { background: var(--brand-red); border-color: var(--brand-red-bright); color: var(--on-brand); }
-    .runtime-device-button.primary:hover:not(:disabled) { background: var(--btn-active); }
-    .runtime-device-button:disabled { opacity: .45; cursor: not-allowed; }
+    .runtime-device-button:hover:not(:disabled), .motor-button:hover:not(:disabled) { background: var(--btn-hover); border-color: var(--accent); }
+    .runtime-device-button.primary, .motor-button.primary { background: var(--brand-red); border-color: var(--brand-red-bright); color: var(--on-brand); }
+    .runtime-device-button.primary:hover:not(:disabled), .motor-button.primary:hover:not(:disabled) { background: var(--btn-active); }
+    .runtime-device-button:disabled, .motor-button:disabled { opacity: .45; cursor: not-allowed; }
     .runtime-device-error { color: var(--halted); font-size: 10px; margin-top: 5px; }
     .runtime-device-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
     .runtime-device-row { padding-top: 6px; border-top: 1px solid var(--border); min-width: 0; }
@@ -1422,7 +1423,7 @@
     .runtime-device-value { color: var(--text); font-variant-numeric: tabular-nums; }
     .runtime-device [hidden] { display: none !important; }
 
-    /* ---- Workspace views (I/O & Devices, Events) --------------------------------------------------- */
+    /* ---- Workspace views (Devices, Motor control, Events) --------------------------------------------------- */
     .workspace-view { flex: 1; min-height: 0; overflow: auto; padding: 0 18px 28px; background: var(--bg); }
     .workspace-header {
       display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px;
@@ -1473,6 +1474,54 @@
       border: 1px solid var(--border); border-radius: 7px; color: var(--text);
       font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6;
     }
+
+    .motor-status {
+      padding: 7px 10px; border: 1px solid var(--border-strong); border-radius: 5px;
+      background: var(--panel-inset); color: var(--text); font-size: 11px;
+      overflow-wrap: anywhere; max-width: 100%;
+    }
+    .motor-error {
+      margin: 8px 0; padding: 7px 12px; background: var(--highlight); border: 1px solid var(--halted);
+      border-radius: 5px; color: var(--halted); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere;
+    }
+    .motor-layout { display: grid; grid-template-columns: minmax(280px, 380px) minmax(0, 1fr); gap: 12px; align-items: start; }
+    .motor-controls, .motor-plots { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .motor-card {
+      padding: 13px; background: var(--panel); border: 1px solid var(--border); border-radius: 9px;
+      box-shadow: 0 8px 24px var(--shadow); color: var(--text); min-width: 0;
+    }
+    .motor-card h2 {
+      display: flex; align-items: center; margin-bottom: 10px;
+      font: 700 10px var(--font-ui); letter-spacing: 0.1em; text-transform: uppercase;
+    }
+    .motor-card h2::before {
+      content: ""; flex: 0 0 3px; height: 14px; margin-right: 8px;
+      background: var(--accent); border-radius: 2px; opacity: 0.85;
+    }
+    .motor-help + .motor-fields { margin-top: 10px; }
+    .motor-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+    .motor-field { display: flex; flex-direction: column; gap: 3px; font-size: 10px; font-weight: 700; color: var(--text-dim); min-width: 0; }
+    .motor-field input, .motor-field select {
+      width: 100%; min-width: 0; min-height: 30px; padding: 5px 8px; border-radius: 4px;
+      font: inherit; font-size: 12px; font-weight: 400; font-variant-numeric: tabular-nums;
+    }
+    .motor-field input:invalid { border-color: var(--halted); }
+    .motor-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .motor-button[aria-pressed="true"] { background: var(--highlight); border-color: var(--accent); }
+    .motor-help { margin: 8px 0 0; color: var(--text-dim); font-size: 10px; line-height: 1.45; }
+    .motor-help code { color: var(--text); }
+    .motor-readout { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 6px 10px; margin: 0; }
+    .motor-readout > div { padding-bottom: 5px; border-bottom: 1px solid var(--border); }
+    .motor-readout dt { font-size: 10px; color: var(--text-dim); }
+    .motor-readout dd { margin: 0; font-size: 12px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+    .motor-readout dd.fault { color: var(--halted); }
+    .motor-canvas { display: block; width: 100%; height: 150px; border-radius: 4px; background: var(--graph-bg); }
+    .motor-canvas + .motor-canvas { margin-top: 8px; }
+    .motor-canvas-dial { height: 220px; }
+    .motor-legend { margin: 6px 0 0; font-size: 10px; color: var(--text-dim); }
+    .motor-swatch { display: inline-block; width: 18px; height: 3px; margin: 0 4px 2px 8px; vertical-align: middle; }
+    .motor-swatch.rotor { background: #70d6b4; }
+    .motor-swatch.command { background: #da8ee6; }
 
     /* ---- Text buttons: skewed wipe on hover --------------------------------------
        Neutral buttons: two skewed --wipe parallelograms sweep across the pill
@@ -1571,6 +1620,9 @@
       .toolbar-context, .toolbar-execution, .toolbar-actions { width: 100%; }
       .toolbar-end { justify-content: flex-end; }
     }
+    @media (max-width: 900px) {
+      .motor-layout { grid-template-columns: minmax(0, 1fr); }
+    }
     @media (max-width: 700px) {
       #controls {
         grid-template-columns: minmax(0, 1fr);
@@ -1602,6 +1654,8 @@
       .runtime-device-row input { width: 100%; min-height: 40px; font-size: 14px; }
       .runtime-device-button { min-height: 40px; padding: 7px 12px; font-size: 12px; }
       .runtime-device-row .runtime-device-actions > button { flex: 1; }
+      .motor-field input, .motor-field select, .motor-button { min-height: 40px; font-size: 14px; }
+      .motor-actions .motor-button { flex: 1; }
     }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {
@@ -1619,7 +1673,7 @@
   <!-- Controls bar: labelled groups (target / execute / session / status), workspace tools, telemetry -->
   <div id="controls">
     <div class="toolbar-group toolbar-context" role="group" aria-label="Target selection">
-      <span class="logo" title="PRU Simulator v0.3.1">PRU SIM</span>
+      <span class="logo" title="PRU Simulator v0.3.2">PRU SIM</span>
 
       <select id="core-select">
         <option value="pru0">PRU0</option>
@@ -1697,6 +1751,7 @@
       <nav class="view-switch" aria-label="Workspace views">
         <button type="button" data-workspace-view="simulator" aria-controls="main" aria-pressed="true">Simulator</button>
         <button type="button" data-workspace-view="io" aria-controls="io-view" aria-pressed="false" id="io-nav-button">I/O &amp; Devices<span class="tab-badge" id="io-fault-badge" hidden><span aria-hidden="true"></span><span class="visually-hidden"></span></span></button>
+        <button type="button" data-workspace-view="motor" aria-controls="motor-view" aria-pressed="false" id="motor-nav-button">Motor control</button>
         <span class="view-glider" aria-hidden="true"></span>
       </nav>
       <div id="workspace-secondary">
@@ -2491,9 +2546,152 @@ Example:
       <pre id="device-event-log" aria-label="Current device events">No device events. Attach a model and execute firmware to inspect its activity.</pre>
     </section>
   </section>
+  <section id="motor-view" class="workspace-view" aria-labelledby="motor-view-title" hidden>
+    <header class="workspace-header motor-header">
+      <div>
+        <p class="workspace-kicker">PRU0 · open-loop V/f · PMSM plant model</p>
+        <h1 id="motor-view-title">Motor control</h1>
+        <p>Open-loop V/f control on PRU0: the firmware ramps the speed, integrates the electrical angle and drives three PWM pins; the PMSM model sees only those pins and returns phase current as PDM on GPI3/GPI4. Angles, duties and currents below are measured from the pins and the plant.</p>
+      </div>
+      <div id="motor-status" class="motor-status" role="status" aria-live="polite">Firmware not loaded.</div>
+    </header>
+    <div id="motor-error" class="motor-error" role="alert" aria-live="assertive" hidden></div>
+    <div class="motor-layout">
+      <div class="motor-controls">
+        <section class="motor-card" aria-labelledby="motor-setup-title">
+          <h2 id="motor-setup-title">Setup</h2>
+          <div class="motor-actions">
+            <button type="button" id="motor-load" class="motor-button primary btn-17 btn-run"><span class="text-container"><span class="text">Load firmware</span></span></button>
+            <button type="button" class="motor-button btn-17" data-scenario="FOC motor (open loop)" disabled><span class="text-container"><span class="text">Load example</span></span></button>
+            <button type="button" id="motor-detach" class="motor-button btn-17" disabled><span class="text-container"><span class="text">Detach motor</span></span></button>
+          </div>
+          <p class="motor-help">Attaches the <code>foc_motor</code> profile on PRU0 if needed and loads <code>source/foc_open_loop.asm</code>. Use Start to run it.</p>
+          <div class="motor-fields">
+            <label class="motor-field" for="motor-route-0">SD channel 0 input
+              <select id="motor-route-0" data-motor-route="0"></select>
+            </label>
+            <label class="motor-field" for="motor-route-1">SD channel 1 input
+              <select id="motor-route-1" data-motor-route="1"></select>
+            </label>
+          </div>
+          <div class="motor-actions">
+            <button type="button" id="motor-routes-apply" class="motor-button btn-17" disabled><span class="text-container"><span class="text">Apply SD routes</span></span></button>
+          </div>
+        </section>
+
+        <form class="motor-card" id="motor-reference-form" aria-labelledby="motor-reference-title" novalidate>
+          <h2 id="motor-reference-title">References</h2>
+          <div class="motor-fields">
+            <label class="motor-field" for="motor-speed-rpm">Speed reference (rpm)
+              <input id="motor-speed-rpm" type="number" value="400" min="-15000" max="15000" step="1" required>
+            </label>
+            <label class="motor-field" for="motor-vd-pu">Vd reference (pu)
+              <input id="motor-vd-pu" type="number" value="0" min="-1" max="1" step="0.001" required>
+            </label>
+            <label class="motor-field" for="motor-vq-pu">Vq reference (pu)
+              <input id="motor-vq-pu" type="number" value="0.25" min="-1" max="1" step="0.001" required>
+            </label>
+            <label class="motor-field" for="motor-accel">Acceleration (rpm/s)
+              <input id="motor-accel" type="number" value="1000" min="0" step="1" required>
+            </label>
+          </div>
+          <div class="motor-actions">
+            <button type="submit" id="motor-apply" class="motor-button btn-17" disabled><span class="text-container"><span class="text">Apply</span></span></button>
+            <button type="button" id="motor-start" class="motor-button primary btn-17 btn-run" disabled><span class="text-container"><span class="text">Start</span></span></button>
+            <button type="button" id="motor-stop" class="motor-button btn-17" disabled><span class="text-container"><span class="text">Stop</span></span></button>
+          </div>
+          <p class="motor-help">Voltages are per unit of the DC bus; the linear limit is 0.577. Apply changes take effect at the next control update of a running firmware.</p>
+        </form>
+
+        <form class="motor-card" id="motor-physics-form" aria-labelledby="motor-physics-title" novalidate>
+          <h2 id="motor-physics-title">Motor physics</h2>
+          <div class="motor-fields">
+            <label class="motor-field" for="motor-resistance">Rs (Ω)
+              <input id="motor-resistance" data-physics="resistance_ohm" type="number" step="any" min="0" required>
+            </label>
+            <label class="motor-field" for="motor-inductance">Ls (H)
+              <input id="motor-inductance" data-physics="inductance_h" type="number" step="any" min="0" required>
+            </label>
+            <label class="motor-field" for="motor-flux">Flux / Ke (V·s/rad)
+              <input id="motor-flux" data-physics="flux_linkage_vs" type="number" step="any" min="0" required>
+            </label>
+            <label class="motor-field" for="motor-poles">Pole pairs
+              <input id="motor-poles" data-physics="pole_pairs" type="number" step="1" min="1" max="64" required>
+            </label>
+            <label class="motor-field" for="motor-inertia">J (kg·m²)
+              <input id="motor-inertia" data-physics="inertia_kg_m2" type="number" step="any" min="0" required>
+            </label>
+            <label class="motor-field" for="motor-damping">B (N·m·s)
+              <input id="motor-damping" data-physics="damping_nm_s" type="number" step="any" min="0" required>
+            </label>
+            <label class="motor-field" for="motor-load-torque">Load torque (N·m)
+              <input id="motor-load-torque" data-physics="load_torque_nm" type="number" step="any" required>
+            </label>
+            <label class="motor-field" for="motor-vdc">Vdc (V)
+              <input id="motor-vdc" data-physics="dc_bus_v" type="number" step="any" min="0" required>
+            </label>
+          </div>
+          <div class="motor-actions">
+            <button type="submit" id="motor-physics-apply" class="motor-button btn-17" disabled><span class="text-container"><span class="text">Apply</span></span></button>
+            <button type="button" id="motor-physics-defaults" class="motor-button btn-17" disabled><span class="text-container"><span class="text">Defaults</span></span></button>
+          </div>
+          <p class="motor-help">Applied live to the plant from its next step. Flux 0 makes it a plain three-phase RL load. Invalid values change nothing.</p>
+        </form>
+
+        <section class="motor-card" aria-labelledby="motor-readout-title">
+          <h2 id="motor-readout-title">Readouts</h2>
+          <dl class="motor-readout" id="motor-readout">
+            <div><dt>Requested speed</dt><dd data-readout="requestedSpeed">--</dd></div>
+            <div><dt>Ramped (commanded) speed</dt><dd data-readout="commandedSpeed">--</dd></div>
+            <div><dt>Rotor speed</dt><dd data-readout="rotorSpeed">--</dd></div>
+            <div><dt>Commanded angle</dt><dd data-readout="commandedAngle">--</dd></div>
+            <div><dt>Rotor angle</dt><dd data-readout="rotorAngle">--</dd></div>
+            <div><dt>Angle error</dt><dd data-readout="angleError">--</dd></div>
+            <div><dt>Duty A / B / C</dt><dd data-readout="duties">--</dd></div>
+            <div><dt>Vα / Vβ</dt><dd data-readout="alphaBeta">--</dd></div>
+            <div><dt>Ia / Ib / Ic</dt><dd data-readout="phaseCurrents">--</dd></div>
+            <div><dt>Id / Iq</dt><dd data-readout="dqCurrents">--</dd></div>
+            <div><dt>PWM / control rate</dt><dd data-readout="pwmFrequency">--</dd></div>
+            <div><dt>PRU clock</dt><dd data-readout="pruClock">--</dd></div>
+            <div><dt>IEP clock</dt><dd data-readout="iepClock">--</dd></div>
+            <div><dt>Status</dt><dd data-readout="status">--</dd></div>
+            <div><dt>Plant sim time</dt><dd data-readout="plantTime">--</dd></div>
+            <div><dt>PWM periods</dt><dd data-readout="pwmPeriods">--</dd></div>
+          </dl>
+        </section>
+      </div>
+
+      <div class="motor-plots">
+        <section class="motor-card" aria-labelledby="motor-dial-title">
+          <h2 id="motor-dial-title">Electrical angle</h2>
+          <canvas id="motor-dial" class="motor-canvas motor-canvas-dial" role="img" aria-label="Rotor dial: commanded and rotor electrical angle"></canvas>
+          <p class="motor-legend"><span class="motor-swatch rotor"></span> rotor <span class="motor-swatch command"></span> commanded</p>
+        </section>
+        <section class="motor-card" aria-labelledby="motor-duty-title">
+          <h2 id="motor-duty-title">PWM duty cycles</h2>
+          <canvas id="motor-duty-plot" class="motor-canvas" role="img" aria-label="Three-phase duty cycle history"></canvas>
+        </section>
+        <section class="motor-card" aria-labelledby="motor-current-title">
+          <h2 id="motor-current-title">Phase currents (A)</h2>
+          <canvas id="motor-current-plot" class="motor-canvas" role="img" aria-label="Three-phase current history"></canvas>
+        </section>
+        <section class="motor-card" aria-labelledby="motor-voltage-title">
+          <h2 id="motor-voltage-title">Voltage vector Vα, Vβ (V)</h2>
+          <canvas id="motor-voltage-plot" class="motor-canvas" role="img" aria-label="Alpha and beta voltage history"></canvas>
+        </section>
+        <section class="motor-card" aria-labelledby="motor-speed-title">
+          <h2 id="motor-speed-title">Speed (rpm) and Id / Iq (A)</h2>
+          <canvas id="motor-speed-plot" class="motor-canvas" role="img" aria-label="Commanded and rotor speed history"></canvas>
+          <canvas id="motor-dq-plot" class="motor-canvas" role="img" aria-label="Id and Iq history"></canvas>
+        </section>
+      </div>
+    </div>
+  </section>
   <script src="/static/chrome.js"></script>
   <script src="/static/layout.js"></script>
   <script src="/static/app.js?v=20260729"></script>
   <script src="/static/workspace.js"></script>
+  <script src="/static/motor_helpers.js"></script>
+  <script src="/static/motor.js"></script>
 </body>
 </html>

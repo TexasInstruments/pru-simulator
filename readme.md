@@ -21,6 +21,7 @@ These are simulator-side capabilities, not features of the PRU hardware itself.
 - **GPIO loopback** — wire GPO groups directly to GPI for firmware loopback testing without hardware. Can specify loopback latency/jitter/clock-drift
 - **Device bus** — attach external device models (`DeviceModel`) to any core's GPIO pins and wire pins between cores. A shared `DeviceBus` resolves open-drain nets as wired-AND and reports push-pull contention as a fault instead of last-writer-wins; devices expose `events()` and `faults()` for checking firmware
 - **SSI encoder model and reader** — independent binary/Gray encoder `DeviceModel` with up to 64-bit frames, error fields and 12 SICK encoder presets, clock-rate and monoflop faults, generated shared-memory ABI, and PRU1 reader and PRU0 emulator examples. See [SSI device model and reader](docs/ssi_device_model.md)
+- **FOC open-loop control and PMSM model** — ordinary PRU0 instructions ramp a speed reference, integrate the electrical angle, apply the inverse Park transform to Vd/Vq references and generate 16 kHz three-phase SVGEN PWM on R30.0–2; an optional pin-coupled PMSM model with changeable physics returns current PDM on GPI3/4. See [FOC open-loop example](docs/foc_open_loop.md)
 - **UART decoder** — bit-bang UART decode in the IO panel (8N1, auto-detect bit period)
 - **Multi-core simulation & debug view** — PRU_ICSSG supports simultaneous simulation & debugging of up to 4 PRU cores (PRU0, RTU0, PRU1, RTU1), shown as PRU0 plus a selected partner; PRU-ICSS supports simultaneous simulation & debugging of both PRU cores
 - **Tiling window manager** — drag, split, collapse/expand, and persist panel layouts
@@ -103,7 +104,7 @@ pru_simulator/
 ├── core/               PRU ISA implementation (ALU, parser, disassembler, ELF loader, …)
 ├── mem/                Memory bus and region model
 ├── mcp_server/         MCP server for AI tool integration
-├── pru_io/             GPO/GPI port model, SD filter (R30/R31 interface), DeviceModel/DeviceBus, device models (SSI encoder, TCA9538), generated ABIs
+├── pru_io/             GPO/GPI port model, SD filter (R30/R31 interface), DeviceModel/DeviceBus, device models (SSI encoder, TCA9538, FOC motor), generated ABIs
 ├── perif/              3-channel Peripheral Interface (SCU), GPCFG mux, TX→RX loopback
 ├── schema/             Shared-memory ABI schemas (source for generated .py/.inc files)
 ├── source/             Example PRU assembly programs
@@ -161,6 +162,7 @@ See [getting_started.md](getting_started.md) for step-by-step walkthroughs of al
 | `uart_rx_11frame.asm` | Bit-bang UART RX (4 Mbaud, 8N1) with frame injection from IO panel |
 | `ssi_generic_reader/ssi_generic_reader.asm` | SSI encoder reader (1-64 bit frames) and generated shared-memory mailbox; see [timing and manual 300 MHz instructions](docs/ssi_device_model.md) |
 | `ssi_generic_emulator.asm` | SSI encoder emulator on PRU0 (1-64 bit frame read from a shared-memory block at every frame start); pairs with the reader in a board loopback, see [docs/ssi_device_model.md](docs/ssi_device_model.md) |
+| `foc_open_loop.asm` | Open-loop V/f FOC on PRU0: speed ramp, angle integration, inverse Park and 16 kHz SVGEN PWM from the schema-generated control ABI; pairs with the `foc_motor` PMSM model, see [FOC open-loop example](docs/foc_open_loop.md) |
 | `mvi_gpio_loopback.asm` | MVIB register-indirect + GPIO loopback (walking-bit pattern) |
 | `sdfm_sinc3_demo/` | Free-running SINC3 filter adapted from AM261x ICSS-M firmware |
 | `perif_duty_cycle_sweep.asm` | Peripheral Interface TX: 125 Mbit 0%→100% duty-cycle pulse sweep on PRU0 ch0 (needs `memory_perif_125mbit_demo.cfg`) |
@@ -195,9 +197,17 @@ standalone experiments and may require optional packages (for example,
 
 ## Version
 
-v0.3.1 — hover over **PRU SIM** in the dashboard header to confirm.
+v0.3.2 — hover over **PRU SIM** in the dashboard header to confirm.
 
 ### Changelog
+
+**v0.3.2**
+- **FOC open-loop control example** — `source/foc_open_loop.asm` ramps a per-unit speed reference, integrates the electrical angle, applies the inverse Park transform to Vd/Vq references and produces three-phase space-vector PWM on PRU0 R30.0–2 with ordinary, cycle-counted PRU instructions (`cycles == instructions + stalls`). Each 12,500-tick period (62.5 μs, or 16 kHz, at the default 200 MHz IEP clock) is started by polling the IEP counter, including across counter rollover. There is no simulator fast path or callback that skips firmware. Phase order and common-mode injection follow TI's Motor Control SDK `SVGEN_runCom`; the tests check the firmware against TI vectors and an independent pure-Python Park + SVGEN + ramp reference.
+- **FOC control ABI** — generated from `schema/foc_control_abi.json` by `python -m tools.gen_foc_abi` (`--check` in CI); the 48-byte block at `0x00010100` carries enable, speed/ramp/Vd/Vq references and a generation handshake with PRU-owned `ack_generation` and `status` words. `pru_io/foc_control.py` converts rpm and per-unit values and stages the block.
+- **Pin-coupled PMSM model** — the optional `foc_motor` device profile (PRU0 only) observes the real GPO0–2 PWM pins and integrates a surface PMSM (stator currents with back-EMF, torque, mechanics) whose resistance, inductance, flux linkage, pole pairs, inertia, damping, load torque and bus voltage are profile options and can be changed live (generic `DeviceModel.configure` and MCP `pru_device_configure`). It drives phase A/B current as sigma-delta PDM on GPI3/GPI4 and reports duties, α/β, commanded and rotor angle, speed, currents and a bounded per-period sample ring measured from the pins and plant state. It has no shared-memory path to or from the firmware. PDM runs at each routed SD channel's sample clock, 20 MHz by default.
+- **SD inputs from GPI pins** — a sigma-delta channel can sample a physical GPI pin instead of its internal pattern generator. Route it with the new MCP `pru_sd_route_input` tool (`pin=-1` restores the internal modulator). The SD filter now advances once per elapsed core cycle, stalls included, instead of once per instruction.
+- **Motor control view** — loads `source/foc_open_loop.asm` with the `foc_motor` PMSM model on PRU0, stages speed, Vd/Vq and acceleration references, starts and stops through the normal Run loop, and edits the motor physics (Rs, Ls, flux, pole pairs, J, B, load torque, Vdc) live. It shows the commanded and rotor electrical angle, angle error, duties, α/β, phase and d/q currents, clocks and status, with a rotor dial and plots fed by per-PWM-period samples that the model derives from the pins and the plant. It uses the existing Run loop, so breakpoints and step-back keep working. See [docs/simulator_dashboard.md](docs/simulator_dashboard.md).
+- **MCP over SDK stdio** — tests load the SSI reader and FOC firmware through the SDK stdio transport and verify SSI frames and FOC PWM end to end.
 
 **v0.3.1**
 - **Dashboard workspace views** — the toolbar switches between **Simulator** (generic debugging: source, editor, registers, memory, graph panels and an I/O Pins panel reduced to the GP-mux selector, the R30/R31 grids and the GPIO loopback; a core memory fault shows as a red band) and **I/O & Devices** without resetting or stopping execution. A glider slides under the active tab. Panels can be hidden from the Panels buttons, and visibility and layout are remembered separately for single-core and multicore modes. Reset Layout restores the defaults. View, sub-tab, panel visibility and the new Dark/High-contrast themes are stored as local browser preferences. The Dark theme restores the red-brand dashboard design (labelled Target/Execute/Session/Status header groups, a segmented view switcher, icon panel toggles, raised/inset panel chrome, themed graphs, a hover wipe on the neutral toolbar buttons); High contrast keeps the same layout at WCAG AA contrast. See [docs/simulator_dashboard.md](docs/simulator_dashboard.md).

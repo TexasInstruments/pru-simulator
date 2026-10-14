@@ -355,6 +355,7 @@ function connect() {
     }
     sendAction({ action: "device_discover" });
     sendAction({ action: "scenario_list" });
+    window.MotorControl?.onConnect();
     refreshMemory();
     refreshMemory2();
     loadRegions();
@@ -382,6 +383,7 @@ function connect() {
         if (msg.available_cores) showAvailableCores(msg.available_cores);
         if (msg.iep) showIepClock(msg.iep);
         updateSsiDemo(msg.io?.ssi_demo || null);
+        window.MotorControl?.onState(msg);
         window.updateWorkspaceEvents?.(msg, multiCoreMode ? mcShown() : [currentCore]);
         if (multiCoreMode) {
           updateMCUI(msg);
@@ -404,6 +406,8 @@ function connect() {
           st.style.color = "var(--green)";
           st.style.display = "";
         }
+      } else if (msg.type === "foc_samples") {
+        window.MotorControl?.onSamples(msg);
       } else if (msg.type === "device_profiles") {
         populateSsiPresets(msg.profiles);
       } else if (msg.type === "scenarios") {
@@ -435,8 +439,10 @@ function connect() {
           document.querySelector('[data-workspace-view="io"]')?.click();
           document.querySelector('[data-io-tab="devices"]')?.click();
         }
+        else if (msg.tag === "motor") window.MotorControl?.onError(msg.errors);
         else {
           showErrors(msg.errors);
+          window.MotorControl?.onLoadError(msg.errors);
         }
       }
     } catch (e) {
@@ -1290,7 +1296,7 @@ function updateDevicePanel(io, core) {
   }
 }
 
-// One row for any attached device that is not an SSI encoder (TCA9538, ...).
+// One row for any attached device that is not an SSI encoder (TCA9538, FOC motor, ...).
 function updateGenericDeviceRow(row, device, faults) {
   if (!row) {
     row = document.createElement('div');
@@ -1313,25 +1319,27 @@ function updateGenericDeviceRow(row, device, faults) {
     row.appendChild(actions);
   }
   const isTca = device.model === 'tca9538';
+  const isMotor = device.model === 'pmsm';
   row.querySelector('.runtime-device-row-title').textContent = device.name;
   row.querySelector('[data-role="detail"]').textContent = isTca
     ? `I2C expander (tca9538) \u00b7 ${device.core} \u00b7 address 0x${device.address.toString(16).toUpperCase()} \u00b7 ` +
       `SCL pin ${device.scl_pin} \u00b7 SDA pin ${device.sda_pin} \u00b7 OUTPUT=${_hex2(device.output_reg)} ` +
       `CONFIG=${_hex2(device.config_reg)}`
-    : `${device.model || 'device'} \u00b7 ${device.core}`;
+    : `${isMotor ? 'PMSM motor model (foc_motor)' : (device.model || 'device')} \u00b7 ${device.core}` +
+      `${isMotor ? ' \u00b7 configure it in Motor control' : ''}`;
   const lastFault = faults.slice().reverse().find(message => message.startsWith(`${device.name}:`));
   const fault = row.querySelector('[data-role="fault"]');
   fault.hidden = !lastFault;
   fault.textContent = lastFault ? `Latest fault (${device.faults} total): ${lastFault.slice(device.name.length + 1).trim()}` : '';
   const actions = row.querySelector('.runtime-device-actions');
-  const wanted = ['detach'];
+  const wanted = isMotor ? ['open-motor', 'detach'] : ['detach'];
   if (actions.children.length !== wanted.length) {
     actions.replaceChildren();
     for (const action of wanted) {
       const button = document.createElement('button');
       button.className = 'runtime-device-button btn-17';
       button.type = 'button';
-      setButtonLabel(button, 'Detach');
+      setButtonLabel(button, action === 'detach' ? 'Detach' : 'Open Motor control');
       button.dataset.deviceAction = action;
       actions.appendChild(button);
     }
@@ -2633,7 +2641,7 @@ function startRun() {
   btnRun.classList.add("btn-reset");
   btnRun.classList.remove("btn-run");
   runInterval = setInterval(() => {
-    // Device chunks can take longer than this timer interval. Wait for the
+    // FOC/device chunks can take longer than this timer interval. Wait for the
     // final state of our chunk so Run and Stop never build up a command queue.
     if (runPending !== null || !ws || ws.readyState !== WebSocket.OPEN) return;
     const run_id = ++runSequence;
@@ -2837,6 +2845,10 @@ document.getElementById('ssi-device-list')?.addEventListener('click', event => {
   const button = event.target.closest('button[data-device-action]');
   if (!button) return;
   const name = button.dataset.name;
+  if (button.dataset.deviceAction === 'open-motor') {
+    document.getElementById('motor-nav-button')?.click();
+    return;
+  }
   if (button.dataset.deviceAction === 'detach') {
     sendDeviceAction({ action: 'device_detach', core: devicePanelCore, name });
     return;
@@ -4016,6 +4028,7 @@ async function applyScenario(scenario) {
     memAutoRefresh = true;
     refreshMemory();
   }
+  window.MotorControl?.onConnect();
   document.querySelector(`[data-workspace-view="${ui.view || "simulator"}"]`)?.click();
   if (ui.view === 'io') document.querySelector('[data-io-tab="devices"]')?.click();
   // Editor tabs: the lead's firmware last so it is the one on screen.

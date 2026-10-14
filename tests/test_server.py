@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 from ui.server import app
 from simulator import Simulator
+from pru_io import foc_control_abi as foc_abi
 
 
 client = TestClient(app)
@@ -391,6 +392,194 @@ def test_websocket_rejects_invalid_ssi_error_updates(fresh_sim):
     assert fresh_sim.device_bus.get_device("plain").error == 0
 
 
+def test_websocket_set_error_rejects_non_ssi_device(fresh_sim):
+    sent = _run_websocket_actions([
+        {"action": "device_attach", "core": "pru0", "profile": "foc_motor"},
+        {"action": "ssi_set_error", "core": "pru0", "name": "foc_motor", "error": 1},
+    ])
+
+    error = next(message for message in sent if message.get("type") == "error")
+    assert "not an SSI encoder" in error["errors"][0]
+
+
+def test_websocket_foc_apply_writes_control_abi_and_sd_routes(fresh_sim):
+    sent = _run_websocket_actions([
+        {"action": "device_attach", "core": "pru0", "profile": "foc_motor"},
+        {"action": "foc_apply", "core": "pru0",
+         "config": {"enable": 1, "vd_ref_q15": -4096, "vq_ref_q15": 2048,
+                    "speed_ref_q28": 0x10000000, "ramp_rate_q28": 12000,
+                    "initial_phase_q32": 0x20000000},
+         "routes": [3, 4]},
+    ])
+
+    config = foc_abi.unpack_config(
+        fresh_sim.memory_read(foc_abi.CONTROL_ADDRESS, foc_abi.CONFIG_SIZE)
+    )
+    assert config["enable"] == 1
+    assert config["vd_ref_q15"] == -4096
+    assert config["vq_ref_q15"] == 2048
+    assert config["speed_ref_q28"] == 0x10000000
+    assert config["ramp_rate_q28"] == 12000
+    assert config["initial_phase_q32"] == 0x20000000
+    assert config["requested_generation"] == 1
+    assert fresh_sim.cores["pru0"].io_port.sd_filter.input_routes[:2] == [3, 4]
+
+    state = [message for message in sent if message.get("type") == "state"][-1]
+    assert state["io"]["foc_config"]["vd_ref_q15"] == -4096
+    assert state["io"]["device_bus"]["devices"][0]["model"] == "pmsm"
+
+
+def test_websocket_rejects_invalid_foc_route_without_partial_update(fresh_sim):
+    original_config = foc_abi.pack_config(vd_ref_q15=321, vq_ref_q15=-654)
+    fresh_sim.memory.write(foc_abi.CONTROL_ADDRESS, original_config)
+    sd = fresh_sim.cores["pru0"].io_port.sd_filter
+    sd.route_input(0, 7)
+    sd.route_input(1, 8)
+
+    sent = _run_websocket_actions([
+        {"action": "device_attach", "core": "pru0", "profile": "foc_motor"},
+        {"action": "foc_apply", "core": "pru0",
+         "config": {"vd_ref_q15": 1000, "vq_ref_q15": 2000},
+         "routes": [9, 20]},
+    ])
+
+    error = next(message for message in sent
+                 if message.get("type") == "error" and message.get("tag") == "device")
+    assert "routes" in error["errors"][0]
+    assert fresh_sim.memory_read(foc_abi.CONTROL_ADDRESS, foc_abi.CONFIG_SIZE) == original_config
+    assert sd.input_routes[:2] == [7, 8]
+
+
+def test_websocket_swaps_foc_routes_with_unequal_clocks_atomically(fresh_sim):
+    fresh_sim.set_sd_modulator("pru0", 0, sd_clock_mhz=10)
+    sent = _run_websocket_actions([
+        {"action": "device_attach", "core": "pru0", "profile": "foc_motor"},
+        {"action": "foc_apply", "core": "pru0", "config": {}, "routes": [3, 4]},
+        {"action": "foc_apply", "core": "pru0", "config": {}, "routes": [4, 3]},
+    ])
+    assert not any(message.get("type") == "error" for message in sent)
+    assert fresh_sim.cores["pru0"].io_port.sd_filter.input_routes[:2] == [4, 3]
+    motor = fresh_sim.device_bus.get_device("foc_motor")
+    assert motor.current_a_clock_hz == 20_000_000
+    assert motor.current_b_clock_hz == 10_000_000
+
+
+def test_websocket_rejects_conflicting_foc_clocks_and_keeps_session(fresh_sim):
+    original_config = foc_abi.pack_config(vd_ref_q15=321)
+    fresh_sim.memory.write(foc_abi.CONTROL_ADDRESS, original_config)
+    fresh_sim.set_sd_modulator("pru0", 0, sd_clock_mhz=10)
+    sd = fresh_sim.cores["pru0"].io_port.sd_filter
+    sd.route_input(2, 4)
+    sent = _run_websocket_actions([
+        {"action": "device_attach", "core": "pru0", "profile": "foc_motor"},
+        {"action": "foc_apply", "core": "pru0", "config": {}, "routes": [3, 3]},
+        {"action": "foc_apply", "core": "pru0", "config": {}, "routes": [3, 4]},
+        {"action": "set_sd_modulator", "core": "pru0", "channel": 2,
+         "params": {"sd_clock_mhz": 10}},
+        {"action": "set_sd_modulator", "core": "pru0", "channel": 0,
+         "params": {"sd_clock_mhz": 15}},
+    ])
+    errors = [message for message in sent if message.get("type") == "error"]
+    assert len(errors) == 2
+    assert all("different clocks" in error["errors"][0] for error in errors)
+    error_index = sent.index(errors[0])
+    unchanged = sent[error_index + 1]
+    assert unchanged["io"]["foc_config"]["vd_ref_q15"] == 321
+    assert sd.input_routes == [3, 4, 4]
+    assert sd.modulators[2].sd_clock_mhz == 20
+    assert sd.modulators[0].sd_clock_mhz == 15
+
+
+# ---- Motor control actions -----------------------------------------------
+
+def _foc_block(sim):
+    return foc_abi.unpack_config(sim.memory_read(foc_abi.CONTROL_ADDRESS, foc_abi.CONFIG_SIZE))
+
+
+def test_websocket_foc_reference_converts_units_and_sets_the_display_angle(fresh_sim):
+    import math
+    import ui.server as srv
+
+    srv._history_order.append(("pru0", {"stale": True}))
+    sent = _run_websocket_actions([
+        {"action": "device_attach", "core": "pru0", "profile": "foc_motor",
+         "config": {"pole_pairs": 2}},
+        {"action": "foc_set_reference", "core": "pru0", "speed_rpm": 600,
+         "vd_pu": 0.25, "vq_pu": 0.25, "accel_rpm_s": 1200, "enable": True},
+    ])
+    assert not any(message.get("type") == "error" for message in sent)
+    block = _foc_block(fresh_sim)
+    # 600 rpm * 2 pole pairs / 60 = 20 Hz electrical = 0.02 pu of the 1 kHz base.
+    assert block["speed_ref_q28"] == round(0.02 * 2**28)
+    assert block["ramp_rate_q28"] == round(0.04 / 16000 * 2**28)
+    assert (block["vd_ref_q15"], block["vq_ref_q15"]) == (8192, 8192)
+    assert (block["enable"], block["requested_generation"]) == (1, 1)
+    motor = fresh_sim.device_bus.get_device("foc_motor")
+    assert motor.parameters()["reference_angle_rad"] == pytest.approx(math.pi / 4)
+    assert srv._history_order == []
+    state = [message for message in sent if message.get("type") == "state"][-1]
+    assert state["io"]["foc_config"]["requested_generation"] == 1
+    assert state["io"]["foc_clocks"] == {"pru_hz": 250e6, "iep_hz": 200e6}
+
+
+def test_websocket_foc_actions_reject_bad_input_without_changing_anything(fresh_sim):
+    sent = _run_websocket_actions([
+        {"action": "foc_set_reference", "core": "pru0", "speed_rpm": 100},
+        {"action": "device_attach", "core": "pru0", "profile": "foc_motor"},
+        {"action": "foc_set_reference", "core": "pru0", "speed_rpm": 100, "vq_pu": 0.1},
+        {"action": "foc_set_reference", "core": "pru0", "speed_rpm": 1e9},
+        {"action": "foc_set_reference", "core": "pru0", "vq_pu": 2},
+        {"action": "foc_set_reference", "core": "pru0", "accel_rpm_s": -1},
+        {"action": "foc_set_reference", "core": "pru0", "speed_rpm": "fast"},
+        {"action": "foc_set_reference", "core": "pru0", "enable": "yes"},
+        {"action": "foc_enable", "core": "pru0", "enable": 1},
+        {"action": "foc_set_motor", "core": "pru0", "parameters": {"resistance_ohm": 0}},
+        {"action": "foc_set_motor", "core": "pru0", "parameters": []},
+        {"action": "foc_set_motor", "core": "pru0", "parameters": {"bogus": 1}},
+        {"action": "foc_state", "core": "pru0", "since": -1},
+    ])
+    errors = [message for message in sent if message.get("type") == "error"]
+    assert len(errors) == 11
+    assert all(error["tag"] == "motor" for error in errors)
+    assert "Attach a FOC motor" in errors[0]["errors"][0]
+    block = _foc_block(fresh_sim)
+    assert (block["speed_ref_q28"], block["requested_generation"]) == (
+        round(100 * 4 / 60 / 1000 * 2**28), 1), "only the one valid update was staged"
+    assert fresh_sim.device_bus.get_device("foc_motor").parameters()["resistance_ohm"] == 0.5
+
+
+def test_websocket_foc_set_motor_enable_and_state(fresh_sim):
+    import ui.server as srv
+
+    srv._history_order.append(("pru0", {"stale": True}))
+    sent = _run_websocket_actions([
+        {"action": "device_attach", "core": "pru0", "profile": "foc_motor"},
+        {"action": "foc_set_motor", "core": "pru0",
+         "parameters": {"load_torque_nm": 0.2, "pole_pairs": 3}},
+        {"action": "foc_enable", "core": "pru0", "enable": True},
+        {"action": "foc_state", "core": "pru0", "since": 0},
+    ])
+    assert not any(message.get("type") == "error" for message in sent)
+    motor = fresh_sim.device_bus.get_device("foc_motor")
+    assert (motor.load_torque_nm, motor.pole_pairs) == (0.2, 3)
+    assert _foc_block(fresh_sim)["enable"] == 1
+    samples = sent[-1]
+    assert samples["type"] == "foc_samples"
+    assert samples["fields"][:2] == ["index", "time_s"]
+    assert samples["samples"] == [] and samples["next_index"] == 0
+    assert srv._history_order == []
+
+
+def test_websocket_foc_apply_with_empty_config_only_changes_routes(fresh_sim):
+    fresh_sim.memory.write(foc_abi.CONTROL_ADDRESS, foc_abi.pack_config(vd_ref_q15=77))
+    _run_websocket_actions([
+        {"action": "device_attach", "core": "pru0", "profile": "foc_motor"},
+        {"action": "foc_apply", "core": "pru0", "config": {}, "routes": [3, 4]},
+    ])
+    assert fresh_sim.cores["pru0"].io_port.sd_filter.input_routes[:2] == [3, 4]
+    assert _foc_block(fresh_sim)["vd_ref_q15"] == 77
+
+
 @pytest.mark.parametrize('mhz', [333.333, 0.125, 251.5])
 def test_custom_iep_clock_preserves_counters_and_time(fresh_sim, monkeypatch, mhz):
     import ui.server as srv
@@ -443,8 +632,7 @@ def test_gpio_direction_control_preserves_r30_and_reports_ownership(fresh_sim):
     sent = _run_websocket_actions([
         {'action': 'set_register', 'index': 30, 'value': 15},
         {'action': 'set_gpio_drive_mask', 'mask': 7},
-        {'action': 'device_attach', 'profile': 'ssi_encoder',
-         'config': {'data_pin': 16}},
+        {'action': 'device_attach', 'profile': 'foc_motor'},
         {'action': 'set_gpio_drive_mask', 'mask': 0},
         {'action': 'get_state'},
     ])
@@ -475,6 +663,22 @@ def test_unavailable_core_request_keeps_socket_and_advertises_actual_cores(fresh
     assert sent[1]['core'] == 'pru0'
     assert sent[1]['available_cores'] == ['pru0', 'rtu0', 'pru1']
     assert any(p['type'] == 'error' and 'partners' in p['errors'][0] for p in sent)
+
+
+@pytest.mark.parametrize('core_source', [False, True])
+def test_foc_reference_uses_active_iep_rate(fresh_sim, core_source):
+    from pru_io import foc_control
+    fresh_sim.iep.set_clock_mhz(333.333)
+    fresh_sim.iep.write_iepclk(int(core_source))
+    sent = _run_websocket_actions([
+        {'action': 'device_attach', 'profile': 'foc_motor'},
+        {'action': 'foc_set_reference', 'speed_rpm': 600, 'accel_rpm_s': 1200},
+    ])
+    assert not any(p['type'] == 'error' for p in sent)
+    hz = float(fresh_sim.iep.active_clock_hz) / 12500
+    block = _foc_block(fresh_sim)
+    assert block['speed_ref_q28'] == foc_control.speed_rpm_to_q28(600, 4, update_hz=hz)
+    assert block['ramp_rate_q28'] == foc_control.ramp_rpm_s_to_q28(1200, 4, update_hz=hz)
 
 
 def test_iep_override_survives_core_reload_saved_config_clears_it(tmp_path, monkeypatch):

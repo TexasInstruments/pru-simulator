@@ -8,8 +8,7 @@ from simulator import Simulator
 from ui.server import app
 
 client = TestClient(app)
-SINGLE = "SSI encoder (single core)"
-MULTI = "SSI multi-core (emulator + reader)"
+SINGLE, MULTI, FOC = SCENARIOS
 
 
 @pytest.fixture
@@ -44,6 +43,7 @@ def test_scenario_list_describes_every_scenario(fresh_sim):
     assert list(by_name) == list(SCENARIOS)
     assert by_name[MULTI]["multicore"] is True and by_name[MULTI]["lead"] == "pru0"
     assert by_name[MULTI]["cores"] == ["pru0", "pru1"]
+    assert by_name[FOC]["ui"]["view"] == "motor"
     assert all(scenario["description"] for scenario in by_name.values())
 
 
@@ -92,6 +92,28 @@ def test_multicore_scenario_refreshes_both_cores_and_runs_together(fresh_sim):
             ws.receive_json(), ws.receive_json()
     assert _mailbox(fresh_sim)["frame_count"] >= 3
     assert _mailbox(fresh_sim)["raw_frame_lo"] == 0xABC
+
+
+def test_foc_scenario_fills_the_motor_samples_on_the_first_run(fresh_sim):
+    import ui.server as srv
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "set_iep_clock", "mhz": 250})
+        ws.receive_json()
+        loaded, state = _load(ws, FOC, 1)
+        assert loaded["ui"]["view"] == "motor"
+        assert state["io"]["foc_config"]["enable"] == 1
+        assert state["io"]["sd"]["input_routes"][:2] == [3, 4]
+        assert state["io"]["foc_clocks"]["iep_hz"] == 250e6
+        assert srv._iep_clock_override == 250
+        for _ in range(120):
+            ws.send_json({"action": "run", "core": "pru0", "max_steps": 1000})
+            ws.receive_json()
+        ws.send_json({"action": "foc_state", "core": "pru0", "since": 0})
+        samples = ws.receive_json()
+    columns = dict(zip(samples["fields"], zip(*samples["samples"])))
+    assert len(samples["samples"]) >= 3
+    assert any(abs(current) > 0.5 for phase in ("ia", "ib", "ic") for current in columns[phase])
+    assert any(duty != 0.5 for duty in columns["duty_a"])
 
 
 def _run_capture(ws, message):

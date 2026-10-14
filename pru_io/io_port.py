@@ -136,6 +136,8 @@ class IOPort:
         """
         if elapsed_cycles <= 0:
             return
+        if after_cycle is None and self.sd_filter is not None:
+            after_cycle = lambda _cycle, gpi: self.sd_filter.tick(gpi)
         has_time_driven = self.device_bus.has_time_driven(self._device_endpoint)
         if not has_time_driven and after_cycle is None:
             self._device_cycle += elapsed_cycles

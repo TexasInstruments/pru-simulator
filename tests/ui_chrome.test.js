@@ -124,7 +124,7 @@ for (const id of ['device-runtime-panel', 'ssi-attach-button', 'tca-attach-butto
   'uart-rx-inject', 'ssi-device-list', 'sd-interface', 'perif-interface', 'device-event-log'])
   assert.ok(ioView.includes(`id="${id}"`), `I/O & Devices holds ${id}`);
 const nav = html.match(/<nav class="view-switch"[\s\S]*?<\/nav>/)[0];
-assert.deepEqual([...nav.matchAll(/data-workspace-view="(\w+)"/g)].map(m => m[1]), ['simulator', 'io']);
+assert.deepEqual([...nav.matchAll(/data-workspace-view="(\w+)"/g)].map(m => m[1]), ['simulator', 'io', 'motor']);
 assert.match(nav, /I\/O &amp; Devices/);
 assert.deepEqual([...html.matchAll(/data-io-tab="(\w+)"/g)].map(m => m[1]), ['devices', 'peripherals', 'events']);
 assert.equal((html.match(/class="view-glider"/g) || []).length, 2, 'one glider per tab strip');
@@ -137,7 +137,7 @@ for (const id of ['btn-multicore', 'btn-step', 'btn-run', 'btn-sim', 'btn-reset'
 for (const [, attrs, inner] of html.matchAll(/<button\b([^>]*\bbtn-17\b[^>]*)>([\s\S]*?)<\/button>/g))
   assert.match(inner, /^<span class="text-container"><span class="text">/, `wipe button ${attrs.trim()} wraps its label`);
 for (const id of ['btn-file', 'btn-load', 'bp-add-btn', 'btn-mem-fill', 'btn-config-save', 'btn-fill-apply',
-  'tca-attach-button', 'uart-inj-btn'])
+  'tca-attach-button', 'uart-inj-btn', 'motor-start', 'motor-physics-defaults'])
   assert.match(html, new RegExp(`<button [^>]*id="${id}"[^>]*class="[^"]*btn-17|<button [^>]*class="[^"]*btn-17[^"]*"[^>]*id="${id}"`), `${id} wipes on hover`);
 for (const id of ['spad', 'loopback', 'mem-btn', 'panel-toggle'])
   assert.ok(!new RegExp(`<button[^>]*(id|class)="[^"]*${id}[^"]*btn-17`).test(html), `${id} toggles keep their own hover`);
@@ -168,7 +168,7 @@ assert.ok(clockSection.length > 0 && !/fetch\(/.test(clockSection), 'IEP session
 // Every id the scripts look up exists (three are created at run time).
 const known = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map(m => m[1]));
 const dynamic = new Set(['_src-menu', '_proj-menu']);  // menus created on demand
-for (const file of ['app.js', 'workspace.js', 'layout.js', 'chrome.js']) {
+for (const file of ['app.js', 'workspace.js', 'motor.js', 'layout.js', 'chrome.js']) {
   const source = readFileSync(new URL(`../ui/static/${file}`, import.meta.url), 'utf8');
   for (const [, id] of source.matchAll(/getElementById\(\s*['"]([\w-]+)['"]\s*\)/g))
     assert.ok(known.has(id) || dynamic.has(id), `${file} looks up #${id}, which is not in index.html`);

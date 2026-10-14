@@ -6,7 +6,7 @@ from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from pru_io import ssi_config_abi as ssi
+from pru_io import foc_control_abi as foc, ssi_config_abi as ssi
 
 
 ROOT = Path(__file__).parents[1]
@@ -42,7 +42,7 @@ async def _exercise_stdio_tools():
                 "pru_device_discover", "pru_device_attach", "pru_device_detach",
                 "pru_device_state", "pru_device_events", "pru_device_faults",
                 "pru_load", "pru_step", "pru_run_until", "pru_status",
-                "pru_gpio_drive_mask",
+                "pru_gpio_drive_mask", "pru_sd_route_input",
             }
             assert required <= by_name.keys()
             def property_schema(name, field):
@@ -73,7 +73,7 @@ async def _exercise_stdio_tools():
 
             discovered = _payload(await session.call_tool(
                 "pru_device_discover", {}))
-            assert set(discovered["profiles"]) == {"ssi_encoder", "tca9538"}
+            assert set(discovered["profiles"]) == {"ssi_encoder", "tca9538", "foc_motor"}
 
             attached = _payload(await session.call_tool(
                 "pru_device_attach", {
@@ -95,7 +95,22 @@ async def _exercise_stdio_tools():
                 "pru_device_detach", {"device_name": "sdk_encoder"}))[
                     "success"] is True
 
+            attached_foc = _payload(await session.call_tool(
+                "pru_device_attach", {"profile": "foc_motor"}))
+            assert attached_foc["success"] is True
+            assert attached_foc["device"]["model"] == "pmsm"
+            routed = _payload(await session.call_tool(
+                "pru_sd_route_input", {"channel": 0, "pin": 3}))
+            assert routed == {"channel": 0, "pin": 3}
+            restored = _payload(await session.call_tool(
+                "pru_sd_route_input", {"channel": 0, "pin": -1}))
+            assert restored == {"channel": 0, "pin": None}
+            assert _payload(await session.call_tool(
+                "pru_device_detach", {"device_name": "foc_motor"}))[
+                    "success"] is True
+
             for core, firmware in (
+                ("pru0", "source/foc_open_loop.asm"),
                 ("pru1", "source/ssi_generic_reader/ssi_generic_reader.asm"),
             ):
                 loaded = _payload(await session.call_tool("pru_load", {
@@ -104,12 +119,19 @@ async def _exercise_stdio_tools():
                     "include_paths": ["source"],
                 }))
                 assert loaded["success"] is True, loaded["errors"]
-                executed = _payload(await session.call_tool("pru_run_until", {
-                    "core": core, "condition": "halt", "max_steps": 1000,
-                }))
-                assert executed["condition_met"] is True
-                assert executed["reason"] == "halted"
-                assert executed["cycles"] > 0
+                if core == "pru0":
+                    # The FOC firmware builds its sine table, then runs forever
+                    # with a neutral output until a valid control block arrives.
+                    executed = _payload(await session.call_tool("pru_step", {
+                        "core": core, "count": 2000}))
+                    assert executed["halted"] is False
+                else:
+                    executed = _payload(await session.call_tool("pru_run_until", {
+                        "core": core, "condition": "halt", "max_steps": 1000,
+                    }))
+                    assert executed["condition_met"] is True
+                    assert executed["reason"] == "halted"
+                    assert executed["cycles"] > 0
                 reset = _payload(await session.call_tool(
                     "pru_reset", {"core": core}))
                 assert reset == {"ok": True}
@@ -155,7 +177,47 @@ async def _exercise_valid_firmware(tmp_path):
                 assert not (await call("pru_device_faults", device_name="ssi_encoder"))["faults"]
                 await call("pru_device_detach", device_name="ssi_encoder")
 
+                await call("pru_device_attach", profile="foc_motor")
+                for channel, pin in enumerate((3, 4)):
+                    await call("pru_sd_route_input", channel=channel, pin=pin)
+                await configure(foc.CONTROL_ADDRESS, foc.pack_config(
+                    enable=1, requested_generation=1, vd_ref_q15=16384))
+                assert (await call("pru_load", include_paths=["source"],
+                    source=(ROOT / "source/foc_open_loop.asm").read_text()))["success"]
+                path = tmp_path / "sdk-foc.vcd"
+                await call("pru_vcd_export", path=str(path), max_steps=60000,
+                           pins="0-4", include_gpi=True)
+                # Read actual GPIO edge timestamps independently of firmware registers.
+                identifier, timestamp, previous = None, 0, 0
+                rises = []
+                current_identifiers = {}
+                current_values = {"gpi_3": set(), "gpi_4": set()}
+                for line in path.read_text().splitlines():
+                    fields = line.split()
+                    if len(fields) >= 5 and fields[0] == "$var":
+                        if fields[4] == "gpo_0":
+                            identifier = fields[3]
+                        if fields[4] in current_values:
+                            current_identifiers[fields[3]] = fields[4]
+                    elif line.startswith("#"):
+                        timestamp = int(line[1:])
+                    elif identifier and line in ("0" + identifier, "1" + identifier):
+                        value = int(line[0])
+                        if value and not previous:
+                            rises.append(timestamp)
+                        previous = value
+                    elif line[:1] in ("0", "1") and line[1:] in current_identifiers:
+                        current_values[current_identifiers[line[1:]]].add(int(line[0]))
+                periods = [b - a for a, b in zip(rises, rises[1:])]
+                assert len(periods) >= 2
+                assert all(abs(period - 62_500_000) <= 50_000 for period in periods)
+                state = await call("pru_device_state")
+                assert not state["faults"]
+                motor = state["devices"][0]
+                assert motor["pwm_periods"] >= 2
+                assert any(abs(current) > 0.01 for current in motor["phase_currents_a"])
+                assert all(values == {0, 1} for values in current_values.values())
 
 
-def test_valid_ssi_frames_over_sdk_stdio(tmp_path):
+def test_valid_ssi_frames_and_foc_pwm_over_sdk_stdio(tmp_path):
     asyncio.run(_exercise_valid_firmware(tmp_path))
