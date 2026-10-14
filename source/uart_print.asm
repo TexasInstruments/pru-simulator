@@ -1,11 +1,19 @@
 ; uart_print.asm — UART TX of a null-terminated string from DRAM0
-; Caller must pre-load the string at DRAM0 offset 0 before execution.
+; The firmware first writes the string "Hello 2026" to DRAM0 offset 0, then
+; transmits it byte by byte until the null terminator.
 ; c24 = DRAM0 base  (PRU constant table entry 24, address 0x00000000)
 ; r4.b0 = current byte offset  (max string length: 255 bytes)
 BAUD_COUNT .set 868
 TX_BIT     .set 0              ; R30.t0  =  GPO pin 0
 
     set  r30, r30, TX_BIT   ; idle HIGH
+
+    ; ---- write "Hello 2026\0" to DRAM0 (little-endian: first char in low byte) ----
+    ldi32 r10, 0x6C6C6548    ; 'H' 'e' 'l' 'l'
+    ldi32 r11, 0x3032206F    ; 'o' ' ' '2' '0'
+    ldi32 r12, 0x00003632    ; '2' '6' '\0' '\0'
+    ldi  r4, 0
+    sbco &r10, c24, r4.b0, 12 ; DRAM0[0..11] = r10..r12
 
     ldi  r4, 0              ; r4.b0 = DRAM0 byte offset
 
