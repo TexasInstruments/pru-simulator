@@ -372,6 +372,10 @@
     #mac-mode-label { color: var(--text); font-weight: bold; margin: 0 4px; }
     #mac-carry-label { color: var(--changed); font-weight: bold; margin-left: 4px; }
 
+    #crc-row { margin-left: 10px; }
+    #crc-mode-label { color: var(--text); font-weight: bold; margin: 0 4px; }
+    #crc-value-label { color: var(--accent2); font-weight: bold; }
+
     #carry-row {
       padding: 4px 6px;
       color: var(--text-dim);
@@ -399,6 +403,10 @@
     .mc-mac-row { color: var(--text-dim); margin-left: 8px; font-size: 11px; }
     .mc-mac-mode { color: var(--text); font-weight: bold; margin: 0 3px; }
     .mc-mac-carry { color: var(--changed); font-weight: bold; }
+
+    .mc-crc-row { color: var(--text-dim); margin-left: 8px; font-size: 11px; }
+    .mc-crc-mode { color: var(--text); font-weight: bold; margin: 0 3px; }
+    .mc-crc-value { color: var(--accent2); font-weight: bold; }
 
     .mc-pc-badge {
       margin-left: auto;
@@ -1446,7 +1454,7 @@ Example:
           <span style="margin-left:8px;font-size:10px;color:var(--text-dim);">XFR:</span>
           <button id="btn-xfr-shift" class="spad-btn" title="Toggle XFR_SHIFT_EN (ICSSG_SPP_REG[1])">SHF</button>
         </div>
-        <div id="carry-row">Carry: <span class="val" id="reg-carry">0</span><span id="mac-row">MAC: <span id="mac-mode-label">MPY</span><span id="mac-carry-label"></span></span></div>
+        <div id="carry-row">Carry: <span class="val" id="reg-carry">0</span><span id="mac-row">MAC: <span id="mac-mode-label">MPY</span><span id="mac-carry-label"></span></span><span id="crc-row">CRC: <span id="crc-mode-label">CRC16</span><span id="crc-value-label">0000</span></span></div>
         <div class="panel-body" id="reg-body">
           <table id="reg-table" class="reg-table">
             <tbody id="reg-tbody"></tbody>
@@ -1720,6 +1728,7 @@ Example:
           <span>PRU0 Registers</span>
           <span class="mc-carry-row">Carry: <span class="mc-carry-val" id="mc-pru0-carry">0</span></span>
           <span class="mc-mac-row">MAC: <span class="mc-mac-mode" id="mc-pru0-mac-mode">MPY</span><span class="mc-mac-carry" id="mc-pru0-mac-carry"></span></span>
+          <span class="mc-crc-row">CRC: <span class="mc-crc-mode" id="mc-pru0-crc-mode">CRC16</span><span class="mc-crc-value" id="mc-pru0-crc-value">0000</span></span>
           <span style="margin-left:6px;font-size:10px;color:var(--text-dim);">SPAD:</span>
           <button class="spad-btn mc-spad-btn" data-bank="bank0" title="Toggle SPAD Bank 0">B0</button>
           <button class="spad-btn mc-spad-btn" data-bank="bank1" title="Toggle SPAD Bank 1">B1</button>
@@ -1755,6 +1764,7 @@ Example:
           <span id="mc-partner-reg-title">RTU0 Registers</span>
           <span class="mc-carry-row">Carry: <span class="mc-carry-val" id="mc-rtu0-carry">0</span></span>
           <span class="mc-mac-row">MAC: <span class="mc-mac-mode" id="mc-rtu0-mac-mode">MPY</span><span class="mc-mac-carry" id="mc-rtu0-mac-carry"></span></span>
+          <span class="mc-crc-row">CRC: <span class="mc-crc-mode" id="mc-rtu0-crc-mode">CRC16</span><span class="mc-crc-value" id="mc-rtu0-crc-value">0000</span></span>
         </div>
         <div class="panel-body">
           <table class="reg-table"><tbody id="mc-rtu0-reg-tbody"></tbody></table>
