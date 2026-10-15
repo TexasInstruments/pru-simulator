@@ -50,7 +50,9 @@ class MACAccelerator(Accelerator):
         if start_reg == 25 and len(data) >= 1:
             ctrl = data[0]
             if ctrl & 0x01:
-                # MAC_MODE=1: trigger one accumulation of R28*R29
+                # MAC_MODE=1: trigger one accumulation of R28*R29.
+                # The one-instruction lag here is an ASSUMPTION extrapolated from
+                # the measured XIN lag; it has not been measured on silicon.
                 a, b = self._operands()
                 product = a * b
                 self._accumulator += product
