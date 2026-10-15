@@ -28,6 +28,19 @@ class MACAccelerator(Accelerator):
         self.mac_mode: bool = False
         self._accumulator: int = 0
         self.acc_carry: bool = False
+        self._latched: tuple[int, int] | None = None   # (R28, R29) at start of this step
+        self._delayed: tuple[int, int] | None = None   # ... and at start of the previous one
+
+    def begin_step(self) -> None:
+        """Called by the core before each instruction executes."""
+        self._delayed = self._latched
+        self._latched = (self._regs.read_full(28), self._regs.read_full(29))
+
+    def _operands(self) -> tuple[int, int]:
+        """R28/R29 as the MAC sees them: as of one instruction ago."""
+        if self._delayed is not None:
+            return self._delayed
+        return self._regs.read_full(28), self._regs.read_full(29)
 
     # ------------------------------------------------------------------
     # Accelerator interface
@@ -38,8 +51,7 @@ class MACAccelerator(Accelerator):
             ctrl = data[0]
             if ctrl & 0x01:
                 # MAC_MODE=1: trigger one accumulation of R28*R29
-                a = self._regs.read_full(28)
-                b = self._regs.read_full(29)
+                a, b = self._operands()
                 product = a * b
                 self._accumulator += product
                 if self._accumulator > _MASK64:
@@ -69,8 +81,7 @@ class MACAccelerator(Accelerator):
             if self.mac_mode:
                 result64 = self._accumulator
             else:
-                a = self._regs.read_full(28)
-                b = self._regs.read_full(29)
+                a, b = self._operands()
                 result64 = a * b
 
             low  = result64 & 0xFFFF_FFFF
@@ -92,3 +103,5 @@ class MACAccelerator(Accelerator):
         self.mac_mode = False
         self._accumulator = 0
         self.acc_carry = False
+        self._latched = None
+        self._delayed = None

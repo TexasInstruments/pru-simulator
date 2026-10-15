@@ -206,6 +206,7 @@ class Simulator:
                     read_latency=int(cfg[section].get("read_latency", "0")),
                     write_latency=int(cfg[section].get("write_latency", "0")),
                     jitter=int(cfg[section].get("jitter", "0")),
+                    per_word_latency=int(cfg[section].get("per_word_latency", "1")),
                 ))
         return bus
 
