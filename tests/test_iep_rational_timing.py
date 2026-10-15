@@ -141,7 +141,7 @@ def test_repeated_global_cfg_firmware_writes_preserve_rational_tick_phase():
 
 
 def test_global_cfg_noop_and_non_timing_writes_preserve_tick_phase():
-    iep = IepTimer(clock_mhz="200")
+    iep = IepTimer(clock_mhz="200", ocp_clock_mhz="250")
     iep.write32(GLOBAL_CFG, 0x11)
     iep.observe_core_cycles("pru0", 1)
     assert iep._tick_remainder == 4
@@ -156,7 +156,7 @@ def test_global_cfg_noop_and_non_timing_writes_preserve_tick_phase():
 
 
 def test_global_cfg_enable_and_increment_transitions_reset_tick_phase():
-    iep = IepTimer(clock_mhz="200")
+    iep = IepTimer(clock_mhz="200", ocp_clock_mhz="250")
     iep.write32(GLOBAL_CFG, 0x11)
     iep.observe_core_cycles("pru0", 1)
     assert iep._tick_remainder == 4
@@ -183,7 +183,7 @@ def test_global_cfg_enable_and_increment_transitions_reset_tick_phase():
 
 
 def test_iep_clock_source_and_rate_transitions_reset_tick_phase():
-    iep = IepTimer(clock_mhz="200")
+    iep = IepTimer(clock_mhz="200", ocp_clock_mhz="250")
     iep.write32(GLOBAL_CFG, 0x11)
     iep.observe_core_cycles("pru0", 1)
     assert iep._tick_remainder == 4
@@ -215,7 +215,7 @@ def test_repeated_iepclk_firmware_writes_preserve_tick_phase():
 
 
 def test_unchanged_effective_clock_preserves_tick_phase():
-    iep = IepTimer(clock_mhz="200")
+    iep = IepTimer(clock_mhz="200", ocp_clock_mhz="250")
     iep.global_cfg = 0x11
     iep.observe_core_cycles("pru0", 1)
     iep.write_iepclk(0)
@@ -422,6 +422,34 @@ def test_backward_cycle_jump_is_absorbed_not_added_to_shared_time():
 
     sim.iep.observe_core_cycles("pru0", 11)
     assert sim.iep.now_ns == 84               # one 4 ns cycle past the rewind
+
+
+@pytest.mark.parametrize("target", [None, "AM243x", "AM64x", "AM263x"])
+def test_omitted_core_rates_preserve_200_mhz_elapsed_time(tmp_path, target):
+    config = tmp_path / "default.cfg"
+    config.write_text("[device]\n" + (f"target = {target}\n" if target else ""))
+    sim = Simulator(str(config))
+    sim.iep.global_cfg = 0x11
+
+    for core in sim.cores:
+        _load_loop(sim, core)
+        sim.step(core, 1000)
+        # 1,000 one-cycle instructions at 200 MHz take 5 us on every core.
+        assert sim.iep.core_time_ns(core, 1000) == 5000
+        assert sim.iep.count == 1000
+
+
+def test_standalone_iep_default_core_and_ocp_clock_preserve_200_mhz_timing():
+    iep = IepTimer()
+    iep.global_cfg = 0x11
+    iep.observe_core_cycles("pru0", 1000)
+    assert iep.now_ns == 5000
+    assert iep.count == 1000
+
+    iep.write_iepclk(1)
+    iep.observe_core_cycles("pru0", 2000)
+    assert iep.now_ns == 10000
+    assert iep.count == 2000
 
 
 def test_omitted_external_clock_defaults_to_the_trm_200_mhz_for_any_core_rate(tmp_path):

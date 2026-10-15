@@ -440,15 +440,15 @@ after the first rising edge — drop that first bit before grouping into octets.
 
 ### Core and IEP clocks
 
-The PRU cores start at 250 MHz because the project chose it as an arbitrary starting point, not because of a hardware value. The IEP does not follow that choice. It defaults to 200 MHz, the rate the TRM gives for ICSSG_IEP_CLK (SPRUIM2J §6.4.13.2.4: the counter counts every ICSSG_IEP_CLK cycle at a "default rate of 200 MHz"). Core and IEP clocks remain independently configurable, including positive fractional MHz values, and changing the core speed leaves the IEP clock unchanged. Firmware's IEPCLK register selects which configured source drives the timer.
+Omitting `pru_clock_mhz` preserves the simulator's 200 MHz core default; omitting `pru1_clock_mhz` inherits the first rate. Explicitly configured rates, including 250 MHz, remain unchanged. The external IEP defaults independently to 200 MHz, the rate the TRM gives for ICSSG_IEP_CLK (SPRUIM2J §6.4.13.2.4). Core and IEP clocks remain independently configurable, including positive fractional MHz values, and changing the core speed leaves the external IEP clock unchanged. Firmware's IEPCLK register selects which configured source drives the timer.
 
 | INI setting | Default |
 | --- | --- |
-| `pru_clock_mhz` | 250 |
+| `pru_clock_mhz` | 200 |
 | `pru1_clock_mhz` | inherited core |
 | `iep_clock_mhz` | 200 |
 
-With CNT_ENABLE=1 and DEFAULT_INC=1, 1000 unstalled default core cycles produce 800 IEP ticks, because the IEP defaults to 200 MHz and the core to 250 MHz. Setting `iep_clock_mhz = 250` instead produces 1000 ticks. IEPCLK bit 0 clear selects the configured external clock; set selects the modeled OCP/core clock. Memory and wait stalls contribute elapsed cycles too.
+With CNT_ENABLE=1 and DEFAULT_INC=1 and both rates omitted, 1000 unstalled core cycles produce 1000 IEP ticks at 200 MHz. The supplied `memory.cfg` explicitly selects 250 MHz cores; with the omitted 200 MHz external IEP rate, it instead produces 800 ticks for those 1000 core cycles. IEPCLK bit 0 clear selects the configured external clock; set selects the modeled OCP/core clock. Memory and wait stalls contribute elapsed cycles too.
 
 The simulator's IEP `GLOBAL_CFG` reset value, `0x550`, follows the TRM register defaults (IEP_GLOBAL_CFG_REG, Table 14-10907: `CMP_INC` and `DEFAULT_INC` reset to 5h, `CNT_ENABLE` to 0h). `DEFAULT_INC=5` counts nanoseconds at the default 200 MHz IEP clock, where one tick is 5 ns, so firmware that enables the counter with a read-modify-write (`GLOBAL_CFG | 1`) gets a nanosecond count. If you set a different IEP clock, for example 250 MHz (a 4 ns tick), firmware must set `DEFAULT_INC` itself (4 at 250 MHz) to keep a nanosecond count. A full-word write of `1` leaves `DEFAULT_INC=0`, and the counter does not advance.
 

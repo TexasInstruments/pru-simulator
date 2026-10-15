@@ -129,13 +129,13 @@ Clock keys in the `[device]` section:
 
 | Key | Applies to | Default if absent |
 |---|---|---|
-| `pru_clock_mhz` | PRU0, RTU0, and the IEP OCP clock | 250 |
+| `pru_clock_mhz` | PRU0, RTU0, and the IEP OCP clock | 200 |
 | `pru1_clock_mhz` | PRU1, RTU1 | inherited core |
 | `iep_clock_mhz` | IEP while ICSS CFG `IEPCLK` bit 0 is clear | 200 |
 
-The PRU cores start at 250 MHz because the project chose it as an arbitrary starting point, not because of a hardware value. The IEP does not follow that choice. It defaults to 200 MHz, the rate the TRM gives for ICSSG_IEP_CLK (SPRUIM2J §6.4.13.2.4: the counter counts every ICSSG_IEP_CLK cycle at a "default rate of 200 MHz"). Core and IEP clocks remain independently configurable, including positive fractional MHz values, and changing the core speed leaves the IEP clock unchanged. Firmware's IEPCLK register selects which configured source drives the timer.
+Omitting `pru_clock_mhz` preserves the simulator's 200 MHz core default; omitting `pru1_clock_mhz` inherits the first rate. Explicitly configured rates, including 250 MHz, remain unchanged. The external IEP defaults independently to 200 MHz, the rate the TRM gives for ICSSG_IEP_CLK (SPRUIM2J §6.4.13.2.4). Core and IEP clocks remain independently configurable, including positive fractional MHz values, and changing the core speed leaves the external IEP clock unchanged. Firmware's IEPCLK register selects which configured source drives the timer.
 
-With the default 250 MHz core and 200 MHz IEP, 1000 unstalled core cycles produce 800 IEP ticks with `CNT_ENABLE=1` and `DEFAULT_INC=1` while IEPCLK bit 0 is clear. Setting `iep_clock_mhz = 250` produces 1000 ticks. See [clock sources and configuration](getting_started.md) for the cited TI firmware examples. RTU1 is available only on the AM243x/AM64x profiles; an omitted target selects AM243x.
+With both rates omitted, 1000 unstalled core cycles produce 1000 IEP ticks with `CNT_ENABLE=1` and `DEFAULT_INC=1` while IEPCLK bit 0 is clear. The supplied `memory.cfg` explicitly selects 250 MHz cores; with the omitted external IEP rate of 200 MHz, it produces 800 ticks for the same 1000 core cycles. See [clock sources and configuration](getting_started.md) for the cited TI firmware examples. RTU1 is available only on the AM243x/AM64x profiles; an omitted target selects AM243x.
 
 The simulator's IEP `GLOBAL_CFG` reset value, `0x550`, follows the TRM register defaults (IEP_GLOBAL_CFG_REG, Table 14-10907: `CMP_INC` and `DEFAULT_INC` reset to 5h, `CNT_ENABLE` to 0h). `DEFAULT_INC=5` counts nanoseconds at the default 200 MHz IEP clock, where one tick is 5 ns, so firmware that enables the counter with a read-modify-write (`GLOBAL_CFG | 1`) gets a nanosecond count. If you set a different IEP clock, for example 250 MHz (a 4 ns tick), firmware must set `DEFAULT_INC` itself (4 at 250 MHz) to keep a nanosecond count. A full-word write of `1` leaves `DEFAULT_INC=0`, and the counter does not advance.
 
@@ -203,6 +203,7 @@ v0.2.8 — hover over **PRU SIM** in the dashboard header to confirm.
 - **MCP stdio schema types** — the stdio server advertises `integer`, `number`, `boolean`, `array` and `object` types instead of `"string"` for optional, list and dict parameters.
 
 **v0.2.7**
+- **Core clock fallback preserved** — omitted `pru_clock_mhz` uses 200 MHz and omitted `pru1_clock_mhz` inherits it. Explicit configuration values remain unchanged; the external IEP has its own 200 MHz fallback.
 - **Memory faults are reported, not just logged** — an out-of-range `LBBO`/`LBCO`/`SBBO`/`SBCO` still halts the core, and now also records a `fault` (`type`, `opcode`, `address`, `pc`, `error`) on the core. `Simulator.step()` / `status()`, the MCP `pru_step`/`pru_status` tools and the dashboard state push all carry it; returned fault dictionaries are independent copies. The recorded fault clears on reset and is restored by step-back. Loading a program installs its instructions only: `halted`, `pc`, loop state and registers are left as they were (a successful load does drop the recorded fault), so reset a core before running a newly loaded program.
 - **`WBS`/`WBC` accept both operand forms** — the single-operand form (`WBS 5`, bit implied on R31) still works, and the explicit `WBS r31, 5` form is now accepted as well. Parser tests assert exact operand values and order for both.
 - **HW Reset also resets the IEP timer** — `Simulator.hard_reset()` now calls `IepTimer.hardware_reset()`, so the counter, compare and capture state no longer survive a full reset. Register defaults follow [AM64x/AM243x TRM SPRUIM2J](https://www.ti.com/lit/pdf/spruim2), Tables 14-10907 and 14-10925: the counter stays disabled, with `GLOBAL_CFG` defined fields `0x550` and `CAP_CFG` defined fields `0x1FC00`.

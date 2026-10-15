@@ -126,7 +126,7 @@ class Simulator:
         self.memory = self._load_memory(config_path)
         self.constant_table = self._load_constants(config_path)
         dev = self._get_device_config(config_path)
-        pru_clock = dev.get("pru_clock_mhz", "250")
+        pru_clock = dev.get("pru_clock_mhz", "200")
         pru1_clock = dev.get("pru1_clock_mhz", pru_clock)
         iep_clock = dev.get("iep_clock_mhz", IEP_DEFAULT_CLOCK_MHZ)
         io_pru0 = IOPort()

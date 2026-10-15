@@ -67,7 +67,7 @@ TIMING
 
 The IEP is shared by every configured core and advances to the furthest exact
 core time seen. Core rates come from [device] `pru_clock_mhz` and
-`pru1_clock_mhz`; absent values use the project's 250 MHz starting clock. The
+`pru1_clock_mhz`; an omitted first rate uses 200 MHz and the second inherits it. The
 IEP uses `iep_clock_mhz` (200 MHz when omitted, the TRM default ICSSG_IEP_CLK rate) while ICSS CFG IEPCLK bit 0 is
 clear, and the PRU0 OCP/core clock while it is set. Rational clock periods are
 represented with integer time units, so fractional MHz values and mixed core
@@ -135,7 +135,7 @@ class IepTimer:
     IEPCLK_OCP_EN = 1 << 0
 
     def __init__(self, clock_mhz: float | str | None = None,
-                 ocp_clock_mhz: float | str = 250.0,
+                 ocp_clock_mhz: float | str = 200.0,
                  core_clocks_mhz: dict[str, float | str] | None = None):
         core_clocks_mhz = core_clocks_mhz or {"pru0": ocp_clock_mhz}
         core_clocks_hz = {
