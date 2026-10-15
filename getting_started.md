@@ -83,40 +83,40 @@ endloop:
 
 ## Example 2 — Memory Copy (`mem_copy.asm`)
 
-**What it does:** Writes values 1–100 into DRAM0 using SBCO, then copies them to ICSS_SHARED using LBCO+SBCO. Demonstrates the constant table addressing for data memory access.
+**What it does:** Writes values 1–100 into ICSS_SHARED using SBCO, then copies the first 25 of them to DRAM0 using LBCO+SBCO. Demonstrates the constant table addressing for data memory access.
 
 **Source:**
 ```asm
 start:
     ldi   r2, 1
     loop endloop, 100
-    sbco &r2, c28, r2.b0, 1      ; write r2 → DRAM0[r2.b0]
+    sbco &r2, c28, r2.b0, 1      ; write r2 → ICSS_SHARED[r2.b0]
     add  r2, r2, 1
 endloop:
     ldi   r2, 1
     loop endloop1, 25
-    lbco &r3, c28, r2.b0, 1      ; read  DRAM0[r2.b0] → r3
-    sbco &r3, c24, r2.b0, 1      ; write r3 → ICSS_SHARED[r2.b0]
+    lbco &r3, c28, r2.b0, 1      ; read  ICSS_SHARED[r2.b0] → r3
+    sbco &r3, c24, r2.b0, 1      ; write r3 → DRAM0[r2.b0]
     add  r2, r2, 1
 endloop1:
     halt
 ```
 
-> `c28` = DRAM0 base, `c24` = ICSS_SHARED base (PRU constant table).
+> `c24` = DRAM0 base (`0x00000000`), `c28` = ICSS_SHARED base (`0x00010000`). See `config/constants_am243x.cfg` for the full PRU constant table.
 
 **Steps:**
 
 1. Paste the source (or open `source/mem_copy.asm`) and click **Load & Assemble**.
-2. Click **Reset** to clear memory to zero.
-3. Open the **Memory** panel. Select **DRAM0** from the region selector.
+2. Clear both target areas so the result is easy to see. **Reset** and **HW Reset** do not clear data memory. In the **Memory** panel, click **Fill**, set **Start** = `0x00000000`, **Length** = `256` and **Value** = `0x00` on the Pattern tab, then click **Fill**. Repeat with **Start** = `0x00010000`.
+3. Use the two Memory panels: the first one opens at DRAM0 (`0x00000000`), the second at ICSS_SHARED (`0x00010000`). Switch both to the **Byte** view.
 4. Click **Run** and let the program reach `halt` (the Run button stops automatically on HALT).
-5. Observe DRAM0: bytes at offsets 0x01–0x64 should read `01 02 03 … 64`.
-6. Switch the Memory panel region to **ICSS_SHARED**: offsets 0x01–0x19 should be a copy of DRAM0[0x01–0x19].
+5. Observe ICSS_SHARED: bytes at offsets 0x01–0x64 should read `01 02 03 … 64`.
+6. Observe DRAM0: offsets 0x01–0x19 should be a copy of ICSS_SHARED[0x01–0x19], and offset 0x1A onward stays `00`.
 
 **What to observe:**
 - R2 counts from 1 upward in the Registers panel during execution.
-- The write loop fills DRAM0; the copy loop copies the first 25 values to ICSS_SHARED.
-- Counters panel shows ~130 instruction cycles to complete.
+- The write loop fills ICSS_SHARED; the copy loop copies the first 25 values to DRAM0.
+- Counters panel shows 280 instructions and 455 cycles at HALT. The extra cycles are the memory access latencies set in `memory.cfg`.
 
 ---
 
@@ -372,6 +372,48 @@ register forever — a running LED across the expander's 8 physical pins.
 
 ---
 
+## Example 11 — UART Print String (`uart_print.asm`)
+
+**What it does:** Writes the string `Hello 2026` to DRAM0 offset 0 itself,
+then bit-bangs it out of GPO pin 0 at 115200 baud (8N1), one byte at a time,
+until it reaches the `0x00` terminator. It is the multi-byte version of
+Example 5. You don't need to prepare any memory first.
+
+**Steps:**
+
+1. Open `source/uart_print.asm` and click **Load & Assemble**.
+2. In the **Signal Graph** panel, set the window to **2048** (or larger), then
+   click **● REC**.
+3. Click **Run**. The program halts on its own after about 174,000
+   instructions.
+4. In the **IO** panel's **UART Decoder**, check that **GPO** = `GPO0` and
+   **Mode** = `8N1`, then click **▶ Decode**. The output reads
+   `Auto-detected: 1700 steps/bit · 10 bytes decoded` followed by
+   `Hello 2026`.
+
+**What to observe:**
+- The first instructions load the string into R10–R12 with `ldi32` and store
+  all 12 bytes to DRAM0 with a single `sbco`. In the **Memory** panel at
+  `0x00000000` (32b / LSB view) you can see `6C6C6548 3032206F 00003632`,
+  which is `H e l l`, `o ␣ 2 0`, `2 6 \0 \0`.
+- R4 counts up through the string offsets. R0 holds the character being
+  shifted out, and it moves one bit right after each data bit.
+- Each character takes about 17,400 instructions: 10 bits × 868 delay loops
+  × 2 instructions.
+- In Run mode the Signal Graph records every 100th instruction, so each
+  character takes about 174 samples. The 10-character string needs about
+  1740 samples. With the default 1024 window the start scrolls out and the
+  decoder shows only ` 2026`.
+
+**Change the string:** Edit the three `ldi32` values. Each 32-bit word holds
+four characters with the first one in the low byte, so `"ABCD"` is
+`0x44434241`. Keep a `00` byte after the last character. For a longer string,
+add more `ldi32` registers (R13, R14, …) and raise the `sbco` byte count to
+match. The window must cover about 174 samples per character (8192 holds about
+47), and the offset is the 8-bit `r4.b0`, so strings can be at most 255 bytes.
+
+---
+
 ## Signal Graph
 
 The Signal Graph panel records GPO/GPI pin states and optional memory addresses over time.
@@ -454,4 +496,4 @@ The simulator's IEP `GLOBAL_CFG` reset value, `0x550`, follows the TRM register 
 
 TI's [EnDAT3 example](https://software-dl.ti.com/processor-industrial-sw/esd/motor_control_sdk/am243x/latest/docs/api_guide_am243x/EXAMPLE_MOTORCONTROL_ENDAT3.html) uses configurations at 200 and 300 MHz; its [EtherNet/IP firmware](https://software-dl.ti.com/processor-industrial-sw/esd/ind_comms_sdk/am243x/2025_00_00_08/docs/api_guide_am243x/ETHERNETIP_ADAPTER_FWHAL.html) specifies 200 MHz for that configuration. The [GPIO example](https://git.ti.com/cgit/pru-software-support-package/pru-software-support-package/commit/examples?id=3895fa73784357366bbee5ca993660c6da50acc2) illustrates selecting the core source through IEPCLK. These firmware examples do not establish a universal IEP frequency; the simulator accepts positive fractional rates without a hardware whitelist. Register reset values are a separate hardware question.
 
-RTU1 is available for AM243x and AM64x profiles (an omitted target selects AM243x), including `tools.headless_runner --core rtu1`. Its local address 0 accesses DRAM1 and it uses the slice-1 clock. Each core has an independent mutable constant table.
+RTU1 is available for AM243x and AM64x profiles (an omitted target selects AM243x), including `tools.headless_runner --core rtu1`. Its local address 0 accesses DRAM1 and it uses `pru1_clock_mhz` alongside PRU1. An unknown target causes a configuration-load error. Each core has an independent mutable constant table.

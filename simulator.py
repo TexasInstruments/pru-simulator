@@ -151,7 +151,7 @@ class Simulator:
         if target.lower() == "am263x":
             del self.cores["rtu1"]
 
-        # Wire SD filters to each core's IOPort (slice 1 runs on its own clock)
+        # PRU0/RTU0 use the first configured rate; PRU1/RTU1 use the second.
         pru_clock_mhz = float(pru_clock)
         pru1_clock_mhz = float(pru1_clock)
         self._pru_clock_mhz = pru_clock_mhz
@@ -159,6 +159,7 @@ class Simulator:
         core_clocks = {"pru0": pru_clock_mhz, "rtu0": pru_clock_mhz,
                        "pru1": pru1_clock_mhz, "rtu1": pru1_clock_mhz}
         for name, core in self.cores.items():
+            core.clock_mhz = core_clocks[name]
             core.io_port.sd_filter = SigmaDeltaFilter(pru_clock_mhz=core_clocks[name])
 
         # Wire SD registers into memory bus (pru0 owns the register region)
@@ -485,6 +486,14 @@ class Simulator:
         for key, val in params.items():
             if hasattr(mod, key):
                 setattr(mod, key, val)
+
+    def set_iep_clock_mhz(self, mhz: float) -> None:
+        """Set the IEP0 clock (ICSSG_IEP_CLK) independently of the PRU clocks.
+
+        Takes effect from the current simulated time; the counter keeps its
+        value. The config equivalent is ``iep_clock_mhz`` under [device].
+        """
+        self.iep.set_clock_mhz(mhz)
 
     def reset(self, core: str) -> None:
         """Reset *core* to its initial state (registers, counters, PC, halted flag)."""
