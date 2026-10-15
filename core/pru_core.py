@@ -108,6 +108,7 @@ class PRUCore:
         self.dram_swap = dram_swap
         self.pc: int = 0
         self.halted: bool = False
+        self.fault: dict | None = None
         self.instructions: list[Instruction] = []
         self.loop_state: LoopState | None = None
         self.breakpoints: set[int] = set()
@@ -135,10 +136,16 @@ class PRUCore:
         """Parse assembly source and load instructions.
 
         Returns a list of error strings (empty on success).
+
+        Loading installs instructions only: halted, pc, loop state and
+        registers are left as they were, so reset() the core before running a
+        newly loaded program. A successful load drops the recorded fault; a
+        failed parse leaves the previous program and its fault in place.
         """
         errors: list[str] = []
         try:
             self.instructions = self._parser.parse_text(source, include_paths)
+            self.fault = None  # a fault belongs to the program that raised it
         except Exception as exc:  # noqa: BLE001
             errors.append(str(exc))
         return errors
@@ -148,12 +155,18 @@ class PRUCore:
         """Load pre-compiled binary instructions (from .out ELF).
 
         Returns a list of error strings (empty on success).
+
+        Loading installs instructions only: halted, pc, loop state and
+        registers are left as they were, so reset() the core before running a
+        newly loaded program. A successful load drops the recorded fault; a
+        failed disassembly leaves the previous program and its fault in place.
         """
         from .disassembler import disassemble
         errors: list[str] = []
         try:
             syms = symbols or {}
             self.instructions = disassemble(text_words, syms)
+            self.fault = None
             # Store symbols as labels (name → addr) for the frontend
             self._parser.labels = {name: addr for addr, name in syms.items()}
             if data_bytes:
@@ -169,11 +182,21 @@ class PRUCore:
         self.counters.reset()
         self.pc = 0
         self.halted = False
+        self.fault = None
         self.loop_state = None
         for acc in self.accelerators.values():
             acc.reset()
         self.io_port.reset()
         self.unsupported_xfr.clear()
+
+    def _record_fault(self, opcode: str, address: int, error: Exception) -> None:
+        self.fault = {
+            "type": "memory",
+            "opcode": opcode,
+            "address": int(address) & 0xFFFF_FFFF,
+            "pc": self.pc,
+            "error": str(error),
+        }
 
     def step(self) -> None:
         """Execute one instruction."""
@@ -402,6 +425,7 @@ class PRUCore:
             except ValueError as e:
                 logger.error(f"LBBO fault at 0x{addr:08X}: {e}"
                              f"{_stack_pointer_hint(self, base_op, addr)}")
+                self._record_fault("LBBO", addr, e)
                 self.halted = True
 
         elif op == "LBCO":
@@ -419,6 +443,7 @@ class PRUCore:
                 self.counters.stall(stalls)
             except ValueError as e:
                 logger.error(f"LBCO fault at 0x{addr:08X}: {e}")
+                self._record_fault("LBCO", addr, e)
                 self.halted = True
 
         elif op == "SBCO":
@@ -436,6 +461,7 @@ class PRUCore:
                 self.counters.stall(stalls)
             except ValueError as e:
                 logger.error(f"SBCO fault at 0x{addr:08X}: {e}")
+                self._record_fault("SBCO", addr, e)
                 self.halted = True
 
         elif op == "SBBO":
@@ -454,6 +480,7 @@ class PRUCore:
             except ValueError as e:
                 logger.error(f"SBBO fault at 0x{addr:08X}: {e}"
                              f"{_stack_pointer_hint(self, base_op, addr)}")
+                self._record_fault("SBBO", addr, e)
                 self.halted = True
 
         # ---- XFR ---------------------------------------------------------

@@ -52,6 +52,17 @@ class TestBasicInstructions:
         assert instrs[0].opcode == "HALT"
         assert instrs[0].operands == []
 
+    @pytest.mark.parametrize("opcode", ["WBS", "WBC"])
+    @pytest.mark.parametrize("operands, expected", [
+        ("5", [Immediate(5)]),
+        ("r31, 5", [Register(31, 0, 32), Immediate(5)]),
+        ("r3, 5", [Register(3, 0, 32), Immediate(5)]),
+    ])
+    def test_wait_bit_accepts_implicit_and_explicit_source(self, opcode, operands, expected):
+        instr = parse(f"{opcode} {operands}")[0]
+        assert instr.opcode == opcode
+        assert instr.operands == expected
+
 
 # ---------------------------------------------------------------------------
 # Sub-register operands
