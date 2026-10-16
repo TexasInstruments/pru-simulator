@@ -320,8 +320,11 @@ class XFR2VBUSReadAccelerator(Accelerator):
             # RD_BUSY(0), RD_CMD_FL(1), RD_DATA_FL(2), RD_MST_REQ(3): SILICON
             # (module docstring point 1).
             return self._status().to_bytes(4, "little")[:length].ljust(length, b"\0")
-        if _DATA_FIRST_REG <= start_reg <= _DATA_LAST_REG and start_byte == 0:
-            result = self._data_reg[:length].ljust(length, b"\0")
+        if _DATA_FIRST_REG <= start_reg <= _DATA_LAST_REG:
+            # RD_DATA is the R2..R17 window: an XIN starting at &Rn.bB
+            # returns the data register from that byte, not from byte 0.
+            offset = (start_reg - _DATA_FIRST_REG) * 4 + start_byte
+            result = self._data_reg[offset:offset + length].ljust(length, b"\0")
             if not self._data_ready:
                 # SILICON (module docstring point 2): nothing has landed, so
                 # the XIN returns the data register as it stands and pops

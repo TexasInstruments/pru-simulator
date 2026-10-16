@@ -400,6 +400,26 @@ class TestReadChannel:
         land(acc)
         assert acc.xin(2, 32) == bytes(range(100, 132))
 
+    def test_partial_xin_after_r2_returns_the_matching_slice(self):
+        """RD_DATA is the R2..R17 window: an XIN starting at &r4 returns bytes
+        8.. of the data register, not bytes 0.. (Table 6-107, R17-R2)."""
+        vbus = make_vbus()
+        self._seed(vbus, VBUS_BASE, bytes(range(32)))
+        acc = XFR2VBUSReadAccelerator(vbus, RD_ID0)
+        acc.xout(18, bytes([0b100]))  # RD_SIZE=2 (32 Bytes)
+        acc.xout(19, struct.pack("<I", VBUS_BASE))
+        land(acc)
+        assert acc.xin(4, 8) == bytes(range(8, 16))
+
+    def test_partial_xin_with_start_byte_returns_the_matching_slice(self):
+        vbus = make_vbus()
+        self._seed(vbus, VBUS_BASE, bytes(range(32)))
+        acc = XFR2VBUSReadAccelerator(vbus, RD_ID0)
+        acc.xout(18, bytes([0b100]))
+        acc.xout(19, struct.pack("<I", VBUS_BASE))
+        land(acc)
+        assert acc.xin(3, 4, 2) == bytes(range(6, 10))
+
     def test_backpressure_rejects_new_rd_addr_while_undrained(self):
         vbus = make_vbus()
         self._seed(vbus, VBUS_BASE, b"\x00" * 4)
