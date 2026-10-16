@@ -37,9 +37,13 @@ def reg(core: PRUCore, n: int) -> int:
 
 @pytest.mark.parametrize("opcode", ["xin", "xout", "xchg"])
 def test_unknown_xfr_fails_loudly_at_core_boundary(opcode: str):
-    """Unknown broadside IDs must not silently read zeros or discard writes."""
-    core = make_core(f"{opcode} 99, &r2, 4\nhalt\n")
-    with pytest.raises(RuntimeError, match=rf"{opcode.upper()} XFR device ID 99.*R2.b0.*4 byte"):
+    """Unknown broadside IDs must not silently read zeros or discard writes.
+
+    199 (not 96-99, now the XFR2VBUS RD_ID0/RD_ID1/WR_ID0/WR_ID1 range
+    0x60-0x63) is picked to stay genuinely unmodelled.
+    """
+    core = make_core(f"{opcode} 199, &r2, 4\nhalt\n")
+    with pytest.raises(RuntimeError, match=rf"{opcode.upper()} XFR device ID 199.*R2.b0.*4 byte"):
         core.run(4)
 
 
