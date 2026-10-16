@@ -818,6 +818,49 @@ class TestSixteenOutstanding:
         assert ring.busy is False
 
 
+class TestHaltedCoreDrain:
+    def _sim(self):
+        from simulator import Simulator
+        sim = Simulator(config_path="nonexistent.cfg")
+        for tr_id in range(32):
+            sim.memory.write(SRC_BASE + tr_id * 8, bytes([tr_id]) * 8)
+        return sim
+
+    def test_ring_lands_after_rtu0_halts(self):
+        """Qodo inline 4290176856: the copy engine does not need the core."""
+        sim = self._sim()
+        sim.load("rtu0", SETUP_ASM + """
+    ldi32 r2, 0x00030009
+    xout 0x72, &r2, 4
+    halt
+""")
+        for _ in range(100):
+            if sim.cores["rtu0"].halted:
+                break
+            sim.step("rtu0")
+        assert sim.cores["rtu0"].halted
+        assert sim.cores["rtu0"].task_ring.busy is True
+        sim.step("rtu0", 40)
+        ring = sim.cores["rtu0"].task_ring
+        assert ring.busy is False
+        assert ring.wrt_ptr == ptr(2)
+        assert sim.memory_read(RING_BASE, 16) == bytes([9]) * 8 + bytes([3]) * 8
+
+    def test_run_keeps_going_until_the_ring_is_idle_after_halt(self):
+        bus = make_memory()
+        fill_source_table(bus)
+        core = make_core(SETUP_ASM + """
+    ldi32 r2, 0x00030009
+    xout 0x72, &r2, 4
+    halt
+""", bus=bus)
+        core.run(max_steps=1000)
+        assert core.halted
+        assert core.task_ring.busy is False
+        assert core.task_ring.wrt_ptr == ptr(2)
+        assert (ring_entry(bus, 0), ring_entry(bus, 1)) == (9, 3)
+
+
 def drain(ring: XFR2TRRing, limit: int = 4096) -> int:
     """Tick until the accelerator reports idle; return the ticks taken.
 

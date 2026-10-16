@@ -166,6 +166,10 @@ class PRUCore:
     def step(self) -> None:
         """Execute one instruction."""
         if self.halted or self.pc >= len(self.instructions):
+            # The XFR2TR copy engine runs independently of the core: queued
+            # TRs still land after HALT / end of program.
+            if self.task_ring is not None:
+                self.task_ring.tick(1)
             return
         cycles_before = self.counters.cycles
 
@@ -604,7 +608,10 @@ class PRUCore:
     def run(self, max_steps: int = 100_000) -> int:
         """Run until halted or max_steps reached. Returns steps executed."""
         steps = 0
-        while not self.halted and self.pc < len(self.instructions) and steps < max_steps:
+        while steps < max_steps:
+            running = not self.halted and self.pc < len(self.instructions)
+            if not running and not (self.task_ring is not None and self.task_ring.busy):
+                break
             if self.pc in self.breakpoints:
                 break
             self.step()
