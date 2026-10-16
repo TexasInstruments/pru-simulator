@@ -818,6 +818,60 @@ class TestSixteenOutstanding:
         assert ring.busy is False
 
 
+class TestTwoCoreDelivery:
+    """Qodo review of PR #37 (inline 4290176845): a real two-core scenario.
+
+    RTU0 owns the XFR2TR block (Table 6-60); PRU0 shares the ICSS shared RAM
+    and reads the Send list the accelerator built.  Expected values come from
+    the submitted ID order (module point 1: landing order is submission
+    order) and the all-ID-k-bytes source table, not from running the model.
+    """
+
+    IDS = [5, 3, 7, 1, 6, 2, 4, 0]
+
+    def _sim(self):
+        from simulator import Simulator
+        sim = Simulator(config_path="nonexistent.cfg")
+        for tr_id in range(32):
+            sim.memory.write(SRC_BASE + tr_id * 8, bytes([tr_id]) * 8)
+        return sim
+
+    def test_pru0_observes_rtu0_send_list_in_submission_order(self):
+        sim = self._sim()
+        packed = [self.IDS[2 * i] | (self.IDS[2 * i + 1] << 16) for i in range(4)]
+        submit = "".join(f"    ldi32 r{2 + i}, 0x{w:08X}\n" for i, w in enumerate(packed))
+        sim.load("rtu0", SETUP_ASM + submit + "    xout 0x72, &r2, 16\n"
+                 + WAIT_FOR_IDLE_ASM)
+        sim.load("pru0", """
+    ldi32 r0, 0x11000
+    lbbo &r10, r0, 0, 64
+    halt
+""")
+
+        for _ in range(500):
+            if sim.cores["rtu0"].halted:
+                break
+            sim.step("rtu0")
+        assert sim.cores["rtu0"].halted
+
+        sim.step("pru0", 3)
+        regs = sim.registers("pru0")
+        # entry k = 8 bytes of value id -> r10+2k and r11+2k hold id*0x01010101
+        got = [regs[10 + 2 * k] & 0xFF for k in range(8)]
+        assert got == self.IDS
+        assert all(regs[10 + 2 * k] == regs[11 + 2 * k] == self.IDS[k] * 0x01010101
+                   for k in range(8))
+
+    def test_pru0_cannot_use_the_task_ring(self):
+        sim = self._sim()
+        sim.load("pru0", """
+    xin 0x71, &r7, 4
+    halt
+""")
+        with pytest.raises(RuntimeError, match="0x71"):
+            sim.step("pru0")
+
+
 class TestHaltedCoreDrain:
     def _sim(self):
         from simulator import Simulator
