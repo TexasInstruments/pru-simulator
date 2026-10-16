@@ -179,3 +179,48 @@ def test_a_full_transmit_thread_drops_writes_without_stalling():
     assert core.registers.read_full(3) == 0x0
     assert len(dma.tx_fifos[1]) == dma.tx_max
     assert dma.tx_dropped == 36 - dma.tx_max
+
+
+# --- Qodo review findings on PR #35 ----------------------------------------
+
+
+def test_xin_longer_than_head_packet_does_not_merge_next_packet():
+    """A receive transfer returns at most the head packet; the next stays queued.
+
+    Unmeasured on silicon (the LP-AM243 run had no PSI-L peer); a PSI-L
+    packet is a unit, so one transfer must not span two of them."""
+    core = make_core("xin 0x51, &r2, 8\nxin 0x51, &r4, 8\nhalt\n")
+    dma = bridge(core)
+    dma.inject_rx(1, b"abcd")
+    dma.inject_rx(1, b"efgh")
+    core.step()
+    assert core.registers.read_full(2).to_bytes(4, "little") == b"abcd"
+    assert core.registers.read_full(3) == 0           # short packet is zero padded
+    assert dma.rx_depth(1) == 1                        # second packet still queued
+    core.step()
+    assert core.registers.read_full(4).to_bytes(4, "little") == b"efgh"
+    assert dma.rx_depth(1) == 0
+
+
+def test_xchg_longer_than_head_packet_does_not_merge_next_packet():
+    core = make_core("ldi r2, 0x11\nxchg 0x51, &r2, 8\nxin 0x51, &r4, 8\nhalt\n")
+    dma = bridge(core)
+    dma.inject_rx(1, b"abcd")
+    dma.inject_rx(1, b"efgh")
+    core.step()   # ldi
+    core.step()   # xchg
+    assert core.registers.read_full(2).to_bytes(4, "little") == b"abcd"
+    assert core.registers.read_full(3) == 0
+    assert dma.rx_depth(1) == 1
+    core.step()   # xin picks up the second packet on its own
+    assert core.registers.read_full(4).to_bytes(4, "little") == b"efgh"
+    assert dma.rx_depth(1) == 0
+
+
+def test_partial_read_keeps_the_rest_of_the_head_packet_ahead_of_the_next():
+    dma = XFRDMAAccelerator(XFRDMABridge(), 0x51)
+    dma.bridge.inject_rx(1, b"abcdef")
+    dma.bridge.inject_rx(1, b"gh")
+    assert dma.xin(2, 4) == b"abcd"
+    assert dma.xin(2, 4) == b"ef\0\0"                  # remainder only, padded
+    assert dma.xin(2, 4) == b"gh\0\0"
