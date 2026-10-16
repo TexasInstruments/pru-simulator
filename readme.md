@@ -122,6 +122,7 @@ The simulator loads `memory.cfg` at startup. Three built-in configs are provided
 |---|---|---|
 | `memory_am243x.cfg` | AM243x | Default |
 | `memory_am263x.cfg` | AM263x | |
+| `memory_am261x.cfg` | AM261x | MSRAM burst timing measured on LP-AM261; selected by cfg file, not by target |
 
 Switch config by editing `memory.cfg` or copying one of the `config/` files over it.
 
