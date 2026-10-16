@@ -214,6 +214,11 @@ class XFR2TRRing:
         self._slots = [0] * SUBMIT_FIFO_DEPTH
         self._fifo_wr = 0
         self._fifo_rd = 0
+        #: IDs submitted and not yet landed.  Unlike ``fifo_occ`` this never
+        #: aliases: 16 outstanding IDs make ``(wr - rd) mod 16`` read 0, but
+        #: the engine still has 16 copies to do.  Scheduling and ``busy`` use
+        #: this; the silicon-observed occupancy value stays pointer-derived.
+        self._pending = 0
         #: Queued IDs overwritten before any copy latched them (silicon drops
         #: them silently).
         self.overflow_events = 0
@@ -269,10 +274,12 @@ class XFR2TRRing:
         Table 6-112: "It will be busy until the FIFO is empty AND the last
         write completed /data has landed."  An ID leaves the FIFO count only
         once its TR has landed (module docstring point 4), so both terms
-        reduce to a non-zero occupancy -- plus, on silicon, one more cycle
+        reduce to outstanding work (``_pending``, which unlike the aliasing
+        pointer difference stays non-zero at 16 outstanding IDs; silicon was
+        not measured there, so that is an INFERENCE) -- plus, on silicon, one more cycle
         after the last landing (module docstring point 6).
         """
-        return self.fifo_occ != 0 or self._busy_tail > 0
+        return self._pending != 0 or self._busy_tail > 0
 
     # -- 0x70 / 0x71 XOUT configuration ------------------------------------
 
@@ -305,18 +312,19 @@ class XFR2TRRing:
                 f"XFR2TR 0x72 XOUT carries 1 to {MAX_IDS_PER_XOUT} TR IDs "
                 f"(SPRUIM2J Table 6-112); got {len(ids)}"
             )
-        was_idle = self.fifo_occ == 0
+        was_idle = self._pending == 0
         for tr_id in ids:
             # SILICON (module docstring point 5): no stall and no error when
             # full -- the write pointer runs on and overwrites queued slots.
             # The slot about to be written still holds an ID that no copy has
             # latched yet: that ID is lost.  (The ID being copied still counts
             # in fifo_occ but is already latched, so overwriting it is safe.)
-            if self.fifo_occ - (self._in_flight is not None) >= SUBMIT_FIFO_DEPTH:
+            if self._pending - (self._in_flight is not None) >= SUBMIT_FIFO_DEPTH:
                 self.overflow_events += 1
             self._slots[self._fifo_wr % SUBMIT_FIFO_DEPTH] = tr_id & TR_ID_MASK
             self._fifo_wr = (self._fifo_wr + 1) % FIFO_PTR_MODULUS
-        if was_idle and self.fifo_occ:
+            self._pending += 1
+        if was_idle and self._pending:
             self._in_flight = None
             self._cycles_left = TR_START_CYCLES
 
@@ -331,7 +339,7 @@ class XFR2TRRing:
         because time passes -- not because anything else pokes it.
         """
         for _ in range(cycles):
-            if self.fifo_occ == 0:
+            if self._pending == 0:
                 self._busy_tail = max(0, self._busy_tail - 1)
                 if not self._busy_tail:
                     return
@@ -342,10 +350,11 @@ class XFR2TRRing:
             if self._in_flight is not None:
                 self._land(self._in_flight)
                 self._fifo_rd = (self._fifo_rd + 1) % FIFO_PTR_MODULUS
+                self._pending -= 1
                 self._in_flight = None
-                if self.fifo_occ == 0:
+                if self._pending == 0:
                     self._busy_tail = BUSY_TAIL_CYCLES
-            if self.fifo_occ:
+            if self._pending:
                 # Start the next copy back to back, latching its ID now
                 # (SILICON, module docstring point 6).
                 self._in_flight = self._slots[self._fifo_rd % SUBMIT_FIFO_DEPTH]

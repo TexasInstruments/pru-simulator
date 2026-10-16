@@ -788,6 +788,36 @@ class TestReset:
         assert ring.busy is False
 
 
+class TestSixteenOutstanding:
+    """Qodo review of PR #37 (inline 4290176850).
+
+    16 submitted-but-not-landed IDs make the silicon pointer difference
+    ``(wr - rd) mod 16`` read 0.  The occupancy VALUE stays pointer-derived
+    (module point 4); whether the engine has work is tracked separately.
+    Silicon was only measured with TRs landing between the two submits
+    (module point 5), so the idle-looking-but-busy reading is an INFERENCE.
+    """
+
+    def test_two_eight_id_submits_before_any_copy_still_drain(self):
+        ring, bus = make_ring()
+        fill_source_table(bus)
+        configure(ring, nums=31)
+        ring.submit([1, 2, 3, 4, 5, 6, 7, 8])
+        ring.submit([9, 10, 11, 12, 13, 14, 15, 16])
+        # Pointer-derived value aliases to 0 exactly as the 4-bit pointers do,
+        # but the ring still has 16 TRs to copy.
+        assert ring.fifo_occ == 0
+        assert ring.busy is True
+        drain(ring)
+        # 8 slots: the second submit overwrites all eight queued IDs before
+        # any copy latched them (module point 5), so 9..16 land twice -- but
+        # all 16 copies must still happen.
+        assert ring.overflow_events == 8
+        assert [ring_entry(bus, k) for k in range(16)] == list(range(9, 17)) * 2
+        assert ring.wrt_ptr == ptr(16)
+        assert ring.busy is False
+
+
 def drain(ring: XFR2TRRing, limit: int = 4096) -> int:
     """Tick until the accelerator reports idle; return the ticks taken.
 
