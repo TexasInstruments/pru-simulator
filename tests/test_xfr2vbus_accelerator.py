@@ -638,6 +638,82 @@ td:
 
 
 # ===========================================================================
+# Blocked / empty paths at the assembly level (PR #36 review, Qodo 1).
+# Expected status words come from the TRM Table 6-107 bit layout and the
+# LP-AM243 measurements (in flight 0x0B, landed 0x05, empty 0x00); they were
+# not obtained by running this model.
+# ===========================================================================
+
+class TestBlockedAndEmptyPathsAssembly:
+    def _core(self, body: str):
+        vbus = make_vbus()
+        vbus.write(VBUS_BASE, PATTERN)
+        return make_core(body + "    halt\n", vbus=vbus)
+
+    def test_empty_rx_reads_idle_status_and_leaves_old_data(self):
+        """Nothing submitted: RD_BUSY/RD_CMD_FL/RD_DATA_FL all clear (status
+        0x00) and an RD_DATA XIN pops nothing and returns the empty (zero)
+        data register -- the silicon 'early XIN' behaviour."""
+        core = self._core(
+            "    ldi32 r2, 0xDEADBEEF\n"
+            "    xin 96, &r18, 1\n"
+            "    and r21, r18, 0xFF\n"
+            "    xin 96, &r2, 4\n"
+            "    xin 96, &r18, 1\n"
+            "    and r22, r18, 0xFF\n"
+        )
+        core.run(50)
+        assert core.halted
+        assert reg(core, 21) == 0x00
+        assert reg(core, 2) == 0
+        assert reg(core, 22) == 0x00     # the early XIN consumed nothing
+
+    def test_second_rd_addr_while_in_flight_is_blocked_and_status_is_in_flight(self):
+        """A second RD_ADDR XOUT while the first read is in flight is refused;
+        the status the program saw just before is 0x0B (BUSY, CMD_FL, MST_REQ)."""
+        core = self._core(
+            f"    ldi32 r19, 0x{VBUS_BASE:X}\n"
+            "    xout 96, &r19, 4\n"
+            "    xin 96, &r18, 1\n"
+            "    and r21, r18, 0xFF\n"
+            "    xout 96, &r19, 4\n"
+        )
+        with pytest.raises(ValueError, match="RD_BUSY=1"):
+            core.run(50)
+        assert reg(core, 21) == 0x0B
+
+    def test_second_rd_addr_with_unpopped_data_is_blocked_and_status_is_data_ready(self):
+        """Data landed but not popped (status 0x05, BUSY + DATA_FL): a new
+        RD_ADDR is still refused until RD_DATA is popped."""
+        core = self._core(
+            f"    ldi32 r19, 0x{VBUS_BASE:X}\n"
+            "    xout 96, &r19, 4\n"
+            + WAIT_RD_DATA_FL
+            + "    and r21, r18, 0xFF\n"
+            "    xout 96, &r19, 4\n"
+        )
+        with pytest.raises(ValueError, match="RD_BUSY=1"):
+            core.run(200)
+        assert reg(core, 21) == 0x05
+
+    def test_new_rd_addr_is_accepted_after_the_pop(self):
+        """The block clears once RD_DATA is popped: pop, then the same XOUT
+        succeeds and the channel reports 'in flight' again (0x0B)."""
+        core = self._core(
+            f"    ldi32 r19, 0x{VBUS_BASE:X}\n"
+            "    xout 96, &r19, 4\n"
+            + WAIT_RD_DATA_FL
+            + "    xin 96, &r2, 4\n"
+            "    xout 96, &r19, 4\n"
+            "    xin 96, &r18, 1\n"
+            "    and r21, r18, 0xFF\n"
+        )
+        core.run(200)
+        assert core.halted
+        assert reg(core, 21) == 0x0B
+
+
+# ===========================================================================
 # Registration is load-bearing (mutation proving PR #30's fail-loud path
 # still applies to a genuinely unmodelled ID, and that removing the
 # registration reverts these IDs to that same fail-loud path).
