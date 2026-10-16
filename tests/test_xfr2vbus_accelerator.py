@@ -732,3 +732,14 @@ class TestRegistrationIsLoadBearing:
         for device_id in (RD_ID0, RD_ID1, WR_ID0, WR_ID1):
             assert device_id in core.accelerators
             assert core.xfr.supports(device_id) is False  # not an XFRBus scratchpad either
+
+    @pytest.mark.parametrize("op", ["xin 100, &r2, 4", "xout 100, &r2, 4"])
+    def test_tx_pru_receive_id_0x64_stays_unmodelled(self, op):
+        """ID 0x64 (TX_PRU receive) is not registered: this repo has no TX_PRU
+        core and TRM Table 6-60 gives no register layout for it, so the
+        simulator reports it as unmodelled rather than inventing semantics
+        (see docs/xfr2vbus-trm-model-table.md)."""
+        core = make_core(op + "\nhalt\n")
+        assert 0x64 not in core.accelerators
+        with pytest.raises(RuntimeError, match=r"XFR device ID 100 \(0x64\).*not modelled"):
+            core.run(4)
