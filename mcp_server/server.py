@@ -427,31 +427,35 @@ class PRUSimulatorMCP:
         return {"cores": self.sim.status()}
 
 
-def run_stdio_server():
-    """Start the MCP stdio server. Requires the 'mcp' SDK to be installed."""
-    try:
-        # mcp 2.x renamed FastMCP to MCPServer; fall back for mcp 1.x.
-        try:
-            from mcp.server import MCPServer
-        except ImportError:
-            from mcp.server.fastmcp import FastMCP as MCPServer
-    except ImportError:
-        print("Error: 'mcp' SDK is not installed. Install it with: pip install mcp", file=sys.stderr)
-        sys.exit(1)
+def build_server():
+    """Build an MCP server with every public PRUSimulatorMCP method registered as a tool.
 
+    Requires the 'mcp' SDK (>= 2.0) to be installed.
+    """
     import inspect
+    from mcp.server import MCPServer
 
     server = MCPServer("pru-simulator")
     mcp_wrapper = PRUSimulatorMCP()
 
-    # Register every public PRUSimulatorMCP method as a tool; the input schema
-    # is derived from the method signature.
+    # The input schema of each tool is derived from the method signature.
     for name, method in inspect.getmembers(mcp_wrapper, predicate=inspect.ismethod):
         if name.startswith("_"):
             continue
         server.add_tool(method, name=name, description=method.__doc__ or name)
+    return server
 
+
+def run_stdio_server():
+    """Start the MCP stdio server."""
+    try:
+        server = build_server()
+    except ImportError as exc:
+        print(f"Error: could not import the 'mcp' SDK ({exc}). "
+              "Install or upgrade it with: pip install 'mcp>=2.0'", file=sys.stderr)
+        sys.exit(1)
     server.run("stdio")
+
 
 if __name__ == "__main__":
     run_stdio_server()
