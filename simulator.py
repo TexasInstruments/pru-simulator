@@ -211,11 +211,17 @@ class Simulator:
         return bus
 
     def _load_constants(self, config_path: str) -> ConstantTable:
-        """Load constant table from constants_am243x.cfg alongside the project root."""
+        """Load constant table from constants_am243x.cfg next to the config.
+
+        A root-level config (memory.cfg) finds it in its config/ subdirectory;
+        a preset inside config/ (config/memory_am261x.cfg) finds it alongside.
+        """
         table = ConstantTable()
-        project_root = os.path.dirname(os.path.abspath(config_path))
-        constants_path = os.path.join(project_root, "config", "constants_am243x.cfg")
-        if not os.path.exists(constants_path):
+        cfg_dir = os.path.dirname(os.path.abspath(config_path))
+        candidates = [os.path.join(cfg_dir, "config", "constants_am243x.cfg"),
+                      os.path.join(cfg_dir, "constants_am243x.cfg")]
+        constants_path = next((p for p in candidates if os.path.exists(p)), None)
+        if constants_path is None:
             return table
         cfg = configparser.ConfigParser()
         cfg.read(constants_path)
