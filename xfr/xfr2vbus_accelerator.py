@@ -184,7 +184,10 @@ class XFR2VBUSWriteAccelerator(Accelerator):
                 f"XFR2VBUS write device 0x{self.DEVICE_ID:02X} only exposes "
                 f"WR_BUSY via XIN &R20 (TRM Table 6-106); got R{start_reg}.b{start_byte}"
             )
-        return int(self._busy_left > 0).to_bytes(4, "little")[:length].ljust(length, b"\0")
+        # WR_BUSY is R20[0]: byte 0 of the status word.  An XIN starting at
+        # a later byte (&R20.b1) sees only the zero upper bits.
+        status = int(self._busy_left > 0).to_bytes(4, "little")
+        return status[start_byte:start_byte + length].ljust(length, b"\0")
 
     def xout(self, start_reg: int, data: bytes, start_byte: int = 0) -> None:
         if not data:

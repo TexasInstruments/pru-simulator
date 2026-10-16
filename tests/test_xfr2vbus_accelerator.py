@@ -245,6 +245,17 @@ class TestWriteChannel:
         with pytest.raises(ValueError, match="WR_BUSY via XIN &R20"):
             acc.xin(2, 4)
 
+    def test_wr_busy_is_byte_zero_of_r20_only(self):
+        """WR_BUSY is R20[0] (Table 6-106): an XIN starting at &r20.b1 sees
+        bits 8+ of the status word, which are all zero, even while busy."""
+        acc = XFR2VBUSWriteAccelerator(make_vbus(), WR_ID0)
+        acc.xout(10, struct.pack("<I", VBUS_BASE))
+        acc.xout(2, b"\xFF" * 4)
+        assert acc.xin(20, 1, 0) == b"\x01"
+        assert acc.xin(20, 1, 1) == b"\x00"
+        assert acc.xin(20, 2, 0) == b"\x01\x00"
+        assert acc.xin(20, 3, 1) == b"\x00\x00\x00"
+
     def test_xchg_is_unsupported(self):
         vbus = make_vbus()
         acc = XFR2VBUSWriteAccelerator(vbus, WR_ID0)
