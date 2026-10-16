@@ -224,3 +224,59 @@ def test_partial_read_keeps_the_rest_of_the_head_packet_ahead_of_the_next():
     assert dma.xin(2, 4) == b"abcd"
     assert dma.xin(2, 4) == b"ef\0\0"                  # remainder only, padded
     assert dma.xin(2, 4) == b"gh\0\0"
+
+
+def _held_core(asm: str) -> PRUCore:
+    core = make_core(asm)
+    dma = bridge(core)
+    dma.stall_when_full = True
+    for _ in range(dma.tx_max):
+        dma.fill_tx(1)
+    return core
+
+
+@pytest.mark.parametrize("opcode", ["xout", "xchg"])
+def test_held_xfr_counts_stall_cycles_not_retired_instructions(opcode):
+    """A held XOUT/XCHG consumes a cycle but retires nothing."""
+    core = _held_core(f"ldi r2, 0x55\n{opcode} 0x51, &r2, 4\nhalt\n")
+    dma = bridge(core)
+    core.step()                                         # ldi retires
+    assert (core.counters.cycles, core.counters.instruction_count) == (1, 1)
+    for held in range(1, 4):
+        core.step()
+        assert core.pc == 1
+        assert core.counters.stall_cycles == held
+        assert core.counters.instruction_count == 1     # nothing new retired
+        assert core.counters.cycles == 1 + held         # one cycle per step
+    dma.tx_fifos[1].popleft()                           # free a slot
+    core.step()                                         # retry succeeds
+    assert core.pc == 2
+    assert core.counters.instruction_count == 2
+    assert core.counters.stall_cycles == 3
+    assert core.counters.cycles == 5
+    core.run()
+    assert (core.counters.cycles, core.counters.instruction_count, core.counters.stall_cycles) == (6, 3, 3)
+
+
+def test_held_xin_counts_stall_cycles_not_retired_instructions():
+    class HoldingReader:
+        hold_pc = True
+
+        def xin(self, start_reg, length, start_byte=0):
+            return bytes(length)
+
+    core = make_core("xin 0x7e, &r2, 4\nhalt\n")
+    reader = HoldingReader()
+    core.accelerators[0x7E] = reader
+    for held in range(1, 4):
+        core.step()
+        assert core.pc == 0
+        assert core.counters.instruction_count == 0
+        assert core.counters.stall_cycles == held
+        assert core.counters.cycles == held
+    reader.hold_pc = False
+    core.step()
+    assert core.pc == 1
+    assert core.counters.instruction_count == 1
+    assert core.counters.stall_cycles == 3
+    assert core.counters.cycles == 4

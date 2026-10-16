@@ -172,6 +172,7 @@ class PRUCore:
 
         instr = self.instructions[self.pc]
         branch_taken = False
+        xfr_held = False
 
         # Dispatch
         op = instr.opcode
@@ -459,6 +460,7 @@ class PRUCore:
                     # the transfer actually completes.  Writing the placeholder
                     # here would make the stall observable as register damage.
                     branch_taken = True
+                    xfr_held = True
                     self.counters.stall_cycles += 1
                 else:
                     self._write_registers_from_bytes(start_reg, data, start_byte)
@@ -484,6 +486,7 @@ class PRUCore:
                 accelerator.xout(start_reg, data, start_byte)
                 if getattr(accelerator, "hold_pc", False):
                     branch_taken = True
+                    xfr_held = True
                     self.counters.stall_cycles += 1
             elif self.xfr.xfr_shift_en and device_id in (SPAD_BANK0, SPAD_BANK1, SPAD_BANK2):
                 self._xout_shifted(device_id, start_reg, length)
@@ -508,6 +511,7 @@ class PRUCore:
                 if getattr(accelerator, "hold_pc", False):
                     # Held XCHG: neither side moved, so leave the registers alone.
                     branch_taken = True
+                    xfr_held = True
                     self.counters.stall_cycles += 1
                 else:
                     self._write_registers_from_bytes(start_reg, old_data, start_byte)
@@ -605,7 +609,12 @@ class PRUCore:
             self.iep.tick()
 
         # ---- Count instruction cycle ------------------------------------
-        self.counters.tick()
+        if xfr_held:
+            # A held XFR consumes a cycle (stall_cycles was bumped above) but
+            # retires nothing, so it must not count as an instruction.
+            self.counters.cycles += 1
+        else:
+            self.counters.tick()
 
     def run(self, max_steps: int = 100_000) -> int:
         """Run until halted or max_steps reached. Returns steps executed."""
