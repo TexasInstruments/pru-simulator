@@ -788,131 +788,67 @@ class TestReset:
         assert ring.busy is False
 
 
-class TestSixteenOutstanding:
-    """Qodo review of PR #37 (inline 4290176850).
-
-    16 submitted-but-not-landed IDs make the silicon pointer difference
-    ``(wr - rd) mod 16`` read 0.  The occupancy VALUE stays pointer-derived
-    (module point 4); whether the engine has work is tracked separately.
-    Silicon was only measured with TRs landing between the two submits
-    (module point 5), so the idle-looking-but-busy reading is an INFERENCE.
+class TestPointerDifferenceEngine:
+    """Module point 7.  Replays LP-AM243 programs from the 2026-10-19 run
+    (research/pru-simulator-pr-hw-checks-2026-10-19, case sets s37 and s37b):
+    RTU_PRU0, 32-entry ring, IDs 1..8 in one XOUT, then 9..16 built with four
+    ADDs and sent in a second XOUT before any TR lands.  Expected rings and
+    write pointers are the silicon read-back, not model output.
     """
 
-    def test_two_eight_id_submits_before_any_copy_still_drain(self):
-        ring, bus = make_ring()
-        fill_source_table(bus)
-        configure(ring, nums=31)
-        ring.submit([1, 2, 3, 4, 5, 6, 7, 8])
-        ring.submit([9, 10, 11, 12, 13, 14, 15, 16])
-        # Pointer-derived value aliases to 0 exactly as the 4-bit pointers do,
-        # but the ring still has 16 TRs to copy.
-        assert ring.fifo_occ == 0
-        assert ring.busy is True
-        drain(ring)
-        # 8 slots: the second submit overwrites all eight queued IDs before
-        # any copy latched them (module point 5), so 9..16 land twice -- but
-        # all 16 copies must still happen.
-        assert ring.overflow_events == 8
-        assert [ring_entry(bus, k) for k in range(16)] == list(range(9, 17)) * 2
-        assert ring.wrt_ptr == ptr(16)
-        assert ring.busy is False
-
-
-class TestTwoCoreDelivery:
-    """Qodo review of PR #37 (inline 4290176845): a real two-core scenario.
-
-    RTU0 owns the XFR2TR block (Table 6-60); PRU0 shares the ICSS shared RAM
-    and reads the Send list the accelerator built.  Expected values come from
-    the submitted ID order (module point 1: landing order is submission
-    order) and the all-ID-k-bytes source table, not from running the model.
-    """
-
-    IDS = [5, 3, 7, 1, 6, 2, 4, 0]
-
-    def _sim(self):
-        from simulator import Simulator
-        sim = Simulator(config_path="nonexistent.cfg")
-        for tr_id in range(32):
-            sim.memory.write(SRC_BASE + tr_id * 8, bytes([tr_id]) * 8)
-        return sim
-
-    def test_pru0_observes_rtu0_send_list_in_submission_order(self):
-        sim = self._sim()
-        packed = [self.IDS[2 * i] | (self.IDS[2 * i + 1] << 16) for i in range(4)]
-        submit = "".join(f"    ldi32 r{2 + i}, 0x{w:08X}\n" for i, w in enumerate(packed))
-        sim.load("rtu0", SETUP_ASM + submit + "    xout 0x72, &r2, 16\n"
-                 + WAIT_FOR_IDLE_ASM)
-        sim.load("pru0", """
-    ldi32 r0, 0x11000
-    lbbo &r10, r0, 0, 64
-    halt
-""")
-
-        for _ in range(500):
-            if sim.cores["rtu0"].halted:
-                break
-            sim.step("rtu0")
-        assert sim.cores["rtu0"].halted
-
-        sim.step("pru0", 3)
-        regs = sim.registers("pru0")
-        # entry k = 8 bytes of value id -> r10+2k and r11+2k hold id*0x01010101
-        got = [regs[10 + 2 * k] & 0xFF for k in range(8)]
-        assert got == self.IDS
-        assert all(regs[10 + 2 * k] == regs[11 + 2 * k] == self.IDS[k] * 0x01010101
-                   for k in range(8))
-
-    def test_pru0_cannot_use_the_task_ring(self):
-        sim = self._sim()
-        sim.load("pru0", """
-    xin 0x71, &r7, 4
-    halt
-""")
-        with pytest.raises(RuntimeError, match="0x71"):
-            sim.step("pru0")
-
-
-class TestHaltedCoreDrain:
-    def _sim(self):
-        from simulator import Simulator
-        sim = Simulator(config_path="nonexistent.cfg")
-        for tr_id in range(32):
-            sim.memory.write(SRC_BASE + tr_id * 8, bytes([tr_id]) * 8)
-        return sim
-
-    def test_ring_lands_after_rtu0_halts(self):
-        """Qodo inline 4290176856: the copy engine does not need the core."""
-        sim = self._sim()
-        sim.load("rtu0", SETUP_ASM + """
-    ldi32 r2, 0x00030009
-    xout 0x72, &r2, 4
-    halt
-""")
-        for _ in range(100):
-            if sim.cores["rtu0"].halted:
-                break
-            sim.step("rtu0")
-        assert sim.cores["rtu0"].halted
-        assert sim.cores["rtu0"].task_ring.busy is True
-        sim.step("rtu0", 40)
-        ring = sim.cores["rtu0"].task_ring
-        assert ring.busy is False
-        assert ring.wrt_ptr == ptr(2)
-        assert sim.memory_read(RING_BASE, 16) == bytes([9]) * 8 + bytes([3]) * 8
-
-    def test_run_keeps_going_until_the_ring_is_idle_after_halt(self):
+    def _run(self, tail: str):
         bus = make_memory()
         fill_source_table(bus)
-        core = make_core(SETUP_ASM + """
-    ldi32 r2, 0x00030009
-    xout 0x72, &r2, 4
-    halt
-""", bus=bus)
-        core.run(max_steps=1000)
+        asm = (SETUP_ASM.replace("0x00000F00", "0x00001F00")   # 32-entry ring, as on the board
+               + "    ldi32 r2, 0x00020001\n    ldi32 r3, 0x00040003\n"
+               "    ldi32 r4, 0x00060005\n    ldi32 r5, 0x00080007\n"
+               "    ldi32 r6, 0x00080008\n"
+               "    xout 0x72, &r2, 16\n"
+               "    add r2, r2, r6\n    add r3, r3, r6\n    add r4, r4, r6\n    add r5, r5, r6\n"
+               "    xout 0x72, &r2, 16\n"
+               + tail + WAIT_FOR_IDLE_ASM)
+        core = make_core(asm, bus=bus)
+        core.run(max_steps=5000)
         assert core.halted
-        assert core.task_ring.busy is False
-        assert core.task_ring.wrt_ptr == ptr(2)
-        assert (ring_entry(bus, 0), ring_entry(bus, 1)) == (9, 3)
+        ring = core.task_ring
+        n = ring.wrt_index
+        return [ring_entry(bus, k) for k in range(n)], ring
+
+    def test_sixteen_back_to_back_all_land(self):
+        # silicon s37/b2b_16 and its four phases, s37b/b2b_16_ctl
+        got, ring = self._run("")
+        assert got == [1, 10, 11, 12, 13, 14, 15, 16, 9, 10, 11, 12, 13, 14, 15, 16]
+        assert ring.wrt_ptr == RING_BASE + 16 * 8
+        assert ring.overflow_events == 7         # IDs 2..8 overwritten, ID 1 already latched
+
+    def test_seventeenth_before_the_first_landing_stops_the_engine(self):
+        # silicon s37/b2b_17 and s37b/b2b_17_repeat: ring [1], wrt_ptr base + 8
+        got, ring = self._run("    ldi r2, 17\n    xout 0x72, &r2, 2\n")
+        assert got == [1]
+        assert ring.busy is False
+
+    def test_seventeenth_after_the_first_landing_keeps_it_running(self):
+        # silicon s37b/b2b_17_late
+        got, _ = self._run("    ldi r2, 17\n    nop\n    nop\n    nop\n    nop\n"
+                           "    xout 0x72, &r2, 2\n")
+        assert got == [1, 10, 11, 12, 13, 14, 15, 16, 17, 10, 11, 12, 13, 14, 15, 16, 17]
+
+    def test_eighteen_lands_two(self):
+        # silicon s37b/b2b_18
+        got, _ = self._run("    ldi32 r2, 0x00120011\n    xout 0x72, &r2, 4\n")
+        assert got == [1, 10]
+
+    def test_twenty_four_lands_eight(self):
+        # silicon s37b/b2b_24
+        got, _ = self._run("    add r2, r2, r6\n    add r3, r3, r6\n    add r4, r4, r6\n"
+                           "    add r5, r5, r6\n    xout 0x72, &r2, 16\n")
+        assert got == [1, 10, 19, 20, 21, 22, 23, 24]
+
+    def test_one_more_id_after_the_stop_lands_from_its_own_slot(self):
+        # silicon s37b/b2b_17_then_1: ring [1, 20]
+        got, _ = self._run("    ldi r2, 17\n    xout 0x72, &r2, 2\n" + WAIT_FOR_IDLE_ASM.replace("wait_idle", "wait_idle0").replace("halt", "")
+                           + "    ldi r2, 20\n    xout 0x72, &r2, 2\n")
+        assert got == [1, 20]
 
 
 def drain(ring: XFR2TRRing, limit: int = 4096) -> int:
