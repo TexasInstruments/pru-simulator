@@ -180,6 +180,14 @@ fixed the following; `TestSiliconBehaviour` in
   cycle later (`WR_BUSY_CYCLES` = 2), for 32- and 64-byte writes alike.
 * **8-byte split write** is legal and writes exactly 8 bytes, confirming the
   split/combined reading above.
+* **1/4/8-byte writes are register-positional** (2026-10-19 runs r2/r3). The
+  data for address `a` must come from byte lane `a & 0x1F` of the 32-byte
+  WR_DATA line, `XOUT &R(2 + (a & 0x1F)/4).b(a & 3)`; from any other lane
+  nothing is written (WR_BUSY still rises). The earlier runs only wrote
+  64-byte-aligned addresses from &R2, which is why this was not seen.
+* **A new RD_ADDR while RD_BUSY = 1 is dropped** (2026-10-19 runs r1/r2): no
+  stall, no second read, and the address is not latched (RD_AUTO keeps
+  following the first address). Before this the model raised.
 
 ## Simplifications (labelled simulator-only, not TRM claims)
 

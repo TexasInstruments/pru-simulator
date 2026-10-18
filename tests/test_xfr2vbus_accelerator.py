@@ -116,10 +116,12 @@ class TestWriteChannel:
         assert vbus.read(VBUS_BASE + 0x40, 64)[0] == b"\xEE" * 64
 
     def test_1_byte_write_is_unaligned_allowed(self):
+        """Any byte address, as long as the byte comes from its lane (&R2.b1
+        for +1; SILICON, module docstring point 5)."""
         vbus = make_vbus()
         acc = XFR2VBUSWriteAccelerator(vbus, WR_ID0)
         acc.xout(10, struct.pack("<I", VBUS_BASE + 1))
-        acc.xout(2, b"\x7F")
+        acc.xout(2, b"\x7F", 1)
         assert vbus.read(VBUS_BASE + 1, 1)[0] == b"\x7F"
 
     def test_4_byte_write_requires_size_aligned_address(self):
@@ -166,7 +168,7 @@ class TestWriteChannel:
         vbus = make_vbus()
         acc = XFR2VBUSWriteAccelerator(vbus, WR_ID0)
         acc.xout(10, struct.pack("<I", VBUS_BASE + 8))  # 8-byte aligned
-        acc.xout(2, b"\x11" * 8)
+        acc.xout(4, b"\x11" * 8)                         # lanes 8..15 = R4:R5
         assert vbus.read(VBUS_BASE + 8, 8)[0] == b"\x11" * 8
 
     def test_8_byte_write_requires_size_aligned_address(self):
@@ -212,11 +214,12 @@ class TestWriteChannel:
         acc.xout(2, b"\xCC" * 64 + b"\x40")
         assert vbus.read(0x40, 64)[0] == b"\xCC" * 64
 
-    def test_write_data_must_start_at_r2(self):
+    def test_32_byte_write_data_must_start_at_r2(self):
         vbus = make_vbus()
         acc = XFR2VBUSWriteAccelerator(vbus, WR_ID0)
+        acc.xout(10, struct.pack("<I", VBUS_BASE))
         with pytest.raises(ValueError, match="must start at &R2"):
-            acc.xout(3, b"\x00" * 4)
+            acc.xout(3, b"\x00" * 32)
 
     def test_xout_to_unmapped_register_is_rejected(self):
         vbus = make_vbus()
@@ -420,13 +423,19 @@ class TestReadChannel:
         land(acc)
         assert acc.xin(3, 4, 2) == bytes(range(6, 10))
 
-    def test_backpressure_rejects_new_rd_addr_while_undrained(self):
+    def test_new_rd_addr_while_undrained_is_dropped(self):
+        """SILICON (module docstring point 6): no error, no second read, no latch."""
         vbus = make_vbus()
-        self._seed(vbus, VBUS_BASE, b"\x00" * 4)
+        self._seed(vbus, VBUS_BASE, b"\x11" * 4)
+        self._seed(vbus, VBUS_BASE + 4, b"\x22" * 4)
         acc = XFR2VBUSReadAccelerator(vbus, RD_ID0)
         acc.xout(19, struct.pack("<I", VBUS_BASE))
-        with pytest.raises(ValueError, match="RD_BUSY=1"):
-            acc.xout(19, struct.pack("<I", VBUS_BASE + 4))
+        acc.xout(19, struct.pack("<I", VBUS_BASE + 4))
+        assert acc.dropped_addr_writes == 1
+        land(acc)
+        assert acc.xin(2, 4) == b"\x11" * 4
+        land(acc)
+        assert acc.xin(18, 1)[0] == 0               # nothing else was queued
 
     def test_xin_rd_data_before_data_lands_returns_the_old_register(self):
         """SILICON: an XIN of RD_DATA with RD_DATA_FL = 0 returns the data
@@ -668,33 +677,66 @@ class TestBlockedAndEmptyPathsAssembly:
         assert reg(core, 2) == 0
         assert reg(core, 22) == 0x00     # the early XIN consumed nothing
 
-    def test_second_rd_addr_while_in_flight_is_blocked_and_status_is_in_flight(self):
-        """A second RD_ADDR XOUT while the first read is in flight is refused;
-        the status the program saw just before is 0x0B (BUSY, CMD_FL, MST_REQ)."""
+    # The next three replay LP-AM243 programs from the 2026-10-19 run
+    # (research/pru-simulator-pr-hw-checks-2026-10-19, run r1 cases
+    # s36/second_addr_in_flight and s36/second_addr_unpopped, run r2 case
+    # s36b/second_addr_auto).  Silicon: the second RD_ADDR XOUT retires in one
+    # cycle with no STALL increment, no second read ever lands (a 16384-poll
+    # wait times out) and the popped data is the first address's.
+
+    def _second_addr(self, wait_first: bool):
         core = self._core(
-            f"    ldi32 r19, 0x{VBUS_BASE:X}\n"
-            "    xout 96, &r19, 4\n"
+            f"    ldi32 r12, 0x{VBUS_BASE + 0x100:X}\n"
+            "    ldi r18, 0x6\n"
+            f"    ldi32 r19, 0x{VBUS_BASE + 0x80:X}\n"
+            "    xout 96, &r18, 8\n"
             "    xin 96, &r18, 1\n"
             "    and r21, r18, 0xFF\n"
+            + (WAIT_RD_DATA_FL + "    and r21, r18, 0xFF\n" if wait_first else "")
+            + "    mov r19, r12\n"
             "    xout 96, &r19, 4\n"
+            + WAIT_RD_DATA_FL.replace("wait_rd", "wait_rd2")
+            + "    xin 96, &r2, 64\n"
+            "    xin 96, &r18, 1\n"
+            "    and r22, r18, 0xFF\n"
         )
-        with pytest.raises(ValueError, match="RD_BUSY=1"):
-            core.run(50)
-        assert reg(core, 21) == 0x0B
+        core.run(400)
+        assert core.halted
+        return core
 
-    def test_second_rd_addr_with_unpopped_data_is_blocked_and_status_is_data_ready(self):
-        """Data landed but not popped (status 0x05, BUSY + DATA_FL): a new
-        RD_ADDR is still refused until RD_DATA is popped."""
+    def test_second_rd_addr_while_in_flight_is_dropped(self):
+        core = self._second_addr(wait_first=False)
+        assert reg(core, 21) == 0x0B                 # silicon status_in_flight
+        assert reg(core, 2) == 0xC0DE0020            # silicon land1_r2: first address
+        assert reg(core, 22) == 0x00                 # silicon status_after_pop1: nothing queued
+        assert core.accelerators[RD_ID0].dropped_addr_writes == 1
+
+    def test_second_rd_addr_with_unpopped_data_is_dropped(self):
+        core = self._second_addr(wait_first=True)
+        assert reg(core, 21) == 0x05                 # silicon land0_status
+        assert reg(core, 2) == 0xC0DE0020
+        assert reg(core, 22) == 0x00
+
+    def test_dropped_rd_addr_is_not_latched_for_the_auto_reissue(self):
+        """RD_AUTO 64 B from base, then RD_ADDR base+0x100 while landed data is
+        unpopped: silicon pops base+0x00, then base+0x40 (r2 pop0_r2, pop1_r2)."""
         core = self._core(
+            f"    ldi32 r12, 0x{VBUS_BASE + 0x100:X}\n"
+            "    ldi r18, 0x7\n"
             f"    ldi32 r19, 0x{VBUS_BASE:X}\n"
-            "    xout 96, &r19, 4\n"
+            "    xout 96, &r18, 8\n"
             + WAIT_RD_DATA_FL
-            + "    and r21, r18, 0xFF\n"
+            + "    mov r19, r12\n"
             "    xout 96, &r19, 4\n"
+            "    xin 96, &r2, 64\n"
+            "    mov r23, r2\n"
+            + WAIT_RD_DATA_FL.replace("wait_rd", "wait_rd2")
+            + "    xin 96, &r2, 64\n"
+            "    mov r24, r2\n"
         )
-        with pytest.raises(ValueError, match="RD_BUSY=1"):
-            core.run(200)
-        assert reg(core, 21) == 0x05
+        core.run(400)
+        assert core.halted
+        assert (reg(core, 23), reg(core, 24)) == (0xC0DE0000, 0xC0DE0010)
 
     def test_new_rd_addr_is_accepted_after_the_pop(self):
         """The block clears once RD_DATA is popped: pop, then the same XOUT
@@ -711,6 +753,45 @@ class TestBlockedAndEmptyPathsAssembly:
         core.run(200)
         assert core.halted
         assert reg(core, 21) == 0x0B
+
+
+# ===========================================================================
+# 1/4/8-byte writes are register-positional (module docstring point 5).
+# Replays of LP-AM243 run r3 of 2026-10-19 (case set s36c) and r2 (s36b):
+# the data must come from the byte lane that matches the address inside its
+# 32-byte line; from any other lane nothing is written.
+# ===========================================================================
+
+class TestPositionalWrites:
+    @pytest.mark.parametrize("off,size,start_reg,start_byte", [
+        (0x204, 4, 3, 0), (0x208, 4, 4, 0), (0x20C, 4, 5, 0), (0x210, 4, 6, 0),
+        (0x21C, 4, 9, 0), (0x230, 4, 6, 0), (0x224, 4, 3, 0),
+        (0x208, 8, 4, 0), (0x210, 8, 6, 0), (0x218, 8, 8, 0),
+        (0x201, 1, 2, 1), (0x213, 1, 6, 3), (0x21E, 1, 9, 2),
+    ])
+    def test_write_from_the_matching_lane_lands(self, off, size, start_reg, start_byte):
+        vbus = make_vbus()
+        acc = XFR2VBUSWriteAccelerator(vbus, WR_ID0)
+        acc.xout(10, struct.pack("<I", VBUS_BASE + off))
+        acc.xout(start_reg, bytes(range(0x40, 0x40 + size)), start_byte)
+        assert vbus.read(VBUS_BASE + off, size)[0] == bytes(range(0x40, 0x40 + size))
+        assert acc.lane_mismatch_writes == 0
+
+    @pytest.mark.parametrize("off,size,start_reg,start_byte", [
+        (0x204, 4, 2, 0), (0x208, 4, 2, 0), (0x210, 4, 2, 0), (0x230, 4, 2, 0),
+        (0x201, 1, 2, 0), (0x210, 1, 2, 0), (0x213, 1, 2, 0),
+        (0x208, 8, 2, 0), (0x210, 8, 2, 0),
+        (0x200, 4, 3, 0),
+    ])
+    def test_write_from_another_lane_writes_nothing(self, off, size, start_reg, start_byte):
+        vbus = make_vbus()
+        vbus.write(VBUS_BASE + 0x200, b"\xEE" * 0x40)
+        acc = XFR2VBUSWriteAccelerator(vbus, WR_ID0)
+        acc.xout(10, struct.pack("<I", VBUS_BASE + off))
+        acc.xout(start_reg, b"\x5A" * size, start_byte)
+        assert vbus.read(VBUS_BASE + 0x200, 0x40)[0] == b"\xEE" * 0x40
+        assert acc.lane_mismatch_writes == 1
+        assert acc.xin(20, 1) == b"\x01"            # WR_BUSY still rises (r2 r20_immediate)
 
 
 # ===========================================================================

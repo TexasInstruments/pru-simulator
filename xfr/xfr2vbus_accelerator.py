@@ -38,6 +38,20 @@ open.  Each is pinned by ``TestSiliconBehaviour`` in
 4. **WR_BUSY.**  R20[0] reads 1 for :data:`WR_BUSY_CYCLES` core cycles after
    a data-bearing write XOUT.  The write itself still lands in backing
    memory immediately (simplification: the VBUSM write is not delayed).
+5. **1-, 4- and 8-byte writes are register-positional.**  WR_DATA is the
+   byte lanes of one 32-byte line: the bytes for address ``a`` must come
+   from lane ``a & 0x1F``, i.e. ``XOUT &R(2 + (a & 0x1F) // 4).b(a & 3)``.
+   A data XOUT from any other lane writes nothing (WR_BUSY still rises).
+   Silicon: 4 B at +0x204 from R3, +0x21C from R9, +0x224 from R3, 1 B at
+   +0x21E from R9.b2 all landed; 4 B at +0x204 from R2 and at +0x200 from R3
+   left the whole 1 KB window untouched.  That nothing lands anywhere else is
+   an INFERENCE (only that window was read).  32- and 64-byte writes start at
+   &R2.b0 as before.
+6. **A new RD_ADDR while RD_BUSY = 1 is dropped.**  With a read in flight, or
+   landed data not yet popped, an XOUT of RD_ADDR (R19) neither stalls nor
+   errors: no second read is issued and the address is not latched (in
+   RD_AUTO mode the next re-issue still follows the first address).  Counted
+   in ``dropped_addr_writes``.
 """
 
 from __future__ import annotations
@@ -118,7 +132,8 @@ class XFR2VBUSWriteAccelerator(Accelerator):
     #   size. 8 bytes is not a legal combined size under either note.
     #
     # In this model the two cases are also geometrically distinct: a
-    # payload-bearing XOUT must start at &R2.b0 (checked below), and the
+    # combined XOUT carries a 32/64-byte payload, which must start at &R2.b0
+    # (checked below; only 1/4/8-byte split data is lane-positional), and the
     # address registers sit immediately after the full 32-/64-byte data
     # window, so an XOUT can only ever reach an address register once it
     # has already supplied the *entire* preceding data window — an 8-byte
@@ -129,6 +144,10 @@ class XFR2VBUSWriteAccelerator(Accelerator):
     # into one tuple that would obscure which rule is being applied.
     _VALID_SPLIT_SIZES = (1, 4, 8, 32, 64)
     _VALID_COMBINED_SIZES = (32, 64)
+    #: SILICON (module docstring point 5): these sizes are written from the
+    #: byte lane that matches the address inside its 32-byte line.
+    _POSITIONAL_SIZES = (1, 4, 8)
+    _LINE_BYTES = 32
 
     def __init__(self, memory: MemoryBus, device_id: int,
                  busy_cycles: int = WR_BUSY_CYCLES) -> None:
@@ -138,11 +157,14 @@ class XFR2VBUSWriteAccelerator(Accelerator):
         self._addr_lo = bytearray(4)
         self._addr_hi = bytearray(2)
         self._busy_left = 0
+        #: Positional writes whose lane did not match the address (nothing written).
+        self.lane_mismatch_writes = 0
 
     def reset(self) -> None:
         self._addr_lo = bytearray(4)
         self._addr_hi = bytearray(2)
         self._busy_left = 0
+        self.lane_mismatch_writes = 0
 
     def advance(self, cycles: int) -> None:
         """Let *cycles* core cycles pass (called from ``PRUCore.step``)."""
@@ -226,13 +248,15 @@ class XFR2VBUSWriteAccelerator(Accelerator):
         if not payload:
             return  # address-only XOUT: latch the address, no VBUSM write issued
 
-        if start_reg != _DATA_FIRST_REG or start_byte != 0:
+        size = len(payload)
+        lane = (start_reg - _DATA_FIRST_REG) * 4 + start_byte
+        positional = size in self._POSITIONAL_SIZES and not touched_addr
+        if not positional and lane != 0:
             raise ValueError(
-                f"XFR2VBUS write device 0x{self.DEVICE_ID:02X}: WR_DATA must start at "
-                f"&R2.b0 (TRM Table 6-106); got &R{start_reg}.b{start_byte}"
+                f"XFR2VBUS write device 0x{self.DEVICE_ID:02X}: a {size}-byte WR_DATA "
+                f"must start at &R2.b0 (TRM Table 6-106); got &R{start_reg}.b{start_byte}"
             )
 
-        size = len(payload)
         self._validate_size(size, combined=touched_addr)
         addr = _split_addr48(self._addr_lo, self._addr_hi)
         if size != 1 and addr % size != 0:
@@ -240,7 +264,12 @@ class XFR2VBUSWriteAccelerator(Accelerator):
                 f"XFR2VBUS write device 0x{self.DEVICE_ID:02X}: address 0x{addr:X} is not "
                 f"{size}-byte aligned (TRM section 6.4.6.3.1.4)"
             )
-        self._memory.write(addr, bytes(payload))
+        if positional and lane != addr & (self._LINE_BYTES - 1):
+            # SILICON (module docstring point 5): the data sits in the wrong
+            # byte lanes for this address, so no byte is written.
+            self.lane_mismatch_writes += 1
+        else:
+            self._memory.write(addr, bytes(payload))
         # INFERENCE: a write issued while still busy queues behind the first.
         self._busy_left += self.busy_cycles
 
@@ -285,6 +314,8 @@ class XFR2VBUSReadAccelerator(Accelerator):
         self._data_ready = False         # RD_DATA_FL
         self._pending: bytes | None = None  # read in flight
         self._cycles_left = 0
+        #: RD_ADDR XOUTs dropped because RD_BUSY was 1 (module docstring point 6).
+        self.dropped_addr_writes = 0
 
     @property
     def _busy(self) -> bool:
@@ -371,6 +402,11 @@ class XFR2VBUSReadAccelerator(Accelerator):
             return
 
         if start_reg in (self._ADDR_LOW_REG, self._ADDR_HIGH_REG):
+            if self._busy and start_reg * 4 + start_byte < (self._ADDR_LOW_REG + 1) * 4:
+                # SILICON (module docstring point 6): a new RD_ADDR while
+                # RD_BUSY = 1 is dropped -- no read, no latch, no stall.
+                self.dropped_addr_writes += 1
+                return
             touched_low = False
             for i, value in enumerate(data):
                 abs_byte = start_reg * 4 + start_byte + i
