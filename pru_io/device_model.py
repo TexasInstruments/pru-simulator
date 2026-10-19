@@ -415,8 +415,10 @@ class DeviceBus:
             provisional = self._resolve_standalone(cycle, self._last_gpo,
                                                    record_contention=False)
             own_changes = {}
+            previous_drives = dict(self._last_drives)
             for device in self.devices:
-                own_changes[id(device)] = self._tick_device(device, cycle, provisional)
+                own_changes[id(device)] = self._tick_device(
+                    device, cycle, provisional, previous_drives)
             bus = self._resolve_standalone(cycle, self._last_gpo,
                                            record_contention=False)
             final_changes = self._tick_reactive_port(None, self.devices, cycle, bus, own_changes)
@@ -674,6 +676,7 @@ class DeviceBus:
                             cycle: int, bus: int,
                             own_changes: dict[int, int] | None = None) -> dict[int, int]:
         changed = {}
+        previous_drives = dict(self._last_drives)
         for device in devices:
             if device.time_driven:
                 continue
@@ -683,7 +686,7 @@ class DeviceBus:
             previous = self._last_inputs.get(key)
             if previous == bus:
                 continue
-            changed[key] = self._tick_device(device, cycle, bus)
+            changed[key] = self._tick_device(device, cycle, bus, previous_drives)
         return changed
 
     def _suppress_own_edge(self, key: int, pins: int, bus: int, find=None) -> None:
@@ -696,15 +699,36 @@ class DeviceBus:
             pins = sum(1 << pin for pin in range(20) if find((port, pin)) in nets)
         self._last_inputs[key] = (self._last_inputs[key] & ~pins) | (bus & pins)
 
-    def _tick_device(self, device: DeviceModel, cycle: int, bus: int) -> int:
-        """Sample once and return pins whose drive changed, for self-edge suppression."""
+    def _tick_device(self, device: DeviceModel, cycle: int, bus: int,
+                     previous_drives: dict | None = None) -> int:
+        """Sample once and identify electrical edges caused by this drive alone."""
         key = id(device)
         old_mask, old_values = self._last_drives.get(key, (0, 0))
         mask, values = device.tick(cycle, bus)
         mask, values = mask & _MASK_20, values & _MASK_20
         self._last_drives[key] = mask, values
         self._last_inputs[key] = bus
-        return (old_mask ^ mask) | ((old_values ^ values) & (old_mask | mask))
+        changed = (old_mask ^ mask) | ((old_values ^ values) & (old_mask | mask))
+        if not changed or previous_drives is None:
+            return changed
+        # Keep peers at their pre-sample drives: a direction change need not
+        # change a level, and must not hide an edge created by a peer instead.
+        current_drives = self._last_drives
+        self._last_drives = {**previous_drives, key: (mask, values)}
+        try:
+            if self._ports:
+                port = self._device_ports[key]
+                if self._wires:
+                    (find, levels), _ = self._shared_levels(cycle, record_contention=False)
+                    own_bus = self._bus_word(port, find, levels)
+                else:
+                    own_bus = self._resolve_unwired_port(port, cycle)
+            else:
+                own_bus = self._resolve_standalone(
+                    cycle, self._last_gpo, record_contention=False)
+        finally:
+            self._last_drives = current_drives
+        return bus ^ own_bus
 
     def _bus_word(self, core: str, find, levels) -> int:
         word = 0
@@ -728,12 +752,12 @@ class DeviceBus:
         reactive = any(not device.time_driven for device in self.devices)
         if process_reactive:
             own_changes = self._tick_reactive(cycle, find, provisional)
-            if any(own_changes.values()):
+            if own_changes:
                 find, drivers = self._shared_drivers(cycle)
                 find, provisional = self._resolve_shared_levels(
                     cycle, find, drivers, record_contention=False)
                 final_changes = self._tick_reactive(cycle, find, provisional, own_changes)
-                if any(final_changes.values()):
+                if final_changes:
                     find, drivers = self._shared_drivers(cycle)
                     find, provisional = self._resolve_shared_levels(
                         cycle, find, drivers, record_contention=False)
@@ -753,12 +777,12 @@ class DeviceBus:
             # net must observe the edge in this same elapsed core cycle.
             if reactive:
                 own_changes = self._tick_reactive(cycle, find, provisional)
-                if any(own_changes.values()):
+                if own_changes:
                     find, drivers = self._shared_drivers(cycle)
                     find, provisional = self._resolve_shared_levels(
                         cycle, find, drivers, record_contention=False)
                     final_changes = self._tick_reactive(cycle, find, provisional, own_changes)
-                    if any(final_changes.values()):
+                    if final_changes:
                         find, drivers = self._shared_drivers(cycle)
                         find, provisional = self._resolve_shared_levels(
                             cycle, find, drivers, record_contention=False)
@@ -793,6 +817,7 @@ class DeviceBus:
     def _tick_reactive(self, cycle: int, find, levels,
                        own_changes: dict[int, int] | None = None) -> dict[int, int]:
         changed = {}
+        previous_drives = dict(self._last_drives)
         for device in self.devices:
             if device.time_driven:
                 continue
@@ -804,7 +829,7 @@ class DeviceBus:
             previous = self._last_inputs.get(key)
             if previous == bus:
                 continue
-            changed[key] = self._tick_device(device, cycle, bus)
+            changed[key] = self._tick_device(device, cycle, bus, previous_drives)
         return changed
 
     # -- aggregate views -----------------------------------------------------

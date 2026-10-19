@@ -683,6 +683,77 @@ class _ReactiveRelay(DeviceModel):
 
 
 @pytest.mark.parametrize("mode", ["standalone", "unwired", "wired"])
+def test_releasing_own_high_drive_does_not_hide_peer_falling_edge(mode):
+    class ReleasingDriver(DeviceModel):
+        nets = {4: PUSH_PULL}
+
+        def __init__(self):
+            self.seen = []
+
+        def tick(self, cycle, bus):
+            self.seen.append(_level(bus, 4))
+            return (16, 16) if bus & 1 else (0, 0)
+
+    class PeerPuller(DeviceModel):
+        nets = {4: OPEN_DRAIN}
+
+        def tick(self, cycle, bus):
+            return (0, 0) if bus & 1 else (16, 0)
+
+    if mode == "standalone":
+        port = IOPort()
+    else:
+        sim = Simulator()
+        port = sim.cores["pru0"].io_port
+        if mode == "wired":
+            sim.add_gpio_wire("pru0", 4, "pru0", 6)
+    port.set_gpo_drive_mask(1)
+    port.write_r30(1)
+    driver = port.attach_device(ReleasingDriver())
+    port.attach_device(PeerPuller())
+    port.tick_devices(0)
+    assert _level(port.gpi, 4) == 1
+    driver.seen.clear()
+
+    port.write_r30(0)
+
+    assert driver.seen == [1, 0]
+    assert _level(port.gpi, 4) == 0
+
+
+@pytest.mark.parametrize("mode", ["standalone", "unwired", "wired"])
+def test_two_open_drain_releases_propagate_the_shared_rising_edge(mode):
+    class ReleasingPuller(DeviceModel):
+        nets = {4: OPEN_DRAIN}
+
+        def __init__(self):
+            self.seen = []
+
+        def tick(self, cycle, bus):
+            self.seen.append(_level(bus, 4))
+            return (0, 0) if bus & 1 else (16, 0)
+
+    if mode == "standalone":
+        port = IOPort()
+    else:
+        sim = Simulator()
+        port = sim.cores["pru0"].io_port
+        if mode == "wired":
+            sim.add_gpio_wire("pru0", 4, "pru0", 6)
+    port.set_gpo_drive_mask(1)
+    devices = [port.attach_device(ReleasingPuller()) for _ in range(2)]
+    port.tick_devices(0)
+    assert _level(port.gpi, 4) == 0
+    for device in devices:
+        device.seen.clear()
+
+    port.write_r30(1)
+
+    assert [device.seen for device in devices] == [[0, 1], [0, 1]]
+    assert _level(port.gpi, 4) == 1
+
+
+@pytest.mark.parametrize("mode", ["standalone", "unwired", "wired"])
 def test_reactive_peer_sees_relay_output_in_same_settle(mode):
     if mode == "standalone":
         port = IOPort()

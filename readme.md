@@ -130,19 +130,42 @@ Clock keys in the `[device]` section:
 
 | Key | Applies to | Default if absent |
 |---|---|---|
-| `pru_clock_mhz` | PRU0, RTU0, and the IEP OCP clock | 250 |
+| `pru_clock_mhz` | PRU0, RTU0, and the IEP OCP clock | 200 |
 | `pru1_clock_mhz` | PRU1, RTU1 | inherited core |
 | `iep_clock_mhz` | IEP while ICSS CFG `IEPCLK` bit 0 is clear | 200 |
 
-The PRU cores start at 250 MHz because the project chose it as an arbitrary starting point, not because of a hardware value. The IEP does not follow that choice. It defaults to 200 MHz, the rate the TRM gives for ICSSG_IEP_CLK (SPRUIM2J §6.4.13.2.4: the counter counts every ICSSG_IEP_CLK cycle at a "default rate of 200 MHz"). Core and IEP clocks remain independently configurable, including positive fractional MHz values, and changing the core speed leaves the IEP clock unchanged. Firmware's IEPCLK register selects which configured source drives the timer.
+Omitting `pru_clock_mhz` preserves the simulator's 200 MHz core default; omitting `pru1_clock_mhz` inherits the first rate. Explicitly configured rates, including 250 MHz, remain unchanged. The external IEP defaults independently to 200 MHz, the rate the TRM gives for ICSSG_IEP_CLK (SPRUIM2J §6.4.13.2.4). Core and IEP clocks remain independently configurable, including positive fractional MHz values, and changing the core speed leaves the external IEP clock unchanged. Firmware's IEPCLK register selects which configured source drives the timer.
 
-With the default 250 MHz core and 200 MHz IEP, 1000 unstalled core cycles produce 800 IEP ticks with `CNT_ENABLE=1` and `DEFAULT_INC=1` while IEPCLK bit 0 is clear. Setting `iep_clock_mhz = 250` produces 1000 ticks. See [clock sources and configuration](getting_started.md) for the cited TI firmware examples. RTU1 is available only on the AM243x/AM64x profiles; an omitted target selects AM243x.
+With both rates omitted, 1000 unstalled core cycles produce 1000 IEP ticks with `CNT_ENABLE=1` and `DEFAULT_INC=1` while IEPCLK bit 0 is clear. The supplied `memory.cfg` explicitly selects 250 MHz cores; with the omitted external IEP rate of 200 MHz, it produces 800 ticks for the same 1000 core cycles. See [clock sources and configuration](getting_started.md) for the cited TI firmware examples. RTU1 is available only on the AM243x/AM64x profiles; an omitted target selects AM243x.
 
 The simulator's IEP `GLOBAL_CFG` reset value, `0x550`, follows the TRM register defaults (IEP_GLOBAL_CFG_REG, Table 14-10907: `CMP_INC` and `DEFAULT_INC` reset to 5h, `CNT_ENABLE` to 0h). `DEFAULT_INC=5` counts nanoseconds at the default 200 MHz IEP clock, where one tick is 5 ns, so firmware that enables the counter with a read-modify-write (`GLOBAL_CFG | 1`) gets a nanosecond count. If you set a different IEP clock, for example 250 MHz (a 4 ns tick), firmware must set `DEFAULT_INC` itself (4 at 250 MHz) to keep a nanosecond count. A full-word write of `1` leaves `DEFAULT_INC=0`, and the counter does not advance.
 
 All cores share one IEP timer. Each core's elapsed cycles, including stalls,
 are converted to time with exact rational clock periods, so cores at different
 clocks stay aligned without float drift.
+
+Count-register writes preserve the running IEP clock phase, including byte and
+64-bit writes. Enabling the counter or changing its increment or effective clock
+starts a new phase.
+
+Dashboard core and load selectors follow the configured target, including RTU1
+on AM243x/AM64x. Each core has an independent copy of the configured constant
+table, but those copies still start with the same values: core-specific C11/C22
+addresses are not modeled. The dashboard constant-table panel is a reference,
+not a readback of the executing core's table.
+
+Dashboard step-back uses one ordered history across all cores. Undo restores
+all cores, shared memory, the IEP and devices to the same saved point, and
+removes later history entries so peer state stays consistent.
+
+Paced stepping limits each follower to 1000 catch-up instructions per lead step.
+`step_paced` and `step_paced_many` return `complete` and the selected `targets`
+(in exact IEP time units). An unfinished catch-up returns `complete=False` with
+`reason="pacing_incomplete"`; MCP reports the same reason and dashboard Run stops
+with a message. Another call continues execution from the actual core state;
+elapsed time is never skipped. A follower that reaches HALT or the end of its
+program finishes normally, while a recorded CPU fault remains an error. The
+guard target is fixed for that catch-up even if firmware changes the mux.
 
 ## Example Programs
 
@@ -154,12 +177,14 @@ See [getting_started.md](getting_started.md) for step-by-step walkthroughs of al
 | `mem_copy.asm` | SBCO/LBCO data memory read/write |
 | `xfr_test.asm` | XFR scratchpad (XOUT/XIN, SPAD banks) |
 | `mac_example.asm` | MAC accelerator (MPY mode + accumulate mode) |
+| `crc_example.asm` | CRC16/32 accelerator: CRC-16 (half-word writes) and CRC-32 (word writes) over one frame |
+| `crc_bitswap_example.asm` | CRC16/32 accelerator bit-mirrored reads: byte-wide flip (`R27`) and 32-bit flip (`R28`), with byte-wide and 32-bit-wide data writes |
 | `uart_tx.asm` | Bit-bang UART TX (115200 baud, 8N1) with UART decoder |
 | `uart_rx_11frame.asm` | Bit-bang UART RX (4 Mbaud, 8N1) with frame injection from IO panel |
 | `mvi_gpio_loopback.asm` | MVIB register-indirect + GPIO loopback (walking-bit pattern) |
 | `sdfm_sinc3_demo/` | Free-running SINC3 filter adapted from AM261x ICSS-M firmware |
 | `perif_duty_cycle_sweep.asm` | Peripheral Interface TX: 125 Mbit 0%→100% duty-cycle pulse sweep on PRU0 ch0 (needs `memory_perif_125mbit_demo.cfg`) |
-| `pif_eth/` | 8b/10b line-coded Ethernet TX over the Peripheral Interface (PRU0 ch0): firmware PRNG/CRC-32, running-disparity 8b/10b via DRAM0 LUT, pcap output. See [PROJECT_REPORT.md](source/pif_eth/PROJECT_REPORT.md) ([PDF](source/pif_eth/PROJECT_REPORT.pdf)) · [handoff note](docs/handoff/2026-07-20-pif-eth.md). Experimental higher-clock variants `pif_eth_tx_n2*.asm` (not wired into the test suite): [design note](docs/superpowers/specs/2026-07-21-pif-eth-n2-125mbaud-design.md). PRU1 RX over the PRU0→PRU1 loopback (`pif_eth_rx_o1_raw.asm` + `rx_driver.py`), CI-exercised: [design note](docs/superpowers/specs/2026-07-21-pif-eth-pru1-rx-design.md) · [handoff note](docs/handoff/2026-07-22-pif-eth-rx-o1.md) |
+| `pif_eth/` | 8b/10b line-coded Ethernet TX over the Peripheral Interface (PRU0 ch0): firmware PRNG, CRC-32 on the CRC16/32 broadside accelerator, running-disparity 8b/10b via DRAM0 LUT, pcap output. See [PROJECT_REPORT.md](source/pif_eth/PROJECT_REPORT.md) ([PDF](source/pif_eth/PROJECT_REPORT.pdf)) · [handoff note](docs/handoff/2026-07-20-pif-eth.md). Experimental higher-clock variants `pif_eth_tx_n2*.asm` (not wired into the test suite): [design note](docs/superpowers/specs/2026-07-21-pif-eth-n2-125mbaud-design.md). PRU1 RX over the PRU0→PRU1 loopback (`pif_eth_rx_o1_raw.asm` + `rx_driver.py`), CI-exercised: [design note](docs/superpowers/specs/2026-07-21-pif-eth-pru1-rx-design.md) · [handoff note](docs/handoff/2026-07-22-pif-eth-rx-o1.md) |
 
 ## Headless JSON runner
 
@@ -205,16 +230,28 @@ v0.2.9 — hover over **PRU SIM** in the dashboard header to confirm.
 - **Bare core stepping restored** — bare `PRUCore` stepping with no attached device is back to its pre-#51 speed; the cycle count stays exact. `IOPort.tick_devices` lost its unused `time_only` parameter. GPIO drive and lease masks reject bools.
 
 **v0.2.8**
-- **Rational multi-clock IEP timebase** — the single `perif/iep.py` `IepTimer` (compare, capture, 64-bit CMP pairs, `CMP0_RST_CNT_EN`) now advances on exact elapsed core time instead of one tick per instruction. Each core reports its elapsed cycles, stalls included, through a `cycle_observer`, and the timer converts them with `Fraction` clock periods, so PRU0/PRU1/RTU cores at different clocks share one exact timeline. **Behaviour change:** omitted `iep_clock_mhz` selects 200 MHz, the TRM default ICSSG_IEP_CLK rate (SPRUIM2J §6.4.13.2.4), independent of the core clock; an explicit external IEP rate remains independently configurable. ICSS CFG `IEPCLK` bit 0 (`0x26030`) clear selects that external rate, while set selects the OCP clock (`pru_clock_mhz`). Tick phase is preserved across firmware writes that do not change the effective clock.
-- **RTU1 core** — `Simulator.cores` gains `rtu1` for AM243x/AM64x profiles (an omitted target selects AM243x), on the slice-1 clock with the PRU1 DRAM mapping (DRAM1 at local `0x0000`).
+- **Core clock fallback preserved** — omitted `pru_clock_mhz` uses 200 MHz and omitted `pru1_clock_mhz` inherits it. Explicit configuration values remain unchanged; the external IEP has its own 200 MHz fallback.
+- **Rational multi-clock IEP timebase** — the single `perif/iep.py` `IepTimer` (compare, capture, 64-bit CMP pairs, `CMP0_RST_CNT_EN`) now advances on exact elapsed core time, replacing floating-point time conversion. Each core reports its elapsed cycles, stalls included, through a `cycle_observer`, and the timer converts them with `Fraction` clock periods, so PRU0/PRU1/RTU cores at different clocks share one exact timeline. **Behaviour change:** omitted `iep_clock_mhz` selects 200 MHz, the TRM default ICSSG_IEP_CLK rate (SPRUIM2J §6.4.13.2.4), independent of the core clock; an explicit external IEP rate remains independently configurable. ICSS CFG `IEPCLK` bit 0 (`0x26030`) clear selects that external rate, while set selects the OCP clock (`pru_clock_mhz`). Tick phase is preserved across firmware writes that do not change the effective clock.
+- **RTU1 core** — `Simulator.cores` gains `rtu1` for AM243x/AM64x profiles (an omitted target selects AM243x), using `pru1_clock_mhz` alongside PRU1 and the PRU1 DRAM mapping (DRAM1 at local `0x0000`). An unknown target causes a configuration-load error.
 - **Time-based multi-core pacing** — `step_paced` (and the new `step_paced_many` for several followers) catches each follower up to the lead's exact elapsed time instead of interleaving instructions 1:1. This keeps cores aligned when clocks differ or when `LBBO`/`WBS` stalls occur. The Peripheral Interface guard (`guard_ns`) now applies only while both cores' Peripheral Interfaces are enabled; otherwise followers catch up with no guard. MCP `pru_step_multicore` uses the same pacing.
-- **Step-back restores the IEP** — dashboard history snapshots include the shared timer, and history for all four cores is cleared on config changes.
+- **Step-back restores the IEP** — dashboard history snapshots include the shared timer, restore all cores and shared devices together, and clear history for all four cores on config changes.
+- **Invalid config is rejected before it is written** — `PUT /config` and `PUT /config/clock_speed` validate a new config before writing it. A rejected config returns 400 and leaves the file, the live simulator and the history unchanged.
+- **MCP tools reject wrong types** — integer parameters reject bools and strings, and boolean parameters accept only `true`/`false`. `pru_set_input(value="false")` no longer drives the pin high.
+- **MCP stdio schema types** — MCP 2.x derives schemas from tool signatures and advertises `integer`, `number`, `boolean`, `array` and `object` types instead of `"string"` for optional, list and dict parameters.
 
 **v0.2.7**
 - **Memory faults are reported, not just logged** — an out-of-range `LBBO`/`LBCO`/`SBBO`/`SBCO` still halts the core, and now also records a `fault` (`type`, `opcode`, `address`, `pc`, `error`) on the core. `Simulator.step()` / `status()`, the MCP `pru_step`/`pru_status` tools and the dashboard state push all carry it; returned fault dictionaries are independent copies. The recorded fault clears on reset and is restored by step-back. Loading a program installs its instructions only: `halted`, `pc`, loop state and registers are left as they were (a successful load does drop the recorded fault), so reset a core before running a newly loaded program.
 - **`WBS`/`WBC` accept both operand forms** — the single-operand form (`WBS 5`, bit implied on R31) still works, and the explicit `WBS r31, 5` form is now accepted as well. Parser tests assert exact operand values and order for both.
-- **HW Reset also resets the IEP timer** — `Simulator.hard_reset()` now calls `IepTimer.hardware_reset()`, so the counter, compare and capture state no longer survive a full reset. Register defaults follow [AM64x/AM243x TRM SPRUIM2J](https://www.ti.com/lit/pdf/spruim2), Tables 14-10907 and 14-10925: the counter stays disabled, with `GLOBAL_CFG` defined fields `0x550` and `CAP_CFG` defined fields `0x1FC00`.
+- **HW Reset also resets the IEP timer** — `Simulator.hard_reset()` now calls `IepTimer.hardware_reset()`, so the counter, compare and capture state no longer survive a full reset. Register defaults follow [AM64x/AM243x TRM SPRUIM2J](https://www.ti.com/lit/pdf/spruim2), Tables 14-10907 and 14-10925: the counter stays disabled, with `GLOBAL_CFG` defined fields `0x550` and `CAP_CFG` defined fields `0x1FC00`. Reset leaves `DEFAULT_INC=5`, so enabling only `CNT_ENABLE` with a read-modify-write advances the counter by five per IEP tick; firmware must set `DEFAULT_INC` explicitly when another increment is required. Capture configuration follows Table 14-10925: bits 9:0 enable slots, bits 17:10 configure synchronization, and bits 23:18 select external sources. The simulator latches the first event until its valid bit is cleared; input synchronization, source routing and continuous overwrite are not modelled. The earlier synthetic first/last bits have been removed because they overlapped these fields.
 - **Constants file fallback** — `constants_am243x.cfg` is found in `config/` next to `memory.cfg` as before, or directly beside it, so a copied config directory works.
+- **Invalid config is rejected before it is written** — `PUT /config` and `PUT /config/clock_speed` validate a new config before writing it. A rejected config returns 400 and leaves the file, the live simulator and the history unchanged.
+- **MCP tools reject wrong types** — integer parameters reject bools and strings, and boolean parameters accept only `true`/`false`. `pru_set_input(value="false")` no longer drives the pin high.
+- **MCP stdio schema types** — the stdio server advertises `integer`, `number`, `boolean`, `array` and `object` types instead of `"string"` for optional, list and dict parameters.
+- **CRC16/32 broadside accelerator** (XFR `device_id=1`) — modeled on AM64x/AM243x TRM (SPRUIM2H) §6.4.6.2.2.1 / Table 6-429: `R25` CRC_CFG, `R27` CRC_DATA_8_BFLIP (read), `R28` CRC_SEED / CRC_DATA_32_BFLIP (read), `R29` CRC_DATA (destructive read resets the accumulator to the seed). CRC-16 (standard/mod) and CRC-32, matched to AM243x silicon: `R29` is the non-reflected accumulator and `R28` the reflected (zlib/Ethernet) value; CCITT mode feeds bytes MSB first. Byte, half-word and word writes give the same result. Shares the broadside window with the MAC accelerator, selected by `device_id`. The dashboard shows a live CRC status widget (mode and accumulator) in the single-core and multi-core views. Backend in `xfr/crc_accelerator.py`; functional spec of the underlying RTL in `references/icss_m_xfr_crc_functional_spec.md`.
+- **CRC examples** — `source/crc_example.asm` (CRC-16 with half-word writes, CRC-32 with word writes, using the TRM's NOP-based programming model) and `source/crc_bitswap_example.asm` (reads R27 byte flip, R28 32-bit flip and R29, with R29 read last). Both are checked end-to-end in `tests/test_crc_example.py` and `tests/test_crc_bitswap_example.py`.
+- **pif_eth computes the Ethernet FCS on the CRC accelerator** — new `pif_eth_crc32_hw.inc` is a drop-in `crc32_core` with the same contract as the bit-serial routine: 32-bit words go through CRC_DATA in a zero-overhead `LOOP`, and 1–3 trailing bytes run as a byte-wide session re-seeded via CRC_SEED (the TRM requires one write width per session). All four firmware images use it, and the n2 TX variants drop their inlined bit-serial copies. `pif_eth_crc32.inc` stays as the software fallback. A 128-octet FCS goes from ~9.5k to 181 cycles on TX and 187 on RX (~50x), and is now data-independent. `rx_driver.py` still passes all 28 rung/seed combinations. README and PROJECT_REPORT (+PDF) updated.
+- **IEP follows simulated time on its own clock** — the IEP used to tick once per instruction on every core, so memory stall cycles were lost and two cores stepping together ran it at twice the rate. Each core now reports its elapsed time (cycles including stalls, over its own clock), and the shared IEP follows the core that is furthest ahead, emitting one edge per IEP clock period. A core whose cycle counter is reset rejoins at the IEP's current time instead of freezing the counter. The IEP clock is independent of the PRU clocks: `iep_clock_mhz` under `[device]` (default `pru_clock_mhz`), or `Simulator.set_iep_clock_mhz()` at runtime without a count jump.
+- **Hardware test plan for the CRC changes** — [`docs/test-plans/2026-09-24-crc-accelerator-hw-test-plan.md`](docs/test-plans/2026-09-24-crc-accelerator-hw-test-plan.md) (TC1–TC7, results table to fill in on silicon). The CRC results in this release are from the simulator and tested on silicon.
 
 **v0.2.6**
 - **Peripheral Interface TX test patterns** (`source/perif_tx_patterns.asm`) — the existing `perif_tx_pattern.asm` streams an 8-bit counter, which is ~90% zeros MSB-first and reads as sparse noise on the Signal Graph. New self-configuring firmware transmits the classic bit patterns instead, selected by a `PATTERN .set` at the top of the file: `0x00`, `0xFF`, `0xAA`, `0x55`, walking 1, walking 0, counter-only, or (the default) one byte of each followed by the counter — `00 FF AA 55 | 01 02 04 08 10 20 40 80 | FE FD FB F7 EF DF BF 7F | 00 01 02 …`. Twenty bytes, about 1280 graph samples, so the 2048 window catches the whole sequence in one single-shot capture. Patterns come from a table the prologue writes to DRAM at `0x1F00`, so changing them is five `ldi` pairs. Keeps the same pre-shifted start-bit framing, so the receiver still byte-aligns; every `PATTERN` value is checked end-to-end over the ch0 loopback in `tests/test_perif_tx_patterns.py`. `perif_tx_pattern.asm` is untouched — the drift experiment and `tools/perif_drift_report.py` depend on its exact counter output. Cross-machine [handoff note](docs/handoff/2026-07-28-perif-tx-test-patterns.md).
@@ -236,6 +273,7 @@ v0.2.9 — hover over **PRU SIM** in the dashboard header to confirm.
 
 **v0.2.1**
 - **PRU core speed selector** — controls-bar dropdown (200/225/250/300/333 MHz) sets `pru_clock_mhz` and `pru1_clock_mhz` together via a new `GET`/`PUT /config/clock_speed` endpoint, which patches `memory.cfg` in place (preserving formatting/comments — no `configparser` round-trip) and reloads the simulator. Always syncs all three cores; the [PRU0→PRU1 perif clock-drift demo](docs/superpowers/specs/2026-07-18-pru1-perif-drift-design.md) remains a separate manual `pru1_clock_mhz` edit, applied *after* picking a base speed from the dropdown. Design: [`2026-07-20-pru-core-speed-selector-design.md`](docs/superpowers/specs/2026-07-20-pru-core-speed-selector-design.md).
+- **IEP timer clock** — IEP0 now runs on its own clock, set with `iep_clock_mhz` under `[device]` (default: `pru_clock_mhz`) or at runtime with `Simulator.set_iep_clock_mhz()`. It is driven by simulated time, not instruction count: memory stall cycles advance it, and two cores stepping together advance it once, not twice. See the TIMING notes in `perif/iep.py`.
 - **pif_eth experimental 125 Mbaud TX firmware** (`source/pif_eth/pif_eth_tx_n2*.asm`) — batched 4-octet loads and fixed-shift unrolled 8b/10b bit-packing get the TX loop's own cost down to the perif drain-rate boundary. The all-checks build is a robust ~4x speedup (83.33 MHz @ n=3, zero BER) over the original 25 MHz design; a second build with 2 of the loop's FIFO-full checks removed hits the full 125 Mbaud (n=2) target with zero BER, but is hard-pinned to that exact divider — it silently corrupts frames at any other clock/divider combination. Neither file replaces `pif_eth_tx.asm` in the test suite. Caveat and full results: [`2026-07-21-pif-eth-n2-125mbaud-design.md`](docs/superpowers/specs/2026-07-21-pif-eth-n2-125mbaud-design.md); cross-machine [handoff note](docs/handoff/2026-07-21-speed-selector-and-pif-eth-n2.md).
 
 **v0.2.0**
