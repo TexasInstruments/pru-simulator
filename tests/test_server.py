@@ -229,3 +229,110 @@ def test_fault_is_reported_in_state_and_restored_by_step_back(fresh_sim):
 
     srv._restore("pru0", snapshot)
     assert fresh_sim.cores["pru0"].fault is None
+
+
+@pytest.mark.parametrize("target,has_rtu1", [
+    ("AM243x", True), ("AM64x", True), ("AM263x", False),
+])
+def test_dashboard_core_choices_follow_the_live_target(tmp_path, monkeypatch, target, has_rtu1):
+    import ui.server as srv
+
+    cfg_file = tmp_path / "memory.cfg"
+    cfg_file.write_text("[device]\ntarget = AM243x\n")
+    monkeypatch.setattr(srv, "config_path", str(cfg_file))
+    monkeypatch.setattr(srv, "sim", Simulator(str(cfg_file)))
+
+    assert "rtu1" in client.get("/cores").json()
+    response = client.put("/config", content=f"[device]\ntarget = {target}\n")
+
+    assert response.status_code == 200
+    cores = client.get("/cores").json()
+    assert set(cores) == set(srv.sim.cores)
+    assert ("rtu1" in cores) == has_rtu1
+    if has_rtu1:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json({"action": "load", "core": "rtu1", "source": "ldi r3, 42\nhalt"})
+            assert ws.receive_json()["core"] == "rtu1"
+            ws.send_json({"action": "step", "core": "rtu1"})
+            assert ws.receive_json()["registers"][3] == "0x0000002A"
+
+
+def test_step_back_restores_all_peers_and_discards_their_later_history(fresh_sim, monkeypatch):
+    import ui.server as srv
+
+    monkeypatch.setattr(srv, "_history", {core: [] for core in fresh_sim.cores})
+    monkeypatch.setattr(srv, "_history_order", [])
+    for core in ("pru0", "pru1"):
+        assert fresh_sim.load(core, "nop\njmp 0") == []
+    before = fresh_sim.iep.snapshot()
+    with client.websocket_connect("/ws") as ws:
+        for core in ("pru0", "pru1"):
+            ws.send_json({"action": "step", "core": core})
+            ws.receive_json()
+
+        ws.send_json({"action": "step_back", "core": "pru0"})
+
+        states = [ws.receive_json() for _ in fresh_sim.cores]
+        assert {state["core"] for state in states} == set(fresh_sim.cores)
+        assert all(state["cycles"] == 0 for state in states)
+        assert all(not history for history in srv._history.values())
+        assert srv._history_order == []
+        assert fresh_sim.iep.snapshot() == before
+
+
+def test_multicore_run_reports_incomplete_catchup_without_blocking(fresh_sim):
+    for core in ("pru0", "pru1"):
+        assert fresh_sim.load(core, "nop\njmp 0") == []
+    fresh_sim.step("pru0", 10000)
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "run_multicore", "core": "pru0",
+                      "partner": "pru1", "max_steps": 5})
+
+        error = ws.receive_json()
+        assert error["type"] == "error"
+        assert error["reason"] == "pacing_incomplete"
+        assert ws.receive_json()["cycles"] == 10001
+        assert 0 < ws.receive_json()["cycles"] < 10001
+        ws.send_json({"action": "get_state", "core": "pru1"})
+        assert ws.receive_json()["type"] == "state"
+
+
+@pytest.mark.parametrize("finish", ["halt", "nop"])
+def test_multicore_run_resumes_catchup_after_the_lead_finishes(fresh_sim, finish):
+    assert fresh_sim.load(
+        "pru0", f"ldi r0, 10000\nloop: sub r0, r0, 1\nqbne loop, r0, 0\n{finish}"
+    ) == []
+    assert fresh_sim.load("pru1", "add r1, r1, 1\njmp 0") == []
+    fresh_sim.step("pru0", 20001)  # leave HALT/the final NOP for the paced run
+
+    with client.websocket_connect("/ws") as ws:
+        for expected_cycles in (1000, 2000):
+            ws.send_json({"action": "run_multicore", "core": "pru0",
+                          "partner": "pru1", "max_steps": 5})
+            error = ws.receive_json()
+            assert error["type"] == "error"
+            assert error["reason"] == "pacing_incomplete"
+            lead = ws.receive_json()
+            follow = ws.receive_json()
+            assert lead["cycles"] == 20002
+            assert lead["halted"] == (finish == "halt")
+            assert lead["fault"] is None
+            assert follow["cycles"] == expected_cycles
+            assert follow["registers"][1] == f"0x{expected_cycles // 2:08X}"
+
+        for _ in range(25):
+            ws.send_json({"action": "run_multicore", "core": "pru0",
+                          "partner": "pru1", "max_steps": 5})
+            lead = ws.receive_json()
+            incomplete = lead["type"] == "error"
+            if incomplete:
+                assert lead["reason"] == "pacing_incomplete"
+                lead = ws.receive_json()
+            follow = ws.receive_json()
+            if not incomplete:
+                break
+
+        assert not incomplete
+        assert lead["cycles"] == follow["cycles"] == 20002
+        assert follow["registers"][1] == "0x00002711"  # all 10001 ADDs executed

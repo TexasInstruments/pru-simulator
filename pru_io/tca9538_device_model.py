@@ -13,7 +13,9 @@ decode, and the fault checks that make it usable as an oracle.
 """
 from __future__ import annotations
 
-from pru_io.device_model import OPEN_DRAIN, DeviceModel
+from collections import deque
+
+from pru_io.device_model import DEVICE_HISTORY_LIMIT, OPEN_DRAIN, DeviceModel
 from pru_io.tca9538 import TCA9538Device
 
 
@@ -32,8 +34,8 @@ class TCA9538Model(DeviceModel):
         self.nets = {scl_pin: OPEN_DRAIN, sda_pin: OPEN_DRAIN}
 
         self.device = TCA9538Device(address=address)
-        self._events: list[dict] = []
-        self._faults: list[str] = []
+        self._events: deque[dict] = deque(maxlen=DEVICE_HISTORY_LIMIT)
+        self._faults: deque[str] = deque(maxlen=DEVICE_HISTORY_LIMIT)
         self._prev_scl: int | None = None
         self._prev_sda: int | None = None
         self._driving_low = False
@@ -109,8 +111,9 @@ class TCA9538Model(DeviceModel):
 
     def restore(self, snap: dict) -> None:
         self.device.restore(snap["device"])
-        self._events = [dict(event) for event in snap["events"]]
-        self._faults = list(snap["faults"])
+        self._events = deque((dict(event) for event in snap["events"]),
+                             maxlen=DEVICE_HISTORY_LIMIT)
+        self._faults = deque(snap["faults"], maxlen=DEVICE_HISTORY_LIMIT)
         self._prev_scl = snap["prev_scl"]
         self._prev_sda = snap["prev_sda"]
         self._driving_low = snap["driving_low"]

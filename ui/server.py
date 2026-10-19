@@ -198,6 +198,11 @@ async def get_regions():
     return [{"name": r.name, "base": r.base_addr, "size": r.size} for r in sim.memory.regions]
 
 
+@app.get("/cores")
+async def get_cores():
+    return list(sim.cores)
+
+
 @app.get("/config")
 async def get_config():
     try:
@@ -592,17 +597,24 @@ async def websocket_endpoint(websocket: WebSocket):
                 samples = []
                 try:
                     steps = 0
-                    while (steps < max_steps and not lead_pru.halted
-                           and lead_pru.pc < len(lead_pru.instructions)):
-                        sim.step_paced(core, partner, 1)
+                    while steps < max_steps:
+                        pacing = sim.step_paced(core, partner, 1)
                         steps += 1
                         if capture and _capture_due(lead_pru, steps):
                             samples.append(_capture_sample(lead_pru))
+                        if not pacing["complete"]:
+                            await websocket.send_json({
+                                "type": "error", "reason": pacing["reason"],
+                                "errors": ["Follower catch-up is incomplete; run again to continue"],
+                            })
+                            break
                         if lead_pru.pc in lead_pru.breakpoints:
                             lead_bp = True
                             break
                         if partner_pru.pc in partner_pru.breakpoints:
                             partner_bp = True
+                            break
+                        if lead_pru.halted or lead_pru.pc >= len(lead_pru.instructions):
                             break
                 except ValueError as ve:
                     await websocket.send_json({"type": "error", "errors": [str(ve)]})
@@ -681,6 +693,20 @@ def _read_mac(core) -> dict:
     if acc is None:
         return {"mode": False, "acc_carry": False}
     return {"mode": acc.mac_mode, "acc_carry": acc.acc_carry}
+
+
+def _read_crc(core) -> dict:
+    """Return CRC accelerator status for the given PRUCore."""
+    acc = core.accelerators.get(1)
+    if acc is None:
+        return {"mode": "CRC16", "value": "0000"}
+    if acc.crc32_mode:
+        mode = "CRC32"
+        value = f"{acc.crc_reg:08X}"
+    else:
+        mode = "CRC16-MOD" if acc.mod_en else "CRC16"
+        value = f"{acc.crc_reg:04X}"
+    return {"mode": mode, "value": value}
 
 
 def _read_spad(sim_obj) -> dict:
@@ -840,6 +866,7 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False):
         "spad": _read_spad(sim),
         "xfr_shift_en": sim.xfr.xfr_shift_en,
         "mac": _read_mac(c),
+        "crc": _read_crc(c),
     }
     await ws.send_json(state)
 

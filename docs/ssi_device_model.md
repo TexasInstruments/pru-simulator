@@ -269,11 +269,11 @@ clocks.
 
 ## Manual 300 MHz run (test only)
 
-The default core clock is **250 MHz** and it stays that way: `memory.cfg`
-ships with `pru_clock_mhz = 250` and `pru1_clock_mhz = 250`, and every default,
-example and test is written for it. Running at 300 MHz is a manual switch that
-someone makes only to try the reader at that clock. Do not change the shipped
-`memory.cfg` for it.
+An omitted `pru_clock_mhz` uses **200 MHz**; an omitted `pru1_clock_mhz`
+inherits that first rate. The shipped `memory.cfg` explicitly selects 250 MHz
+for both rates. The external IEP defaults independently to 200 MHz. SSI tests
+cover multiple core rates using temporary configurations. A 300 MHz run is a
+manual test choice; do not change the shipped config for it.
 
 Pick one way to switch, and switch back afterwards:
 
@@ -281,9 +281,9 @@ Pick one way to switch, and switch back afterwards:
   into a temporary directory and edit the copy, as below. The shipped
   `memory.cfg` is never touched.
 * **Dashboard.** The core speed selector (300) rewrites `memory.cfg` in place.
-  Pick 250 again, or run `git checkout memory.cfg`, before committing.
+  Restore your previous selection before committing.
 * **Editing `memory.cfg` by hand.** Set both `pru_clock_mhz` and
-  `pru1_clock_mhz`, then restore 250 the same way.
+  `pru1_clock_mhz`, then restore your previous values the same way.
 
 The reader needs a longer bit period at 300 MHz. Its bit period is about four
 cycles per `clock_delay_loops` plus eight, and the encoder model enforces

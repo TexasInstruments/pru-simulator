@@ -74,9 +74,21 @@ class TestUartPrint:
         src = re.sub(r"BAUD_COUNT\s+\.set\s+\d+", "BAUD_COUNT .set 2", src)
         return self.mcp.pru_load(src, core="pru0")
 
-    def _write_string(self, s: bytes) -> None:
-        """Write null-terminated bytes into DRAM0 at offset 0."""
-        self.mcp.sim.memory.write(0x00000000, s + b"\x00")
+    @staticmethod
+    def _with_string(src: str, s: bytes) -> str:
+        """Replace the firmware's built-in string with *s* (max 11 chars).
+
+        The firmware writes its string to DRAM0 from three ldi32 constants
+        (R10..R12, little-endian), so patch those instead of pre-loading memory.
+        """
+        data = (s + b"\x00").ljust(12, b"\x00")
+        assert len(data) == 12, "string too long for R10..R12"
+        for i in range(3):
+            word = int.from_bytes(data[4 * i:4 * i + 4], "little")
+            src, n = re.subn(rf"ldi32 r1{i}, 0x[0-9A-Fa-f]+",
+                             f"ldi32 r1{i}, 0x{word:08X}", src)
+            assert n == 1
+        return src
 
     def test_uart_print_assembles(self):
         with open("source/uart_print.asm") as f:
@@ -88,17 +100,38 @@ class TestUartPrint:
         """Null byte at offset 0 → immediate halt."""
         with open("source/uart_print.asm") as f:
             src = f.read()
-        self._load_fast(src)
-        self.mcp.sim.memory.write(0x00000000, b"\x00")
+        self._load_fast(self._with_string(src, b""))
         run = self.mcp.pru_run_until(core="pru0", max_steps=100)
         assert run["reason"] == "halted"
+
+    def test_uart_print_builtin_string(self):
+        """Unmodified firmware writes "Hello 2026" to DRAM0 and sends it on GPO0."""
+        with open("source/uart_print.asm") as f:
+            result = self.mcp.pru_load(f.read(), core="pru0")
+        assert result["success"] is True
+        sim = self.mcp.sim
+        sim.memory.write(0x00000000, b"\xAA" * 16)   # firmware must overwrite
+        pins = []
+        while not sim.step("pru0")["halted"]:
+            pins.append(sim.io("pru0")["gpo_pins"][0])
+        assert sim.memory_read(0x00000000, 11) == b"Hello 2026\x00"
+
+        # 8N1 decode at mid-bit; one bit = 868 delay loops x 2 + ~4 instructions
+        t_bit = 868 * 2 + 4
+        out, i = bytearray(), 1
+        while i < len(pins):
+            if pins[i] == 0 and pins[i - 1] == 1:
+                out.append(sum(pins[int(i + t_bit * (n + 1.5))] << n for n in range(8)))
+                i = int(i + t_bit * 9.5)
+            else:
+                i += 1
+        assert bytes(out) == b"Hello 2026"
 
     def test_uart_print_single_char_bit_sequence(self):
         """Single 'U' (0x55) must produce same frame as uart_tx."""
         with open("source/uart_print.asm") as f:
             src = f.read()
-        self._load_fast(src)
-        self._write_string(b"U")
+        self._load_fast(self._with_string(src, b"U"))
         transitions = _collect_transitions(self.mcp, max_steps=300)
         assert transitions == [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1], (
             f"Expected alternating 11-state frame for 'U', got: {transitions}"
@@ -108,8 +141,7 @@ class TestUartPrint:
         """After transmitting 'Hi', TX pin is HIGH (idle)."""
         with open("source/uart_print.asm") as f:
             src = f.read()
-        self._load_fast(src)
-        self._write_string(b"Hi")
+        self._load_fast(self._with_string(src, b"Hi"))
         run = self.mcp.pru_run_until(core="pru0", max_steps=10000)
         assert run["reason"] == "halted"
         assert self.mcp.pru_io(core="pru0")["gpo_pins"][0] == 1
