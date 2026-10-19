@@ -153,6 +153,26 @@ class Simulator:
         if target.lower() == "am263x":
             del self.cores["rtu1"]
 
+        # SPRUIM2J Table 6-65: these fixed entries depend on the executing
+        # core. A shared sidecar cannot provide all four sets of addresses.
+        if target.lower() in ("am243x", "am64x"):
+            core_constants = {
+                "pru0": {10: 0x2A000, 11: 0x22000, 22: 0x8000},
+                "rtu0": {10: 0x2A100, 11: 0x23000, 22: 0x8000},
+                "pru1": {10: 0x2A200, 11: 0x24000, 22: 0x9000},
+                "rtu1": {10: 0x2A300, 11: 0x23800, 22: 0x9000},
+            }
+        else:
+            # TI OpenPRU AM263x_PRU0/1.cmd: C10 is reserved on this target.
+            # The legacy simulated RTU0 has no AM263x hardware equivalent;
+            # leave its common table unchanged rather than inventing a map.
+            core_constants = {
+                "pru0": {11: 0x22000, 22: 0x8000},
+                "pru1": {11: 0x24000, 22: 0x9000},
+            }
+        for name, entries in core_constants.items():
+            self.cores[name].constant_table.load_from_dict(entries)
+
         # PRU0/RTU0 use the first configured rate; PRU1/RTU1 use the second.
         pru_clock_mhz = float(pru_clock)
         pru1_clock_mhz = float(pru1_clock)
