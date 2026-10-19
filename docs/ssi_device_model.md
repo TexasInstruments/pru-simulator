@@ -29,14 +29,12 @@ The Nth rising edge completes a word. Tm can then expire with the clock held
 high, or the reader may produce its closing falling edge followed by the
 return to high idle. That one closing pair does not request another data bit;
 another falling edge before Tm expires is reported as an extra clock pulse.
-The LSB remains on data through the high-phase sample. The closing falling
-edge then drives data low for the rest of Tm, after which the model returns it
-to its configured idle value.
-This closing transition is an idealization: SICK IM0100079 p. 5, Figure 2
-draws DATA returning low near the clock's closing rise (time 3), after the
-closing low phase. The model and emulator return DATA low at the closing fall.
-Their high-phase sampling convention retains the LSB through the sample;
-sampling the LSB during that closing low phase is outside this convention.
+The LSB remains on DATA throughout the last high phase and the closing low
+phase. The closing rising edge returns DATA low, matching Figure 2; the
+monoflop interval is still measured from the closing falling edge. DATA
+returns to its configured idle value when Tm expires. The model is an ideal
+edge-level model; the emulator follows these transitions through ordinary PRU
+instruction polling.
 An incomplete word and an SSI clock above `f_max_hz` also produce fault
 events. Completed-frame events retain both the transmitted `raw_value` and
 the decoded binary `position` for binary or Gray encoding, plus the decoded
@@ -164,9 +162,10 @@ interval times the active IEP rate. Both mid-frame waits use the memory-mapped
 word, restores idle DATA, and requires high idle followed by a fresh falling
 start; it is a normal abort, with status zero. Expiry is checked before either
 wait accepts an edge, so a late edge after another core advanced shared time
-cannot continue an expired word. Normal completion drives DATA low at the
-closing fall and holds it through the monoflop interval before restoring idle
-high. Polling uses ordinary PRU instructions and memory access cycles.
+cannot continue an expired word. Normal completion retains the LSB through
+the closing low phase, drives DATA low after the closing rise and holds it
+until the monoflop interval expires. Tm starts at the closing fall, not the
+rise. Polling uses ordinary PRU instructions and memory access cycles.
 
 The runtime reuses an enabled free-running IEP with `DEFAULT_INC=1`. An enabled
 timer with another increment, or enabled CMP0 reset, is rejected. A stopped

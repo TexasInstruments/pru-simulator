@@ -513,3 +513,29 @@ def test_host_frame_updates_preserve_firmware_error_status(sim, update):
     emulator.load()
     assert emulator.status() == 0
     assert read_frame(sim, 8) == {"position": 0x4A, "error": 1, "config": 0}[update]
+
+
+@pytest.mark.parametrize("core_mhz", [200, 250, 300])
+@pytest.mark.parametrize("position,last_bit", [(0xA5, 1), (0xA4, 0)])
+def test_emulator_holds_lsb_until_closing_rise(sim_config, core_mhz, position, last_bit):
+    sim = Simulator(sim_config(pru_clock_mhz=core_mhz, iep_clock_mhz=200))
+    emulator = SSIEmulatorRuntime(sim, resolution=8, position=position, monoflop_us=4)
+    emulator.load()
+    sim.set_input("pru0", 0, True)
+    sim.step("pru0", PHASE_STEPS)
+    sim.set_input("pru0", 0, False)
+    sim.step("pru0", PHASE_STEPS)
+    for _ in range(8):
+        sim.set_input("pru0", 0, True)
+        sim.step("pru0", PHASE_STEPS)
+        sim.set_input("pru0", 0, False)
+        sim.step("pru0", PHASE_STEPS)
+    assert sim.io("pru0")["gpo_pins"][16] == last_bit
+    sim.step("pru0", 400)  # Keep CLK low, well before Tm at every tested rate.
+    assert sim.io("pru0")["gpo_pins"][16] == last_bit
+    sim.set_input("pru0", 0, True)
+    sim.step("pru0", PHASE_STEPS)
+    assert sim.io("pru0")["gpo_pins"][16] == 0
+    sim.step("pru0", 1400)
+    assert sim.io("pru0")["gpo_pins"][16] == 1
+    assert emulator.status() == 0
