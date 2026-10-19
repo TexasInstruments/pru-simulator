@@ -540,8 +540,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 samples = []
                 try:
                     steps = 0
-                    while (steps < max_steps and not lead_pru.halted
-                           and lead_pru.pc < len(lead_pru.instructions)):
+                    while steps < max_steps:
                         pacing = sim.step_paced(core, partner, 1)
                         steps += 1
                         if capture and _capture_due(lead_pru, steps):
@@ -557,6 +556,8 @@ async def websocket_endpoint(websocket: WebSocket):
                             break
                         if partner_pru.pc in partner_pru.breakpoints:
                             partner_bp = True
+                            break
+                        if lead_pru.halted or lead_pru.pc >= len(lead_pru.instructions):
                             break
                 except ValueError as ve:
                     await websocket.send_json({"type": "error", "errors": [str(ve)]})
