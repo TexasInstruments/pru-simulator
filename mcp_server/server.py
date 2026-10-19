@@ -433,7 +433,11 @@ class PRUSimulatorMCP:
             managed_mask = drive_mask
         self.sim.lease_gpio_outputs(core, managed_mask, device,
                                     drive_mask=drive_mask)
-        self.sim.attach_device(core, device)
+        try:
+            self.sim.attach_device(core, device)
+        except BaseException:
+            self.sim.device_bus.release_core_outputs(device)
+            raise
         return {"success": True, "core": core, "device": device.get_state()}
 
     def pru_device_detach(self, device_name: str) -> dict:

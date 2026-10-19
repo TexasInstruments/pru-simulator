@@ -373,6 +373,8 @@ def test_first_low_sample_is_idle_then_literal_waveform_latches_cleanly(restored
     assert model.get_state()["state"] == "idle"
     assert tick(model, 160, 1) == 1
     # Explicit clock/data oracle; high-phase samples are included separately.
+    # Closing DATA-low at cycle330 is the model's documented idealization:
+    # Figure2 draws this transition near the closing rise, after the low phase.
     waveform = [
         (170, 0, 1), (180, 1, 1), (185, 1, 1),
         (190, 0, 1), (200, 1, 0), (205, 1, 0),

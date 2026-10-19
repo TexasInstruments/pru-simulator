@@ -146,6 +146,33 @@ def test_tca_profile_keeps_sda_and_scl_owned_as_open_drain_master_lines():
     }
 
 
+@pytest.mark.parametrize("generic_first", [False, True])
+def test_tca_legacy_and_generic_attachments_reject_same_pins_without_leaking(generic_first):
+    mcp = fresh_mcp()
+    generic = lambda: mcp.pru_device_attach("tca9538", config={"name": "expander"})
+    legacy = lambda: mcp.pru_i2c_attach()
+    first, second = (generic, legacy) if generic_first else (legacy, generic)
+    first()
+    mask_before = mcp.sim.io("pru0")["gpo_drive_mask"]
+    owners_before = dict(mcp.sim.device_bus._lease_owners)
+
+    with pytest.raises(ValueError, match="legacy|generic"):
+        second()
+
+    assert mcp.sim.io("pru0")["gpo_drive_mask"] == mask_before
+    assert mcp.sim.device_bus._lease_owners == owners_before
+    assert len(mcp.pru_device_discover()["devices"]) == int(generic_first)
+    assert (mcp.sim.i2c_state("pru0") is None) == generic_first
+
+
+def test_legacy_tca_allows_generic_tca_on_other_pins_or_core():
+    mcp = fresh_mcp()
+    mcp.pru_i2c_attach()
+    mcp.pru_device_attach("tca9538", config={"name": "other_pins", "scl_pin": 2, "sda_pin": 3})
+    mcp.pru_device_attach("tca9538", core="pru1", config={"name": "other_core"})
+    assert len(mcp.pru_device_discover()["devices"]) == 2
+
+
 def test_attached_ssi_profile_reset_clears_reports_and_keeps_device():
     mcp = fresh_mcp()
     mcp.pru_device_attach(

@@ -32,6 +32,11 @@ another falling edge before Tm expires is reported as an extra clock pulse.
 The LSB remains on data through the high-phase sample. The closing falling
 edge then drives data low for the rest of Tm, after which the model returns it
 to its configured idle value.
+This closing transition is an idealization: SICK IM0100079 p. 5, Figure 2
+draws DATA returning low near the clock's closing rise (time 3), after the
+closing low phase. The model and emulator return DATA low at the closing fall.
+Their high-phase sampling convention retains the LSB through the sample;
+sampling the LSB during that closing low phase is outside this convention.
 An incomplete word and an SSI clock above `f_max_hz` also produce fault
 events. Completed-frame events retain both the transmitted `raw_value` and
 the decoded binary `position` for binary or Gray encoding, plus the decoded
@@ -108,6 +113,9 @@ SSI variants (Interfaces, p. 2); trimmed Gray variants need a different layout.
 24-bit Gray position (p. 2), followed by the two separate error bits in
 [IM0100079](https://www.sick.com/media/docs/9/79/079/technical_information_ssi_interface_description_en_im0100079.pdf)
 p. 23: the resulting full wire frame is 26 bits, not a 26-bit Gray conversion.
+This preset combines the part datasheet's Gray position with the interface
+document's two independent error flags. That combination is an inferred
+extension; the part datasheet alone specifies only the 24-bit Gray position.
 `KH53` uses [24-bit Gray SSI](https://www.sick.com/media/docs/0/00/600/product_information_kh53_linear_encoders_en_im0011600.pdf)
 (Interfaces, p. 3). The multi-turn presets are a plain
 position field; the model does not split turns from steps. Left/right
@@ -147,6 +155,8 @@ out. The emulator re-reads the block at every frame's first falling clock
 edge, so host changes apply to the next frame (the block is not seqlocked).
 Its `status` is written by the firmware: 0 while running, 1 if it halted on an
 invalid ABI version, a frame width outside 1-64, or zero timeout ticks.
+Host position/error/config updates preserve this status; a successful firmware
+load clears it when restarting the selected core.
 ABI 3 appends `monoflop_ticks` as u32 at emulator offset `0x14`; reader and
 mailbox offsets stay unchanged. The host rounds up the selected monoflop
 interval times the active IEP rate. Both mid-frame waits use the memory-mapped
@@ -169,6 +179,8 @@ left alone. Two emulators on one `Simulator` would share the one emulator
 block, so a second `load()` raises until the first is closed and the IEP never
 has two owners. Changing the active IEP clock requires reloading the emulator
 timeout configuration.
+If a reload fails, the existing emulator configuration, timeout and GPIO lease
+remain active, and the original load error is raised.
 
 ## Run the reader and SSI model
 
@@ -190,9 +202,16 @@ with SSIRuntime(sim, position=0xABC, resolution=12) as ssi:
     print(ssi.encoder.faults())
 ```
 
+Both runtime helpers reset only the selected core after a successful firmware
+load, rebasing its execution time without resetting peer CPUs or the shared
+IEP count. An initial reader load failure closes that runtime, detaching its
+encoder and restoring its GPIO leases; create a new runtime to retry.
+
 `mailbox()` also returns the combined `raw_frame` and the `position` and
-`error` fields decoded with the encoder's layout. To emulate a SICK encoder,
-pass a preset; the 2 MHz limit needs a slower reader clock than the default
+`error` fields decoded with the encoder's layout. The host decodes these fields
+separately from the model's `decode_frame()`, retaining the independent host
+path requested in review; tests use literal frame/field expectations. To
+emulate a SICK encoder, pass a preset; the 2 MHz limit needs a slower reader clock than the default
 (about `clock_delay_loops=40` at 250 MHz):
 
 ```python
@@ -220,6 +239,8 @@ default and for multi-turn presets, and `tests/test_ssi_emulator.py` checks the
 emulator against a separate Python SSI master:
 
 ```python
+from math import ceil
+
 from pru_io import ssi_config_abi as abi
 from pru_io.ssi_runtime import SSIEmulatorRuntime
 
@@ -230,10 +251,21 @@ sim.set_gpio_drive_mask("pru1", (1 << 20) - 1 & ~(1 << 16))
 emulator = SSIEmulatorRuntime(sim, preset="AFS_AFM60_MULTITURN_30BIT",
                               position=0x2ABCDEF1, error_value=0b101)
 emulator.load()                       # PRU0; later: emulator.set_error(0)
+# The reader's idle loop takes two core cycles. Wait beyond the configured Tm,
+# with eight extra loops for the emulator's instruction polling.
+idle_loops = ceil(emulator.layout.monoflop_us
+                  * sim.iep.core_clock_hz("pru1") / 2_000_000) + 8
 sim.memory.write(abi.CONFIG_ADDRESS, abi.pack_config(
-    frame_bits=33, clock_delay_loops=20, idle_delay_loops=8))
+    frame_bits=33, clock_delay_loops=40, idle_delay_loops=idle_loops))
 sim.load("pru1", reader_source, include_paths=["source"])  # the reader asm
+sim.reset("pru1")
 ```
+
+The idle interval must exceed Tm before each new frame. Eight idle loops alone
+are too short and can produce shifted or zero frames after the first sample.
+Board-loopback tests check three consecutive frames, including a host position
+change, for binary, Gray/error and 33-bit layouts at 200, 250 and 300 MHz reader
+clocks.
 
 ## Manual 300 MHz run (test only)
 
@@ -322,6 +354,8 @@ profile accepts a 7-bit
 `address` and distinct `scl_pin`/`sda_pin` values from 0–19. Unknown fields
 and invalid values are rejected before attachment. The existing TCA
 `pru_i2c_attach` tool remains available for compatibility.
+Legacy and generic TCA9538 attachments reject overlapping pins on the same
+core in either order. Generic TCA9538 devices on other pins or cores may coexist.
 
 When `pru_device_faults` is filtered by device name, its `contentions` field
 contains structured records for each bus conflict involving that exact device.
