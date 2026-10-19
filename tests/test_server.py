@@ -296,3 +296,43 @@ def test_multicore_run_reports_incomplete_catchup_without_blocking(fresh_sim):
         assert 0 < ws.receive_json()["cycles"] < 10001
         ws.send_json({"action": "get_state", "core": "pru1"})
         assert ws.receive_json()["type"] == "state"
+
+
+@pytest.mark.parametrize("finish", ["halt", "nop"])
+def test_multicore_run_resumes_catchup_after_the_lead_finishes(fresh_sim, finish):
+    assert fresh_sim.load(
+        "pru0", f"ldi r0, 10000\nloop: sub r0, r0, 1\nqbne loop, r0, 0\n{finish}"
+    ) == []
+    assert fresh_sim.load("pru1", "add r1, r1, 1\njmp 0") == []
+    fresh_sim.step("pru0", 20001)  # leave HALT/the final NOP for the paced run
+
+    with client.websocket_connect("/ws") as ws:
+        for expected_cycles in (1000, 2000):
+            ws.send_json({"action": "run_multicore", "core": "pru0",
+                          "partner": "pru1", "max_steps": 5})
+            error = ws.receive_json()
+            assert error["type"] == "error"
+            assert error["reason"] == "pacing_incomplete"
+            lead = ws.receive_json()
+            follow = ws.receive_json()
+            assert lead["cycles"] == 20002
+            assert lead["halted"] == (finish == "halt")
+            assert lead["fault"] is None
+            assert follow["cycles"] == expected_cycles
+            assert follow["registers"][1] == f"0x{expected_cycles // 2:08X}"
+
+        for _ in range(25):
+            ws.send_json({"action": "run_multicore", "core": "pru0",
+                          "partner": "pru1", "max_steps": 5})
+            lead = ws.receive_json()
+            incomplete = lead["type"] == "error"
+            if incomplete:
+                assert lead["reason"] == "pacing_incomplete"
+                lead = ws.receive_json()
+            follow = ws.receive_json()
+            if not incomplete:
+                break
+
+        assert not incomplete
+        assert lead["cycles"] == follow["cycles"] == 20002
+        assert follow["registers"][1] == "0x00002711"  # all 10001 ADDs executed

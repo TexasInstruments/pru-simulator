@@ -229,3 +229,34 @@ def test_multicore_catchup_is_bounded_and_resumes_without_skipping_execution():
     assert result["success"] is True
     assert result["follow"]["cycles"] == result["lead"]["cycles"]
     assert mcp.sim.registers("pru1")[0] == (result["follow"]["cycles"] + 1) // 2
+
+
+@pytest.mark.parametrize("finish", ["halt", "nop"])
+def test_multicore_resumes_catchup_after_the_lead_finishes(finish):
+    mcp = fresh_mcp()
+    assert mcp.pru_load(
+        f"ldi r0, 10000\nloop: sub r0, r0, 1\nqbne loop, r0, 0\n{finish}",
+        core="pru0"
+    )["success"]
+    assert mcp.pru_load("add r1, r1, 1\njmp 0", core="pru1")["success"]
+    mcp.sim.step("pru0", 20001)
+
+    for expected_cycles in (1000, 2000):
+        result = mcp.pru_step_multicore(count=5)
+        assert result["success"] is False
+        assert result["reason"] == "pacing_incomplete"
+        assert result["lead"]["cycles"] == 20002
+        assert result["lead"]["halted"] == (finish == "halt")
+        assert result["lead"]["fault"] is None
+        assert result["follow"]["cycles"] == expected_cycles
+        assert mcp.sim.registers("pru1")[1] == expected_cycles // 2
+
+    for _ in range(25):
+        result = mcp.pru_step_multicore(count=5)
+        if result["success"]:
+            break
+        assert result["reason"] == "pacing_incomplete"
+
+    assert result["success"] is True
+    assert result["lead"]["cycles"] == result["follow"]["cycles"] == 20002
+    assert mcp.sim.registers("pru1")[1] == 10001
