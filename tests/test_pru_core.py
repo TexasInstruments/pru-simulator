@@ -721,8 +721,9 @@ def test_loading_a_program_clears_the_previous_programs_fault(load):
     [
         lambda core: core.load_asm("ldi r1\n"),
         lambda core: core.load_binary(["not a word"], b"", 0),
+        lambda core: core.load_binary([], b"x", 0xF0000000),
     ],
-    ids=["load_asm", "load_binary"],
+    ids=["load_asm", "bad_disassembly", "unmapped_data"],
 )
 def test_a_failed_load_keeps_the_faulting_program_and_its_fault(load):
     """A load that fails installs nothing, so the fault still explains the halt."""
@@ -730,12 +731,14 @@ def test_a_failed_load_keeps_the_faulting_program_and_its_fault(load):
     run_to_halt(core)
     fault = core.fault
     program = core.instructions
+    labels = core._parser.labels.copy()
     assert fault is not None
 
     assert load(core) != []
 
     assert core.fault == fault
     assert core.instructions is program
+    assert core._parser.labels == labels
     assert core.halted
 
 

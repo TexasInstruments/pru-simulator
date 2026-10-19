@@ -164,18 +164,19 @@ class PRUCore:
         Loading installs instructions only: halted, pc, loop state and
         registers are left as they were, so reset() the core before running a
         newly loaded program. A successful load drops the recorded fault; a
-        failed disassembly leaves the previous program and its fault in place.
+        failed load leaves the previous program and its fault in place.
         """
         from .disassembler import disassemble
         errors: list[str] = []
         try:
             syms = symbols or {}
-            self.instructions = disassemble(text_words, syms)
-            self.fault = None
-            # Store symbols as labels (name → addr) for the frontend
-            self._parser.labels = {name: addr for addr, name in syms.items()}
+            instructions = disassemble(text_words, syms)
             if data_bytes:
                 self.memory.write(data_addr, data_bytes)
+            self.instructions = instructions
+            # Store symbols as labels (name → addr) for the frontend
+            self._parser.labels = {name: addr for addr, name in syms.items()}
+            self.fault = None
         except Exception as exc:  # noqa: BLE001
             errors.append(str(exc))
         return errors

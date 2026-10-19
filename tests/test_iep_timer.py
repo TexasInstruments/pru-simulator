@@ -380,16 +380,16 @@ def test_first_mode_keeps_the_first_event():
     assert iep.read32(CAPR0_REG0) == 5
 
 
-def test_last_mode_overwrites():
+def test_capture_enable_bit_seven_does_not_select_slot_zero_overwrite():
     iep = _running_iep()
-    iep.write32(CAP_CFG, 0x1 | (1 << 7))          # slot 0, last mode
-    for _ in range(5):
-        iep.tick()
-    iep.capture_event(0)
-    for _ in range(50):
-        iep.tick()
-    assert iep.capture_event(0) is True
-    assert iep.read32(CAPR0_REG0) == 55
+    iep.write32(CAP_CFG, 0x81)  # CAP_EN[0] and CAP_EN[7], Table 14-10925
+    iep.count = 5
+    assert iep.capture_event(0)
+    iep.count = 55
+    assert iep.capture_event(7)
+    assert not iep.capture_event(0)
+    assert iep.read32(CAPR0_REG0) == 5
+    assert iep.read32(CAPR0_REG0 + 8 * 7) == 55
 
 
 def test_clearing_the_valid_bit_re_arms_first_mode():
@@ -568,3 +568,21 @@ def test_invalid_iep_clock_is_rejected():
         IepTimer(clock_mhz=0)
     with pytest.raises(ValueError):
         IepTimer().set_clock_mhz(-1)
+
+
+@pytest.mark.parametrize("reset_method", ["reset", "hardware_reset"])
+@pytest.mark.parametrize("slot", range(10))
+def test_reset_async_bits_do_not_overwrite_capture(slot, reset_method):
+    timer = IepTimer()
+    timer.cap_cfg = 0xFFFFFF
+    getattr(timer, reset_method)()
+    # Table 14-10925: bits 9:0 enable captures, 17:10 synchronize inputs.
+    timer.write32(CAP_CFG, timer.read32(CAP_CFG) | (1 << slot))
+    timer.count = 7
+    assert timer.capture_event(slot)
+    timer.count = 19
+    assert not timer.capture_event(slot)
+    assert timer.read32(CAPR0_REG0 + 8 * slot) == 7
+    timer.write32(CAP_STATUS, 1 << slot)
+    assert timer.capture_event(slot)
+    assert timer.read32(CAPR0_REG0 + 8 * slot) == 19
