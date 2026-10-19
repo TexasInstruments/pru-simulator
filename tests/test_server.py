@@ -213,3 +213,69 @@ def test_fault_is_reported_in_state_and_restored_by_step_back(fresh_sim):
 
     srv._restore("pru0", snapshot)
     assert fresh_sim.cores["pru0"].fault is None
+
+
+@pytest.mark.parametrize("target,has_rtu1", [
+    ("AM243x", True), ("AM64x", True), ("AM263x", False),
+])
+def test_dashboard_core_choices_follow_the_live_target(tmp_path, monkeypatch, target, has_rtu1):
+    import ui.server as srv
+
+    cfg_file = tmp_path / "memory.cfg"
+    cfg_file.write_text("[device]\ntarget = AM243x\n")
+    monkeypatch.setattr(srv, "config_path", str(cfg_file))
+    monkeypatch.setattr(srv, "sim", Simulator(str(cfg_file)))
+
+    assert "rtu1" in client.get("/cores").json()
+    response = client.put("/config", content=f"[device]\ntarget = {target}\n")
+
+    assert response.status_code == 200
+    cores = client.get("/cores").json()
+    assert set(cores) == set(srv.sim.cores)
+    assert ("rtu1" in cores) == has_rtu1
+    if has_rtu1:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json({"action": "load", "core": "rtu1", "source": "ldi r3, 42\nhalt"})
+            assert ws.receive_json()["core"] == "rtu1"
+            ws.send_json({"action": "step", "core": "rtu1"})
+            assert ws.receive_json()["registers"][3] == "0x0000002A"
+
+
+def test_step_back_after_peer_progress_reports_error_and_preserves_history(fresh_sim, monkeypatch):
+    import ui.server as srv
+
+    monkeypatch.setattr(srv, "_history", {core: [] for core in fresh_sim.cores})
+    for core in ("pru0", "pru1"):
+        assert fresh_sim.load(core, "nop\njmp 0") == []
+    with client.websocket_connect("/ws") as ws:
+        for core in ("pru0", "pru1"):
+            ws.send_json({"action": "step", "core": core})
+            ws.receive_json()
+        before = fresh_sim.iep.snapshot()
+
+        ws.send_json({"action": "step_back", "core": "pru0"})
+
+        error = ws.receive_json()
+        assert error["type"] == "error"
+        assert "peer core has progressed" in error["errors"][0]
+        assert ws.receive_json()["cycles"] == 1
+        assert len(srv._history["pru0"]) == 1
+        assert fresh_sim.iep.snapshot() == before
+
+
+def test_multicore_run_reports_incomplete_catchup_without_blocking(fresh_sim):
+    for core in ("pru0", "pru1"):
+        assert fresh_sim.load(core, "nop\njmp 0") == []
+    fresh_sim.step("pru0", 10000)
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "run_multicore", "core": "pru0",
+                      "partner": "pru1", "max_steps": 5})
+
+        error = ws.receive_json()
+        assert error["type"] == "error"
+        assert error["reason"] == "pacing_incomplete"
+        assert ws.receive_json()["cycles"] == 10001
+        assert 0 < ws.receive_json()["cycles"] < 10001
+        ws.send_json({"action": "get_state", "core": "pru1"})
+        assert ws.receive_json()["type"] == "state"

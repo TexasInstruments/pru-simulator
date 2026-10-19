@@ -471,10 +471,8 @@ class IepTimer:
             self.global_status = value
         elif offset == COUNT_REG0:
             self.count = (self.count & ~_MASK32) | value
-            self._tick_remainder = 0
         elif offset == COUNT_REG1:
             self.count = (self.count & _MASK32) | (value << 32)
-            self._tick_remainder = 0
         elif offset == CMP_CFG:
             self.cmp_cfg = value
         elif offset == CMP_STATUS:

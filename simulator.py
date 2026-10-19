@@ -6,6 +6,7 @@ reading memory, and querying I/O state.
 
 import configparser
 import copy
+import math
 import os
 import re
 
@@ -25,6 +26,7 @@ from perif.gpcfg import GpcfgRegisters, MUX_PERIF
 from perif.loopback import Loopback
 
 _GPCFG_INDEX = {"pru0": 0, "pru1": 1}   # rtu0 has no GPCFG GP-mux (TRM)
+_MAX_CATCHUP_STEPS = 1000
 
 
 class SDRegisterRegion(MemoryRegion):
@@ -350,12 +352,12 @@ class Simulator:
         }
 
     def step_paced(self, lead: str, follow: str, count: int = 1,
-                   guard_ns: float = 20.0) -> None:
+                   guard_ns: float = 20.0) -> dict:
         """Step *lead* and pace *follow* by elapsed core time."""
-        self.step_paced_many(lead, [follow], count=count, guard_ns=guard_ns)
+        return self.step_paced_many(lead, [follow], count=count, guard_ns=guard_ns)
 
     def step_paced_many(self, lead: str, followers: list[str], count: int = 1,
-                        guard_ns: float = 20.0) -> None:
+                        guard_ns: float = 20.0) -> dict:
         """Step a lead core and catch each follower up by exact elapsed time.
 
         When both cores have enabled PERIF blocks, *guard_ns* keeps the follower
@@ -363,7 +365,16 @@ class Simulator:
         the follower catches up to the lead's exact core time without a guard.
         PERIF clocks continue to advance while mux-disabled; the mux controls
         signal routing, and the guard applies only while both routes are active.
+        Each follower catch-up is limited to 1000 instructions per lead step.
+        The result records the selected targets and reports incomplete work;
+        subsequent calls execute the remaining gap without skipping core time.
         """
+        if isinstance(guard_ns, bool) or not isinstance(guard_ns, (int, float)):
+            raise ValueError("guard_ns must be a number")
+        if isinstance(guard_ns, float) and not math.isfinite(guard_ns):
+            raise ValueError("guard_ns must be finite")
+        if guard_ns < 0:
+            raise ValueError("guard_ns must be non-negative")
         lead_pru = self._get_core(lead)
         lead_perif = self._perif.get(lead)
         follower_states = [
@@ -371,6 +382,7 @@ class Simulator:
             for follower in followers
         ]
         guard_units = self.iep.nanoseconds_to_units(guard_ns)
+        targets = {}
         for _ in range(count):
             if not lead_pru.halted and lead_pru.pc < len(lead_pru.instructions):
                 lead_pru.step()
@@ -381,12 +393,25 @@ class Simulator:
                     and lead_perif.enabled and follow_perif.enabled
                 )
                 target = lead_time - (guard_units if use_guard else 0)
+                targets[follower] = target
+                steps = 0
                 while (
                     self.iep.core_time_units(follower, follow_pru.counters.cycles) < target
                     and not follow_pru.halted
                     and follow_pru.pc < len(follow_pru.instructions)
                 ):
+                    if steps >= _MAX_CATCHUP_STEPS:
+                        return {"complete": False, "reason": "pacing_incomplete",
+                                "follower": follower, "targets": targets}
+                    previous_cycles = follow_pru.counters.cycles
                     follow_pru.step()
+                    steps += 1
+                    if (follow_pru.counters.cycles == previous_cycles
+                            and not follow_pru.halted
+                            and follow_pru.pc < len(follow_pru.instructions)):
+                        return {"complete": False, "reason": "pacing_catchup_failed",
+                                "follower": follower, "targets": targets}
+        return {"complete": True, "targets": targets}
 
     def registers(self, core: str) -> list[int]:
         """Return the 32 general-purpose register values for *core*."""

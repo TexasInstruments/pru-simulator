@@ -55,6 +55,14 @@ _MAX_HISTORY = 500
 _history: dict[str, list] = {"pru0": [], "rtu0": [], "pru1": [], "rtu1": []}
 
 
+def _peer_progress(core: str) -> dict:
+    return {
+        name: (peer.counters.cycles, peer.counters.instruction_count,
+               sim.iep.core_time_units(name, peer.counters.cycles))
+        for name, peer in sim.cores.items() if name != core
+    }
+
+
 def _snapshot(core: str) -> dict:
     """Capture full PRU core + memory state before a step."""
     c = sim.cores[core]
@@ -63,6 +71,7 @@ def _snapshot(core: str) -> dict:
     perif = c.io_port.perif
     i2c = c.io_port.i2c_device
     return {
+        "peer_progress": _peer_progress(core),
         "pc": c.pc,
         "halted": c.halted,
         "fault": dict(c.fault) if c.fault is not None else None,
@@ -85,6 +94,8 @@ def _snapshot(core: str) -> dict:
 
 def _restore(core: str, snap: dict) -> None:
     """Restore PRU core + memory state from a snapshot."""
+    if _peer_progress(core) != snap["peer_progress"]:
+        raise ValueError("Cannot step back after a peer core has progressed")
     c = sim.cores[core]
     c.pc = snap["pc"]
     c.halted = snap["halted"]
@@ -121,6 +132,11 @@ async def index():
 @app.get("/regions")
 async def get_regions():
     return [{"name": r.name, "base": r.base_addr, "size": r.size} for r in sim.memory.regions]
+
+
+@app.get("/cores")
+async def get_cores():
+    return list(sim.cores)
 
 
 @app.get("/config")
@@ -403,7 +419,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 await _send_state(websocket, core)
             elif action == "step_back":
                 if _history[core]:
-                    _restore(core, _history[core].pop())
+                    try:
+                        _restore(core, _history[core][-1])
+                        _history[core].pop()
+                    except ValueError as ve:
+                        await websocket.send_json({"type": "error", "errors": [str(ve)]})
                 await _send_state(websocket, core)
             elif action == "toggle_breakpoint":
                 addr = int(msg.get("addr", 0))
@@ -522,10 +542,16 @@ async def websocket_endpoint(websocket: WebSocket):
                     steps = 0
                     while (steps < max_steps and not lead_pru.halted
                            and lead_pru.pc < len(lead_pru.instructions)):
-                        sim.step_paced(core, partner, 1)
+                        pacing = sim.step_paced(core, partner, 1)
                         steps += 1
                         if capture and _capture_due(lead_pru, steps):
                             samples.append(_capture_sample(lead_pru))
+                        if not pacing["complete"]:
+                            await websocket.send_json({
+                                "type": "error", "reason": pacing["reason"],
+                                "errors": ["Follower catch-up is incomplete; run again to continue"],
+                            })
+                            break
                         if lead_pru.pc in lead_pru.breakpoints:
                             lead_bp = True
                             break

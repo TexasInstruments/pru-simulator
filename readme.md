@@ -143,6 +143,30 @@ All cores share one IEP timer. Each core's elapsed cycles, including stalls,
 are converted to time with exact rational clock periods, so cores at different
 clocks stay aligned without float drift.
 
+Count-register writes preserve the running IEP clock phase, including byte and
+64-bit writes. Enabling the counter or changing its increment or effective clock
+starts a new phase.
+
+Dashboard core and load selectors follow the configured target, including RTU1
+on AM243x/AM64x. Each core has an independent copy of the configured constant
+table, but those copies still start with the same values: core-specific C11/C22
+addresses are not modeled. The dashboard constant-table panel is a reference,
+not a readback of the executing core's table.
+
+Dashboard step-back is restricted to snapshots whose peer cores have not
+progressed. Restoring one core after a peer executes would rewind shared memory
+and IEP time without restoring that peer's CPU. Coherent multicore undo remains
+follow-up work.
+
+Paced stepping limits each follower to 1000 catch-up instructions per lead step.
+`step_paced` and `step_paced_many` return `complete` and the selected `targets`
+(in exact IEP time units). An unfinished catch-up returns `complete=False` with
+`reason="pacing_incomplete"`; MCP reports the same reason and dashboard Run stops
+with a message. Another call continues execution from the actual core state;
+elapsed time is never skipped. A follower that reaches HALT or the end of its
+program finishes normally, while a recorded CPU fault remains an error. The
+guard target is fixed for that catch-up even if firmware changes the mux.
+
 ## Example Programs
 
 See [getting_started.md](getting_started.md) for step-by-step walkthroughs of all examples in `source/`.
@@ -200,7 +224,7 @@ v0.2.8 — hover over **PRU SIM** in the dashboard header to confirm.
 - **Rational multi-clock IEP timebase** — the single `perif/iep.py` `IepTimer` (compare, capture, 64-bit CMP pairs, `CMP0_RST_CNT_EN`) now advances on exact elapsed core time, replacing floating-point time conversion. Each core reports its elapsed cycles, stalls included, through a `cycle_observer`, and the timer converts them with `Fraction` clock periods, so PRU0/PRU1/RTU cores at different clocks share one exact timeline. **Behaviour change:** omitted `iep_clock_mhz` selects 200 MHz, the TRM default ICSSG_IEP_CLK rate (SPRUIM2J §6.4.13.2.4), independent of the core clock; an explicit external IEP rate remains independently configurable. ICSS CFG `IEPCLK` bit 0 (`0x26030`) clear selects that external rate, while set selects the OCP clock (`pru_clock_mhz`). Tick phase is preserved across firmware writes that do not change the effective clock.
 - **RTU1 core** — `Simulator.cores` gains `rtu1` for AM243x/AM64x profiles (an omitted target selects AM243x), using `pru1_clock_mhz` alongside PRU1 and the PRU1 DRAM mapping (DRAM1 at local `0x0000`). An unknown target causes a configuration-load error.
 - **Time-based multi-core pacing** — `step_paced` (and the new `step_paced_many` for several followers) catches each follower up to the lead's exact elapsed time instead of interleaving instructions 1:1. This keeps cores aligned when clocks differ or when `LBBO`/`WBS` stalls occur. The Peripheral Interface guard (`guard_ns`) now applies only while both cores' Peripheral Interfaces are enabled; otherwise followers catch up with no guard. MCP `pru_step_multicore` uses the same pacing.
-- **Step-back restores the IEP** — dashboard history snapshots include the shared timer, and history for all four cores is cleared on config changes.
+- **Step-back restores the IEP** — dashboard history snapshots include the shared timer, reject unsafe undo after a peer core progresses, and clear history for all four cores on config changes.
 - **Invalid config is rejected before it is written** — `PUT /config` and `PUT /config/clock_speed` validate a new config before writing it. A rejected config returns 400 and leaves the file, the live simulator and the history unchanged.
 - **MCP tools reject wrong types** — integer parameters reject bools and strings, and boolean parameters accept only `true`/`false`. `pru_set_input(value="false")` no longer drives the pin high.
 - **MCP stdio schema types** — the stdio server advertises `integer`, `number`, `boolean`, `array` and `object` types instead of `"string"` for optional, list and dict parameters.

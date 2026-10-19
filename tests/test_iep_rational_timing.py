@@ -400,6 +400,58 @@ def test_ui_step_back_restores_the_shared_timer_timeline(monkeypatch):
     assert sim.cores["pru0"].counters.cycles == 10
 
 
+@pytest.mark.parametrize("peer", ["pru1", "rtu1"])
+def test_ui_step_back_rejects_a_snapshot_after_a_peer_executes(monkeypatch, peer):
+    import ui.server as server
+
+    sim = Simulator()
+    monkeypatch.setattr(server, "sim", sim)
+    for core in ("pru0", peer):
+        _load_loop(sim, core)
+    sim.iep.global_cfg = 0x11
+    snapshot = server._snapshot("pru0")
+    sim.step("pru0", 10)
+    sim.step(peer, 20)
+    before_time = sim.iep.snapshot()
+    before_cores = sim.status()
+
+    with pytest.raises(ValueError, match="peer.*progress"):
+        server._restore("pru0", snapshot)
+
+    assert sim.iep.snapshot() == before_time
+    assert sim.status() == before_cores
+
+
+@pytest.mark.parametrize("offset,data,expected", [
+    (COUNT_REG0, (100).to_bytes(4, "little"), 101),
+    (COUNT_REG1, (1).to_bytes(4, "little"), (1 << 32) + 1),
+    (COUNT_REG0 + 1, b"\x01", 257),
+    (COUNT_REG0, (100).to_bytes(8, "little"), 101),
+])
+def test_count_writes_preserve_the_running_clock_phase(offset, data, expected):
+    iep = IepTimer(clock_mhz="200", ocp_clock_mhz="250")
+    iep.global_cfg = 0x11
+    iep.observe_core_cycles("pru0", 1)  # 4 ns, before the first 5 ns IEP edge
+
+    iep.write(offset, data)
+    iep.observe_core_cycles("pru0", 2)  # 8 ns: one IEP edge has elapsed
+
+    assert iep.count == expected
+
+
+@pytest.mark.parametrize("guard", [float("nan"), float("inf"), -float("inf")])
+def test_simulator_rejects_nonfinite_guards_before_execution(guard):
+    sim = Simulator()
+    _load_loop(sim, "pru0")
+    _load_loop(sim, "pru1")
+
+    with pytest.raises(ValueError, match="finite"):
+        sim.step_paced("pru0", "pru1", guard_ns=guard)
+
+    assert sim.iep.now_ns == 0
+    assert sim.cores["pru0"].counters.cycles == 0
+
+
 def test_direct_core_reset_notifies_shared_timeline():
     sim = Simulator()
     _load_loop(sim, "pru0")

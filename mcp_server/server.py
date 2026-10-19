@@ -6,6 +6,7 @@ import base64
 import binascii
 import struct
 import copy
+import math
 import random
 import inspect
 import types
@@ -199,6 +200,8 @@ class PRUSimulatorMCP:
         _require_int("count", count)
         if isinstance(guard_ns, bool) or not isinstance(guard_ns, (int, float)):
             raise ValueError("guard_ns must be a number")
+        if isinstance(guard_ns, float) and not math.isfinite(guard_ns):
+            raise ValueError("guard_ns must be finite")
         if count < 0:
             raise ValueError("count must be non-negative")
         if guard_ns < 0:
@@ -217,23 +220,9 @@ class PRUSimulatorMCP:
             }
 
         for _ in range(count):
-            self.sim.step_paced(lead, follow, 1, guard_ns=guard_ns)
-            lead_perif = self.sim._perif.get(lead)
-            follow_perif = self.sim._perif.get(follow)
-            use_guard = (
-                lead_perif is not None and follow_perif is not None
-                and lead_perif.enabled and follow_perif.enabled
-            )
+            pacing = self.sim.step_paced(lead, follow, 1, guard_ns=guard_ns)
             lead_core = self.sim.cores[lead]
             follow_core = self.sim.cores[follow]
-            target_units = self.sim.iep.core_time_units(
-                lead, lead_core.counters.cycles
-            ) - (
-                self.sim.iep.nanoseconds_to_units(guard_ns) if use_guard else 0
-            )
-            follow_units = self.sim.iep.core_time_units(
-                follow, follow_core.counters.cycles
-            )
             if lead_core.fault is not None or follow_core.fault is not None:
                 return {
                     "success": False,
@@ -241,12 +230,16 @@ class PRUSimulatorMCP:
                     "lead": state(lead),
                     "follow": state(follow),
                 }
-            if not follow_core.halted and follow_units < target_units:
+            if not pacing["complete"]:
+                target_units = pacing["targets"][follow]
+                follow_units = self.sim.iep.core_time_units(
+                    follow, follow_core.counters.cycles
+                )
                 target_ns = float(self.sim.iep.time_units_to_ns(target_units))
                 follow_ns = float(self.sim.iep.time_units_to_ns(follow_units))
                 return {
                     "success": False,
-                    "reason": "pacing_catchup_failed",
+                    "reason": pacing["reason"],
                     "target_ns": float(target_ns),
                     "follow_ns": float(follow_ns),
                     "lead": state(lead),
