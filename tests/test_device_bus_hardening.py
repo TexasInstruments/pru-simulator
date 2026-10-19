@@ -1,5 +1,7 @@
 """Focused regressions for DeviceBus cycle and GPIO lifecycle behavior."""
 
+import pytest
+
 from core.pru_core import PRUCore
 from pru_io.device_model import OPEN_DRAIN, PUSH_PULL, DeviceModel
 from pru_io.io_port import IOPort
@@ -50,6 +52,7 @@ def _level(word, pin):
 def test_reactive_device_does_not_tick_for_repeated_r30_value():
     sim = Simulator()
     port = sim.cores["pru0"].io_port
+    port.set_gpo_drive_mask(1)
     device = sim.attach_device("pru0", _PinDevice(4))
     initial_calls = len(device.calls)
 
@@ -632,3 +635,239 @@ def test_contradictory_or_invalid_direction_leases_do_not_mutate_state():
         with pytest.raises(ValueError):
             sim.lease_gpio_outputs("pru0", mask, object(), drive_mask=drive)
         assert sim.device_bus.snapshot() == before
+
+
+@pytest.mark.parametrize("drive_mask", [True, False])
+def test_boolean_lease_drive_masks_are_rejected_before_ownership_changes(drive_mask):
+    sim = Simulator()
+    before = sim.device_bus.snapshot()
+
+    with pytest.raises(ValueError, match="drive mask"):
+        sim.lease_gpio_outputs("pru0", 1, object(), drive_mask=drive_mask)
+
+    assert sim.device_bus.snapshot() == before
+
+
+@pytest.mark.parametrize("mode", ["standalone", "unwired", "wired"])
+@pytest.mark.parametrize("gpo", [0, 1 << 4])
+def test_last_detach_restores_active_loopback(mode, gpo):
+    if mode == "standalone":
+        port = IOPort()
+    else:
+        sim = Simulator()
+        port = sim.cores["pru0"].io_port
+        if mode == "wired":
+            sim.add_gpio_wire("pru0", 8, "rtu0", 8)
+    port.set_loopback_group(1, True)
+    port.write_r30(gpo)
+    device = port.attach_device(_PinDevice(4, value=1 - _level(gpo, 4)))
+    port.tick_devices(0)
+    assert _level(port.gpi, 4) != _level(gpo, 4)
+
+    port.detach_device(device)
+
+    assert _level(port.gpi, 4) == _level(gpo, 4)
+
+
+class _ReactiveRelay(DeviceModel):
+    def __init__(self, input_pin, output_pin):
+        self.name = "relay"
+        self.input_pin = input_pin
+        self.output_pin = output_pin
+        self.nets = {output_pin: PUSH_PULL}
+        self.calls = []
+
+    def tick(self, cycle, bus):
+        self.calls.append((cycle, bus))
+        return 1 << self.output_pin, _level(bus, self.input_pin) << self.output_pin
+
+
+@pytest.mark.parametrize("mode", ["standalone", "unwired", "wired"])
+def test_reactive_peer_sees_relay_output_in_same_settle(mode):
+    if mode == "standalone":
+        port = IOPort()
+    else:
+        sim = Simulator()
+        port = sim.cores["pru0"].io_port
+        if mode == "wired":
+            sim.add_gpio_wire("pru0", 8, "rtu0", 8)
+    port.set_gpo_drive_mask(1)
+    relay = port.attach_device(_ReactiveRelay(0, 4))
+    watcher = port.attach_device(_ReactiveRelay(4, 5))
+    port.write_r30(1)
+    watcher.calls.clear()
+    relay.calls.clear()
+
+    port.write_r30(0)
+
+    assert _level(watcher.calls[-1][1], 4) == 0
+    assert _level(port.gpi, 5) == 0
+    assert len(watcher.calls) <= 2
+    # The relay changed its own output and must not consume that as a fresh edge.
+    assert len(relay.calls) <= 2
+
+
+def test_cross_core_reactive_peer_sees_new_drive_before_settle_returns():
+    sim = Simulator()
+    source = sim.cores["pru0"].io_port
+    source.set_gpo_drive_mask(1)
+    sim.attach_device("pru0", _ReactiveRelay(0, 4))
+    watcher = sim.attach_device("rtu0", _ReactiveRelay(7, 5))
+    sim.add_gpio_wire("pru0", 4, "rtu0", 7)
+    source.write_r30(1)
+    watcher.calls.clear()
+
+    source.write_r30(0)
+
+    assert _level(watcher.calls[-1][1], 7) == 0
+    assert _level(sim.cores["rtu0"].io_port.gpi, 5) == 0
+    assert len(watcher.calls) <= 2
+
+
+def test_standalone_reactive_watcher_sees_each_timed_edge():
+    port = IOPort()
+    port.attach_device(_PinDevice(0, value=0, name="clock", time_driven=True))
+    watcher = port.attach_device(_ReactiveRelay(0, 4))
+    watcher.calls.clear()
+
+    port.advance_devices(4)
+
+    assert [cycle for cycle, _ in watcher.calls] == [1, 2, 3, 4]
+    assert [_level(bus, 0) for _, bus in watcher.calls] == [0, 1, 0, 1]
+
+
+@pytest.mark.parametrize("mode", ["standalone", "unwired", "wired"])
+def test_device_does_not_resample_its_own_new_drive(mode):
+    if mode == "standalone":
+        port = IOPort()
+    else:
+        sim = Simulator()
+        port = sim.cores["pru0"].io_port
+        if mode == "wired":
+            sim.add_gpio_wire("pru0", 4, "pru0", 6)
+    port.set_gpo_drive_mask(1)
+    relay = port.attach_device(_ReactiveRelay(0, 4))
+    port.write_r30(1)
+    relay.calls.clear()
+
+    port.write_r30(0)
+
+    assert len(relay.calls) == 1
+    assert _level(port.gpi, 4) == 0
+
+
+@pytest.mark.parametrize("mode", ["standalone", "unwired", "wired"])
+def test_later_idle_timed_cycles_do_not_reconsume_reactive_output(mode):
+    class HeldClock(DeviceModel):
+        time_driven = True
+        nets = {0: PUSH_PULL}
+
+        def tick(self, cycle, bus):
+            return (0, 0) if cycle == 0 else (1, 0)
+
+    if mode == "standalone":
+        port = IOPort()
+    else:
+        sim = Simulator()
+        port = sim.cores["pru0"].io_port
+        if mode == "wired":
+            sim.add_gpio_wire("pru0", 4, "pru0", 6)
+    port.attach_device(HeldClock())
+    relay = port.attach_device(_ReactiveRelay(0, 4))
+    relay.calls.clear()
+
+    port.advance_devices(4)
+
+    assert [cycle for cycle, _ in relay.calls] == [1]
+
+
+def _record_i2c_events(model, start_cycle, transactions):
+    for cycle in range(start_cycle, start_cycle + transactions * 4, 4):
+        for offset, bus in enumerate((3, 1, 0, 3)):
+            model.tick(cycle + offset, bus)
+
+
+def test_ui_event_payload_and_snapshot_stay_bounded_and_restore_evicted_events(monkeypatch):
+    from ui import server as ui_server
+
+    sim = Simulator()
+    monkeypatch.setattr(ui_server, "sim", sim)
+    model = sim.attach_device("pru0", TCA9538Model())
+    _record_i2c_events(model, 0, 1000)
+    before = model.events()
+    snap = ui_server._snapshot("pru0")
+
+    assert len(before) == 256
+    assert before[-1] == {"cycle": 3999, "kind": "stop"}
+    assert len(sim.device_state()["events"]) == 256
+    assert len(snap["device_bus"]["devices"][0]["events"]) == 256
+
+    _record_i2c_events(model, 4000, 1000)
+    sim.reset("pru0")
+    ui_server._restore("pru0", snap)
+
+    assert model.events() == before
+    assert model.faults() == []
+    _record_i2c_events(model, 4000, 1)
+    replay = model.events()
+    ui_server._restore("pru0", snap)
+    _record_i2c_events(model, 4000, 1)
+    assert model.events() == replay
+    assert snap["device_bus"]["devices"][0]["events"] == before
+
+
+def test_ui_event_payload_is_bounded_across_multiple_devices():
+    sim = Simulator()
+    for pin in (0, 4):
+        model = sim.attach_device("pru0", TCA9538Model(scl_pin=pin, sda_pin=pin + 1))
+        for cycle in range(1000):
+            model.tick(cycle, (3 if cycle & 1 else 1) << pin)
+
+    state = sim.device_state()
+
+    assert len(state["events"]) == 256
+    assert state["events"][-1]["cycle"] == 999
+
+
+def test_recurring_contention_retention_is_bounded_and_snapshot_restores_history():
+    from pru_io.device_model import DeviceBus
+
+    bus = DeviceBus()
+    device = bus.attach(_PinDevice(4, value=1))
+    bus.set_pru_drive_mask(1 << 4)
+    for cycle in range(600):
+        device.value = cycle & 1
+        bus.settle(cycle, 1 << 4)
+    snap = bus.snapshot()
+
+    assert len(bus.contentions) == len(bus.contention_records) == 256
+    assert bus.contention_records[-1]["cycle"] == 598
+    assert bus.get_state()["contentions"] == 256
+
+    for cycle in range(600, 1200):
+        device.value = cycle & 1
+        bus.settle(cycle, 1 << 4)
+    bus.reset()
+    bus.restore(snap)
+
+    assert bus.contentions == snap["contentions"]
+    assert bus.contention_records == snap["contention_records"]
+    assert bus.get_state()["contentions"] == 256
+    device.value = 0
+    bus.settle(600, 1 << 4)
+    assert bus.contention_records[-1]["cycle"] == 600
+    assert snap["contention_records"][-1]["cycle"] == 598
+
+
+def test_repeated_tca_faults_and_their_snapshots_are_bounded():
+    model = TCA9538Model()
+    for cycle in range(1000):
+        model.tick(cycle, 3 if cycle & 1 else 1)
+
+    before = model.faults()
+    snap = model.snapshot()
+
+    assert len(before) == len(snap["faults"]) == 256
+    model.reset()
+    model.restore(snap)
+    assert model.faults() == before

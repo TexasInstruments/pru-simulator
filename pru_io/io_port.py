@@ -93,9 +93,10 @@ class IOPort:
 
     def set_gpo_drive_mask(self, mask: int) -> None:
         """Set which pins this core is currently driving as GPIO outputs."""
-        if not isinstance(mask, int) or isinstance(mask, bool):
+        if (not isinstance(mask, int) or isinstance(mask, bool)
+                or not 0 <= mask <= _MASK_20):
             raise ValueError("GPIO drive mask must be a 20-bit integer")
-        self.gpo_drive_mask = mask & _MASK_20
+        self.gpo_drive_mask = mask
         if self._device_endpoint is None:
             self.device_bus.set_pru_drive_mask(self.gpo_drive_mask)
             if self.device_bus.active:
@@ -163,6 +164,9 @@ class IOPort:
             for pin in device.nets:
                 driven |= 1 << pin
         managed = self._device_pin_mask | driven
+        released_loopback = self._device_pin_mask & ~driven & self.loopback_mask
+        if self.sd_filter is None or not self.sd_filter.sd_en:
+            bus = (bus & ~released_loopback) | (self.gpo & released_loopback)
         self.gpi = ((self.gpi & ~managed) | (bus & managed)) & _MASK_20
         self._device_pin_mask = driven
 

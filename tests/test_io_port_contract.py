@@ -5,7 +5,7 @@ import pytest
 from core.pru_core import PRUCore
 from mem.memory_bus import MemoryBus
 from mem.regions import MemoryRegion
-from pru_io.device_model import PUSH_PULL, DeviceModel
+from pru_io.device_model import PUSH_PULL, DeviceBus, DeviceModel
 from pru_io.io_port import IOPort
 from xfr.xfr_bus import XFRBus
 
@@ -100,3 +100,24 @@ def test_gpo_drive_mask_still_accepts_an_int():
     port = IOPort()
     port.set_gpo_drive_mask(0x3)
     assert port.gpo_drive_mask == 0x3
+
+
+@pytest.mark.parametrize("mask", [-1, 1 << 20, True, False, 1.0, "3", None])
+@pytest.mark.parametrize("api", ["port", "standalone_bus", "registered_bus"])
+def test_invalid_drive_masks_leave_existing_direction_unchanged(mask, api):
+    port = IOPort()
+    if api == "registered_bus":
+        port.bind_device_bus(DeviceBus(), "pru0")
+    port.set_gpo_drive_mask(3)
+    before = port.device_bus.snapshot()
+
+    with pytest.raises(ValueError, match="20-bit integer"):
+        if api == "port":
+            port.set_gpo_drive_mask(mask)
+        elif api == "standalone_bus":
+            port.device_bus.set_pru_drive_mask(mask)
+        else:
+            port.device_bus.set_core_drive_mask("pru0", mask)
+
+    assert port.gpo_drive_mask == 3
+    assert port.device_bus.snapshot() == before
