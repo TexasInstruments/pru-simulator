@@ -149,10 +149,16 @@ Count-register writes preserve the running IEP clock phase, including byte and
 starts a new phase.
 
 Dashboard core and load selectors follow the configured target, including RTU1
-on AM243x/AM64x. Each core has an independent copy of the configured constant
-table, but those copies still start with the same values: core-specific C11/C22
-addresses are not modeled. The dashboard constant-table panel is a reference,
-not a readback of the executing core's table.
+on AM243x/AM64x. Each core has an independent constant table. Fixed C10,
+C11 and C22 addresses follow the executing core on AM243x/AM64x (SPRUIM2J,
+Table 6-65, pp. 581–582); AM263x PRU0/PRU1 use their documented C11/C22
+addresses. Other configured entries are preserved. AM263x's legacy simulated
+RTU0 has no hardware counterpart and keeps the common table; this change does
+not add hardware support for that core. Correct address selection does not
+implement the task manager, control or RAT register behavior. Accesses still
+require the corresponding memory region/model in the chosen configuration.
+The dashboard constant-table panel shows the common sidecar reference, not
+the executing core's corrected table.
 
 Dashboard step-back uses one ordered history across all cores. Undo restores
 all cores, shared memory, the IEP and devices to the same saved point, and
