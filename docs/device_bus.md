@@ -43,3 +43,7 @@ missing endpoints are rejected before changing the registry. Standalone buses ac
 `port=None`. Resetting one core clears contention records and active episodes involving
 its drivers/devices while preserving unrelated peer conflicts. Successful ELF session
 replacement releases all temporary direction leases, including nondevice owners.
+
+Time-driven models advance only for elapsed core cycles, including stalls.
+Attaching a model or changing R30 settles reactive devices without advancing
+time-driven models, both on a standalone core and in a Simulator.
