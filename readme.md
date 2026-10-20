@@ -125,6 +125,64 @@ The simulator loads `memory.cfg` at startup. Three built-in configs are provided
 
 Switch config by editing `memory.cfg` or copying one of the `config/` files over it.
 
+Clock keys in the `[device]` section:
+
+| Key | Applies to | Default if absent |
+|---|---|---|
+| `pru_clock_mhz` | PRU0, RTU0, and the IEP OCP clock | 200 |
+| `pru1_clock_mhz` | PRU1, RTU1 | inherited core |
+| `iep_clock_mhz` | IEP while ICSS CFG `IEPCLK` bit 0 is clear | 200 |
+
+Omitting `pru_clock_mhz` preserves the simulator's 200 MHz core default; omitting `pru1_clock_mhz` inherits the first rate. Explicitly configured rates, including 250 MHz, remain unchanged. The external IEP defaults independently to 200 MHz, the rate the TRM gives for ICSSG_IEP_CLK (SPRUIM2J §6.4.13.2.4). Core and IEP clocks remain independently configurable, including positive fractional MHz values, and changing the core speed leaves the external IEP clock unchanged. Firmware's IEPCLK register selects which configured source drives the timer.
+
+With both rates omitted, 1000 unstalled core cycles produce 1000 IEP ticks with `CNT_ENABLE=1` and `DEFAULT_INC=1` while IEPCLK bit 0 is clear. The supplied `memory.cfg` explicitly selects 250 MHz cores; with the omitted external IEP rate of 200 MHz, it produces 800 ticks for the same 1000 core cycles. See [clock sources and configuration](getting_started.md) for the cited TI firmware examples. RTU1 is available only on the AM243x/AM64x profiles; an omitted target selects AM243x.
+
+The simulator's IEP `GLOBAL_CFG` reset value, `0x550`, follows the TRM register defaults (IEP_GLOBAL_CFG_REG, Table 14-10907: `CMP_INC` and `DEFAULT_INC` reset to 5h, `CNT_ENABLE` to 0h). `DEFAULT_INC=5` counts nanoseconds at the default 200 MHz IEP clock, where one tick is 5 ns, so firmware that enables the counter with a read-modify-write (`GLOBAL_CFG | 1`) gets a nanosecond count. If you set a different IEP clock, for example 250 MHz (a 4 ns tick), firmware must set `DEFAULT_INC` itself (4 at 250 MHz) to keep a nanosecond count. A full-word write of `1` leaves `DEFAULT_INC=0`, and the counter does not advance.
+
+All cores share one IEP timer. Each core's elapsed cycles, including stalls,
+are converted to time with exact rational clock periods, so cores at different
+clocks stay aligned without float drift.
+
+Count-register writes preserve the running IEP clock phase, including byte and
+64-bit writes. Enabling the counter or changing its increment or effective clock
+starts a new phase.
+
+Dashboard core and load selectors follow the configured target, including RTU1
+on AM243x/AM64x. Each core has an independent constant table. Fixed C10,
+C11 and C22 addresses follow the executing core on AM243x/AM64x (SPRUIM2J,
+Table 6-65, pp. 581–582); AM263x PRU0/PRU1 use their documented C11/C22
+addresses. Other configured entries are preserved. AM263x's legacy simulated
+RTU0 has no hardware counterpart and keeps the common table; this change does
+not add hardware support for that core. Correct address selection does not
+implement the task manager, control or RAT register behavior. Accesses still
+require the corresponding memory region/model in the chosen configuration.
+The dashboard constant-table panel shows the common sidecar reference, not
+the executing core's corrected table.
+
+Dashboard step-back is restricted to snapshots whose peer cores have not
+progressed. Restoring one core after a peer executes would rewind shared memory
+and IEP time without restoring that peer's CPU. Coherent multicore undo remains
+follow-up work.
+
+Paced stepping limits each follower to 1000 catch-up instructions per lead step.
+`step_paced` and `step_paced_many` return `complete`, actual `lead_steps`, and the selected `targets`
+(in exact IEP time units). An unfinished catch-up returns `complete=False` with
+`reason="pacing_incomplete"`; MCP reports the same reason and dashboard Run stops
+with a message. Another call continues execution from the actual core state;
+elapsed time is never skipped. A follower that reaches HALT or the end of its
+program finishes normally, while a recorded CPU fault remains an error. The
+guard target is fixed for that catch-up even if firmware changes the mux.
+Unfinished targets are retained per lead and follower set: retries finish them
+before advancing that lead again, so `lead_steps` can be zero during catch-up.
+Other follower selections do not execute or discard that saved work. A core
+reset discards pending targets; dashboard step-back restores them with time.
+
+Batched callers must count `lead_steps`, not the requested batch size: a
+bounded catch-up may return before the batch finishes. Retry `pacing_incomplete`;
+report `pacing_catchup_failed` instead of treating it as a completed batch.
+Peripheral Interface timestamps use the same core-time origin as the IEP,
+including after resetting one core. A full hardware reset starts both at zero.
+
 ### IEP reset and capture limits
 
 `Simulator.hard_reset()` now calls `IepTimer.hardware_reset()`, so the counter, compare and capture state no longer survive a full reset. Register defaults follow [AM64x/AM243x TRM SPRUIM2J](https://www.ti.com/lit/pdf/spruim2), Tables 14-10907 and 14-10925: the counter stays disabled, with `GLOBAL_CFG` defined fields `0x550` and `CAP_CFG` defined fields `0x1FC00`. Reset leaves `DEFAULT_INC=5`, so enabling only `CNT_ENABLE` with a read-modify-write advances the counter by five per IEP tick; firmware must set `DEFAULT_INC` explicitly when another increment is required. Capture configuration follows Table 14-10925: bits 9:0 enable slots, bits 17:10 configure synchronization, and bits 23:18 select external sources. The simulator latches the first event until its valid bit is cleared; input synchronization, source routing and continuous overwrite are not modelled. The earlier synthetic first/last bits have been removed because they overlapped these fields.
@@ -177,9 +235,15 @@ standalone experiments and may require optional packages (for example,
 
 ## Version
 
-v0.2.8 — hover over **PRU SIM** in the dashboard header to confirm.
+v0.2.9 — hover over **PRU SIM** in the dashboard header to confirm.
 
 ### Changelog
+
+**v0.2.9**
+- **Exact shared IEP time** — one rational timebase includes memory stalls and preserves compare/capture behavior across different core clocks. Omitted core and external IEP rates default to 200 MHz; explicit rates remain configurable.
+- **RTU1 and paced execution** — AM243x/AM64x profiles gain RTU1. Multi-core stepping follows elapsed time, reports actual progress when catch-up is bounded, and keeps Peripheral Interface timestamps aligned after a core reset.
+- **IEP-aware step-back** — snapshots restore the shared timer, reject unsafe undo after a peer core progresses, and clear all core histories on configuration changes.
+- **Per-core constant addresses** — C10/C11/C22 selection follows the executing core where the target defines it; corrected addresses do not add the corresponding register models.
 
 **v0.2.8**
 - **Core faults and wait instructions** — memory faults are available in simulator, MCP and dashboard state; `WBS`/`WBC` accept implicit R31 and explicit register forms, with immediate bit numbers limited to 0–31.

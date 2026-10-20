@@ -55,24 +55,15 @@ The ten slots follow register order: CAPR0..CAPR6, CAPF6, CAPR7, CAPF7.
 
 TIMING
 
-The IEP runs on its own clock (ICSSG_IEP_CLK), not on any PRU core's
-instruction stream. `clock_mhz` sets that rate; the Simulator reads it from the
-`iep_clock_mhz` key in the config's [device] section and defaults it to the
-PRU0 clock. One `tick()` is one IEP clock edge.
-
-Cores drive time forward through `advance_core(core, core_ns)`, reporting their
-elapsed time in nanoseconds (cycles, stall cycles included, over the core's own
-clock). The IEP is shared by every core on the ICSSG, so its timeline follows
-the core that is furthest ahead and emits one edge per IEP clock period up to
-that point. Two cores stepping together therefore advance it once, not twice.
-Consequences worth knowing:
-
-  * A core that is stepped far behind another sees the leading core's counter
-    value - it reads "the future". `Simulator.step_paced` keeps cores within a
-    few ns of each other, which is what timing-sensitive two-core runs need.
-  * A core whose time goes backwards (its cycle counter was reset) restarts
-    from the IEP's current time rather than freezing the counter until it
-    catches up.
+The IEP is shared by every configured core and advances to the furthest exact
+core time seen. Core rates come from [device] `pru_clock_mhz` and
+`pru1_clock_mhz`; an omitted first rate uses 200 MHz and the second inherits it. The
+IEP uses `iep_clock_mhz` (200 MHz when omitted, the TRM default ICSSG_IEP_CLK rate) while ICSS CFG IEPCLK bit 0 is
+clear, and the PRU0 OCP/core clock while it is set. Rational clock periods are
+represented with integer time units, so fractional MHz values and mixed core
+rates do not accumulate float drift. Memory and wait stalls count as elapsed
+core cycles. Resetting one core rebases it at the current shared time; a full
+hardware reset clears the timer registers and timeline.
 
 Not modelled: shadow mode (IEP_CMP_CFG_REG[17] SHADOW_EN), slow compensation,
 sync/EHRPWM counter reset, interrupt routing, and the pin/event routing that
@@ -81,6 +72,12 @@ by the harness or by another model calling `capture_event()`. Reads of
 unimplemented offsets return zero and writes are ignored, so firmware touching
 them does not fault - it simply sees a counter that ignores those features.
 """
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from fractions import Fraction
+from math import gcd, lcm
 
 GLOBAL_CFG = 0x00
 GLOBAL_STATUS = 0x04
@@ -97,9 +94,25 @@ NUM_COMPARE = 16
 # 0x20..0x6C is 0x50 bytes = ten 64-bit pairs.
 NUM_CAPTURE = 10
 IEP_SIZE = 0x100
+# TRM SPRUIM2J §6.4.13.2.4: the IEP counter counts every ICSSG_IEP_CLK cycle at a
+# "default rate of 200 MHz". This is the rate used when `iep_clock_mhz` is not set.
+IEP_DEFAULT_CLOCK_MHZ = 200
 
 _MASK32 = 0xFFFFFFFF
 _MASK64 = 0xFFFFFFFFFFFFFFFF
+
+
+def _mhz_to_hz(clock_mhz: float | str) -> Fraction:
+    """Convert a configured MHz value without introducing float drift."""
+    return Fraction(str(clock_mhz)) * 1_000_000
+
+
+@dataclass
+class _CoreTimeline:
+    cycle_units: int
+    base_cycles: int = 0
+    base_time_units: int = 0
+    last_cycles: int = 0
 
 
 class IepTimer:
@@ -109,23 +122,44 @@ class IepTimer:
     evaluates the enabled compares against the new count.
     """
 
-    def __init__(self, clock_mhz: float = 200.0):
-        if clock_mhz <= 0:
+    IEPCLK_OCP_EN = 1 << 0
+
+    def __init__(self, clock_mhz: float | str | None = None,
+                 ocp_clock_mhz: float | str = 200.0,
+                 core_clocks_mhz: dict[str, float | str] | None = None):
+        core_clocks_mhz = core_clocks_mhz or {"pru0": ocp_clock_mhz}
+        core_clocks_hz = {
+            name: _mhz_to_hz(rate) for name, rate in core_clocks_mhz.items()
+        }
+        if any(rate <= 0 for rate in core_clocks_hz.values()):
+            raise ValueError("PRU core clocks must be positive")
+        self._time_units_per_second = lcm(
+            *(rate.numerator for rate in core_clocks_hz.values())
+        )
+        self._core_timelines = {
+            name: _CoreTimeline(
+                rate.denominator * (self._time_units_per_second // rate.numerator)
+            )
+            for name, rate in core_clocks_hz.items()
+        }
+        self._global_time_units = 0
+        self._tick_remainder = 0
+        self._tick_numerator = 0
+        self._tick_denominator = 1
+        self._ticks_per_time_unit = 0
+        self.external_clock_hz = _mhz_to_hz(IEP_DEFAULT_CLOCK_MHZ if clock_mhz is None else clock_mhz)
+        self.ocp_clock_hz = _mhz_to_hz(ocp_clock_mhz)
+        if self.external_clock_hz <= 0:
             raise ValueError(f"IEP clock must be positive, got {clock_mhz}")
-        self.clock_mhz = float(clock_mhz)
-        # Timeline state: survives register reset() so a core reset or an
-        # IEP register reset never rewinds simulated time.
-        self._now_ns = 0.0                   # furthest core time seen
-        self._edges = 0                      # IEP clock edges emitted so far
-        self._origin_ns = 0.0                # time at the last clock change
-        self._origin_edges = 0               # edges emitted at that time
-        self._core_base: dict[str, float] = {}
-        self._core_last: dict[str, float] = {}
+        if self.ocp_clock_hz <= 0:
+            raise ValueError(f"OCP clock must be positive, got {ocp_clock_mhz}")
+        self.iepclk = 0
+        self._global_cfg = 0
         self.reset()
 
     def reset(self) -> None:
         # SPRUIM2J Table 14-10907: CMP_INC=5, DEFAULT_INC=5, disabled.
-        self.global_cfg = 0x550
+        self._global_cfg = 0x550
         self.global_status = 0
         self.count = 0                       # 64-bit
         self.cmp_cfg = 0
@@ -135,10 +169,196 @@ class IepTimer:
         self.cap_cfg = 0x1FC00
         self.cap_status = 0                  # valid bits, write-1-to-clear
         self.capture = [0] * NUM_CAPTURE     # each 64-bit
+        self._tick_remainder = 0
+        self._refresh_tick_rate()
 
     def hardware_reset(self) -> None:
-        """Reset the timer through the simulator's full-reset interface."""
+        """Reset both IEP registers and the shared hardware timeline."""
         self.reset()
+        self.iepclk = 0
+        self._global_time_units = 0
+        self._tick_remainder = 0
+        self._refresh_tick_rate()
+        for timeline in self._core_timelines.values():
+            timeline.base_cycles = 0
+            timeline.last_cycles = 0
+            timeline.base_time_units = 0
+
+    @property
+    def clock_mhz(self) -> Fraction:
+        return self.active_clock_mhz
+
+    @property
+    def active_clock_hz(self) -> Fraction:
+        return self.ocp_clock_hz if self.iepclk & self.IEPCLK_OCP_EN else self.external_clock_hz
+
+    @property
+    def active_clock_mhz(self) -> Fraction:
+        return self.active_clock_hz / 1_000_000
+
+    def set_clock_mhz(self, clock_mhz: float | str) -> None:
+        """Set the external IEP clock rate while preserving elapsed time."""
+        rate = _mhz_to_hz(clock_mhz)
+        if rate <= 0:
+            raise ValueError(f"IEP clock must be positive, got {clock_mhz}")
+        previous_rate = self.active_clock_hz
+        self.external_clock_hz = rate
+        if self.active_clock_hz != previous_rate:
+            self._tick_remainder = 0
+            self._refresh_tick_rate()
+
+    def write_iepclk(self, value: int) -> None:
+        previous_rate = self.active_clock_hz
+        self.iepclk = value & _MASK32
+        if self.active_clock_hz != previous_rate:
+            self._tick_remainder = 0
+            self._refresh_tick_rate()
+
+    @property
+    def global_time_units(self) -> int:
+        return self._global_time_units
+
+    @property
+    def time_units_per_second(self) -> int:
+        return self._time_units_per_second
+
+    @property
+    def now_ns(self) -> Fraction:
+        return Fraction(self._global_time_units * 1_000_000_000,
+                        self._time_units_per_second)
+
+    def core_clock_hz(self, core: str) -> Fraction:
+        timeline = self._core_timelines[core]
+        return Fraction(self._time_units_per_second, timeline.cycle_units)
+
+    def core_time_units(self, core: str, cycles: int) -> int:
+        """Return *core*'s absolute virtual time for its cumulative cycle count."""
+        timeline = self._core_timelines[core]
+        return timeline.base_time_units + (
+            cycles - timeline.base_cycles
+        ) * timeline.cycle_units
+
+    def core_time_ns(self, core: str, cycles: int) -> Fraction:
+        """Return *core*'s absolute virtual time in nanoseconds."""
+        return Fraction(
+            self.core_time_units(core, cycles) * 1_000_000_000,
+            self._time_units_per_second,
+        )
+
+    def nanoseconds_to_units(self, nanoseconds: float | str) -> Fraction:
+        return Fraction(str(nanoseconds)) * self._time_units_per_second / 1_000_000_000
+
+    def time_units_to_ns(self, units: int | Fraction) -> Fraction:
+        return Fraction(units) * 1_000_000_000 / self._time_units_per_second
+
+    def rebase_core(self, core: str, cycles: int = 0) -> None:
+        """Place a reset core at the current shared time without rewinding it."""
+        timeline = self._core_timelines[core]
+        timeline.base_cycles = cycles
+        timeline.last_cycles = cycles
+        timeline.base_time_units = self._global_time_units
+
+    def observe_core_cycles(self, core: str, cycles: int) -> None:
+        """Advance the shared IEP to the furthest core time seen so far."""
+        if cycles < 0:
+            raise ValueError("PRU cycle counters cannot be negative")
+        timeline = self._core_timelines[core]
+        if cycles < timeline.last_cycles:
+            self.rebase_core(core, cycles)
+        timeline.last_cycles = cycles
+        core_time_units = self.core_time_units(core, cycles)
+        if core_time_units <= self._global_time_units:
+            return
+
+        elapsed_units = core_time_units - self._global_time_units
+        self._global_time_units = core_time_units
+        if self._tick_numerator == 0:
+            return
+        if self._ticks_per_time_unit:
+            whole_ticks = elapsed_units * self._ticks_per_time_unit
+        else:
+            whole_ticks, self._tick_remainder = divmod(
+                self._tick_remainder + elapsed_units * self._tick_numerator,
+                self._tick_denominator,
+            )
+        self._advance_ticks(whole_ticks)
+
+    @property
+    def global_cfg(self) -> int:
+        return self._global_cfg
+
+    @global_cfg.setter
+    def global_cfg(self, value: int) -> None:
+        value &= _MASK32
+        # CNT_ENABLE and DEFAULT_INC are the modeled timing fields. Same-value
+        # writes and changes to other bits must not disturb fractional phase.
+        timing_changed = bool((self._global_cfg ^ value) & 0xF1)
+        self._global_cfg = value
+        if timing_changed:
+            self._tick_remainder = 0
+            self._refresh_tick_rate()
+
+    def _refresh_tick_rate(self) -> None:
+        if not self.count_enabled:
+            self._tick_numerator = 0
+            self._tick_denominator = 1
+            self._ticks_per_time_unit = 0
+            return
+        active_clock = self.active_clock_hz
+        numerator = active_clock.numerator
+        denominator = active_clock.denominator * self._time_units_per_second
+        divisor = gcd(numerator, denominator)
+        numerator //= divisor
+        denominator //= divisor
+        self._tick_numerator = numerator
+        self._tick_denominator = denominator
+        self._ticks_per_time_unit = (
+            numerator // denominator if numerator % denominator == 0 else 0
+        )
+
+    def _advance_ticks(self, ticks: int) -> None:
+        if ticks <= 0 or not self.count_enabled:
+            return
+        increment = self.default_inc
+        if not (self.cmp_cfg & 0x1FFFE):
+            self.count = (self.count + ticks * increment) & _MASK64
+            return
+        modulus = 1 << 64
+        divisor = gcd(increment, modulus)
+        period = modulus // divisor
+        inverse = pow(increment // divisor, -1, period) if increment else 0
+
+        def hit_distance(start: int, value: int) -> int | None:
+            delta = (value - start) & _MASK64
+            if not increment:
+                return 1 if delta == 0 else None
+            if delta % divisor:
+                return None
+            distance = ((delta // divisor) * inverse) % period
+            return distance or period
+
+        def record_hits(start: int, length: int) -> None:
+            for j in range(NUM_COMPARE):
+                if self.cmp_enabled(j):
+                    distance = hit_distance(start, self.compare[j])
+                    if distance is not None and distance <= length:
+                        self.cmp_status |= 1 << j
+
+        reset_distance = (hit_distance(self.count, self.compare[0])
+                          if self.cmp0_rst_cnt_en and self.cmp_enabled(0) else None)
+        if reset_distance is None or reset_distance > ticks:
+            record_hits(self.count, ticks)
+            self.count = (self.count + ticks * increment) & _MASK64
+            return
+        record_hits(self.count, reset_distance)
+        ticks -= reset_distance
+        self.count = 0
+        reset_period = hit_distance(0, self.compare[0])
+        if reset_period is not None and ticks >= reset_period:
+            record_hits(0, reset_period)
+            ticks %= reset_period
+        record_hits(0, ticks)
+        self.count = (ticks * increment) & _MASK64
 
     # -- configuration views --------------------------------------------
     @property
@@ -183,46 +403,6 @@ class IepTimer:
         return True
 
     # -- timeline --------------------------------------------------------
-    @property
-    def now_ns(self) -> float:
-        return self._now_ns
-
-    def set_clock_mhz(self, clock_mhz: float) -> None:
-        """Change the IEP clock from now on; edges already emitted stay put."""
-        if clock_mhz <= 0:
-            raise ValueError(f"IEP clock must be positive, got {clock_mhz}")
-        self._origin_ns = self._now_ns
-        self._origin_edges = self._edges
-        self.clock_mhz = float(clock_mhz)
-
-    def advance_core(self, core: str, core_ns: float) -> int:
-        """Bring the IEP up to *core*'s elapsed time; return edges emitted.
-
-        *core_ns* is that core's own elapsed time since its last reset. The
-        IEP timeline is the maximum over all cores, so this only emits edges
-        when *core* is the one furthest ahead.
-        """
-        last = self._core_last.get(core)
-        if last is None:
-            self._core_base[core] = 0.0             # cores start together at 0
-        elif core_ns < last:
-            self._core_base[core] = self._now_ns    # core was reset
-        self._core_last[core] = core_ns
-        t = self._core_base[core] + core_ns
-        if t <= self._now_ns:
-            return 0
-        self._now_ns = t
-        # The 1e-6 guards against a period like 1000/333.33 landing a hair
-        # short of an exact edge through float rounding.
-        target = self._origin_edges + int(
-            (t - self._origin_ns) * self.clock_mhz / 1000.0 + 1e-6)
-        n = target - self._edges
-        self._edges = target
-        if self.count_enabled:
-            for _ in range(n):
-                self.tick()
-        return n
-
     def tick(self) -> None:
         """Advance one ICSSG_IEP_CLK cycle."""
         if not self.count_enabled:
@@ -328,10 +508,51 @@ class IepTimer:
     def snapshot(self) -> dict:
         return {
             "global_cfg": self.global_cfg,
+            "global_status": self.global_status,
             "count": self.count,
             "cmp_cfg": self.cmp_cfg,
             "cmp_status": self.cmp_status,
             "compare": list(self.compare),
-            "clock_mhz": self.clock_mhz,
-            "now_ns": self._now_ns,
+            "cap_cfg": self.cap_cfg,
+            "cap_status": self.cap_status,
+            "capture": list(self.capture),
+            "iepclk": self.iepclk,
+            "external_clock_hz": self.external_clock_hz,
+            "ocp_clock_hz": self.ocp_clock_hz,
+            "active_clock_hz": self.active_clock_hz,
+            "global_time_units": self._global_time_units,
+            "tick_remainder": self._tick_remainder,
+            "core_timelines": {
+                name: {
+                    "base_cycles": timeline.base_cycles,
+                    "base_time_units": timeline.base_time_units,
+                    "last_cycles": timeline.last_cycles,
+                }
+                for name, timeline in self._core_timelines.items()
+            },
         }
+
+    def restore(self, snapshot: dict) -> None:
+        """Restore IEP registers and shared-time bookkeeping from a snapshot."""
+        self._global_cfg = snapshot["global_cfg"] & _MASK32
+        self.global_status = snapshot.get("global_status", 0) & _MASK32
+        self.count = snapshot["count"] & _MASK64
+        self.cmp_cfg = snapshot["cmp_cfg"] & _MASK32
+        self.cmp_status = snapshot["cmp_status"] & 0xFFFF
+        self.compare = list(snapshot["compare"])
+        self.cap_cfg = snapshot.get("cap_cfg", 0) & _MASK32
+        self.cap_status = snapshot.get("cap_status", 0) & _MASK32
+        self.capture = list(snapshot.get("capture", [0] * NUM_CAPTURE))
+        self.iepclk = snapshot.get("iepclk", self.iepclk) & _MASK32
+        self.external_clock_hz = snapshot.get("external_clock_hz", self.external_clock_hz)
+        self.ocp_clock_hz = snapshot.get("ocp_clock_hz", self.ocp_clock_hz)
+        self._global_time_units = snapshot.get("global_time_units", 0)
+        self._tick_remainder = snapshot.get("tick_remainder", 0)
+        for name, state in snapshot.get("core_timelines", {}).items():
+            timeline = self._core_timelines.get(name)
+            if timeline is None:
+                continue
+            timeline.base_cycles = state["base_cycles"]
+            timeline.base_time_units = state["base_time_units"]
+            timeline.last_cycles = state["last_cycles"]
+        self._refresh_tick_rate()

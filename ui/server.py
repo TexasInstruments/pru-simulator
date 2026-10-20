@@ -1,6 +1,7 @@
 """FastAPI + WebSocket backend for the PRU Simulator Dashboard."""
 
 import asyncio
+import copy
 import json
 import math
 import os
@@ -52,7 +53,15 @@ _config_lock = asyncio.Lock()
 
 # ---- Step history (for step-back) ----------------------------------------
 _MAX_HISTORY = 500
-_history: dict[str, list] = {"pru0": [], "rtu0": [], "pru1": []}
+_history: dict[str, list] = {"pru0": [], "rtu0": [], "pru1": [], "rtu1": []}
+
+
+def _peer_progress(core: str) -> dict:
+    return {
+        name: (peer.counters.cycles, peer.counters.instruction_count,
+               sim.iep.core_time_units(name, peer.counters.cycles))
+        for name, peer in sim.cores.items() if name != core
+    }
 
 
 def _snapshot(core: str) -> dict:
@@ -63,6 +72,7 @@ def _snapshot(core: str) -> dict:
     perif = c.io_port.perif
     i2c = c.io_port.i2c_device
     return {
+        "peer_progress": _peer_progress(core),
         "pc": c.pc,
         "halted": c.halted,
         "fault": dict(c.fault) if c.fault is not None else None,
@@ -76,6 +86,8 @@ def _snapshot(core: str) -> dict:
         "stall_cycles": c.counters.stall_cycles,
         "instruction_count": c.counters.instruction_count,
         "mem": [bytes(r._data) for r in sim.memory.regions],
+        "iep": sim.iep.snapshot(),
+        "paced_pending": copy.deepcopy(sim._paced_pending),
         "sd": sd.snapshot() if sd is not None else None,
         "perif": perif.snapshot() if perif is not None else None,
         "i2c": i2c.snapshot() if i2c is not None else None,
@@ -84,6 +96,8 @@ def _snapshot(core: str) -> dict:
 
 def _restore(core: str, snap: dict) -> None:
     """Restore PRU core + memory state from a snapshot."""
+    if _peer_progress(core) != snap["peer_progress"]:
+        raise ValueError("Cannot step back after a peer core has progressed")
     c = sim.cores[core]
     c.pc = snap["pc"]
     c.halted = snap["halted"]
@@ -99,6 +113,9 @@ def _restore(core: str, snap: dict) -> None:
     for i, region_data in enumerate(snap["mem"]):
         if i < len(sim.memory.regions):
             sim.memory.regions[i]._data[:] = region_data
+    sim._paced_pending = copy.deepcopy(snap.get("paced_pending", {}))
+    if snap.get("iep") is not None:
+        sim.iep.restore(snap["iep"])
     if snap.get("sd") is not None and c.io_port.sd_filter is not None:
         c.io_port.sd_filter.restore(snap["sd"])
     if snap.get("perif") is not None and c.io_port.perif is not None:
@@ -118,6 +135,11 @@ async def index():
 @app.get("/regions")
 async def get_regions():
     return [{"name": r.name, "base": r.base_addr, "size": r.size} for r in sim.memory.regions]
+
+
+@app.get("/cores")
+async def get_cores():
+    return list(sim.cores)
 
 
 @app.get("/config")
@@ -209,9 +231,8 @@ async def put_config(request: Request):
     async with _config_lock:
         try:
             sim = _replace_config(text)
-            _history["pru0"].clear()
-            _history["rtu0"].clear()
-            _history["pru1"].clear()
+            for history in _history.values():
+                history.clear()
             return {"ok": True}
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=400)
@@ -265,9 +286,8 @@ async def put_clock_speed(request: Request):
             text = _set_ini_value(text, "device", "pru_clock_mhz", str(mhz))
             text = _set_ini_value(text, "device", "pru1_clock_mhz", str(mhz))
             sim = _replace_config(text)
-            _history["pru0"].clear()
-            _history["rtu0"].clear()
-            _history["pru1"].clear()
+            for history in _history.values():
+                history.clear()
             return {"ok": True}
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=400)
@@ -402,7 +422,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 await _send_state(websocket, core)
             elif action == "step_back":
                 if _history[core]:
-                    _restore(core, _history[core].pop())
+                    try:
+                        _restore(core, _history[core][-1])
+                        _history[core].pop()
+                    except ValueError as ve:
+                        await websocket.send_json({"type": "error", "errors": [str(ve)]})
                 await _send_state(websocket, core)
             elif action == "toggle_breakpoint":
                 addr = int(msg.get("addr", 0))
@@ -519,17 +543,24 @@ async def websocket_endpoint(websocket: WebSocket):
                 samples = []
                 try:
                     steps = 0
-                    while (steps < max_steps and not lead_pru.halted
-                           and lead_pru.pc < len(lead_pru.instructions)):
-                        sim.step_paced(core, partner, 1)
+                    while steps < max_steps:
+                        pacing = sim.step_paced(core, partner, 1)
                         steps += 1
                         if capture and _capture_due(lead_pru, steps):
                             samples.append(_capture_sample(lead_pru))
+                        if not pacing["complete"]:
+                            await websocket.send_json({
+                                "type": "error", "reason": pacing["reason"],
+                                "errors": ["Follower catch-up is incomplete; run again to continue"],
+                            })
+                            break
                         if lead_pru.pc in lead_pru.breakpoints:
                             lead_bp = True
                             break
                         if partner_pru.pc in partner_pru.breakpoints:
                             partner_bp = True
+                            break
+                        if lead_pru.halted or lead_pru.pc >= len(lead_pru.instructions):
                             break
                 except ValueError as ve:
                     await websocket.send_json({"type": "error", "errors": [str(ve)]})
@@ -747,6 +778,7 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False):
         "mux_sel": mux_sel,
         "gpo_pins": gpo_pins,
         "gpi_pins": c.io_port.get_gpi_pins(),
+        "gpio_loopback_mask": c.io_port.loopback_mask,
     }
     if sd_data is not None:
         io_section["sd"] = sd_data

@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import re
 import struct
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -93,18 +94,22 @@ class PRUCore:
 
     def __init__(self, name: str, memory: MemoryBus, xfr: XFRBus, io_port: IOPort,
                  constant_table: ConstantTable | None = None,
-                 dram_swap: bool = False):
+                 dram_swap: bool = False,
+                 cycle_observer: Callable[[int], None] | None = None,
+                 reset_observer: Callable[[], None] | None = None):
         self.name = name
         self.registers = RegisterFile()
         self.counters = CycleCounters()
         self.iep = None          # set by Simulator when an IEP is present
+        self.cycle_observer = cycle_observer
+        self.reset_observer = reset_observer
         self.clock_mhz: float = 200.0   # set by Simulator from the config
         self.memory = memory
         self.xfr = xfr
         self.io_port = io_port
         self.constant_table: ConstantTable = constant_table if constant_table is not None else ConstantTable()
-        # PRU1 sees its own DRAM (DRAM1) at core-local 0x0000 and DRAM0 at
-        # 0x2000 -- the reverse of PRU0. See _map_data_addr.
+        # PRU1/RTU1 see DRAM1 at local 0x0000 and DRAM0 at 0x2000. See
+        # _map_data_addr.
         self.dram_swap = dram_swap
         self.pc: int = 0
         self.halted: bool = False
@@ -181,6 +186,8 @@ class PRUCore:
         self.registers.regs[:] = [0] * 32
         self.registers.carry = False
         self.counters.reset()
+        if self.reset_observer is not None:
+            self.reset_observer()
         self.pc = 0
         self.halted = False
         self.fault = None
@@ -203,6 +210,7 @@ class PRUCore:
         """Execute one instruction."""
         if self.halted or self.pc >= len(self.instructions):
             return
+        cycles_before = self.counters.cycles
 
         # Pre-tick: advance UART frame generator before instruction reads R31
         if self.io_port.uart_generator is not None:
@@ -631,15 +639,8 @@ class PRUCore:
 
         # ---- Count instruction cycle ------------------------------------
         self.counters.tick()
-
-        # ---- Advance the IEP timer (if attached) ------------------------
-        # The IEP runs on its own clock, so it is driven by this core's
-        # elapsed time (stall cycles included), not by instruction count.
-        # Firmware that polls IEP_COUNT_REG0 in a loop depends on this
-        # advancing; without it the poll never terminates.
-        if self.iep is not None:
-            self.iep.advance_core(self.name,
-                                  self.counters.cycles * 1000.0 / self.clock_mhz)
+        if self.cycle_observer is not None:
+            self.cycle_observer(self.counters.cycles - cycles_before)
 
     def run(self, max_steps: int = 100_000) -> int:
         """Run until halted or max_steps reached. Returns steps executed."""
