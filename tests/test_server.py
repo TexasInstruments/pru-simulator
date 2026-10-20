@@ -191,6 +191,22 @@ def test_gpo_zero_after_reset(fresh_sim):
         assert state["registers"][30] == "0x00000000"
 
 
+def test_core_reset_invalidates_all_global_step_histories(fresh_sim):
+    import ui.server as srv
+
+    srv._clear_history()
+    for history in srv._history.values():
+        history.append({"stale": True})
+    srv._history_order.append(("pru0", {"stale": True}))
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "reset", "core": "pru0"})
+        ws.receive_json()
+
+    assert all(not history for history in srv._history.values())
+    assert srv._history_order == []
+
+
 def test_fault_is_reported_in_state_and_restored_by_step_back(fresh_sim):
     import ui.server as srv
 
@@ -241,25 +257,26 @@ def test_dashboard_core_choices_follow_the_live_target(tmp_path, monkeypatch, ta
             assert ws.receive_json()["registers"][3] == "0x0000002A"
 
 
-def test_step_back_after_peer_progress_reports_error_and_preserves_history(fresh_sim, monkeypatch):
+def test_step_back_restores_all_peers_and_discards_their_later_history(fresh_sim, monkeypatch):
     import ui.server as srv
 
     monkeypatch.setattr(srv, "_history", {core: [] for core in fresh_sim.cores})
+    monkeypatch.setattr(srv, "_history_order", [])
     for core in ("pru0", "pru1"):
         assert fresh_sim.load(core, "nop\njmp 0") == []
+    before = fresh_sim.iep.snapshot()
     with client.websocket_connect("/ws") as ws:
         for core in ("pru0", "pru1"):
             ws.send_json({"action": "step", "core": core})
             ws.receive_json()
-        before = fresh_sim.iep.snapshot()
 
         ws.send_json({"action": "step_back", "core": "pru0"})
 
-        error = ws.receive_json()
-        assert error["type"] == "error"
-        assert "peer core has progressed" in error["errors"][0]
-        assert ws.receive_json()["cycles"] == 1
-        assert len(srv._history["pru0"]) == 1
+        states = [ws.receive_json() for _ in fresh_sim.cores]
+        assert {state["core"] for state in states} == set(fresh_sim.cores)
+        assert all(state["cycles"] == 0 for state in states)
+        assert all(not history for history in srv._history.values())
+        assert srv._history_order == []
         assert fresh_sim.iep.snapshot() == before
 
 

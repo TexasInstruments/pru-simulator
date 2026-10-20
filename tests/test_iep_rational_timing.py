@@ -401,7 +401,7 @@ def test_ui_step_back_restores_the_shared_timer_timeline(monkeypatch):
 
 
 @pytest.mark.parametrize("peer", ["pru1", "rtu1"])
-def test_ui_step_back_rejects_a_snapshot_after_a_peer_executes(monkeypatch, peer):
+def test_ui_step_back_restores_peer_execution_with_the_shared_timer(monkeypatch, peer):
     import ui.server as server
 
     sim = Simulator()
@@ -410,13 +410,12 @@ def test_ui_step_back_rejects_a_snapshot_after_a_peer_executes(monkeypatch, peer
         _load_loop(sim, core)
     sim.iep.global_cfg = 0x11
     snapshot = server._snapshot("pru0")
-    sim.step("pru0", 10)
-    sim.step(peer, 20)
     before_time = sim.iep.snapshot()
     before_cores = sim.status()
+    sim.step("pru0", 10)
+    sim.step(peer, 20)
 
-    with pytest.raises(ValueError, match="peer.*progress"):
-        server._restore("pru0", snapshot)
+    server._restore("pru0", snapshot)
 
     assert sim.iep.snapshot() == before_time
     assert sim.status() == before_cores

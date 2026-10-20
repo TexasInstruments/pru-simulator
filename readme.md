@@ -19,6 +19,7 @@ These are simulator-side capabilities, not features of the PRU hardware itself.
 - **Signal graph** — digital logic analyzer for GPO/GPI pin transitions
 - **Memory graph** — analog scope for memory buffer waveform visualization
 - **GPIO loopback** — wire GPO groups directly to GPI for firmware loopback testing without hardware. Can specify loopback latency/jitter/clock-drift
+- **Device bus** — attach external device models (`DeviceModel`) to any core's GPIO pins and wire pins between cores. A shared `DeviceBus` resolves open-drain nets as wired-AND and reports push-pull contention as a fault instead of last-writer-wins; devices expose `events()` and `faults()` for checking firmware
 - **UART decoder** — bit-bang UART decode in the IO panel (8N1, auto-detect bit period)
 - **Multi-core simulation & debug view** — PRU_ICSSG supports simultaneous simulation & debugging of up to 3 PRU cores; PRU-ICSS supports simultaneous simulation & debugging of both PRU cores
 - **Tiling window manager** — drag, split, collapse/expand, and persist panel layouts
@@ -101,7 +102,7 @@ pru_simulator/
 ├── core/               PRU ISA implementation (ALU, parser, disassembler, ELF loader, …)
 ├── mem/                Memory bus and region model
 ├── mcp_server/         MCP server for AI tool integration
-├── pru_io/             GPO/GPI port model, SD filter (R30/R31 interface)
+├── pru_io/             GPO/GPI port model, SD filter (R30/R31 interface), DeviceModel/DeviceBus
 ├── perif/              3-channel Peripheral Interface (SCU), GPCFG mux, TX→RX loopback
 ├── source/             Example PRU assembly programs
 ├── tests/              Pytest test suite
@@ -159,10 +160,9 @@ require the corresponding memory region/model in the chosen configuration.
 The dashboard constant-table panel shows the common sidecar reference, not
 the executing core's corrected table.
 
-Dashboard step-back is restricted to snapshots whose peer cores have not
-progressed. Restoring one core after a peer executes would rewind shared memory
-and IEP time without restoring that peer's CPU. Coherent multicore undo remains
-follow-up work.
+Dashboard step-back uses one ordered history across all cores. Undo restores
+all cores, shared memory, the IEP and devices to the same saved point, and
+removes later history entries so peer state stays consistent.
 
 Paced stepping limits each follower to 1000 catch-up instructions per lead step.
 `step_paced` and `step_paced_many` return `complete`, actual `lead_steps`, and the selected `targets`
@@ -235,9 +235,13 @@ standalone experiments and may require optional packages (for example,
 
 ## Version
 
-v0.2.9 — hover over **PRU SIM** in the dashboard header to confirm.
+v0.2.10 — hover over **PRU SIM** in the dashboard header to confirm.
 
 ### Changelog
+
+**v0.2.10**
+- **Shared device bus** — extends the DeviceModel contract from #44 with GPIO drive ownership, pin release on detach, core-to-core wires and contention faults. TCA9538 uses the same device path; time-driven devices include stall cycles.
+- **Coherent multi-core step-back** — restores all cores, shared memory, MAC/XFR, IEP and attached devices to one saved point, discarding later peer history.
 
 **v0.2.9**
 - **Exact shared IEP time** — one rational timebase includes memory stalls and preserves compare/capture behavior across different core clocks. Omitted core and external IEP rates default to 200 MHz; explicit rates remain configurable.

@@ -92,3 +92,17 @@ class MACAccelerator(Accelerator):
         self.mac_mode = False
         self._accumulator = 0
         self.acc_carry = False
+
+    def snapshot(self) -> dict:
+        """Capture the persistent multiply-accumulate state."""
+        return {
+            "mac_mode": self.mac_mode,
+            "accumulator": self._accumulator,
+            "acc_carry": self.acc_carry,
+        }
+
+    def restore(self, snapshot: dict) -> None:
+        """Restore the persistent multiply-accumulate state."""
+        self.mac_mode = snapshot["mac_mode"]
+        self._accumulator = snapshot["accumulator"]
+        self.acc_carry = snapshot["acc_carry"]
