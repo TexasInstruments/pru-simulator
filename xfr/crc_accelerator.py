@@ -156,3 +156,13 @@ class CRCAccelerator(Accelerator):
         self.mod_en = False
         self.seed = 0
         self.crc_reg = 0
+
+    def snapshot(self) -> dict:
+        return {"crc32_mode": self.crc32_mode, "mod_en": self.mod_en,
+                "seed": self.seed, "crc_reg": self.crc_reg}
+
+    def restore(self, state: dict) -> None:
+        self.crc32_mode = state["crc32_mode"]
+        self.mod_en = state["mod_en"]
+        self.seed = state["seed"]
+        self.crc_reg = state["crc_reg"]

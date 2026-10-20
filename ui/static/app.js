@@ -323,13 +323,45 @@ function initUI() {
 
 // ---- WebSocket setup ------------------------------------------------------
 
+async function loadCoreChoices() {
+  const response = await fetch("/cores");
+  if (!response.ok) throw new Error(`Server returned ${response.status}`);
+  const cores = await response.json();
+  const previousCore = currentCore;
+  for (const [select, choices, prefix] of [
+    [coreSelect, cores, ""],
+    [mcPartnerSelect, cores.filter(core => core !== "pru0"), ""],
+    [mcLoadCore, cores, "→ "],
+  ]) {
+    const previous = select.value;
+    select.replaceChildren(...choices.map(core => new Option(prefix + core.toUpperCase(), core)));
+    if (choices.includes(previous)) select.value = previous;
+  }
+  currentCore = coreSelect.value;
+  if (currentCore !== previousCore) {
+    prevRegisters = new Array(32).fill("0x00000000");
+    _lastSourceKey = '';
+    sourceList.innerHTML = '';
+    initSpadState();
+    document.querySelectorAll('#loopback-strip .lb-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('i2c-attach-btn')?.classList.remove('active');
+  }
+  mcPartner = mcPartnerSelect.value;
+  applyMCPartnerLabels();
+}
+
 function connect() {
   const url = `ws://${location.host}/ws`;
   ws = new WebSocket(url);
 
-  ws.onopen = () => {
+  ws.onopen = async () => {
     wsStatus.textContent = "Connected";
     wsStatus.className = "connected";
+    try {
+      await loadCoreChoices();
+    } catch (e) {
+      showErrors(["Could not load core choices: " + String(e)]);
+    }
     if (multiCoreMode) {
       sendAction({ action: "get_state", core: "pru0" });
       sendAction({ action: "get_state", core: mcPartner });
@@ -387,6 +419,9 @@ function connect() {
           st.style.display = "";
         }
       } else if (msg.type === "error") {
+        if (msg.reason === "pacing_incomplete" || msg.reason === "pacing_catchup_failed") {
+          stopRun(); stopSim();
+        }
         if (msg.tag && msg.tag.startsWith("graph-")) graphMarkChannelError(msg.tag);
         else showErrors(msg.errors);
       }
@@ -637,6 +672,7 @@ function updateSource(instructions, pc, labels) {
 
 function updatePins(io) {
   if (!io) return;
+  syncGpioLoopback(io);
 
   (io.gpo_pins || []).forEach((val, i) => {
     const pin = document.getElementById(`pin-gpo-${i}`);
@@ -824,9 +860,9 @@ function updatePerifPanel(io) {
   const sec = document.getElementById('perif-interface');
   if (!sec) return;
 
-  // RTU0 has no GPCFG GP-mux (TRM) — hide the mux row for it.
+  // RTU cores have no GPCFG GP-mux (TRM) — hide the mux row for them.
   const muxRow = document.getElementById('io-mux-row');
-  if (muxRow) muxRow.style.display = (currentCore === 'rtu0') ? 'none' : '';
+  if (muxRow) muxRow.style.display = currentCore.startsWith('rtu') ? 'none' : '';
 
   // Keep the GP-mux selector in sync (unless the user is interacting with it).
   const muxSel = document.getElementById('io-mux-sel');
@@ -2123,6 +2159,7 @@ configModal.addEventListener("click", (e) => {
 });
 
 btnConfigSave.addEventListener("click", async () => {
+  stopRun(); stopSim();
   configError.textContent      = "";
   btnConfigSave.disabled       = true;
   btnConfigSave.textContent    = "Saving...";
@@ -2132,6 +2169,13 @@ btnConfigSave.addEventListener("click", async () => {
     if (data.ok) {
       configModal.style.display = "none";
       flashStatus("RELOADED", "reloaded");
+      await loadCoreChoices();
+      if (multiCoreMode) {
+        sendAction({ action: "get_state", core: "pru0" });
+        sendAction({ action: "get_state", core: mcPartner });
+      } else {
+        sendAction({ action: "get_state", core: currentCore });
+      }
       refreshMemory();
       loadRegions();
       loadClockSpeed();
@@ -2283,6 +2327,14 @@ function handleGpiClick(pinIndex, pinEl) {
 }
 
 // ---- Loopback strip -------------------------------------------------------
+
+function syncGpioLoopback(io) {
+  const mask = io.gpio_loopback_mask || 0;
+  document.querySelectorAll('#loopback-strip .lb-btn').forEach(button => {
+    const groupMask = 0xF << (Number(button.dataset.group) * 4);
+    button.classList.toggle('active', (mask & groupMask) === groupMask);
+  });
+}
 
 function onLoopbackToggle(btn) {
   const group = parseInt(btn.dataset.group, 10);
@@ -3184,11 +3236,11 @@ function flashStatus(text, cssClass) {
 btnMulticore.addEventListener("click", toggleMultiCore);
 document.getElementById("btn-reset-layout").addEventListener("click", resetLayout);
 
-// ---- Multi-core partner (second core in the MC view: RTU0 or PRU1) --------
+// ---- Multi-core partner (second available core shown beside PRU0) --------
 const mcPartnerSelect = document.getElementById("mc-partner-select");
 
 function applyMCPartnerLabels() {
-  const label = mcPartner === "pru1" ? "PRU1" : "RTU0";
+  const label = mcPartner.toUpperCase();
   const srcTitle = document.getElementById("mc-partner-source-title");
   const regTitle = document.getElementById("mc-partner-reg-title");
   const cntLabel = document.getElementById("cnt-p1-label");
@@ -3596,8 +3648,8 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     stopRun(); stopSim();
     if (multiCoreMode) {
-      sendAction({ action: "step_back", core: "pru0" });
       sendAction({ action: "step_back", core: mcPartner });
+      sendAction({ action: "step_back", core: "pru0" });
     } else {
       sendAction({ action: "step_back", core: currentCore });
     }

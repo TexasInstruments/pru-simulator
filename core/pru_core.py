@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import re
 import struct
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -93,21 +94,26 @@ class PRUCore:
 
     def __init__(self, name: str, memory: MemoryBus, xfr: XFRBus, io_port: IOPort,
                  constant_table: ConstantTable | None = None,
-                 dram_swap: bool = False):
+                 dram_swap: bool = False,
+                 cycle_observer: Callable[[int], None] | None = None,
+                 reset_observer: Callable[[], None] | None = None):
         self.name = name
         self.registers = RegisterFile()
         self.counters = CycleCounters()
         self.iep = None          # set by Simulator when an IEP is present
+        self.cycle_observer = cycle_observer
+        self.reset_observer = reset_observer
         self.clock_mhz: float = 200.0   # set by Simulator from the config
         self.memory = memory
         self.xfr = xfr
         self.io_port = io_port
         self.constant_table: ConstantTable = constant_table if constant_table is not None else ConstantTable()
-        # PRU1 sees its own DRAM (DRAM1) at core-local 0x0000 and DRAM0 at
-        # 0x2000 -- the reverse of PRU0. See _map_data_addr.
+        # PRU1/RTU1 see DRAM1 at local 0x0000 and DRAM0 at 0x2000. See
+        # _map_data_addr.
         self.dram_swap = dram_swap
         self.pc: int = 0
         self.halted: bool = False
+        self.fault: dict | None = None
         self.instructions: list[Instruction] = []
         self.loop_state: LoopState | None = None
         self.breakpoints: set[int] = set()
@@ -135,10 +141,16 @@ class PRUCore:
         """Parse assembly source and load instructions.
 
         Returns a list of error strings (empty on success).
+
+        Loading installs instructions only: halted, pc, loop state and
+        registers are left as they were, so reset() the core before running a
+        newly loaded program. A successful load drops the recorded fault; a
+        failed parse leaves the previous program and its fault in place.
         """
         errors: list[str] = []
         try:
             self.instructions = self._parser.parse_text(source, include_paths)
+            self.fault = None  # a fault belongs to the program that raised it
         except Exception as exc:  # noqa: BLE001
             errors.append(str(exc))
         return errors
@@ -148,16 +160,23 @@ class PRUCore:
         """Load pre-compiled binary instructions (from .out ELF).
 
         Returns a list of error strings (empty on success).
+
+        Loading installs instructions only: halted, pc, loop state and
+        registers are left as they were, so reset() the core before running a
+        newly loaded program. A successful load drops the recorded fault; a
+        failed load leaves the previous program and its fault in place.
         """
         from .disassembler import disassemble
         errors: list[str] = []
         try:
             syms = symbols or {}
-            self.instructions = disassemble(text_words, syms)
-            # Store symbols as labels (name → addr) for the frontend
-            self._parser.labels = {name: addr for addr, name in syms.items()}
+            instructions = disassemble(text_words, syms)
             if data_bytes:
                 self.memory.write(data_addr, data_bytes)
+            self.instructions = instructions
+            # Store symbols as labels (name → addr) for the frontend
+            self._parser.labels = {name: addr for addr, name in syms.items()}
+            self.fault = None
         except Exception as exc:  # noqa: BLE001
             errors.append(str(exc))
         return errors
@@ -167,18 +186,31 @@ class PRUCore:
         self.registers.regs[:] = [0] * 32
         self.registers.carry = False
         self.counters.reset()
+        if self.reset_observer is not None:
+            self.reset_observer()
         self.pc = 0
         self.halted = False
+        self.fault = None
         self.loop_state = None
         for acc in self.accelerators.values():
             acc.reset()
         self.io_port.reset()
         self.unsupported_xfr.clear()
 
+    def _record_fault(self, opcode: str, address: int, error: Exception) -> None:
+        self.fault = {
+            "type": "memory",
+            "opcode": opcode,
+            "address": int(address) & 0xFFFF_FFFF,
+            "pc": self.pc,
+            "error": str(error),
+        }
+
     def step(self) -> None:
         """Execute one instruction."""
         if self.halted or self.pc >= len(self.instructions):
             return
+        cycles_before = self.counters.cycles
 
         # Pre-tick: advance UART frame generator before instruction reads R31
         if self.io_port.uart_generator is not None:
@@ -406,6 +438,7 @@ class PRUCore:
             except ValueError as e:
                 logger.error(f"LBBO fault at 0x{addr:08X}: {e}"
                              f"{_stack_pointer_hint(self, base_op, addr)}")
+                self._record_fault("LBBO", addr, e)
                 self.halted = True
 
         elif op == "LBCO":
@@ -423,6 +456,7 @@ class PRUCore:
                 self.counters.stall(stalls)
             except ValueError as e:
                 logger.error(f"LBCO fault at 0x{addr:08X}: {e}")
+                self._record_fault("LBCO", addr, e)
                 self.halted = True
 
         elif op == "SBCO":
@@ -440,6 +474,7 @@ class PRUCore:
                 self.counters.stall(stalls)
             except ValueError as e:
                 logger.error(f"SBCO fault at 0x{addr:08X}: {e}")
+                self._record_fault("SBCO", addr, e)
                 self.halted = True
 
         elif op == "SBBO":
@@ -458,6 +493,7 @@ class PRUCore:
             except ValueError as e:
                 logger.error(f"SBBO fault at 0x{addr:08X}: {e}"
                              f"{_stack_pointer_hint(self, base_op, addr)}")
+                self._record_fault("SBBO", addr, e)
                 self.halted = True
 
         # ---- XFR ---------------------------------------------------------
@@ -588,15 +624,6 @@ class PRUCore:
                     # Loop finished
                     self.loop_state = None
 
-        # ---- Settle the device bus (if any device attached) --------------
-        # AFTER the instruction, not before: an R30 write must be visible to
-        # the device in the same cycle it happens, so that the next
-        # instruction's R31 read sees the response. Settling first delays every
-        # pin change by one instruction, which is enough to make a bit-banged
-        # I2C master misread its ACK and abort the transfer.
-        self.io_port._device_cycle = self.counters.cycles
-        self.io_port.tick_devices(self.counters.cycles, time_only=True)
-
         # ---- Advance SD filter clock (if attached) ----------------------
         if self.io_port.sd_filter is not None:
             self.io_port.sd_filter.tick()
@@ -607,15 +634,18 @@ class PRUCore:
 
         # ---- Count instruction cycle ------------------------------------
         self.counters.tick()
-
-        # ---- Advance the IEP timer (if attached) ------------------------
-        # The IEP runs on its own clock, so it is driven by this core's
-        # elapsed time (stall cycles included), not by instruction count.
-        # Firmware that polls IEP_COUNT_REG0 in a loop depends on this
-        # advancing; without it the poll never terminates.
-        if self.iep is not None:
-            self.iep.advance_core(self.name,
-                                  self.counters.cycles * 1000.0 / self.clock_mhz)
+        # Time-driven devices advance by the cycles this step consumed, stalls
+        # included, so a core built without a Simulator still ticks them. With
+        # no device attached only the cycle count moves; it stays exact so a
+        # device attached later starts at the right cycle.
+        elapsed_cycles = self.counters.cycles - cycles_before
+        io_port = self.io_port
+        if io_port.device_bus.devices:
+            io_port.advance_devices(elapsed_cycles)
+        else:
+            io_port._device_cycle += elapsed_cycles
+        if self.cycle_observer is not None:
+            self.cycle_observer(elapsed_cycles)
 
     def run(self, max_steps: int = 100_000) -> int:
         """Run until halted or max_steps reached. Returns steps executed."""

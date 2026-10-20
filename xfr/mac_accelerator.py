@@ -107,3 +107,23 @@ class MACAccelerator(Accelerator):
         self.acc_carry = False
         self._latched = None
         self._delayed = None
+
+    def snapshot(self) -> dict:
+        """Capture the persistent multiply-accumulate state."""
+        return {
+            "mac_mode": self.mac_mode,
+            "accumulator": self._accumulator,
+            "acc_carry": self.acc_carry,
+            "latched": self._latched,
+            "delayed": self._delayed,
+        }
+
+    def restore(self, snapshot: dict) -> None:
+        """Restore the persistent multiply-accumulate state."""
+        self.mac_mode = snapshot["mac_mode"]
+        self._accumulator = snapshot["accumulator"]
+        self.acc_carry = snapshot["acc_carry"]
+        latched = snapshot.get("latched")
+        delayed = snapshot.get("delayed")
+        self._latched = tuple(latched) if latched is not None else None
+        self._delayed = tuple(delayed) if delayed is not None else None

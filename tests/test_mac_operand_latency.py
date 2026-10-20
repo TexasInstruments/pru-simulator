@@ -80,3 +80,23 @@ def test_gap_of_zero_vs_one_instruction(sim_config, target):
 
     assert run("") == 7 * 3       # 0-instruction gap: stale r29
     assert run("nop\n") == 7 * 11  # 1-instruction gap: fresh
+
+
+def test_snapshot_restore_keeps_the_delayed_operands():
+    # The one-instruction operand delay is MAC state: a restore taken between
+    # the R28/R29 write and the XIN must still hand the MAC the stale operands.
+    from core.registers import RegisterFile
+    from xfr.mac_accelerator import MACAccelerator
+
+    regs = RegisterFile()
+    mac = MACAccelerator(regs)
+    regs.write_full(28, 2)
+    regs.write_full(29, 3)
+    mac.begin_step()
+    regs.write_full(29, 11)
+    mac.begin_step()
+    snap = mac.snapshot()
+
+    restored = MACAccelerator(regs)
+    restored.restore(snap)
+    assert restored._operands() == mac._operands() == (2, 3)
