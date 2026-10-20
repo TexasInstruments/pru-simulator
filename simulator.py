@@ -249,6 +249,9 @@ class Simulator:
 
             core.cycle_observer = observe_cycles
             core.reset_observer = lambda *, _name=name: self.iep.rebase_core(_name)
+            if name in self._perif:
+                self._perif[name].cycle_time_ns = (
+                    lambda cycles, _name=name: self.iep.core_time_ns(_name, cycles))
 
         # Loopback: PRU0 TX channel-N -> PRU1 RX channel-N.
         self._loopback = Loopback(self._perif["pru0"], self._perif["pru1"])
@@ -386,7 +389,7 @@ class Simulator:
         PERIF clocks continue to advance while mux-disabled; the mux controls
         signal routing, and the guard applies only while both routes are active.
         Each follower catch-up is limited to 1000 instructions per lead step.
-        The result records the selected targets and reports incomplete work;
+        The result records the selected targets, actual lead_steps and incomplete work;
         subsequent calls execute the remaining gap without skipping core time.
         """
         if isinstance(guard_ns, bool) or not isinstance(guard_ns, (int, float)):
@@ -403,9 +406,11 @@ class Simulator:
         ]
         guard_units = self.iep.nanoseconds_to_units(guard_ns)
         targets = {}
+        lead_steps = 0
         for _ in range(count):
             if not lead_pru.halted and lead_pru.pc < len(lead_pru.instructions):
                 lead_pru.step()
+                lead_steps += 1
             lead_time = self.iep.core_time_units(lead, lead_pru.counters.cycles)
             for follower, follow_pru, follow_perif in follower_states:
                 use_guard = (
@@ -422,7 +427,8 @@ class Simulator:
                 ):
                     if steps >= _MAX_CATCHUP_STEPS:
                         return {"complete": False, "reason": "pacing_incomplete",
-                                "follower": follower, "targets": targets}
+                                "follower": follower, "targets": targets,
+                                "lead_steps": lead_steps}
                     previous_cycles = follow_pru.counters.cycles
                     follow_pru.step()
                     steps += 1
@@ -430,8 +436,9 @@ class Simulator:
                             and not follow_pru.halted
                             and follow_pru.pc < len(follow_pru.instructions)):
                         return {"complete": False, "reason": "pacing_catchup_failed",
-                                "follower": follower, "targets": targets}
-        return {"complete": True, "targets": targets}
+                                "follower": follower, "targets": targets,
+                                "lead_steps": lead_steps}
+        return {"complete": True, "targets": targets, "lead_steps": lead_steps}
 
     def registers(self, core: str) -> list[int]:
         """Return the 32 general-purpose register values for *core*."""
@@ -574,9 +581,9 @@ class Simulator:
         so the UI's status bits start clean.  Configuration entered in the UI --
         perif config registers, GPCFG mux, loopback parameters -- is kept.
         """
+        self.iep.hardware_reset()
         for core in self.cores.values():
             core.reset()
-        self.iep.hardware_reset()
         self.xfr.reset()
 
     def uart_inject(

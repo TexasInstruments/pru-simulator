@@ -327,6 +327,7 @@ async function loadCoreChoices() {
   const response = await fetch("/cores");
   if (!response.ok) throw new Error(`Server returned ${response.status}`);
   const cores = await response.json();
+  const previousCore = currentCore;
   for (const [select, choices, prefix] of [
     [coreSelect, cores, ""],
     [mcPartnerSelect, cores.filter(core => core !== "pru0"), ""],
@@ -337,6 +338,14 @@ async function loadCoreChoices() {
     if (choices.includes(previous)) select.value = previous;
   }
   currentCore = coreSelect.value;
+  if (currentCore !== previousCore) {
+    prevRegisters = new Array(32).fill("0x00000000");
+    _lastSourceKey = '';
+    sourceList.innerHTML = '';
+    initSpadState();
+    document.querySelectorAll('#loopback-strip .lb-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('i2c-attach-btn')?.classList.remove('active');
+  }
   mcPartner = mcPartnerSelect.value;
   applyMCPartnerLabels();
 }
@@ -663,6 +672,7 @@ function updateSource(instructions, pc, labels) {
 
 function updatePins(io) {
   if (!io) return;
+  syncGpioLoopback(io);
 
   (io.gpo_pins || []).forEach((val, i) => {
     const pin = document.getElementById(`pin-gpo-${i}`);
@@ -2318,6 +2328,14 @@ function handleGpiClick(pinIndex, pinEl) {
 
 // ---- Loopback strip -------------------------------------------------------
 
+function syncGpioLoopback(io) {
+  const mask = io.gpio_loopback_mask || 0;
+  document.querySelectorAll('#loopback-strip .lb-btn').forEach(button => {
+    const groupMask = 0xF << (Number(button.dataset.group) * 4);
+    button.classList.toggle('active', (mask & groupMask) === groupMask);
+  });
+}
+
 function onLoopbackToggle(btn) {
   const group = parseInt(btn.dataset.group, 10);
   const enabled = !btn.classList.contains('active');
@@ -3630,8 +3648,8 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     stopRun(); stopSim();
     if (multiCoreMode) {
-      sendAction({ action: "step_back", core: "pru0" });
       sendAction({ action: "step_back", core: mcPartner });
+      sendAction({ action: "step_back", core: "pru0" });
     } else {
       sendAction({ action: "step_back", core: currentCore });
     }
