@@ -832,6 +832,7 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False):
         "mux_sel": mux_sel,
         "gpo_pins": gpo_pins,
         "gpi_pins": c.io_port.get_gpi_pins(),
+        "gpio_loopback_mask": c.io_port.loopback_mask,
         "gpo_drive_mask": c.io_port.gpo_drive_mask,
     }
     if sim.device_bus.active:

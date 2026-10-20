@@ -336,3 +336,17 @@ def test_multicore_run_resumes_catchup_after_the_lead_finishes(fresh_sim, finish
         assert not incomplete
         assert lead["cycles"] == follow["cycles"] == 20002
         assert follow["registers"][1] == "0x00002711"  # all 10001 ADDs executed
+
+
+def test_state_reports_each_cores_actual_gpio_loopback_mask(fresh_sim):
+    import ui.server as srv
+
+    fresh_sim.set_loopback("pru0", 0, True)
+    class Sink:
+        async def send_json(self, payload):
+            self.payload = payload
+    sink = Sink()
+    asyncio.run(srv._send_state(sink, "pru0"))
+    assert sink.payload["io"]["gpio_loopback_mask"] == 0xF
+    asyncio.run(srv._send_state(sink, "pru1"))
+    assert sink.payload["io"]["gpio_loopback_mask"] == 0

@@ -342,3 +342,36 @@ def test_failed_initial_reader_load_closes_only_its_resources(monkeypatch, failu
         runtime.load()
     existing.close()
     assert sim.io("pru1")["gpo_drive_mask"] == 0
+
+
+@pytest.mark.parametrize("failure", ["errors", "exception", "invalid config"])
+def test_failed_reader_reload_restores_last_successful_config(monkeypatch, failure):
+    sim = Simulator("memory.cfg")
+    with SSIRuntime(sim, position=0xABC) as runtime:
+        runtime.load(clock_delay_loops=20)
+        sim.step(runtime.core, 8)
+        config_before = sim.memory_read(abi.CONFIG_ADDRESS, abi.CONFIG_SIZE)
+        instructions = sim.cores[runtime.core].instructions
+        state_before = sim.status()[runtime.core]
+        drive_mask = sim.io(runtime.core)["gpo_drive_mask"]
+        load = sim.load
+        if failure == "errors":
+            monkeypatch.setattr(sim, "load", lambda core, *args, **kwargs: load(core, "ldi r0"))
+            expected = ValueError
+        elif failure == "exception":
+            def fail(*args, **kwargs):
+                raise OSError("reload failed")
+            monkeypatch.setattr(sim, "load", fail)
+            expected = OSError
+        else:
+            expected = ValueError
+        with pytest.raises(expected):
+            runtime.load(clock_delay_loops=-1 if failure == "invalid config" else 99)
+        assert sim.memory_read(abi.CONFIG_ADDRESS, abi.CONFIG_SIZE) == config_before
+        assert sim.cores[runtime.core].instructions is instructions
+        assert sim.status()[runtime.core] == state_before
+        assert sim.io(runtime.core)["gpo_drive_mask"] == drive_mask
+        assert sim.device_bus.devices == [runtime.encoder]
+        assert not runtime._closed and runtime._loaded
+        sim.reset(runtime.core)
+        assert runtime.run_until_frames(1, max_steps=16000)["mailbox"]["raw_frame"] == 0xABC

@@ -205,6 +205,8 @@ Both runtime helpers reset only the selected core after a successful firmware
 load, rebasing its execution time without resetting peer CPUs or the shared
 IEP count. An initial reader load failure closes that runtime, detaching its
 encoder and restoring its GPIO leases; create a new runtime to retry.
+A failed reload of an already loaded reader restores its last successful
+configuration and retains its firmware and GPIO ownership.
 
 `mailbox()` also returns the combined `raw_frame` and the `position` and
 `error` fields decoded with the encoder's layout. The host decodes these fields

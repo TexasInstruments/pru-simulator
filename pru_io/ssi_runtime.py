@@ -54,6 +54,8 @@ class SSIRuntime:
         """Pack the reader config into shared memory and load its assembly."""
         if self._closed:
             raise RuntimeError("SSI reader runtime is closed")
+        previous_config = (self.sim.memory_read(abi.CONFIG_ADDRESS, abi.CONFIG_SIZE)
+                           if self._loaded else None)
         try:
             if idle_delay_loops is None:
                 idle_delay_loops = ceil(self.encoder.monoflop_cycles / 2) + 8
@@ -69,7 +71,9 @@ class SSIRuntime:
             if errors:
                 raise ValueError("SSI reader assembly failed: " + "; ".join(errors))
         except BaseException:
-            if not self._loaded:
+            if self._loaded:
+                self.sim.memory.write(abi.CONFIG_ADDRESS, previous_config)
+            else:
                 self.close()
             raise
         self.sim.reset(self.core)
