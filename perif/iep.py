@@ -38,30 +38,20 @@ other PRU simulator gets them wrong:
 
 CAPTURE
 
-  0x18  IEP_CAP_CFG_REG      [n]    CAPnR_EN     capture enable, event n
-                             [n+7]  CAPnR_1ST_LAST  0 = first, 1 = last
-  0x1C  IEP_CAP_STATUS_REG   [n]    CAPnR_VALID, write 1 to clear
-  0x20  IEP_CAPR0_REG0       captured counter, 64-bit pairs, CAPRn at 0x20+8n
+  0x18  IEP_CAP_CFG_REG      [9:0]   CAP_EN, capture enables
+                             [17:10] CAP_ASYNC_EN, input synchronization
+                             [23:18] EXT_CAP_EN, external source selection
+  0x1C  IEP_CAP_STATUS_REG   [n]    capture valid, write 1 to clear
+  0x20  capture registers    ten 64-bit pairs through 0x6C
 
-Capture exists so firmware can timestamp an asynchronous external event
-against the counter - the mechanism every encoder protocol uses when it has to
-relate a host trigger to a line or clock phase.
+SPRUIM2J Table 14-10925 defines these fields; CAP_CFG has no per-slot
+first/last selector. Bits 7..9 enable captures and bits 10..17 configure
+synchronization, so none of them may select timestamp overwrite behavior.
 
-`capture_event(n)` latches the CURRENT counter into slot n, subject to the
-enable and to first-vs-last:
-
-  * first mode - the slot holds the FIRST event since the valid bit was
-    cleared; later events are ignored until software clears it. This is what a
-    protocol wants when it must timestamp a trigger and not have a later,
-    spurious edge overwrite it.
-  * last mode - every event overwrites.
-
-The enable/mode bit positions above are the modelled convention. The TRM's
-exact CAP_CFG field packing varies between ICSS generations, and firmware that
-depends on a particular packing should be checked against the device TRM rather
-than against this model. What IS faithful, and what firmware actually depends
-on, is the latch semantics: enable gating, first-vs-last, and a valid bit that
-software clears.
+`capture_event(n)` is a harness-level latch: an enabled slot retains the first
+counter value until software clears its valid bit. Input synchronization,
+external-source routing and continuous overwrite behavior are not modelled.
+The ten slots follow register order: CAPR0..CAPR6, CAPF6, CAPR7, CAPF7.
 
 TIMING
 
@@ -134,15 +124,21 @@ class IepTimer:
         self.reset()
 
     def reset(self) -> None:
-        self.global_cfg = 0
+        # SPRUIM2J Table 14-10907: CMP_INC=5, DEFAULT_INC=5, disabled.
+        self.global_cfg = 0x550
         self.global_status = 0
         self.count = 0                       # 64-bit
         self.cmp_cfg = 0
         self.cmp_status = 0                  # 16 bits, write-1-to-clear
         self.compare = [0] * NUM_COMPARE     # each 64-bit
-        self.cap_cfg = 0
+        # SPRUIM2J Table 14-10925: CAP_ASYNC_EN=0x7f, captures disabled.
+        self.cap_cfg = 0x1FC00
         self.cap_status = 0                  # valid bits, write-1-to-clear
         self.capture = [0] * NUM_CAPTURE     # each 64-bit
+
+    def hardware_reset(self) -> None:
+        """Reset the timer through the simulator's full-reset interface."""
+        self.reset()
 
     # -- configuration views --------------------------------------------
     @property
@@ -165,9 +161,6 @@ class IepTimer:
     def cap_enabled(self, n: int) -> bool:
         return bool(self.cap_cfg & (1 << n))
 
-    def cap_last_mode(self, n: int) -> bool:
-        return bool(self.cap_cfg & (1 << (n + 7)))
-
     def cap_valid(self, n: int) -> bool:
         return bool(self.cap_status & (1 << n))
 
@@ -176,15 +169,14 @@ class IepTimer:
         """Latch the current counter into capture slot *n*.
 
         Returns True if a value was stored. A disabled slot stores nothing, and
-        in first mode an already-valid slot is left alone - which is the whole
-        point of first mode, so a later edge cannot overwrite the trigger the
-        firmware is trying to timestamp.
+        an already-valid slot is left alone until software clears its valid
+        bit. CAP_CFG synchronization/source bits do not change this latch policy.
         """
         if not 0 <= n < NUM_CAPTURE:
             raise ValueError(f"capture slot {n} out of range")
         if not self.cap_enabled(n):
             return False
-        if self.cap_valid(n) and not self.cap_last_mode(n):
+        if self.cap_valid(n):
             return False
         self.capture[n] = self.count
         self.cap_status |= 1 << n

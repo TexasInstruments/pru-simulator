@@ -41,7 +41,7 @@ _EXPECTED_OPS: dict[str, int | tuple[int, ...]] = {
     "LOOP": 2,
     # Misc
     "ZERO": 2, "FILL": 2,
-    "WBS":  1, "WBC":  1, "SLP": 1,
+    "WBS":  (1, 2), "WBC":  (1, 2), "SLP": 1,
     "HALT": 0, "NOP":  0,
     # Register file indirect
     "MVIB": 2, "MVIW": 2, "MVID": 2,
@@ -361,6 +361,14 @@ class Parser:
                     f"line {source_line}: {opcode} expects {allowed} operand"
                     f"{'s' if max(counts) != 1 else ''}, got {len(operands)}{hint}"
                 )
+
+        if (opcode in ("WBS", "WBC") and len(operands) == 2
+                and not isinstance(operands[0], Register)):
+            raise SyntaxError(f"line {source_line}: {opcode} source must be a register")
+        if opcode in ("WBS", "WBC"):
+            bit = operands[-1]
+            if isinstance(bit, Label) or (isinstance(bit, Immediate) and not 0 <= bit.value <= 31):
+                raise SyntaxError(f"line {source_line}: {opcode} bit position must be 0-31 or a register")
 
         self._validate_operand_ranges(opcode, operands, source_line)
         self._validate_branch_reach(opcode, operands, address, source_line)

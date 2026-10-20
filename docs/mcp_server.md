@@ -71,6 +71,8 @@ print(mcp.pru_registers())           # {'r0': '0x0000002a', 'r1': '0x00000000', 
 | `pru_breakpoint` | `core="pru0"`, `address: int` | `{id}` | Add a breakpoint |
 | `pru_status` | — | `{cores: {name: {pc, cycles, halted}}}` | Snapshot all cores |
 
+Integer and boolean parameters are strictly typed: a bool is not accepted as an integer, and a string is not accepted as a boolean.
+
 ---
 
 ## Example 1 — UART TX: Single Character (`source/uart_tx.asm`)

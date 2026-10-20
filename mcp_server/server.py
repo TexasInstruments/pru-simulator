@@ -15,6 +15,18 @@ from simulator import Simulator
 from mcp_server.vcd_export import export_pin_waveform
 
 
+def _require_int(name: str, value) -> None:
+    """Reject bool and non-int values for an integer tool parameter."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{name} must be an integer")
+
+
+def _require_bool(name: str, value) -> None:
+    """Accept only a real bool: strings are truthy and 0/1 are not booleans."""
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be a boolean")
+
+
 class PRUSimulatorMCP:
     """Wraps the Simulator and exposes its methods as MCP-compatible tool functions."""
 
@@ -163,6 +175,7 @@ class PRUSimulatorMCP:
 
     def pru_step(self, core: str = "pru0", count: int = 1) -> dict:
         """Execute count instructions on the specified core."""
+        _require_int("count", count)
         result = self.sim.step(core, count)
         # Add instruction_text from last executed instruction
         c = self.sim.cores[core]
@@ -180,6 +193,9 @@ class PRUSimulatorMCP:
         MCP default is zero so even short validation programs advance both
         cores; callers modelling a receiver guard may request a positive lag.
         """
+        _require_int("count", count)
+        if isinstance(guard_ns, bool) or not isinstance(guard_ns, (int, float)):
+            raise ValueError("guard_ns must be a number")
         if count < 0:
             raise ValueError("count must be non-negative")
         if guard_ns < 0:
@@ -239,6 +255,8 @@ class PRUSimulatorMCP:
         ``pin`` is an alias for GPI; input and output predicates are never ORed.
         A positive ``max_cycles`` is an inclusive budget measured from this call.
         """
+        _require_int("max_steps", max_steps)
+        _require_int("max_cycles", max_cycles)
         if max_steps < 0:
             raise ValueError("max_steps must be non-negative")
         if max_cycles < 0:
@@ -326,6 +344,8 @@ class PRUSimulatorMCP:
 
     def pru_memory(self, addr: int, length: int) -> dict:
         """Read length bytes from shared memory at addr."""
+        _require_int("addr", addr)
+        _require_int("length", length)
         data = self.sim.memory_read(addr, length)
         return {
             "hex_dump": data.hex(),
@@ -338,12 +358,16 @@ class PRUSimulatorMCP:
 
     def pru_set_input(self, core: str = "pru0", pin: int = 0, value: bool = False) -> dict:
         """Set a single GPI pin on the specified core's I/O port."""
+        _require_int("pin", pin)
+        _require_bool("value", value)
         self.sim.set_input(core, pin, value)
         return {"ok": True}
 
     def pru_vcd_export(self, path: str, core: str = "pru0", max_steps: int = 10000,
                        pins: str = "0-19", include_gpi: bool = False) -> dict:
         """Run a loaded core and export selected GPIO pins as deterministic VCD."""
+        _require_int("max_steps", max_steps)
+        _require_bool("include_gpi", include_gpi)
         return export_pin_waveform(
             self.sim, core, path, max_steps=max_steps, pins=pins,
             include_gpi=include_gpi,
@@ -351,6 +375,8 @@ class PRUSimulatorMCP:
 
     def pru_i2c_attach(self, core: str = "pru0", enabled: bool = True, address: int = 0x23) -> dict:
         """Attach or detach a TCA9538 I2C device model on SCL=bit0/SDA=bit1 of the specified core."""
+        _require_bool("enabled", enabled)
+        _require_int("address", address)
         self.sim.i2c_attach(core, enabled, address)
         return {"success": True, "core": core, "enabled": enabled, "address": address}
 
@@ -361,6 +387,7 @@ class PRUSimulatorMCP:
 
     def pru_breakpoint(self, core: str = "pru0", address: int = 0) -> dict:
         """Add a breakpoint at the specified address for the specified core."""
+        _require_int("address", address)
         self.sim.cores[core].breakpoints.add(address)
         return {"id": len(self.sim.cores[core].breakpoints)}
 
@@ -380,6 +407,13 @@ class PRUSimulatorMCP:
         Loads assembly source, attaches a UARTFrameGenerator, runs the PRU,
         and returns the received data from DRAM0.
         """
+        for name, value in (("baudrate", baudrate), ("frames", frames), ("pin", pin),
+                            ("dram0_offset", dram0_offset), ("max_steps", max_steps)):
+            _require_int(name, value)
+        if not isinstance(payload, list) or any(
+                isinstance(byte, bool) or not isinstance(byte, int) for byte in payload):
+            raise ValueError("payload must be a list of integers")
+
         # Reset and load
         self.sim.reset(core)
         errors = self.sim.load(core, source)

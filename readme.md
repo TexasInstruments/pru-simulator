@@ -125,6 +125,10 @@ The simulator loads `memory.cfg` at startup. Three built-in configs are provided
 
 Switch config by editing `memory.cfg` or copying one of the `config/` files over it.
 
+### IEP reset and capture limits
+
+`Simulator.hard_reset()` now calls `IepTimer.hardware_reset()`, so the counter, compare and capture state no longer survive a full reset. Register defaults follow [AM64x/AM243x TRM SPRUIM2J](https://www.ti.com/lit/pdf/spruim2), Tables 14-10907 and 14-10925: the counter stays disabled, with `GLOBAL_CFG` defined fields `0x550` and `CAP_CFG` defined fields `0x1FC00`. Reset leaves `DEFAULT_INC=5`, so enabling only `CNT_ENABLE` with a read-modify-write advances the counter by five per IEP tick; firmware must set `DEFAULT_INC` explicitly when another increment is required. Capture configuration follows Table 14-10925: bits 9:0 enable slots, bits 17:10 configure synchronization, and bits 23:18 select external sources. The simulator latches the first event until its valid bit is cleared; input synchronization, source routing and continuous overwrite are not modelled. The earlier synthetic first/last bits have been removed because they overlapped these fields.
+
 ## Example Programs
 
 See [getting_started.md](getting_started.md) for step-by-step walkthroughs of all examples in `source/`.
@@ -173,9 +177,14 @@ standalone experiments and may require optional packages (for example,
 
 ## Version
 
-v0.2.7 — hover over **PRU SIM** in the dashboard header to confirm.
+v0.2.8 — hover over **PRU SIM** in the dashboard header to confirm.
 
 ### Changelog
+
+**v0.2.8**
+- **Core faults and wait instructions** — memory faults are available in simulator, MCP and dashboard state; `WBS`/`WBC` accept implicit R31 and explicit register forms, with immediate bit numbers limited to 0–31.
+- **Hardware reset** — resets IEP counter, compare and capture state to the documented register defaults. See the IEP reset notes above for increments and capture limits.
+- **Configuration and MCP safety** — invalid configurations are rejected before writing, copied configurations can locate their constants file, and MCP calls validate argument types.
 
 **v0.2.7**
 - **CRC16/32 broadside accelerator** (XFR `device_id=1`) — modeled on AM64x/AM243x TRM (SPRUIM2H) §6.4.6.2.2.1 / Table 6-429: `R25` CRC_CFG, `R27` CRC_DATA_8_BFLIP (read), `R28` CRC_SEED / CRC_DATA_32_BFLIP (read), `R29` CRC_DATA (destructive read resets the accumulator to the seed). CRC-16 (standard/mod) and CRC-32, matched to AM243x silicon: `R29` is the non-reflected accumulator and `R28` the reflected (zlib/Ethernet) value; CCITT mode feeds bytes MSB first. Byte, half-word and word writes give the same result. Shares the broadside window with the MAC accelerator, selected by `device_id`. The dashboard shows a live CRC status widget (mode and accumulator) in the single-core and multi-core views. Backend in `xfr/crc_accelerator.py`; functional spec of the underlying RTL in `references/icss_m_xfr_crc_functional_spec.md`.
