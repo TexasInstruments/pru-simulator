@@ -375,3 +375,35 @@ def test_failed_reader_reload_restores_last_successful_config(monkeypatch, failu
         assert not runtime._closed and runtime._loaded
         sim.reset(runtime.core)
         assert runtime.run_until_frames(1, max_steps=16000)["mailbox"]["raw_frame"] == 0xABC
+
+
+def test_successful_reader_reload_cannot_return_a_previous_frame():
+    sim = Simulator("memory.cfg")
+    with SSIRuntime(sim, position=0xABC, resolution=12) as runtime:
+        runtime.load()
+        first = runtime.run_until_frames(1, max_steps=16000)
+        assert first["mailbox"]["raw_frame"] == 0xABC
+        runtime.step(6000)  # let the first frame's monoflop period finish
+        runtime.encoder.set_position(0x123)
+        runtime.load()
+        stale = runtime.run_until_frames(1, max_steps=0)
+        assert stale["reached"] is False
+        assert stale["mailbox"]["frame_count"] == 0
+        fresh = runtime.run_until_frames(1, max_steps=16000)
+        assert fresh["reached"] is True
+        assert fresh["steps"] > 0
+        assert fresh["mailbox"]["raw_frame"] == 0x123
+
+
+def test_failed_reader_reload_preserves_a_previously_received_mailbox():
+    sim = Simulator("memory.cfg")
+    with SSIRuntime(sim, position=0xABC, resolution=12) as runtime:
+        runtime.load()
+        assert runtime.run_until_frames(1, max_steps=16000)["reached"]
+        mailbox = sim.memory_read(abi.MAILBOX_ADDRESS, abi.MAILBOX_SIZE)
+        config = sim.memory_read(abi.CONFIG_ADDRESS, abi.CONFIG_SIZE)
+        with pytest.raises(ValueError):
+            runtime.load(clock_delay_loops=-1)
+        assert sim.memory_read(abi.MAILBOX_ADDRESS, abi.MAILBOX_SIZE) == mailbox
+        assert sim.memory_read(abi.CONFIG_ADDRESS, abi.CONFIG_SIZE) == config
+        assert runtime.run_until_frames(1, max_steps=0)["mailbox"]["raw_frame"] == 0xABC

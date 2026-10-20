@@ -368,3 +368,10 @@ rounds the minimum interval up: at 250 MHz, 4 MHz takes 62.5 cycles, so 62 cycle
 exceeds the limit and 63 cycles satisfies it. At 300 MHz, 75 cycles represents
 4 MHz exactly. The model does not relax a per-period limit to accept rounding
 to a shorter interval.
+
+### Reader reloads
+
+A successful reader load clears its mailbox, including the previous frame count.
+Wait for a new frame before using its position. A failed reload preserves the
+last working reader configuration and mailbox. Host mailbox decoding remains
+independent of the encoder model's decoder for validation.

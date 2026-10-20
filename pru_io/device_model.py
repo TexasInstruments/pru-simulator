@@ -406,9 +406,8 @@ class DeviceBus:
     def settle(self, cycle: int, gpo: int, port: str | None = None) -> int:
         """Settle one pin change and return the resolved 20-bit input word.
 
-        Stand-alone callers explicitly stepping a DeviceBus sample every model,
-        then propagate peer changes once. IOPort calls this on pin changes, so
-        reactive models do no work on idle cores.
+        Pin changes sample reactive models and propagate peer changes once.
+        Time-driven models advance only through advance_cycles().
         """
         if port is None and not self._ports:
             self._last_gpo = gpo & _MASK_20
@@ -417,6 +416,8 @@ class DeviceBus:
             own_changes = {}
             previous_drives = dict(self._last_drives)
             for device in self.devices:
+                if device.time_driven:
+                    continue
                 own_changes[id(device)] = self._tick_device(
                     device, cycle, provisional, previous_drives)
             bus = self._resolve_standalone(cycle, self._last_gpo,

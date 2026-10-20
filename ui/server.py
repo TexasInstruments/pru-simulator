@@ -133,6 +133,7 @@ def _snapshot(core: str) -> dict:
         "loopback": sim._loopback.snapshot(),
         "mem": [bytes(r._data) for r in sim.memory.regions],
         "iep": sim.iep.snapshot(),
+        "paced_pending": copy.deepcopy(sim._paced_pending),
     }
 
 
@@ -174,6 +175,7 @@ def _restore(core: str, snap: dict) -> None:
     for i, region_data in enumerate(snap["mem"]):
         if i < len(sim.memory.regions):
             sim.memory.regions[i]._data[:] = region_data
+    sim._paced_pending = copy.deepcopy(snap.get("paced_pending", {}))
     if snap.get("iep") is not None:
         sim.iep.restore(snap["iep"])
     if snap.get("device_bus") is not None:

@@ -942,3 +942,20 @@ def test_repeated_tca_faults_and_their_snapshots_are_bounded():
     model.reset()
     model.restore(snap)
     assert model.faults() == before
+
+
+def test_attaching_a_timed_device_to_a_standalone_port_does_not_advance_it():
+    port = IOPort()
+    device = port.attach_device(_TickCounter())
+    assert device.ticks == 0
+    port.write_r30(1)
+    assert device.ticks == 0
+
+
+def test_bare_core_r30_changes_do_not_add_timed_device_cycles():
+    bare = PRUCore("PRU0", Simulator().memory, XFRBus(), IOPort())
+    device = bare.io_port.attach_device(_TickCounter())
+    assert bare.load_asm("ldi r30, 1\nldi r30, 0\nldi r30, 2\nhalt") == []
+    bare.run()
+    assert bare.counters.cycles == 4
+    assert device.ticks == 4

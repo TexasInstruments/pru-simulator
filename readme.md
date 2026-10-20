@@ -175,6 +175,10 @@ with a message. Another call continues execution from the actual core state;
 elapsed time is never skipped. A follower that reaches HALT or the end of its
 program finishes normally, while a recorded CPU fault remains an error. The
 guard target is fixed for that catch-up even if firmware changes the mux.
+Unfinished targets are retained per lead and follower set: retries finish them
+before advancing that lead again, so `lead_steps` can be zero during catch-up.
+Other follower selections do not execute or discard that saved work. A core
+reset discards pending targets; dashboard step-back restores them with time.
 
 Batched callers must count `lead_steps`, not the requested batch size: a
 bounded catch-up may return before the batch finishes. Retry `pacing_incomplete`;

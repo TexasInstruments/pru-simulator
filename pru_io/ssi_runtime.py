@@ -77,6 +77,7 @@ class SSIRuntime:
                 self.close()
             raise
         self.sim.reset(self.core)
+        self.sim.memory.write(abi.MAILBOX_ADDRESS, bytes(abi.MAILBOX_SIZE))
         self._loaded = True
 
     def step(self, count: int = 1) -> dict:

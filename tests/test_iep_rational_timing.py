@@ -686,3 +686,98 @@ def test_batched_pacing_reports_lead_steps_on_stuck_follower(tmp_path, monkeypat
     result = sim.step_paced("pru0", "pru1", 500)
     assert result["reason"] == "pacing_catchup_failed"
     assert result["lead_steps"] == 1
+
+
+def test_paced_retry_finishes_the_old_target_before_advancing_lead(tmp_path):
+    sim = _clocked_sim(tmp_path, pru="200", pru1="200", iep="200")
+    sim.memory.regions[0].read_latency = 2500
+    assert sim.load("pru0", "lbbo &r2, r0, 0, 4\nqba 0") == []
+    assert sim.load("pru1", "qba 0") == []
+    first = sim.step_paced("pru0", "pru1")
+    assert first["reason"] == "pacing_incomplete"
+    assert sim.cores["pru0"].counters.cycles == 2501
+    retry = sim.step_paced("pru0", "pru1")
+    assert retry["reason"] == "pacing_incomplete"
+    assert retry["lead_steps"] == 0
+    assert retry["targets"] == first["targets"]
+    assert sim.cores["pru0"].counters.cycles == 2501
+    assert sim.cores["pru1"].counters.cycles == 2000
+    complete = sim.step_paced("pru0", "pru1")
+    assert complete["complete"] is True
+    assert complete["lead_steps"] == 1
+    assert sim.cores["pru0"].counters.cycles == 2502
+    assert sim.cores["pru1"].counters.cycles == 2502
+
+
+def test_paced_retry_keeps_all_follower_targets_when_mux_changes(tmp_path):
+    sim = _clocked_sim(tmp_path, pru="200", pru1="200", iep="200")
+    sim.memory.regions[0].read_latency = 2500
+    assert sim.load("pru0", "lbbo &r2, r0, 0, 4\nqba 0") == []
+    for core in ("pru1", "rtu0"):
+        assert sim.load(core, "qba 0") == []
+    _write32(sim, 0x26008, 1 << 26)
+    _write32(sim, 0x2600C, 1 << 26)
+    first = sim.step_paced_many("pru0", ["pru1", "rtu0"])
+    assert first["reason"] == "pacing_incomplete"
+    # The pending guarded target must survive even when the route changes.
+    _write32(sim, 0x26008, 0)
+    retry = sim.step_paced_many("pru0", ["pru1", "rtu0"])
+    assert retry["lead_steps"] == 0
+    assert retry["targets"] == first["targets"]
+    assert set(retry["targets"]) == {"pru1", "rtu0"}
+    # Once the first follower is done, the second must not starve on each retry.
+    for _ in range(5):
+        result = sim.step_paced_many("pru0", ["pru1", "rtu0"])
+        if result["complete"]:
+            break
+    assert result["complete"] is True
+    assert sim.cores["rtu0"].counters.cycles >= 2501
+
+
+@pytest.mark.parametrize("reset", ["lead", "follower", "hardware"])
+def test_reset_discards_unfinished_pacing_targets(tmp_path, reset):
+    sim = _clocked_sim(tmp_path, pru="200", pru1="200", iep="200")
+    for core in ("pru0", "pru1"):
+        assert sim.load(core, "qba 0") == []
+    sim.step("pru0", 5000)
+    assert sim.step_paced("pru0", "pru1")["complete"] is False
+    if reset == "hardware":
+        sim.hard_reset()
+    else:
+        sim.cores["pru0" if reset == "lead" else "pru1"].reset()
+    # Reset rebases to the shared time. The next call is a new lead step.
+    assert sim.step_paced("pru0", "pru1")["lead_steps"] == 1
+
+
+def test_step_back_restores_an_unfinished_pacing_target(tmp_path, monkeypatch):
+    from ui import server
+    sim = _clocked_sim(tmp_path, pru="200", pru1="200", iep="200")
+    sim.memory.regions[0].read_latency = 2500
+    assert sim.load("pru0", "lbbo &r2, r0, 0, 4\nqba 0") == []
+    assert sim.load("pru1", "qba 0") == []
+    monkeypatch.setattr(server, "sim", sim)
+    first = sim.step_paced("pru0", "pru1")
+    snap = server._snapshot("pru1")
+    sim.step("pru1", 2000)  # finish the gap without advancing the lead
+    assert sim.step_paced("pru0", "pru1", count=0)["complete"] is True
+    server._restore("pru1", snap)
+    replay = sim.step_paced("pru0", "pru1")
+    assert replay["lead_steps"] == 0
+    assert replay["targets"] == first["targets"]
+
+
+def test_other_follower_selection_does_not_discard_a_pending_retry(tmp_path):
+    sim = _clocked_sim(tmp_path, pru="200", pru1="200", iep="200")
+    sim.memory.regions[0].read_latency = 2500
+    assert sim.load("pru0", "lbbo &r2, r0, 0, 4\nqba 0") == []
+    for core in ("pru1", "rtu0"):
+        assert sim.load(core, "qba 0") == []
+    first = sim.step_paced_many("pru0", ["pru1", "rtu0"])
+    assert first["reason"] == "pacing_incomplete"
+    before = sim.status()
+    assert sim.step_paced_many("pru0", [], count=0)["complete"]
+    assert sim.status() == before  # unselected cores must not execute
+    # Reordering the same followers is still a retry of the original targets.
+    retry = sim.step_paced_many("pru0", ["rtu0", "pru1"])
+    assert retry["lead_steps"] == 0
+    assert retry["targets"] == first["targets"]
