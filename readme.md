@@ -20,6 +20,7 @@ These are simulator-side capabilities, not features of the PRU hardware itself.
 - **Memory graph** — analog scope for memory buffer waveform visualization
 - **GPIO loopback** — wire GPO groups directly to GPI for firmware loopback testing without hardware. Can specify loopback latency/jitter/clock-drift
 - **Device bus** — attach external device models (`DeviceModel`) to any core's GPIO pins and wire pins between cores. A shared `DeviceBus` resolves open-drain nets as wired-AND and reports push-pull contention as a fault instead of last-writer-wins; devices expose `events()` and `faults()` for checking firmware
+- **SSI encoder model and reader** — independent binary/Gray encoder `DeviceModel` with up to 64-bit frames, error fields and 12 encoder presets, clock-rate and monoflop faults, generated shared-memory ABI, and PRU1 reader and PRU0 emulator examples. See [SSI device model and reader](docs/ssi_device_model.md)
 - **UART decoder** — bit-bang UART decode in the IO panel (8N1, auto-detect bit period)
 - **Multi-core simulation & debug view** — PRU_ICSSG supports simultaneous simulation & debugging of up to 3 PRU cores; PRU-ICSS supports simultaneous simulation & debugging of both PRU cores
 - **Tiling window manager** — drag, split, collapse/expand, and persist panel layouts
@@ -102,10 +103,12 @@ pru_simulator/
 ├── core/               PRU ISA implementation (ALU, parser, disassembler, ELF loader, …)
 ├── mem/                Memory bus and region model
 ├── mcp_server/         MCP server for AI tool integration
-├── pru_io/             GPO/GPI port model, SD filter (R30/R31 interface), DeviceModel/DeviceBus
+├── pru_io/             GPO/GPI port model, SD filter (R30/R31 interface), DeviceModel/DeviceBus, device models (SSI encoder, TCA9538), generated ABIs
 ├── perif/              3-channel Peripheral Interface (SCU), GPCFG mux, TX→RX loopback
+├── schema/             Shared-memory ABI schemas (source for generated .py/.inc files)
 ├── source/             Example PRU assembly programs
 ├── tests/              Pytest test suite
+├── tools/              Headless runner, ABI code generators, perif drift report
 ├── ui/
 │   ├── server.py       FastAPI WebSocket server
 │   └── static/         Dashboard HTML/JS (index.html, app.js, layout.js)
@@ -138,7 +141,7 @@ Omitting `pru_clock_mhz` preserves the simulator's 200 MHz core default; omittin
 
 With both rates omitted, 1000 unstalled core cycles produce 1000 IEP ticks with `CNT_ENABLE=1` and `DEFAULT_INC=1` while IEPCLK bit 0 is clear. The supplied `memory.cfg` explicitly selects 250 MHz cores; with the omitted external IEP rate of 200 MHz, it produces 800 ticks for the same 1000 core cycles. See [clock sources and configuration](getting_started.md) for the cited TI firmware examples. RTU1 is available only on the AM243x/AM64x profiles; an omitted target selects AM243x.
 
-The simulator's IEP `GLOBAL_CFG` reset value, `0x550`, follows the TRM register defaults (IEP_GLOBAL_CFG_REG, Table 14-10907: `CMP_INC` and `DEFAULT_INC` reset to 5h, `CNT_ENABLE` to 0h). `DEFAULT_INC=5` counts nanoseconds at the default 200 MHz IEP clock, where one tick is 5 ns, so firmware that enables the counter with a read-modify-write (`GLOBAL_CFG | 1`) gets a nanosecond count. If you set a different IEP clock, for example 250 MHz (a 4 ns tick), firmware must set `DEFAULT_INC` itself (4 at 250 MHz) to keep a nanosecond count. A full-word write of `1` leaves `DEFAULT_INC=0`, and the counter does not advance.
+The simulator's IEP `GLOBAL_CFG` reset value, `0x550`, follows the TRM register defaults (IEP_GLOBAL_CFG_REG, Table 14-10907: `CMP_INC` and `DEFAULT_INC` reset to 5h, `CNT_ENABLE` to 0h). `DEFAULT_INC=5` counts nanoseconds at the default 200 MHz IEP clock, where one tick is 5 ns, so firmware that enables the counter with a read-modify-write (`GLOBAL_CFG | 1`) gets a nanosecond count. If you set a different IEP clock, for example 250 MHz (a 4 ns tick), firmware must set `DEFAULT_INC` itself (4 at 250 MHz) to keep a nanosecond count. A full-word write of `1` leaves `DEFAULT_INC=0`, and the counter does not advance. The SSI runtime (`pru_io/ssi_runtime.py`) is the in-repo example: it enables a stopped IEP with `DEFAULT_INC=1` written explicitly and sizes its timeouts from the active IEP clock.
 
 All cores share one IEP timer. Each core's elapsed cycles, including stalls,
 are converted to time with exact rational clock periods, so cores at different
@@ -201,6 +204,8 @@ See [getting_started.md](getting_started.md) for step-by-step walkthroughs of al
 | `crc_bitswap_example.asm` | CRC16/32 accelerator bit-mirrored reads: byte-wide flip (`R27`) and 32-bit flip (`R28`), with byte-wide and 32-bit-wide data writes |
 | `uart_tx.asm` | Bit-bang UART TX (115200 baud, 8N1) with UART decoder |
 | `uart_rx_11frame.asm` | Bit-bang UART RX (4 Mbaud, 8N1) with frame injection from IO panel |
+| `ssi_generic_reader/ssi_generic_reader.asm` | SSI encoder reader (1-64 bit frames) and generated shared-memory mailbox; see [timing and manual 300 MHz instructions](docs/ssi_device_model.md) |
+| `ssi_generic_emulator.asm` | SSI encoder emulator on PRU0 (1-64 bit frame read from a shared-memory block at every frame start); pairs with the reader in a board loopback, see [docs/ssi_device_model.md](docs/ssi_device_model.md) |
 | `mvi_gpio_loopback.asm` | MVIB register-indirect + GPIO loopback (walking-bit pattern) |
 | `sdfm_sinc3_demo/` | Free-running SINC3 filter adapted from AM261x ICSS-M firmware |
 | `perif_duty_cycle_sweep.asm` | Peripheral Interface TX: 125 Mbit 0%→100% duty-cycle pulse sweep on PRU0 ch0 (needs `memory_perif_125mbit_demo.cfg`) |
@@ -235,9 +240,14 @@ standalone experiments and may require optional packages (for example,
 
 ## Version
 
-v0.2.10 — hover over **PRU SIM** in the dashboard header to confirm.
+v1.0.0 — hover over **PRU SIM** in the dashboard header to confirm.
 
 ### Changelog
+
+**v1.0.0**
+- **SSI encoder simulation** — binary or Gray frames up to 64 bits, optional error fields and twelve documented RM08/SICK presets, with faults for excessive clock rate, incomplete frames and extra pulses.
+- **Reader and emulator firmware** — generated configuration ABI, seqlock mailbox and host runtimes support model-to-reader and two-core firmware loopback tests. Separate Python decoding keeps validation independent; failed reader reloads preserve the last working configuration.
+- **Generic MCP device tools** — discover, attach, detach and inspect SSI or TCA9538 devices, events and faults through the MCP SDK stdio transport. See [SSI setup and limitations](docs/ssi_device_model.md).
 
 **v0.2.10**
 - **Shared device bus** — extends the DeviceModel contract from #44 with GPIO drive ownership, pin release on detach, core-to-core wires and contention faults. TCA9538 uses the same device path; time-driven devices include stall cycles.

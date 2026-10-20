@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Callable
 
 from pru_io.device_model import DeviceBus
+from pru_io.tca9538_device_model import TCA9538Model
 
 if TYPE_CHECKING:
     from pru_io.sd_filter import SigmaDeltaFilter
@@ -82,6 +83,9 @@ class IOPort:
         The generic replacement for attach_i2c_device: any number of devices,
         on any pins, sharing nets. Opt-in, like everything else here.
         """
+        if (self.i2c_device is not None and isinstance(device, TCA9538Model)
+                and {0, 1}.intersection(device.nets)):
+            raise ValueError("generic TCA9538 pins overlap the legacy I2C device")
         return self.device_bus.attach(device, port=self._device_endpoint,
                                       cycle=self._device_cycle)
 
@@ -176,6 +180,12 @@ class IOPort:
         Opt-in: bits 0/1 already mean SCLK/MOSI to spi_master_tx.asm, so an
         attached device must never be on by default.
         """
+        if device is not None and any(
+                isinstance(attached, TCA9538Model)
+                and self.device_bus._device_ports.get(id(attached)) == self._device_endpoint
+                and {0, 1}.intersection(attached.nets)
+                for attached in self.device_bus.devices):
+            raise ValueError("legacy I2C pins overlap a generic TCA9538 device")
         self.i2c_device = device
 
     def set_loopback_group(self, group: int, enabled: bool) -> None:
