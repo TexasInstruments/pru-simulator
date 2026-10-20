@@ -187,9 +187,12 @@ class Simulator:
         bus = MemoryBus()
 
         if not os.path.exists(config_path):
-            bus.add_region(MemoryRegion("DRAM0",       0x00000000, 0x2000,  2,  1,  0, 1))
-            bus.add_region(MemoryRegion("DRAM1",       0x00002000, 0x2000,  2,  1,  0, 1))
-            bus.add_region(MemoryRegion("ICSS_SHARED", 0x00010000, 0x10000, 2,  1,  0, 1))
+            bus.add_region(MemoryRegion("DRAM0",       0x00000000, 0x2000,  2,  1,  0,
+                                         misaligned_write_penalty=1))
+            bus.add_region(MemoryRegion("DRAM1",       0x00002000, 0x2000,  2,  1,  0,
+                                         misaligned_write_penalty=1))
+            bus.add_region(MemoryRegion("ICSS_SHARED", 0x00010000, 0x10000, 2,  1,  0,
+                                         misaligned_write_penalty=1))
             bus.add_region(MemoryRegion("MS_RAM",      0x80000000, 0x10000, 40, 1, 10))
             return bus
 
