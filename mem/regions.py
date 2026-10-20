@@ -14,6 +14,7 @@ class MemoryRegion:
         read_latency: int,
         write_latency: int,
         jitter: int = 0,
+        misaligned_write_penalty: int = 0,
     ):
         self.name = name
         self.base_addr = base_addr
@@ -21,6 +22,10 @@ class MemoryRegion:
         self.read_latency = read_latency
         self.write_latency = write_latency
         self.jitter = jitter
+        # Extra cycles for a write that starts off a 4-byte boundary AND spans
+        # two or more words. ICSS-local RAM (DRAM0/1, Shared RAM) charges 1 on
+        # silicon (LP-AM261 ICSSM and LP-AM243 ICSSG); MSRAM charges 0.
+        self.misaligned_write_penalty = misaligned_write_penalty
         self._data = bytearray(size)
 
     # ------------------------------------------------------------------
@@ -73,4 +78,7 @@ class MemoryRegion:
         """Return the number of stall cycles for a write of *length* bytes at *addr*."""
         self._check_bounds(addr, length)
         words = self._word_count(addr, length)
-        return self.write_latency + (words - 1)
+        stalls = self.write_latency + (words - 1)
+        if addr & 3 and words >= 2:
+            stalls += self.misaligned_write_penalty
+        return stalls
