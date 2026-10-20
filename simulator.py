@@ -9,6 +9,7 @@ import copy
 import math
 import os
 import re
+from fractions import Fraction
 
 from core.pru_core import PRUCore
 from mem.memory_bus import MemoryBus
@@ -241,6 +242,7 @@ class Simulator:
         )
         self.memory.add_region(IepRegisterRegion(self.iep))
         self.memory.add_region(IepClockRegisterRegion(self.iep))
+        self._paced_pending: dict[tuple[str, frozenset[str]], dict[str, int | Fraction]] = {}
         for name, core in self.cores.items():
             core.iep = self.iep
 
@@ -248,7 +250,12 @@ class Simulator:
                 self.iep.observe_core_cycles(_name, _core.counters.cycles)
 
             core.cycle_observer = observe_cycles
-            core.reset_observer = lambda *, _name=name: self.iep.rebase_core(_name)
+
+            def reset_timeline(*, _name=name) -> None:
+                self._paced_pending.clear()
+                self.iep.rebase_core(_name)
+
+            core.reset_observer = reset_timeline
             if name in self._perif:
                 self._perif[name].cycle_time_ns = (
                     lambda cycles, _name=name: self.iep.core_time_ns(_name, cycles))
@@ -390,7 +397,7 @@ class Simulator:
         signal routing, and the guard applies only while both routes are active.
         Each follower catch-up is limited to 1000 instructions per lead step.
         The result records the selected targets, actual lead_steps and incomplete work;
-        subsequent calls execute the remaining gap without skipping core time.
+        subsequent calls finish those targets before executing another lead step.
         """
         if isinstance(guard_ns, bool) or not isinstance(guard_ns, (int, float)):
             raise ValueError("guard_ns must be a number")
@@ -405,20 +412,13 @@ class Simulator:
             for follower in followers
         ]
         guard_units = self.iep.nanoseconds_to_units(guard_ns)
-        targets = {}
         lead_steps = 0
-        for _ in range(count):
-            if not lead_pru.halted and lead_pru.pc < len(lead_pru.instructions):
-                lead_pru.step()
-                lead_steps += 1
-            lead_time = self.iep.core_time_units(lead, lead_pru.counters.cycles)
-            for follower, follow_pru, follow_perif in follower_states:
-                use_guard = (
-                    lead_perif is not None and follow_perif is not None
-                    and lead_perif.enabled and follow_perif.enabled
-                )
-                target = lead_time - (guard_units if use_guard else 0)
-                targets[follower] = target
+
+        def catch_up(targets: dict[str, int | Fraction]) -> dict | None:
+            for follower, follow_pru, _ in follower_states:
+                if follower not in targets:
+                    continue
+                target = targets[follower]
                 steps = 0
                 while (
                     self.iep.core_time_units(follower, follow_pru.counters.cycles) < target
@@ -427,7 +427,7 @@ class Simulator:
                 ):
                     if steps >= _MAX_CATCHUP_STEPS:
                         return {"complete": False, "reason": "pacing_incomplete",
-                                "follower": follower, "targets": targets,
+                                "follower": follower, "targets": dict(targets),
                                 "lead_steps": lead_steps}
                     previous_cycles = follow_pru.counters.cycles
                     follow_pru.step()
@@ -436,9 +436,37 @@ class Simulator:
                             and not follow_pru.halted
                             and follow_pru.pc < len(follow_pru.instructions)):
                         return {"complete": False, "reason": "pacing_catchup_failed",
-                                "follower": follower, "targets": targets,
+                                "follower": follower, "targets": dict(targets),
                                 "lead_steps": lead_steps}
-        return {"complete": True, "targets": targets, "lead_steps": lead_steps}
+            return None
+
+        # Resume the frozen targets before allowing the lead to add more time.
+        # Store every follower's target up front so later followers cannot starve.
+        # A different execution selection must not run or erase these followers.
+        pacing_key = (lead, frozenset(followers))
+        targets = self._paced_pending.get(pacing_key, {})
+        if targets:
+            incomplete = catch_up(targets)
+            if incomplete is not None:
+                return incomplete
+            del self._paced_pending[pacing_key]
+        for _ in range(count):
+            if not lead_pru.halted and lead_pru.pc < len(lead_pru.instructions):
+                lead_pru.step()
+                lead_steps += 1
+            lead_time = self.iep.core_time_units(lead, lead_pru.counters.cycles)
+            targets = {}
+            for follower, _, follow_perif in follower_states:
+                use_guard = (
+                    lead_perif is not None and follow_perif is not None
+                    and lead_perif.enabled and follow_perif.enabled
+                )
+                targets[follower] = lead_time - (guard_units if use_guard else 0)
+            incomplete = catch_up(targets)
+            if incomplete is not None:
+                self._paced_pending[pacing_key] = targets
+                return incomplete
+        return {"complete": True, "targets": dict(targets), "lead_steps": lead_steps}
 
     def registers(self, core: str) -> list[int]:
         """Return the 32 general-purpose register values for *core*."""

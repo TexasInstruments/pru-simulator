@@ -1,6 +1,7 @@
 """FastAPI + WebSocket backend for the PRU Simulator Dashboard."""
 
 import asyncio
+import copy
 import json
 import math
 import os
@@ -86,6 +87,7 @@ def _snapshot(core: str) -> dict:
         "instruction_count": c.counters.instruction_count,
         "mem": [bytes(r._data) for r in sim.memory.regions],
         "iep": sim.iep.snapshot(),
+        "paced_pending": copy.deepcopy(sim._paced_pending),
         "sd": sd.snapshot() if sd is not None else None,
         "perif": perif.snapshot() if perif is not None else None,
         "i2c": i2c.snapshot() if i2c is not None else None,
@@ -111,6 +113,7 @@ def _restore(core: str, snap: dict) -> None:
     for i, region_data in enumerate(snap["mem"]):
         if i < len(sim.memory.regions):
             sim.memory.regions[i]._data[:] = region_data
+    sim._paced_pending = copy.deepcopy(snap.get("paced_pending", {}))
     if snap.get("iep") is not None:
         sim.iep.restore(snap["iep"])
     if snap.get("sd") is not None and c.io_port.sd_filter is not None:
