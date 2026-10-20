@@ -66,10 +66,18 @@ class SSIRuntime:
     def load(self, clock_delay_loops: int = 20,
              idle_delay_loops: int | None = None) -> None:
         """Pack the reader config into shared memory and load its assembly."""
-        if idle_delay_loops is None:
-            idle_delay_loops = ceil(self.encoder.monoflop_cycles / 2) + 8
-        load_reader(self.sim, self.core, self.encoder.resolution,
-                    clock_delay_loops, idle_delay_loops)
+        if self._closed:
+            raise RuntimeError("SSI reader runtime is closed")
+        try:
+            if idle_delay_loops is None:
+                idle_delay_loops = ceil(self.encoder.monoflop_cycles / 2) + 8
+            load_reader(self.sim, self.core, self.encoder.resolution,
+                        clock_delay_loops, idle_delay_loops)
+        except BaseException:
+            if not self._loaded:
+                self.close()
+            raise
+        self.sim.reset(self.core)
         self._loaded = True
 
     def step(self, count: int = 1) -> dict:
@@ -162,11 +170,15 @@ class SSIEmulatorRuntime:
         self._loaded = False
 
     def write_config(self) -> None:
-        """Pack the current frame into the emulator block in shared memory."""
+        """Write host-owned emulator fields, preserving firmware status."""
         frame = self.layout.pack_frame(self.layout.position, self.layout.error)
-        self.sim.memory.write(abi.EMULATOR_ADDRESS, abi.pack_emulator_config(
+        config = abi.pack_emulator_config(
             self.layout.resolution, frame & 0xFFFFFFFF, frame >> 32,
-            self.monoflop_ticks))
+            self.monoflop_ticks)
+        self.sim.memory.write(abi.EMULATOR_ADDRESS,
+                              config[:abi.EMULATOR_STATUS_OFFSET])
+        self.sim.memory.write(abi.EMULATOR_ADDRESS + abi.EMULATOR_MONOFLOP_TICKS_OFFSET,
+                              config[abi.EMULATOR_MONOFLOP_TICKS_OFFSET:])
 
     def load(self) -> None:
         """Write the emulator block and load its assembly.
@@ -183,25 +195,36 @@ class SSIEmulatorRuntime:
             raise ValueError("SSI emulator requires IEP DEFAULT_INC=1")
         if timer.cmp0_rst_cnt_en and timer.cmp_enabled(0):
             raise ValueError("SSI emulator requires a free-running IEP without CMP0 reset")
-        self.monoflop_ticks = ceil(
+        monoflop_ticks = ceil(
             self.layout.monoflop_us * timer.active_clock_hz / 1_000_000)
-        if not 1 <= self.monoflop_ticks <= 0xFFFFFFFF:
+        if not 1 <= monoflop_ticks <= 0xFFFFFFFF:
             raise ValueError("SSI emulator IEP timeout must fit a positive u32")
-        self.write_config()
-        self.sim.lease_gpio_outputs(
-            self.core, (1 << _CLOCK_PIN) | (1 << _DATA_PIN), self,
-            drive_mask=1 << _DATA_PIN)
+        previous_ticks = self.monoflop_ticks
+        previous_config = (self.sim.memory_read(abi.EMULATOR_ADDRESS, abi.EMULATOR_SIZE)
+                           if self._loaded else None)
         try:
+            self.monoflop_ticks = monoflop_ticks
+            self.write_config()
+            self.sim.lease_gpio_outputs(
+                self.core, (1 << _CLOCK_PIN) | (1 << _DATA_PIN), self,
+                drive_mask=1 << _DATA_PIN)
             errors = self.sim.load(
                 self.core, _EMULATOR_FIRMWARE.read_text(encoding="utf-8"),
                 include_paths=[str(_EMULATOR_FIRMWARE.parent)])
             if errors:
                 raise ValueError("SSI emulator assembly failed: " + "; ".join(errors))
+            self.sim.reset(self.core)
+            self.sim.memory.write(abi.EMULATOR_ADDRESS + abi.EMULATOR_STATUS_OFFSET,
+                                  b"\x00" * 4)
             if not timer.count_enabled:  # last, so no failure above leaves it running
                 self._timer_was_cfg = timer.global_cfg
                 timer.write32(0x00, (timer.global_cfg & ~0xF0) | 0x11)
         except BaseException:
-            self.sim.device_bus.release_core_outputs(self)
+            self.monoflop_ticks = previous_ticks
+            if self._loaded:
+                self.sim.memory.write(abi.EMULATOR_ADDRESS, previous_config)
+            else:
+                self.sim.device_bus.release_core_outputs(self)
             raise
         _EMULATOR_SIMS.add(self.sim)
         self._loaded = True

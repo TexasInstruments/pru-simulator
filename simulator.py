@@ -6,6 +6,7 @@ reading memory, and querying I/O state.
 
 import configparser
 import copy
+import math
 import os
 import re
 
@@ -26,6 +27,7 @@ from perif.gpcfg import GpcfgRegisters, MUX_PERIF
 from perif.loopback import Loopback
 
 _GPCFG_INDEX = {"pru0": 0, "pru1": 1}   # rtu0 has no GPCFG GP-mux (TRM)
+_MAX_CATCHUP_STEPS = 1000
 
 
 class SDRegisterRegion(MemoryRegion):
@@ -127,7 +129,7 @@ class Simulator:
         self.memory = self._load_memory(config_path)
         self.constant_table = self._load_constants(config_path)
         dev = self._get_device_config(config_path)
-        pru_clock = dev.get("pru_clock_mhz", "250")
+        pru_clock = dev.get("pru_clock_mhz", "200")
         pru1_clock = dev.get("pru1_clock_mhz", pru_clock)
         iep_clock = dev.get("iep_clock_mhz", IEP_DEFAULT_CLOCK_MHZ)
         io_pru0 = IOPort()
@@ -152,13 +154,33 @@ class Simulator:
         if target.lower() == "am263x":
             del self.cores["rtu1"]
 
+        # SPRUIM2J Table 6-65: these fixed entries depend on the executing
+        # core. A shared sidecar cannot provide all four sets of addresses.
+        if target.lower() in ("am243x", "am64x"):
+            core_constants = {
+                "pru0": {10: 0x2A000, 11: 0x22000, 22: 0x8000},
+                "rtu0": {10: 0x2A100, 11: 0x23000, 22: 0x8000},
+                "pru1": {10: 0x2A200, 11: 0x24000, 22: 0x9000},
+                "rtu1": {10: 0x2A300, 11: 0x23800, 22: 0x9000},
+            }
+        else:
+            # TI OpenPRU AM263x_PRU0/1.cmd: C10 is reserved on this target.
+            # The legacy simulated RTU0 has no AM263x hardware equivalent;
+            # leave its common table unchanged rather than inventing a map.
+            core_constants = {
+                "pru0": {11: 0x22000, 22: 0x8000},
+                "pru1": {11: 0x24000, 22: 0x9000},
+            }
+        for name, entries in core_constants.items():
+            self.cores[name].constant_table.load_from_dict(entries)
+
         # One resolver owns generic external devices and cross-core GPIO nets.
         # It is inert until a device or wire is attached.
         self.device_bus = DeviceBus()
         for name, core in self.cores.items():
             core.io_port.bind_device_bus(self.device_bus, name)
 
-        # Wire SD filters to each core's IOPort (slice 1 runs on its own clock)
+        # PRU0/RTU0 use the first configured rate; PRU1/RTU1 use the second.
         pru_clock_mhz = float(pru_clock)
         pru1_clock_mhz = float(pru1_clock)
         self._pru_clock_mhz = pru_clock_mhz
@@ -166,6 +188,7 @@ class Simulator:
         core_clocks = {"pru0": pru_clock_mhz, "rtu0": pru_clock_mhz,
                        "pru1": pru1_clock_mhz, "rtu1": pru1_clock_mhz}
         for name, core in self.cores.items():
+            core.clock_mhz = core_clocks[name]
             core.io_port.sd_filter = SigmaDeltaFilter(pru_clock_mhz=core_clocks[name])
 
         # Wire SD registers into memory bus (pru0 owns the register region)
@@ -356,12 +379,12 @@ class Simulator:
         }
 
     def step_paced(self, lead: str, follow: str, count: int = 1,
-                   guard_ns: float = 20.0) -> None:
+                   guard_ns: float = 20.0) -> dict:
         """Step *lead* and pace *follow* by elapsed core time."""
-        self.step_paced_many(lead, [follow], count=count, guard_ns=guard_ns)
+        return self.step_paced_many(lead, [follow], count=count, guard_ns=guard_ns)
 
     def step_paced_many(self, lead: str, followers: list[str], count: int = 1,
-                        guard_ns: float = 20.0) -> None:
+                        guard_ns: float = 20.0) -> dict:
         """Step a lead core and catch each follower up by exact elapsed time.
 
         When both cores have enabled PERIF blocks, *guard_ns* keeps the follower
@@ -369,7 +392,16 @@ class Simulator:
         the follower catches up to the lead's exact core time without a guard.
         PERIF clocks continue to advance while mux-disabled; the mux controls
         signal routing, and the guard applies only while both routes are active.
+        Each follower catch-up is limited to 1000 instructions per lead step.
+        The result records the selected targets and reports incomplete work;
+        subsequent calls execute the remaining gap without skipping core time.
         """
+        if isinstance(guard_ns, bool) or not isinstance(guard_ns, (int, float)):
+            raise ValueError("guard_ns must be a number")
+        if isinstance(guard_ns, float) and not math.isfinite(guard_ns):
+            raise ValueError("guard_ns must be finite")
+        if guard_ns < 0:
+            raise ValueError("guard_ns must be non-negative")
         lead_pru = self._get_core(lead)
         lead_perif = self._perif.get(lead)
         follower_states = [
@@ -377,6 +409,7 @@ class Simulator:
             for follower in followers
         ]
         guard_units = self.iep.nanoseconds_to_units(guard_ns)
+        targets = {}
         for _ in range(count):
             if not lead_pru.halted and lead_pru.pc < len(lead_pru.instructions):
                 lead_pru.step()
@@ -387,12 +420,25 @@ class Simulator:
                     and lead_perif.enabled and follow_perif.enabled
                 )
                 target = lead_time - (guard_units if use_guard else 0)
+                targets[follower] = target
+                steps = 0
                 while (
                     self.iep.core_time_units(follower, follow_pru.counters.cycles) < target
                     and not follow_pru.halted
                     and follow_pru.pc < len(follow_pru.instructions)
                 ):
+                    if steps >= _MAX_CATCHUP_STEPS:
+                        return {"complete": False, "reason": "pacing_incomplete",
+                                "follower": follower, "targets": targets}
+                    previous_cycles = follow_pru.counters.cycles
                     follow_pru.step()
+                    steps += 1
+                    if (follow_pru.counters.cycles == previous_cycles
+                            and not follow_pru.halted
+                            and follow_pru.pc < len(follow_pru.instructions)):
+                        return {"complete": False, "reason": "pacing_catchup_failed",
+                                "follower": follower, "targets": targets}
+        return {"complete": True, "targets": targets}
 
     def registers(self, core: str) -> list[int]:
         """Return the 32 general-purpose register values for *core*."""
@@ -528,6 +574,14 @@ class Simulator:
         for key, val in params.items():
             if hasattr(mod, key):
                 setattr(mod, key, val)
+
+    def set_iep_clock_mhz(self, mhz: float) -> None:
+        """Set the IEP0 clock (ICSSG_IEP_CLK) independently of the PRU clocks.
+
+        Takes effect from the current simulated time; the counter keeps its
+        value. The config equivalent is ``iep_clock_mhz`` under [device].
+        """
+        self.iep.set_clock_mhz(mhz)
 
     def reset(self, core: str) -> None:
         """Reset *core* to its initial state (registers, counters, PC, halted flag)."""

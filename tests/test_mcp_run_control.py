@@ -126,7 +126,7 @@ def test_multicore_live_follower_without_progress_is_catchup_failure(monkeypatch
     mcp = fresh_mcp()
     assert mcp.pru_load("nop\njmp 0", core="pru0")["success"]
     assert mcp.pru_load("nop\njmp 0", core="pru1")["success"]
-    monkeypatch.setattr(mcp.sim, "step_paced", lambda lead, follow, count, **kw: mcp.sim.step(lead, count))
+    monkeypatch.setattr(mcp.sim.cores["pru1"], "step", lambda: None)
     result = mcp.pru_step_multicore(count=1)
     assert result["success"] is False
     assert result["reason"] == "pacing_catchup_failed"
@@ -164,3 +164,99 @@ def test_multicore_normal_lead_halt_is_success():
     assert result["success"] is True
     assert result["lead"]["halted"] is True
     assert result["lead"]["fault"] is None
+
+
+@pytest.mark.parametrize("guard", [float("nan"), float("inf"), -float("inf")])
+def test_multicore_rejects_nonfinite_guards_before_execution(guard):
+    mcp = fresh_mcp()
+    assert mcp.pru_load("nop\njmp 0", core="pru0")["success"]
+    with pytest.raises(ValueError, match="finite"):
+        mcp.pru_step_multicore(guard_ns=guard)
+    assert mcp.sim.iep.now_ns == 0
+
+
+def test_multicore_checks_the_guard_target_selected_before_follower_mux_change():
+    mcp = fresh_mcp()
+    assert mcp.pru_load("nop\njmp 0", core="pru0")["success"]
+    assert mcp.pru_load(
+        "ldi32 r0, 0x2600C\nldi r1, 0\nsbbo &r1, r0, 0, 4\n"
+        "loop: nop\njmp loop", core="pru1"
+    )["success"]
+    for core in ("pru0", "pru1"):
+        mcp.sim.gpcfg_write(core, 1)
+    mcp.sim.step("pru0", 10)
+
+    result = mcp.pru_step_multicore(count=1, guard_ns=20)
+
+    assert not mcp.sim._perif["pru1"].enabled
+    assert result["follow"]["cycles"] == 7  # 35 ns target, 20 ns behind 55 ns lead
+    assert result["success"] is True
+
+
+def test_multicore_exhausted_follower_is_normal_completion():
+    mcp = fresh_mcp()
+    assert mcp.pru_load("nop\njmp 0", core="pru0")["success"]
+    assert mcp.pru_load("ldi r0, 42", core="pru1")["success"]
+
+    result = mcp.pru_step_multicore(count=3)
+
+    assert result["success"] is True
+    assert result["follow"]["pc"] == 1
+    assert result["follow"]["halted"] is False
+    assert result["follow"]["fault"] is None
+    assert mcp.sim.registers("pru1")[0] == 42
+
+
+def test_multicore_catchup_is_bounded_and_resumes_without_skipping_execution():
+    mcp = fresh_mcp()
+    assert mcp.pru_load("nop\njmp 0", core="pru0")["success"]
+    assert mcp.pru_load("add r0, r0, 1\njmp 0", core="pru1")["success"]
+    mcp.sim.step("pru0", 10000)
+
+    result = mcp.pru_step_multicore()
+
+    assert result["success"] is False
+    assert result["reason"] == "pacing_incomplete"
+    assert 0 < result["follow"]["cycles"] < 10001
+    assert result["follow_ns"] < result["target_ns"]
+    assert mcp.sim.registers("pru1")[0] == (result["follow"]["cycles"] + 1) // 2
+    for _ in range(20):
+        result = mcp.pru_step_multicore()
+        if result["success"]:
+            break
+        assert result["reason"] == "pacing_incomplete"
+
+    assert result["success"] is True
+    assert result["follow"]["cycles"] == result["lead"]["cycles"]
+    assert mcp.sim.registers("pru1")[0] == (result["follow"]["cycles"] + 1) // 2
+
+
+@pytest.mark.parametrize("finish", ["halt", "nop"])
+def test_multicore_resumes_catchup_after_the_lead_finishes(finish):
+    mcp = fresh_mcp()
+    assert mcp.pru_load(
+        f"ldi r0, 10000\nloop: sub r0, r0, 1\nqbne loop, r0, 0\n{finish}",
+        core="pru0"
+    )["success"]
+    assert mcp.pru_load("add r1, r1, 1\njmp 0", core="pru1")["success"]
+    mcp.sim.step("pru0", 20001)
+
+    for expected_cycles in (1000, 2000):
+        result = mcp.pru_step_multicore(count=5)
+        assert result["success"] is False
+        assert result["reason"] == "pacing_incomplete"
+        assert result["lead"]["cycles"] == 20002
+        assert result["lead"]["halted"] == (finish == "halt")
+        assert result["lead"]["fault"] is None
+        assert result["follow"]["cycles"] == expected_cycles
+        assert mcp.sim.registers("pru1")[1] == expected_cycles // 2
+
+    for _ in range(25):
+        result = mcp.pru_step_multicore(count=5)
+        if result["success"]:
+            break
+        assert result["reason"] == "pacing_incomplete"
+
+    assert result["success"] is True
+    assert result["lead"]["cycles"] == result["follow"]["cycles"] == 20002
+    assert mcp.sim.registers("pru1")[1] == 10001

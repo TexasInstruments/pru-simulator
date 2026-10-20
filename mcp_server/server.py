@@ -6,10 +6,8 @@ import base64
 import binascii
 import struct
 import copy
+import math
 import random
-import inspect
-import types
-import typing
 
 # Allow imports from parent directory when run directly
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -213,6 +211,8 @@ class PRUSimulatorMCP:
         _require_int("count", count)
         if isinstance(guard_ns, bool) or not isinstance(guard_ns, (int, float)):
             raise ValueError("guard_ns must be a number")
+        if isinstance(guard_ns, float) and not math.isfinite(guard_ns):
+            raise ValueError("guard_ns must be finite")
         if count < 0:
             raise ValueError("count must be non-negative")
         if guard_ns < 0:
@@ -231,23 +231,9 @@ class PRUSimulatorMCP:
             }
 
         for _ in range(count):
-            self.sim.step_paced(lead, follow, 1, guard_ns=guard_ns)
-            lead_perif = self.sim._perif.get(lead)
-            follow_perif = self.sim._perif.get(follow)
-            use_guard = (
-                lead_perif is not None and follow_perif is not None
-                and lead_perif.enabled and follow_perif.enabled
-            )
+            pacing = self.sim.step_paced(lead, follow, 1, guard_ns=guard_ns)
             lead_core = self.sim.cores[lead]
             follow_core = self.sim.cores[follow]
-            target_units = self.sim.iep.core_time_units(
-                lead, lead_core.counters.cycles
-            ) - (
-                self.sim.iep.nanoseconds_to_units(guard_ns) if use_guard else 0
-            )
-            follow_units = self.sim.iep.core_time_units(
-                follow, follow_core.counters.cycles
-            )
             if lead_core.fault is not None or follow_core.fault is not None:
                 return {
                     "success": False,
@@ -255,12 +241,16 @@ class PRUSimulatorMCP:
                     "lead": state(lead),
                     "follow": state(follow),
                 }
-            if not follow_core.halted and follow_units < target_units:
+            if not pacing["complete"]:
+                target_units = pacing["targets"][follow]
+                follow_units = self.sim.iep.core_time_units(
+                    follow, follow_core.counters.cycles
+                )
                 target_ns = float(self.sim.iep.time_units_to_ns(target_units))
                 follow_ns = float(self.sim.iep.time_units_to_ns(follow_units))
                 return {
                     "success": False,
-                    "reason": "pacing_catchup_failed",
+                    "reason": pacing["reason"],
                     "target_ns": float(target_ns),
                     "follow_ns": float(follow_ns),
                     "lead": state(lead),
@@ -434,7 +424,11 @@ class PRUSimulatorMCP:
             managed_mask = drive_mask
         self.sim.lease_gpio_outputs(core, managed_mask, device,
                                     drive_mask=drive_mask)
-        self.sim.attach_device(core, device)
+        try:
+            self.sim.attach_device(core, device)
+        except BaseException:
+            self.sim.device_bus.release_core_outputs(device)
+            raise
         return {"success": True, "core": core, "device": device.get_state()}
 
     def pru_device_detach(self, device_name: str) -> dict:
@@ -549,111 +543,34 @@ class PRUSimulatorMCP:
         return {"cores": self.sim.status()}
 
 
-_JSON_SCALAR_TYPES = {int: "integer", float: "number", bool: "boolean", str: "string"}
+def build_server():
+    """Build an MCP server with every public PRUSimulatorMCP method registered as a tool.
 
-
-def _annotation_to_json_schema(annotation) -> dict:
-    """Map a parameter annotation to a JSON Schema fragment.
-
-    ``X | None`` / ``Optional[X]`` advertise the schema of ``X`` (optionality
-    comes from the parameter default, not from the type). ``int | float`` is
-    ``number``; ``list[X]`` is an array of ``X``; ``dict`` is an object. An
-    unannotated parameter keeps the historical ``string``; an annotation we do
-    not recognise is left unconstrained rather than mislabelled as a string.
+    Requires the 'mcp' SDK (>= 2.0) to be installed.
     """
-    if annotation is inspect.Parameter.empty:
-        return {"type": "string"}
-    if annotation in _JSON_SCALAR_TYPES:
-        return {"type": _JSON_SCALAR_TYPES[annotation]}
-    origin = typing.get_origin(annotation)
-    if origin is typing.Union or origin is types.UnionType:
-        members = [a for a in typing.get_args(annotation) if a is not type(None)]
-        if not members:
-            return {}
-        if len(members) == 1:
-            return _annotation_to_json_schema(members[0])
-        if all(m in (int, float) for m in members):
-            return {"type": "number"}
-        return {"anyOf": [_annotation_to_json_schema(m) for m in members]}
-    if annotation is list or origin is list:
-        schema = {"type": "array"}
-        args = typing.get_args(annotation)
-        if args:
-            schema["items"] = _annotation_to_json_schema(args[0])
-        return schema
-    if annotation is dict or origin is dict:
-        return {"type": "object"}
-    return {}
+    import inspect
+    from mcp.server import MCPServer
 
+    server = MCPServer("pru-simulator")
+    mcp_wrapper = PRUSimulatorMCP()
 
-def _tool_input_schema(method) -> dict:
-    """Build the MCP ``inputSchema`` for a bound ``PRUSimulatorMCP`` method."""
-    # Annotations are real objects here (no ``from __future__ import
-    # annotations`` in this module); eval_str also resolves them if that changes.
-    sig = inspect.signature(method, eval_str=True)
-    properties = {}
-    required = []
-    for param_name, param in sig.parameters.items():
-        if param_name == "self":
+    # The input schema of each tool is derived from the method signature.
+    for name, method in inspect.getmembers(mcp_wrapper, predicate=inspect.ismethod):
+        if name.startswith("_"):
             continue
-        prop = _annotation_to_json_schema(param.annotation)
-        if param.default is inspect.Parameter.empty:
-            required.append(param_name)
-        else:
-            prop["default"] = param.default
-        properties[param_name] = prop
-    return {
-        "type": "object",
-        "properties": properties,
-        "required": required,
-    }
+        server.add_tool(method, name=name, description=method.__doc__ or name)
+    return server
 
 
 def run_stdio_server():
-    """Start the MCP stdio server. Requires the 'mcp' SDK to be installed."""
+    """Start the MCP stdio server."""
     try:
-        import mcp  # noqa: F401
-        from mcp.server import Server
-        from mcp.server.stdio import stdio_server
-        from mcp.types import Tool, TextContent
-        import asyncio
-        import json
-
-        server = Server("pru-simulator")
-        mcp_wrapper = PRUSimulatorMCP()
-
-        # Build tool list from PRUSimulatorMCP public methods
-        _TOOLS = []
-        for name, method in inspect.getmembers(mcp_wrapper, predicate=inspect.ismethod):
-            if name.startswith("_"):
-                continue
-            _TOOLS.append(Tool(
-                name=name,
-                description=method.__doc__ or name,
-                inputSchema=_tool_input_schema(method),
-            ))
-
-        @server.list_tools()
-        async def list_tools():
-            return _TOOLS
-
-        @server.call_tool()
-        async def call_tool(name, arguments):
-            method = getattr(mcp_wrapper, name, None)
-            if method is None:
-                raise ValueError(f"Unknown tool: {name}")
-            result = method(**arguments)
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
-
-        async def main():
-            async with stdio_server() as (read_stream, write_stream):
-                await server.run(read_stream, write_stream, server.create_initialization_options())
-
-        asyncio.run(main())
-
-    except ImportError:
-        print("Error: 'mcp' SDK is not installed. Install it with: pip install mcp", file=sys.stderr)
+        server = build_server()
+    except ImportError as exc:
+        print(f"Error: could not import the 'mcp' SDK ({exc}). "
+              "Install or upgrade it with: pip install 'mcp>=2.0'", file=sys.stderr)
         sys.exit(1)
+    server.run("stdio")
 
 
 if __name__ == "__main__":

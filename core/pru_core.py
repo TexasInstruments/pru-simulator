@@ -30,6 +30,7 @@ from xfr.xfr_bus import XFRBus, IPC_SPAD, SPAD_BANK0, SPAD_BANK1, SPAD_BANK2
 from pru_io.io_port import IOPort
 from xfr.accelerator import Accelerator
 from xfr.mac_accelerator import MACAccelerator
+from xfr.crc_accelerator import CRCAccelerator
 from xfr.bswap_accelerator import (
     BSWAP_4_8,
     BSWAP_4_16,
@@ -102,6 +103,7 @@ class PRUCore:
         self.iep = None          # set by Simulator when an IEP is present
         self.cycle_observer = cycle_observer
         self.reset_observer = reset_observer
+        self.clock_mhz: float = 200.0   # set by Simulator from the config
         self.memory = memory
         self.xfr = xfr
         self.io_port = io_port
@@ -125,6 +127,7 @@ class PRUCore:
         self._branch = BranchUnit()
         self.accelerators: dict[int, Accelerator] = {
             MACAccelerator.DEVICE_ID: MACAccelerator(self.registers),
+            CRCAccelerator.DEVICE_ID: CRCAccelerator(self.registers),
             BSWAP_BYTE_ORDER: BSwapAccelerator(self.registers, BSWAP_BYTE_ORDER),
             BSWAP_4_8: BSwapAccelerator(self.registers, BSWAP_4_8),
             BSWAP_4_16: BSwapAccelerator(self.registers, BSWAP_4_16),
@@ -161,18 +164,19 @@ class PRUCore:
         Loading installs instructions only: halted, pc, loop state and
         registers are left as they were, so reset() the core before running a
         newly loaded program. A successful load drops the recorded fault; a
-        failed disassembly leaves the previous program and its fault in place.
+        failed load leaves the previous program and its fault in place.
         """
         from .disassembler import disassemble
         errors: list[str] = []
         try:
             syms = symbols or {}
-            self.instructions = disassemble(text_words, syms)
-            self.fault = None
-            # Store symbols as labels (name → addr) for the frontend
-            self._parser.labels = {name: addr for addr, name in syms.items()}
+            instructions = disassemble(text_words, syms)
             if data_bytes:
                 self.memory.write(data_addr, data_bytes)
+            self.instructions = instructions
+            # Store symbols as labels (name → addr) for the frontend
+            self._parser.labels = {name: addr for addr, name in syms.items()}
+            self.fault = None
         except Exception as exc:  # noqa: BLE001
             errors.append(str(exc))
         return errors

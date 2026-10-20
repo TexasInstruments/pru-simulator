@@ -198,13 +198,17 @@ class SSIEncoderModel(DeviceModel):
                 if not self._post_word_fall_seen:
                     self._post_word_fall_seen = True
                     self._last_falling_cycle = cycle
-                    self._output_value = 0
+                    # Preserve the LSB throughout the closing low phase.
                 else:
                     self._last_falling_cycle = cycle
                     self._fault(cycle, "clocked past the end of the SSI word")
         elif rising:
             if self._state == "active":
                 self._clock_bit(cycle)
+            elif self._state == "guard" and self._post_word_fall_seen:
+                # SICK IM0100079 p.5 Fig.2: DATA returns low when CLK
+                # returns to high idle; this edge is not another data bit.
+                self._output_value = 0
 
         mask = 1 << self.data_pin
         values = self._output_value << self.data_pin

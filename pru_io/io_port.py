@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Callable
 
 from pru_io.device_model import DeviceBus
+from pru_io.tca9538_device_model import TCA9538Model
 
 if TYPE_CHECKING:
     from pru_io.sd_filter import SigmaDeltaFilter
@@ -82,6 +83,9 @@ class IOPort:
         The generic replacement for attach_i2c_device: any number of devices,
         on any pins, sharing nets. Opt-in, like everything else here.
         """
+        if (self.i2c_device is not None and isinstance(device, TCA9538Model)
+                and {0, 1}.intersection(device.nets)):
+            raise ValueError("generic TCA9538 pins overlap the legacy I2C device")
         return self.device_bus.attach(device, port=self._device_endpoint,
                                       cycle=self._device_cycle)
 
@@ -93,9 +97,10 @@ class IOPort:
 
     def set_gpo_drive_mask(self, mask: int) -> None:
         """Set which pins this core is currently driving as GPIO outputs."""
-        if not isinstance(mask, int) or isinstance(mask, bool):
+        if (not isinstance(mask, int) or isinstance(mask, bool)
+                or not 0 <= mask <= _MASK_20):
             raise ValueError("GPIO drive mask must be a 20-bit integer")
-        self.gpo_drive_mask = mask & _MASK_20
+        self.gpo_drive_mask = mask
         if self._device_endpoint is None:
             self.device_bus.set_pru_drive_mask(self.gpo_drive_mask)
             if self.device_bus.active:
@@ -163,6 +168,9 @@ class IOPort:
             for pin in device.nets:
                 driven |= 1 << pin
         managed = self._device_pin_mask | driven
+        released_loopback = self._device_pin_mask & ~driven & self.loopback_mask
+        if self.sd_filter is None or not self.sd_filter.sd_en:
+            bus = (bus & ~released_loopback) | (self.gpo & released_loopback)
         self.gpi = ((self.gpi & ~managed) | (bus & managed)) & _MASK_20
         self._device_pin_mask = driven
 
@@ -172,6 +180,12 @@ class IOPort:
         Opt-in: bits 0/1 already mean SCLK/MOSI to spi_master_tx.asm, so an
         attached device must never be on by default.
         """
+        if device is not None and any(
+                isinstance(attached, TCA9538Model)
+                and self.device_bus._device_ports.get(id(attached)) == self._device_endpoint
+                and {0, 1}.intersection(attached.nets)
+                for attached in self.device_bus.devices):
+            raise ValueError("legacy I2C pins overlap a generic TCA9538 device")
         self.i2c_device = device
 
     def set_loopback_group(self, group: int, enabled: bool) -> None:

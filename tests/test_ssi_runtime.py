@@ -6,7 +6,7 @@ import struct
 import pytest
 
 from pru_io import ssi_config_abi as abi
-from pru_io.ssi_runtime import SSIRuntime
+from pru_io.ssi_runtime import SSIEmulatorRuntime, SSIRuntime
 from simulator import Simulator
 
 
@@ -283,3 +283,62 @@ def test_emulator_leases_data_output_and_clock_input_then_restores():
     assert sim.io("pru0")["gpo_drive_mask"] == 1 << 16
     runtime.close()
     assert sim.io("pru0")["gpo_drive_mask"] == initial
+
+
+@pytest.mark.parametrize("runtime_class, core, peer", [
+    (SSIRuntime, "pru1", "pru0"),
+    (SSIEmulatorRuntime, "pru0", "pru1"),
+])
+def test_successful_helper_load_resets_selected_core_and_rebases_its_time(
+        runtime_class, core, peer):
+    sim = Simulator("memory.cfg")
+    sim.iep.global_cfg = 0x11
+    assert sim.load(peer, "nop\njmp 0") == []
+    sim.step(peer, 30)
+    assert sim.load(core, "nop\nhalt") == []
+    sim.step(core, 2)
+    assert sim.cores[core].halted
+    peer_before = sim.status()[peer]
+    count_before = sim.iep.count
+
+    runtime = runtime_class(sim, core=core)
+    try:
+        runtime.load()
+        assert sim.cores[core].pc == 0
+        assert sim.cores[core].halted is False
+        assert sim.cores[core].counters.cycles == 0
+        assert sim.status()[peer] == peer_before
+        assert sim.iep.count == count_before
+        sim.step(core, 2)
+        assert sim.iep.count > count_before
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("failure", ["assembly errors", "assembly exception", "config"])
+def test_failed_initial_reader_load_closes_only_its_resources(monkeypatch, failure):
+    sim = Simulator("memory.cfg")
+    existing = SSIRuntime(sim, name="existing")
+    initial_mask = sim.io("pru1")["gpo_drive_mask"]
+    runtime = SSIRuntime(sim, name="failed")
+    if failure == "assembly errors":
+        monkeypatch.setattr(sim, "load", lambda *args, **kwargs: ["original error"])
+        expected = ValueError
+    elif failure == "assembly exception":
+        def fail(*args, **kwargs):
+            raise OSError("original error")
+        monkeypatch.setattr(sim, "load", fail)
+        expected = OSError
+    else:
+        expected = ValueError
+
+    with pytest.raises(expected, match="unsigned 32-bit|original error"):
+        runtime.load(clock_delay_loops=-1 if failure == "config" else 20)
+
+    assert sim.device_bus.devices == [existing.encoder]
+    assert sim.io("pru1")["gpo_drive_mask"] == initial_mask
+    assert id(runtime.encoder) not in sim.device_bus._lease_owners
+    with pytest.raises(RuntimeError, match="closed"):
+        runtime.load()
+    existing.close()
+    assert sim.io("pru1")["gpo_drive_mask"] == 0

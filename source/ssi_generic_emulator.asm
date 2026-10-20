@@ -68,14 +68,16 @@ falling_edge:
     lbbo &r8, r14, 0x10, 8
     sub  r5, r5, 1
     qbne wait_for_rise, r5, 0
-    ; A completed word holds DATA low through the closing-fall monoflop guard.
-    clr r30, r30, DATA_PIN
+    ; Keep the LSB through the closing low phase. DATA returns low when
+    ; CLK rises to idle, then stays low for the remainder of Tm.
 wait_for_monoflop:
     lbbo &r10, r14, 0x10, 8
     sub r12, r10, r8
     suc r13, r11, r9
     qbne start, r13, 0
     qble start, r12, r7
+    qbbc wait_for_monoflop, r31, CLK_PIN
+    clr r30, r30, DATA_PIN
     qba wait_for_monoflop
 
 timeout_abort:

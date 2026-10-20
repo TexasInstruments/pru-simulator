@@ -103,7 +103,7 @@ def test_reader_final_fall_then_high_idle_is_a_valid_completed_word():
     assert complete_events(model)[0]["cycle"] == last_fall - 10
 
 
-def test_lsb_is_sampled_high_then_data_stays_low_until_tm_expires():
+def test_lsb_is_held_through_closing_low_then_data_stays_low_until_tm_expires():
     model = SSIEncoderModel(resolution=1, position=1, idle_value=1,
                             core_clock_hz=100_000_000, f_max_hz=10_000_000,
                             monoflop_us=1)
@@ -111,7 +111,7 @@ def test_lsb_is_sampled_high_then_data_stays_low_until_tm_expires():
     tick(model, 1, 0)  # latch the word
 
     assert tick(model, 11, 1) == 1  # LSB remains available in the high phase
-    assert tick(model, 12, 0) == 0  # final falling edge starts Tm and clears data
+    assert tick(model, 12, 0) == 1  # closing fall starts Tm but retains the LSB
     assert tick(model, 13, 1) == 0  # return to high clock idle does not raise data
     assert tick(model, 111, 1) == 0
     assert tick(model, 112, 1) == 1  # idle level returns exactly at Tm
@@ -373,6 +373,8 @@ def test_first_low_sample_is_idle_then_literal_waveform_latches_cleanly(restored
     assert model.get_state()["state"] == "idle"
     assert tick(model, 160, 1) == 1
     # Explicit clock/data oracle; high-phase samples are included separately.
+    # Figure2 keeps the LSB through the closing low phase, then returns
+    # DATA low near the closing rise. Tm still starts at the closing fall.
     waveform = [
         (170, 0, 1), (180, 1, 1), (185, 1, 1),
         (190, 0, 1), (200, 1, 0), (205, 1, 0),
@@ -382,7 +384,7 @@ def test_first_low_sample_is_idle_then_literal_waveform_latches_cleanly(restored
         (270, 0, 0), (280, 1, 1), (285, 1, 1),
         (290, 0, 1), (300, 1, 0), (305, 1, 0),
         (310, 0, 0), (320, 1, 1), (325, 1, 1),
-        (330, 0, 0), (340, 1, 0), (429, 1, 0), (430, 1, 1),
+        (330, 0, 1), (335, 0, 1), (340, 1, 0), (429, 1, 0), (430, 1, 1),
     ]
     sampled = []
     for cycle, clock, data in waveform:
@@ -405,3 +407,25 @@ def test_restore_of_initialized_clock_preserves_real_next_edge():
     model.restore(snapshot)
     tick(model, 100, 0)
     assert model.get_state()["state"] == "active"
+
+
+@pytest.mark.parametrize("restore_during_low", [False, True])
+def test_last_bit_survives_the_closing_low_phase(restore_during_low):
+    # SICK IM0100079 p.5 Fig.2: LSB is present during the final low phase;
+    # DATA returns low at the closing rise. Tm is measured from the last fall.
+    model = SSIEncoderModel(resolution=1, position=1, core_clock_hz=100_000_000,
+                            f_max_hz=10_000_000, monoflop_us=1)
+    assert tick(model, 0, 1) == 1
+    assert tick(model, 1, 0) == 1
+    assert tick(model, 11, 1) == 1
+    assert tick(model, 21, 0) == 1
+    if restore_during_low:
+        snapshot = model.snapshot()
+        tick(model, 31, 1)
+        model.restore(snapshot)
+    assert tick(model, 25, 0) == 1
+    assert tick(model, 31, 1) == 0
+    assert tick(model, 120, 1) == 0
+    assert tick(model, 121, 1) == 1
+    assert model.frames_captured == 1
+    assert model.faults() == []

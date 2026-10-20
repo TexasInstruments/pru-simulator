@@ -461,3 +461,81 @@ def test_emulator_closing_fall_holds_data_low_until_monoflop(sim_config):
     sim.step("pru0", 1200)  # past Tm, ordinary instruction polling restores idle
     assert sim.io("pru0")["gpo_pins"][16] == 1
     assert emulator.status() == 0
+
+
+@pytest.mark.parametrize("fake_load, error, match", [
+    (_assembly_returns_errors, ValueError, "assembly failed"),
+    (_assembly_raises, RuntimeError, "boom"),
+], ids=["errors", "exception"])
+def test_failed_emulator_reload_preserves_live_session(sim, monkeypatch, fake_load, error, match):
+    emulator = SSIEmulatorRuntime(sim, resolution=8, position=0xA5)
+    emulator.load()
+    assert read_frame(sim, 8) == 0xA5
+    config = sim.memory_read(abi.EMULATOR_ADDRESS, abi.EMULATOR_SIZE)
+    mask = sim.io("pru0")["gpo_drive_mask"]
+    old_ticks = emulator.monoflop_ticks
+    emulator.layout.monoflop_us *= 2
+    monkeypatch.setattr(sim, "load", fake_load)
+
+    with pytest.raises(error, match=match):
+        emulator.load()
+
+    assert sim.io("pru0")["gpo_drive_mask"] == mask
+    assert emulator.monoflop_ticks == old_ticks
+    assert sim.memory_read(abi.EMULATOR_ADDRESS, abi.EMULATOR_SIZE) == config
+    assert emulator._loaded
+    assert read_frame(sim, 8) == 0xA5
+    with pytest.raises(ValueError, match="another SSI emulator"):
+        SSIEmulatorRuntime(sim, core="pru1").load()
+    emulator.close()
+    assert not sim.iep.count_enabled
+
+
+@pytest.mark.parametrize("update", ["position", "error", "config"])
+def test_host_frame_updates_preserve_firmware_error_status(sim, update):
+    emulator = SSIEmulatorRuntime(sim, resolution=8, error_bits=1)
+    emulator.load()
+    sim.memory.write(abi.EMULATOR_ADDRESS + abi.EMULATOR_FRAME_BITS_OFFSET,
+                     struct.pack("<I", 65))
+    read_frame(sim, 1)
+    assert emulator.status() == 1
+    assert sim.cores["pru0"].halted
+
+    if update == "position":
+        emulator.set_position(0x25)
+    elif update == "error":
+        emulator.set_error(1)
+    else:
+        emulator.write_config()
+
+    assert emulator.status() == 1
+    assert sim.cores["pru0"].halted
+    emulator.load()
+    assert emulator.status() == 0
+    assert read_frame(sim, 8) == {"position": 0x4A, "error": 1, "config": 0}[update]
+
+
+@pytest.mark.parametrize("core_mhz", [200, 250, 300])
+@pytest.mark.parametrize("position,last_bit", [(0xA5, 1), (0xA4, 0)])
+def test_emulator_holds_lsb_until_closing_rise(sim_config, core_mhz, position, last_bit):
+    sim = Simulator(sim_config(pru_clock_mhz=core_mhz, iep_clock_mhz=200))
+    emulator = SSIEmulatorRuntime(sim, resolution=8, position=position, monoflop_us=4)
+    emulator.load()
+    sim.set_input("pru0", 0, True)
+    sim.step("pru0", PHASE_STEPS)
+    sim.set_input("pru0", 0, False)
+    sim.step("pru0", PHASE_STEPS)
+    for _ in range(8):
+        sim.set_input("pru0", 0, True)
+        sim.step("pru0", PHASE_STEPS)
+        sim.set_input("pru0", 0, False)
+        sim.step("pru0", PHASE_STEPS)
+    assert sim.io("pru0")["gpo_pins"][16] == last_bit
+    sim.step("pru0", 400)  # Keep CLK low, well before Tm at every tested rate.
+    assert sim.io("pru0")["gpo_pins"][16] == last_bit
+    sim.set_input("pru0", 0, True)
+    sim.step("pru0", PHASE_STEPS)
+    assert sim.io("pru0")["gpo_pins"][16] == 0
+    sim.step("pru0", 1400)
+    assert sim.io("pru0")["gpo_pins"][16] == 1
+    assert emulator.status() == 0

@@ -341,13 +341,36 @@ function initUI() {
 
 // ---- WebSocket setup ------------------------------------------------------
 
+async function loadCoreChoices() {
+  const response = await fetch("/cores");
+  if (!response.ok) throw new Error(`Server returned ${response.status}`);
+  const cores = await response.json();
+  for (const [select, choices, prefix] of [
+    [coreSelect, cores, ""],
+    [mcPartnerSelect, cores.filter(core => core !== "pru0"), ""],
+    [mcLoadCore, cores, "→ "],
+  ]) {
+    const previous = select.value;
+    select.replaceChildren(...choices.map(core => new Option(prefix + core.toUpperCase(), core)));
+    if (choices.includes(previous)) select.value = previous;
+  }
+  currentCore = coreSelect.value;
+  mcPartner = mcPartnerSelect.value;
+  applyMCPartnerLabels();
+}
+
 function connect() {
   const url = `ws://${location.host}/ws`;
   ws = new WebSocket(url);
 
-  ws.onopen = () => {
+  ws.onopen = async () => {
     wsStatus.textContent = "Connected";
     wsStatus.className = "connected";
+    try {
+      await loadCoreChoices();
+    } catch (e) {
+      showErrors(["Could not load core choices: " + String(e)]);
+    }
     if (multiCoreMode) {
       for (const core of mcShown()) sendAction({ action: "get_state", core });
     } else {
@@ -418,6 +441,9 @@ function connect() {
           st.style.display = "";
         }
       } else if (msg.type === "error") {
+        if (msg.reason === "pacing_incomplete" || msg.reason === "pacing_catchup_failed") {
+          stopRun(); stopSim();
+        }
         if (msg.tag && msg.tag.startsWith("graph-")) graphMarkChannelError(msg.tag);
         else if (msg.tag === "gpio") {
           const error = document.getElementById('gpio-drive-error');
@@ -488,6 +514,12 @@ function updateUI(state) {
     document.getElementById("mac-mode-label").textContent = state.mac.mode ? "ACC" : "MPY";
     const carryEl = document.getElementById("mac-carry-label");
     carryEl.textContent = state.mac.acc_carry ? " CARRY" : "";
+  }
+
+  // CRC accelerator indicator
+  if (state.crc) {
+    document.getElementById("crc-mode-label").textContent = state.crc.mode;
+    document.getElementById("crc-value-label").textContent = state.crc.value;
   }
 
   // Registers + SPAD
@@ -890,7 +922,7 @@ function updatePerifPanel(io) {
   const sec = document.getElementById('perif-interface');
   if (!sec) return;
 
-  // RTU0 has no GPCFG GP-mux (TRM) — hide the mux row for it.
+  // RTU cores have no GPCFG GP-mux (TRM) — hide the mux row for them.
   const muxRow = document.getElementById('io-mux-row');
   if (muxRow) muxRow.style.display = currentCore.startsWith('rtu') ? 'none' : '';
 
@@ -2503,6 +2535,7 @@ configModal.addEventListener("click", (e) => {
 });
 
 btnConfigSave.addEventListener("click", async () => {
+  stopRun(); stopSim();
   configError.textContent      = "";
   btnConfigSave.disabled       = true;
   setButtonLabel(btnConfigSave, "Saving...");
@@ -2512,6 +2545,13 @@ btnConfigSave.addEventListener("click", async () => {
     if (data.ok) {
       configModal.style.display = "none";
       flashStatus("RELOADED", "reloaded");
+      await loadCoreChoices();
+      if (multiCoreMode) {
+        sendAction({ action: "get_state", core: "pru0" });
+        sendAction({ action: "get_state", core: mcPartner });
+      } else {
+        sendAction({ action: "get_state", core: currentCore });
+      }
       refreshMemory();
       loadRegions();
       loadClockSpeed();
@@ -3730,7 +3770,7 @@ function flashStatus(text, cssClass) {
 btnMulticore.addEventListener("click", toggleMultiCore);
 document.getElementById("btn-reset-layout").addEventListener("click", resetLayout);
 
-// ---- Multi-core partner (second core in the MC view: RTU0 or PRU1) --------
+// ---- Multi-core partner (second available core shown beside PRU0) --------
 const mcPartnerSelect = document.getElementById("mc-partner-select");
 const mcExtraCores    = document.getElementById("mc-extra-cores");
 const deviceCoreSelect = document.getElementById('device-core-select');
@@ -4116,6 +4156,14 @@ function updateMCUI(state) {
     if (modeEl) modeEl.textContent = state.mac.mode ? "ACC" : "MPY";
     const macCarryEl = document.getElementById(`mc-${core}-mac-carry`);
     if (macCarryEl) macCarryEl.textContent = state.mac.acc_carry ? " CARRY" : "";
+  }
+
+  // CRC indicator
+  if (state.crc) {
+    const crcModeEl = document.getElementById(`mc-${core}-crc-mode`);
+    if (crcModeEl) crcModeEl.textContent = state.crc.mode;
+    const crcValueEl = document.getElementById(`mc-${core}-crc-value`);
+    if (crcValueEl) crcValueEl.textContent = state.crc.value;
   }
 
   // Registers
