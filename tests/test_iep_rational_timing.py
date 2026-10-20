@@ -650,3 +650,39 @@ def test_rtu1_constants_write_and_clock_are_slice_local(tmp_path):
     sim.step("rtu1", 3)
     assert sim.memory_read(0x2000, 4) == bytes.fromhex("a5000000")
     assert sim.iep.now_ns == sim.cores["rtu1"].counters.cycles * 5
+
+
+def test_batched_pacing_reports_actual_lead_steps_on_capped_catchup(tmp_path):
+    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
+    for core in ("pru0", "pru1"):
+        _load_loop(sim, core)
+    sim.step("pru0", 10000)
+    before = sim.cores["pru0"].counters.instruction_count
+    result = sim.step_paced("pru0", "pru1", 500)
+    assert result["complete"] is False
+    assert result["reason"] == "pacing_incomplete"
+    assert sim.cores["pru0"].counters.instruction_count - before == 1
+    assert result["lead_steps"] == 1
+
+
+@pytest.mark.parametrize("count,source,executed", [
+    (0, "nop\njmp 0", 0), (5, "nop\njmp 0", 5), (5, "nop\nhalt", 2),
+])
+def test_batched_pacing_reports_actual_lead_steps_on_completion(tmp_path, count, source, executed):
+    sim = _clocked_sim(tmp_path)
+    assert sim.load("pru0", source) == []
+    _load_loop(sim, "pru1")
+    result = sim.step_paced("pru0", "pru1", count)
+    assert result["complete"] is True
+    assert result["lead_steps"] == executed
+    assert sim.cores["pru0"].counters.instruction_count == executed
+
+
+def test_batched_pacing_reports_lead_steps_on_stuck_follower(tmp_path, monkeypatch):
+    sim = _clocked_sim(tmp_path)
+    for core in ("pru0", "pru1"):
+        _load_loop(sim, core)
+    monkeypatch.setattr(sim.cores["pru1"], "step", lambda: None)
+    result = sim.step_paced("pru0", "pru1", 500)
+    assert result["reason"] == "pacing_catchup_failed"
+    assert result["lead_steps"] == 1
