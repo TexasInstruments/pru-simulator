@@ -13,7 +13,9 @@ decode, and the fault checks that make it usable as an oracle.
 """
 from __future__ import annotations
 
-from pru_io.device_model import OPEN_DRAIN, DeviceModel
+from collections import deque
+
+from pru_io.device_model import DEVICE_HISTORY_LIMIT, OPEN_DRAIN, DeviceModel
 from pru_io.tca9538 import TCA9538Device
 
 
@@ -32,8 +34,8 @@ class TCA9538Model(DeviceModel):
         self.nets = {scl_pin: OPEN_DRAIN, sda_pin: OPEN_DRAIN}
 
         self.device = TCA9538Device(address=address)
-        self._events: list[dict] = []
-        self._faults: list[str] = []
+        self._events: deque[dict] = deque(maxlen=DEVICE_HISTORY_LIMIT)
+        self._faults: deque[str] = deque(maxlen=DEVICE_HISTORY_LIMIT)
         self._prev_scl: int | None = None
         self._prev_sda: int | None = None
         self._driving_low = False
@@ -84,6 +86,38 @@ class TCA9538Model(DeviceModel):
 
     def faults(self) -> list[str]:
         return list(self._faults)
+
+    def reset(self) -> None:
+        """Reset protocol state and clear findings while keeping the device attached."""
+        self.device = TCA9538Device(address=self.address)
+        self._events.clear()
+        self._faults.clear()
+        self._prev_scl = None
+        self._prev_sda = None
+        self._driving_low = False
+        self._cycle = 0
+
+    def snapshot(self) -> dict:
+        """Capture wrapper and I2C protocol state for simulator step-back."""
+        return {
+            "device": self.device.snapshot(),
+            "events": [dict(event) for event in self._events],
+            "faults": list(self._faults),
+            "prev_scl": self._prev_scl,
+            "prev_sda": self._prev_sda,
+            "driving_low": self._driving_low,
+            "cycle": self._cycle,
+        }
+
+    def restore(self, snap: dict) -> None:
+        self.device.restore(snap["device"])
+        self._events = deque((dict(event) for event in snap["events"]),
+                             maxlen=DEVICE_HISTORY_LIMIT)
+        self._faults = deque(snap["faults"], maxlen=DEVICE_HISTORY_LIMIT)
+        self._prev_scl = snap["prev_scl"]
+        self._prev_sda = snap["prev_sda"]
+        self._driving_low = snap["driving_low"]
+        self._cycle = snap["cycle"]
 
     # ------------------------------------------------------------------
     # Decode and violation checks

@@ -6,12 +6,15 @@ import base64
 import binascii
 import struct
 import copy
+import math
 import random
 
 # Allow imports from parent directory when run directly
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from simulator import Simulator
+from pru_io.device_profiles import create_device, discover_device_profiles
+from pru_io.device_model import PUSH_PULL
 from mcp_server.vcd_export import export_pin_waveform
 
 
@@ -33,6 +36,15 @@ class PRUSimulatorMCP:
     def __init__(self, config_path: str = "memory.cfg"):
         self._config_path = config_path
         self.sim = Simulator(config_path)
+
+    def pru_gpio_drive_mask(self, core: str = "pru0", mask: int | None = None) -> dict:
+        """Query or set the twenty GPIO output-enable bits without changing R30."""
+        if mask is not None:
+            if (isinstance(mask, bool) or not isinstance(mask, int)
+                    or not 0 <= mask < (1 << 20)):
+                raise ValueError("GPIO drive mask must be a 20-bit integer")
+            self.sim.set_gpio_drive_mask(core, mask)
+        return {"core": core, "drive_mask": self.sim.io(core)["gpo_drive_mask"]}
 
     def pru_load(self, source: str, core: str = "pru0",
                  include_paths: list[str] | None = None) -> dict:
@@ -160,6 +172,8 @@ class PRUSimulatorMCP:
             errors = candidate.load_elf(core, elf_data)
             if not errors:
                 candidate.cores[core].pc = entry_pc
+                self.sim.device_bus.detach_all()
+                self.sim.device_bus.release_all_core_outputs()
                 self.sim = candidate
         except (OSError, ValueError, binascii.Error) as exc:
             errors = [f"ELF load failed: {exc}"]
@@ -187,15 +201,17 @@ class PRUSimulatorMCP:
 
     def pru_step_multicore(self, lead: str = "pru0", follow: str = "pru1",
                            count: int = 1, guard_ns: float = 0.0) -> dict:
-        """Step two cores with peripheral-clock pacing and return both core states.
+        """Step two cores with elapsed-time pacing and return both core states.
 
-        ``guard_ns`` is how far the follow core may trail the lead core.  The
-        MCP default is zero so even short validation programs advance both
-        cores; callers modelling a receiver guard may request a positive lag.
+        ``guard_ns`` is how far the follow core may trail the lead while both
+        Peripheral Interfaces are enabled. Otherwise both cores are paced by
+        exact elapsed core time with no guard.
         """
         _require_int("count", count)
         if isinstance(guard_ns, bool) or not isinstance(guard_ns, (int, float)):
             raise ValueError("guard_ns must be a number")
+        if isinstance(guard_ns, float) and not math.isfinite(guard_ns):
+            raise ValueError("guard_ns must be finite")
         if count < 0:
             raise ValueError("count must be non-negative")
         if guard_ns < 0:
@@ -210,38 +226,44 @@ class PRUSimulatorMCP:
                 "pc": c.pc,
                 "cycles": c.counters.cycles,
                 "halted": c.halted,
+                "fault": dict(c.fault) if c.fault is not None else None,
             }
 
+        lead_steps = 0
         for _ in range(count):
-            follow_pru = self.sim.cores[follow]
-            follow_cycles = follow_pru.counters.cycles
-            self.sim.step_paced(lead, follow, 1, guard_ns=guard_ns)
-            # Peripheral time does not advance for ordinary ALU-only programs.
-            # A user-facing "step both" tool must still retire one instruction
-            # on the follower instead of returning two plausible-looking states
-            # after advancing only the lead core.
-            if (follow_pru.counters.cycles == follow_cycles
-                    and not follow_pru.halted
-                    and follow_pru.pc < len(follow_pru.instructions)):
-                follow_pru.step()
-
-            lead_perif = self.sim._perif.get(lead)
-            follow_perif = self.sim._perif.get(follow)
-            if lead_perif is not None and follow_perif is not None:
-                target_ns = lead_perif._now_ns - guard_ns
-                if follow_perif._now_ns < target_ns:
-                    return {
-                        "success": False,
-                        "reason": "pacing_catchup_failed",
-                        "target_ns": target_ns,
-                        "follow_ns": follow_perif._now_ns,
-                        "lead": state(lead),
-                        "follow": state(follow),
-                    }
+            pacing = self.sim.step_paced(lead, follow, 1, guard_ns=guard_ns)
+            lead_steps += pacing["lead_steps"]
+            lead_core = self.sim.cores[lead]
+            follow_core = self.sim.cores[follow]
+            if lead_core.fault is not None or follow_core.fault is not None:
+                return {
+                    "success": False,
+                    "reason": "core_fault",
+                    "lead_steps": lead_steps,
+                    "lead": state(lead),
+                    "follow": state(follow),
+                }
+            if not pacing["complete"]:
+                target_units = pacing["targets"][follow]
+                follow_units = self.sim.iep.core_time_units(
+                    follow, follow_core.counters.cycles
+                )
+                target_ns = float(self.sim.iep.time_units_to_ns(target_units))
+                follow_ns = float(self.sim.iep.time_units_to_ns(follow_units))
+                return {
+                    "success": False,
+                    "reason": pacing["reason"],
+                    "lead_steps": lead_steps,
+                    "target_ns": float(target_ns),
+                    "follow_ns": float(follow_ns),
+                    "lead": state(lead),
+                    "follow": state(follow),
+                }
 
         return {
             "success": True,
             "reason": "stepped",
+            "lead_steps": lead_steps,
             "lead": state(lead),
             "follow": state(follow),
         }
@@ -379,6 +401,76 @@ class PRUSimulatorMCP:
         _require_int("address", address)
         self.sim.i2c_attach(core, enabled, address)
         return {"success": True, "core": core, "enabled": enabled, "address": address}
+
+    def pru_device_discover(self) -> dict:
+        """Discover supported generic device profiles and attached devices."""
+        return {
+            "profiles": discover_device_profiles(),
+            "devices": self.sim.device_state()["devices"],
+        }
+
+    def pru_device_attach(self, profile: str, core: str = "pru0",
+                          config: dict | None = None) -> dict:
+        """Attach one validated generic device profile to a core's GPIO pins."""
+        default_core_clock_hz = (
+            self.sim.iep.core_clock_hz(core) if profile == "ssi_encoder" else None
+        )
+        device = create_device(
+            profile, config, default_core_clock_hz=default_core_clock_hz)
+        if any(attached.name == device.name for attached in self.sim.device_bus.devices):
+            raise ValueError(f"device name {device.name!r} is already attached")
+
+        if profile == "ssi_encoder":
+            drive_mask = 1 << device.clock_pin
+            managed_mask = drive_mask | (1 << device.data_pin)
+        else:
+            drive_mask = (1 << device.scl_pin) | (1 << device.sda_pin)
+            managed_mask = drive_mask
+        self.sim.lease_gpio_outputs(core, managed_mask, device,
+                                    drive_mask=drive_mask)
+        try:
+            self.sim.attach_device(core, device)
+        except BaseException:
+            self.sim.device_bus.release_core_outputs(device)
+            raise
+        return {"success": True, "core": core, "device": device.get_state()}
+
+    def pru_device_detach(self, device_name: str) -> dict:
+        """Detach a generic device by name and release its bus ownership."""
+        device = self._get_device(device_name)
+        self.sim.detach_device(device)
+        return {"success": True, "device": device_name}
+
+    def pru_device_state(self) -> dict:
+        """Return attached device state, bus levels, events, and faults."""
+        return self.sim.device_state()
+
+    def pru_device_events(self, device_name: str = "") -> dict:
+        """Read generic bus events, optionally filtered to one device."""
+        if device_name:
+            device = self._get_device(device_name)
+            return {"device": device_name, "events": device.events()}
+        return {"events": self.sim.device_bus.events()}
+
+    def pru_device_faults(self, device_name: str = "") -> dict:
+        """Read generic bus/device faults, optionally filtered to one device."""
+        if device_name:
+            device = self._get_device(device_name)
+            return {
+                "device": device_name,
+                "faults": self.sim.device_bus.faults_for_device(device),
+                "contentions": self.sim.device_bus.contentions_for_device(device),
+            }
+        return {"faults": self.sim.device_bus.faults()}
+
+    def _get_device(self, name: str):
+        matches = [device for device in self.sim.device_bus.devices
+                   if device.name == name]
+        if not matches:
+            raise KeyError(f"No attached device named {name!r}")
+        if len(matches) > 1:
+            raise ValueError(f"more than one attached device is named {name!r}")
+        return matches[0]
 
     def pru_reset(self, core: str = "pru0") -> dict:
         """Reset the specified core to its initial state."""

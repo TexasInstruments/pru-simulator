@@ -244,3 +244,18 @@ def test_o1_overrun_sets_eof_status_2_and_preserves_control_block():
     # bytes actually decoded before the guard tripped must match.
     got = sim.memory_read(rx_driver.FRAME_ADDR, rx_driver.FRAME_BUFFER_SIZE)
     assert got == payload[:rx_driver.FRAME_BUFFER_SIZE]
+
+
+def test_rx_driver_counts_actual_lead_work_after_bounded_catchup(monkeypatch):
+    build_sim = rx_driver.build_sim
+
+    def preadvanced_tx(*args, **kwargs):
+        sim = build_sim(*args, **kwargs)
+        sim.step("pru0", 20000)  # transmitter waits for GO while RX has not started
+        return sim
+
+    monkeypatch.setattr(rx_driver, "build_sim", preadvanced_tx)
+    sim = rx_driver.run_rx(8, num_frames=1, payload_len=8, max_steps=12000)
+    assert rx_driver.ru32(sim, rx_driver.S_FRAMES) == 1
+    assert rx_driver.ru32(sim, rx_driver.S_CRCOK) == 1
+    assert sim.memory_read(rx_driver.FRAME_ADDR, 8) == prng_bytes(8, DEFAULT_SEED)
