@@ -240,11 +240,11 @@ standalone experiments and may require optional packages (for example,
 
 ## Version
 
-v1.0.0 — hover over **PRU SIM** in the dashboard header to confirm.
+v0.3.0 — hover over **PRU SIM** in the dashboard header to confirm.
 
 ### Changelog
 
-**v1.0.0**
+**v0.3.0**
 - **SSI encoder simulation** — binary or Gray frames up to 64 bits, optional error fields and twelve documented RM08/SICK presets, with faults for excessive clock rate, incomplete frames and extra pulses.
 - **Reader and emulator firmware** — generated configuration ABI, seqlock mailbox and host runtimes support model-to-reader and two-core firmware loopback tests. Separate Python decoding keeps validation independent; failed reader reloads preserve the last working configuration.
 - **Generic MCP device tools** — discover, attach, detach and inspect SSI or TCA9538 devices, events and faults through the MCP SDK stdio transport. See [SSI setup and limitations](docs/ssi_device_model.md).
