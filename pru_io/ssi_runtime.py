@@ -42,6 +42,10 @@ class SSIRuntime:
         }
         self.encoder = (SSIEncoderModel(**options) if preset is None
                         else SSIEncoderModel.from_preset(preset, **options))
+        for key, expected in (("clock_pin", _CLOCK_PIN), ("data_pin", _DATA_PIN),
+                              ("core_clock_hz", sim.iep.core_clock_hz(core))):
+            if getattr(self.encoder, key) != expected:
+                raise ValueError(f"SSI reader requires {key}={expected}")
         self._data_mask = 1 << _DATA_PIN
         sim.lease_gpio_outputs(core, self._data_mask | (1 << _CLOCK_PIN),
                                self.encoder, drive_mask=1 << _CLOCK_PIN)

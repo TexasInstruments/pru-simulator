@@ -84,6 +84,23 @@ test('GPIO loopback buttons follow the selected cores actual mask', () => {
   assert(buttons.every(button => !button.active));
 });
 
+test('loopback clicks target the core displayed by the pins panel', () => {
+  const actions = [];
+  const context = vm.createContext({
+    multiCoreMode: true, currentCore: 'pru1',
+    sendAction(action) { actions.push(action); },
+  });
+  vm.runInContext(app.match(/function onLoopbackToggle\(btn\) \{[\s\S]*?\n\}/)[0], context);
+  const button = { dataset: { group: '1' }, classList: {
+    contains() { return false; }, toggle() {},
+  } };
+  context.onLoopbackToggle(button);
+  assert.equal(actions[0].core, 'pru0');
+  context.multiCoreMode = false;
+  context.onLoopbackToggle(button);
+  assert.equal(actions[1].core, 'pru1');
+});
+
 test('multicore keyboard undo runs in reverse step order', () => {
   const actions = []; let onKey;
   const context = vm.createContext({

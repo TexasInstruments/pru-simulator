@@ -163,6 +163,11 @@ require the corresponding memory region/model in the chosen configuration.
 The dashboard constant-table panel shows the common sidecar reference, not
 the executing core's corrected table.
 
+AM263x C10 is reserved in the TRM but currently retains the inherited AM243x
+sidecar value. Its silicon behaviour and simulator handling are tracked in
+[#79](https://github.com/TexasInstruments/pru-simulator/issues/79); firmware
+must not rely on that inherited mapping.
+
 Dashboard step-back uses one ordered history across all cores. Undo restores
 all cores, shared memory, the IEP and devices to the same saved point, and
 removes later history entries so peer state stays consistent.
@@ -185,6 +190,17 @@ bounded catch-up may return before the batch finishes. Retry `pacing_incomplete`
 report `pacing_catchup_failed` instead of treating it as a completed batch.
 Peripheral Interface timestamps use the same core-time origin as the IEP,
 including after resetting one core. A full hardware reset starts both at zero.
+
+The MCP `pru_step_multicore` response includes total `lead_steps` on success,
+incomplete catch-up and core faults, so callers can account for partial batches.
+
+Multicore pacing executes complete instructions before catching up peer cores;
+it does not order all shared effects cycle by cycle. A lagging core's firmware
+write to IEPCLK takes effect at the already-advanced shared IEP time, rather
+than retroactively at that core's earlier time. Configuring the clock before
+advancing the cores avoids this case. Chronological multicore execution,
+including this clock-write limitation, is tracked in
+[#57](https://github.com/TexasInstruments/pru-simulator/issues/57).
 
 ### IEP reset and capture limits
 

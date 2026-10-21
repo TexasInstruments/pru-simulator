@@ -208,6 +208,12 @@ encoder and restoring its GPIO leases; create a new runtime to retry.
 A failed reload of an already loaded reader restores its last successful
 configuration and retains its firmware and GPIO ownership.
 
+The reader runtime fixes its clock output at pin 0 and data input at pin 16.
+Its encoder timing uses the selected core's configured clock. Incompatible
+`clock_pin`, `data_pin` or `core_clock_hz` overrides raise `ValueError` before
+the runtime acquires GPIO leases or attaches the encoder. Matching values
+remain accepted; other encoder options and presets are configurable.
+
 `mailbox()` also returns the combined `raw_frame` and the `position` and
 `error` fields decoded with the encoder's layout. The host decodes these fields
 separately from the model's `decode_frame()`, retaining the independent host

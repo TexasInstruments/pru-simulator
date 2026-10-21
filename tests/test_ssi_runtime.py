@@ -10,6 +10,27 @@ from pru_io.ssi_runtime import SSIEmulatorRuntime, SSIRuntime
 from simulator import Simulator
 
 
+@pytest.mark.parametrize("option,value", [
+    ("clock_pin", 3), ("data_pin", 5), ("core_clock_hz", 100_000_000),
+])
+def test_reader_rejects_incompatible_fixed_options_without_attaching(option, value):
+    sim = Simulator("memory.cfg")
+    before_mask = sim.io("pru1")["gpo_drive_mask"]
+    with pytest.raises(ValueError, match=option):
+        SSIRuntime(sim, **{option: value})
+    assert sim.device_bus.devices == []
+    assert sim.io("pru1")["gpo_drive_mask"] == before_mask
+
+
+def test_reader_accepts_matching_fixed_options():
+    sim = Simulator("memory.cfg")
+    runtime = SSIRuntime(sim, clock_pin=0, data_pin=16,
+                         core_clock_hz=sim.iep.core_clock_hz("pru1"))
+    runtime.load()
+    assert runtime.run_until_frames(1, max_steps=20_000)["reached"]
+    runtime.close()
+
+
 def test_reader_firmware_runs_through_normal_simulator_execution():
     sim = Simulator("memory.cfg")
     initial_drive_mask = sim.io("pru1")["gpo_drive_mask"]

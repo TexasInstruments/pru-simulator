@@ -682,6 +682,61 @@ class _ReactiveRelay(DeviceModel):
         return 1 << self.output_pin, _level(bus, self.input_pin) << self.output_pin
 
 
+@pytest.mark.parametrize("through_port", [False, True])
+def test_standalone_detach_propagates_release_to_reactive_peer(through_port):
+    from pru_io.device_model import DeviceBus
+    port = IOPort() if through_port else None
+    bus = port.device_bus if port else DeviceBus()
+    attach = port.attach_device if port else bus.attach
+    low = attach(_PinDevice(0, value=0))
+    peer = attach(_ReactiveRelay(0, 4))
+    assert _level(bus.get_state()["bus"], 4) == 0
+    bus.settle(100, 0)
+    if port:
+        port.advance_devices(110)
+    else:
+        bus.advance_cycles(None, 10, first_cycle=101)
+    calls = len(peer.calls)
+
+    (port.detach_device if port else bus.detach)(low)
+
+    assert len(peer.calls) > calls
+    assert _level(peer.calls[-1][1], 0) == 1
+    assert peer.calls[-1][0] == 110
+    assert _level(bus.get_state()["bus"], 4) == 1
+    if port:
+        assert _level(port.read_r31(), 4) == 1
+
+
+def test_standalone_detach_uses_restored_bus_time():
+    from pru_io.device_model import DeviceBus
+    bus = DeviceBus()
+    low = bus.attach(_PinDevice(0, value=0))
+    peer = bus.attach(_ReactiveRelay(0, 4))
+    bus.settle(100, 0)
+    snap = bus.snapshot()
+    bus.settle(200, 0)
+    bus.restore(snap)
+
+    bus.detach(low)
+
+    assert peer.calls[-1][0] == 100
+
+
+def test_standalone_attach_samples_current_r30_and_updates_r31():
+    port = IOPort()
+    port.set_gpo_drive_mask(1)
+    port.write_r30(1)
+
+    peer = port.attach_device(_ReactiveRelay(0, 4))
+
+    assert _level(peer.calls[0][1], 0) == 1
+    assert _level(port.read_r31(), 4) == 1
+    calls = len(peer.calls)
+    port.write_r30(1)
+    assert len(peer.calls) == calls  # an unchanged write is not a new edge
+
+
 @pytest.mark.parametrize("mode", ["standalone", "unwired", "wired"])
 def test_releasing_own_high_drive_does_not_hide_peer_falling_edge(mode):
     class ReleasingDriver(DeviceModel):

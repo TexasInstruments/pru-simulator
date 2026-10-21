@@ -9,6 +9,29 @@ def fresh_mcp() -> PRUSimulatorMCP:
     return PRUSimulatorMCP(config_path="nonexistent.cfg")
 
 
+def test_multicore_batch_reports_actual_lead_steps_across_catchup_retries(tmp_path):
+    config = tmp_path / "memory.cfg"
+    config.write_text(
+        "[device]\npru_clock_mhz=200\npru1_clock_mhz=200\n"
+        "[DRAM0]\nbase=0\nsize=0x2000\nread_latency=2500\n"
+        "write_latency=1\njitter=0\n")
+    mcp = PRUSimulatorMCP(str(config))
+    assert mcp.pru_load("nop\nlbbo &r2, r0, 0, 4\nhalt")["success"]
+    assert mcp.pru_load("qba 0", core="pru1")["success"]
+
+    first = mcp.pru_step_multicore(count=3)
+    assert first["reason"] == "pacing_incomplete"
+    assert first["lead_steps"] == 2
+    retry = mcp.pru_step_multicore(count=1)
+    assert retry["reason"] == "pacing_incomplete"
+    assert retry["lead_steps"] == 0
+    final = mcp.pru_step_multicore(count=1)
+    assert final["success"]
+    assert final["lead_steps"] == 1
+    assert final["lead"]["halted"]
+    assert mcp.pru_step_multicore(count=0)["lead_steps"] == 0
+
+
 def test_multicore_default_advances_both_short_programs():
     mcp = fresh_mcp()
     source = "ldi r0, 1\nldi r1, 2\nhalt"

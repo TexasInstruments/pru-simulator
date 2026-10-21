@@ -86,8 +86,13 @@ class IOPort:
         if (self.i2c_device is not None and isinstance(device, TCA9538Model)
                 and {0, 1}.intersection(device.nets)):
             raise ValueError("generic TCA9538 pins overlap the legacy I2C device")
-        return self.device_bus.attach(device, port=self._device_endpoint,
-                                      cycle=self._device_cycle)
+        if self._device_endpoint is None:
+            self.device_bus._last_gpo = self.gpo
+        attached = self.device_bus.attach(device, port=self._device_endpoint,
+                                         cycle=self._device_cycle)
+        if self._device_endpoint is None:
+            self._update_device_gpi(self.device_bus._bus)
+        return attached
 
     def bind_device_bus(self, bus: DeviceBus, endpoint: str) -> None:
         """Join a simulator-wide electrical bus under this core's name."""
@@ -158,7 +163,7 @@ class IOPort:
 
     def detach_device(self, device) -> None:
         """Detach one model and release its previous output pins."""
-        self.device_bus.detach(device)
+        self.device_bus.detach(device, cycle=self._device_cycle)
         if self._device_endpoint is None:
             self._update_device_gpi(self.device_bus._bus)
 

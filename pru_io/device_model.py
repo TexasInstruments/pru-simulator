@@ -155,6 +155,7 @@ class DeviceBus:
         self._bus = _MASK_20          # idle: pull-ups high
         self._pru_drive_mask = 0
         self._last_gpo = 0
+        self._standalone_cycle = 0
         self._ports: dict[str, object] = {}
         self._port_devices: dict[str, list[DeviceModel]] = {}
         self._port_net_masks: dict[str, int] = {}
@@ -294,7 +295,7 @@ class DeviceBus:
             self.settle(cycle, self._last_gpo)
         return device
 
-    def detach(self, device: DeviceModel) -> None:
+    def detach(self, device: DeviceModel, cycle: int | None = None) -> None:
         """Detach one model and immediately remove its previous pin drives."""
         key = id(device)
         if device not in self.devices:
@@ -311,8 +312,8 @@ class DeviceBus:
             self._refresh_shared(self._current_cycle(), process_reactive=True,
                                  affected=affected)
         elif port is None:
-            self._bus = self._resolve_standalone(0, self._last_gpo,
-                                                 record_contention=True)
+            self.settle(self._standalone_cycle if cycle is None else cycle,
+                        self._last_gpo)
         self.release_core_outputs(device)
 
     def detach_all(self, port: str | None = None) -> None:
@@ -410,6 +411,7 @@ class DeviceBus:
         Time-driven models advance only through advance_cycles().
         """
         if port is None and not self._ports:
+            self._standalone_cycle = cycle
             self._last_gpo = gpo & _MASK_20
             provisional = self._resolve_standalone(cycle, self._last_gpo,
                                                    record_contention=False)
@@ -441,7 +443,11 @@ class DeviceBus:
     def advance_cycles(self, port: str | None, cycles: int,
                        first_cycle: int = 1) -> None:
         """Advance time-driven models once per elapsed core cycle."""
-        if cycles <= 0 or not self.has_time_driven(port):
+        if cycles <= 0:
+            return
+        if not self._ports:
+            self._standalone_cycle = first_cycle + cycles - 1
+        if not self.has_time_driven(port):
             return
         for offset in range(cycles):
             cycle = first_cycle + offset
@@ -849,6 +855,7 @@ class DeviceBus:
         return out
 
     def reset(self) -> None:
+        self._standalone_cycle = 0
         self.contentions.clear()
         self.contention_records.clear()
         self._active_conflicts.clear()
@@ -917,6 +924,7 @@ class DeviceBus:
             "drives": [self._last_drives.get(id(d), (0, 0)) for d in self.devices],
             "inputs": [self._last_inputs.get(id(d)) for d in self.devices],
             "last_gpo": self._last_gpo,
+            "standalone_cycle": self._standalone_cycle,
             "pru_drive_mask": self._pru_drive_mask,
             "core_drive_masks": dict(self._core_drive_masks),
             "port_gpo": {core: port.gpo & _MASK_20
@@ -946,6 +954,7 @@ class DeviceBus:
                                   for owner, pins in snap.get("lease_owner_pins", {}).items()}
         self._lease_owners = dict(snap.get("lease_owners", {}))
         self._last_gpo = snap.get("last_gpo", self._last_gpo)
+        self._standalone_cycle = snap.get("standalone_cycle", 0)
         self.contentions = list(snap["contentions"])
         self.contention_records = [
             {**record, "drivers": [dict(driver) for driver in record["drivers"]]}
