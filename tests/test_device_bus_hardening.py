@@ -669,6 +669,36 @@ def test_last_detach_restores_active_loopback(mode, gpo):
     assert _level(port.gpi, 4) == _level(gpo, 4)
 
 
+@pytest.mark.parametrize("mode", ["standalone", "unwired", "wired"])
+@pytest.mark.parametrize("device_level", [0, 1])
+def test_repeated_r30_preserves_device_input_over_loopback(mode, device_level):
+    if mode == "standalone":
+        port = IOPort()
+    else:
+        sim = Simulator()
+        port = sim.cores["pru0"].io_port
+    port.set_loopback_group(1, True)
+    gpo = ((1 - device_level) << 4) | (1 << 5)
+    port.write_r30(gpo)
+    if mode == "wired":
+        sim.add_gpio_wire("pru0", 4, "rtu0", 6)
+        device = sim.attach_device("rtu0", _PinDevice(6, value=device_level))
+    else:
+        device = port.attach_device(_PinDevice(4, value=device_level))
+    assert _level(port.read_r31(), 4) == device_level
+    calls = len(device.calls)
+
+    for _ in range(3):
+        port.write_r30(gpo)
+        assert _level(port.read_r31(), 4) == device_level
+        assert _level(port.read_r31(), 5) == 1  # unmanaged loopback still works
+    assert len(device.calls) == calls
+
+    port.write_r30(gpo & ~(1 << 5))
+    assert _level(port.read_r31(), 4) == device_level
+    assert _level(port.read_r31(), 5) == 0
+
+
 class _ReactiveRelay(DeviceModel):
     def __init__(self, input_pin, output_pin):
         self.name = "relay"
