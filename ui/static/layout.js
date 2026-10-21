@@ -35,163 +35,12 @@ const SC_DEFAULT_TREE = {
   ]
 };
 
-const MC_DEFAULT_TREE = {
-  type: 'split', dir: 'h', sizes: [55, 20, 25],
-  children: [
-    {
-      type: 'split', dir: 'v', sizes: [50, 50],
-      children: [
-        {
-          type: 'split', dir: 'h', sizes: [67, 33],
-          children: [
-            { type: 'leaf', panelId: 'mc-pru0-source' },
-            { type: 'leaf', panelId: 'mc-pru0-registers' },
-          ]
-        },
-        {
-          type: 'split', dir: 'h', sizes: [67, 33],
-          children: [
-            { type: 'leaf', panelId: 'mc-rtu0-source' },
-            { type: 'leaf', panelId: 'mc-rtu0-registers' },
-          ]
-        }
-      ]
-    },
-    {
-      type: 'split', dir: 'v', sizes: [25, 15, 30, 30],
-      children: [
-        { type: 'leaf', panelId: 'editor' },
-        { type: 'leaf', panelId: 'io' },
-        { type: 'leaf', panelId: 'signal-graph' },
-        { type: 'leaf', panelId: 'mem-graph' },
-      ]
-    },
-    {
-      type: 'split', dir: 'v', sizes: [50, 50],
-      children: [
-        { type: 'leaf', panelId: 'memory1' },
-        { type: 'leaf', panelId: 'memory2' },
-      ]
-    }
-  ]
-};
-
-// Three and four cores: the core panels fill a wider left block (2x2 for
-// four, two over one for three); the shared panels keep their MC columns.
-const MC_SHARED_COLUMNS = [
-  {
-    type: 'split', dir: 'v', sizes: [22, 26, 26, 26],
-    children: [
-      { type: 'leaf', panelId: 'editor' },
-      { type: 'leaf', panelId: 'io' },
-      { type: 'leaf', panelId: 'signal-graph' },
-      { type: 'leaf', panelId: 'mem-graph' },
-    ]
-  },
-  {
-    type: 'split', dir: 'v', sizes: [50, 50],
-    children: [
-      { type: 'leaf', panelId: 'memory1' },
-      { type: 'leaf', panelId: 'memory2' },
-    ]
-  }
-];
-
-const MC3_DEFAULT_TREE = {
-  type: 'split', dir: 'h', sizes: [62, 18, 20],
-  children: [
-    {
-      type: 'split', dir: 'v', sizes: [50, 50],
-      children: [
-        {
-          type: 'split', dir: 'h', sizes: [50, 50],
-          children: [
-            {
-              type: 'split', dir: 'h', sizes: [58, 42],
-              children: [
-                { type: 'leaf', panelId: 'mc-pru0-source' },
-                { type: 'leaf', panelId: 'mc-pru0-registers' },
-              ]
-            },
-            {
-              type: 'split', dir: 'h', sizes: [58, 42],
-              children: [
-                { type: 'leaf', panelId: 'mc-rtu0-source' },
-                { type: 'leaf', panelId: 'mc-rtu0-registers' },
-              ]
-            }
-          ]
-        },
-        {
-              type: 'split', dir: 'h', sizes: [67, 33],
-              children: [
-                { type: 'leaf', panelId: 'mc-x2-source' },
-                { type: 'leaf', panelId: 'mc-x2-registers' },
-              ]
-            }
-      ]
-    },
-    ...MC_SHARED_COLUMNS
-  ]
-};
-
-const MC4_DEFAULT_TREE = {
-  type: 'split', dir: 'h', sizes: [62, 18, 20],
-  children: [
-    {
-      type: 'split', dir: 'v', sizes: [50, 50],
-      children: [
-        {
-          type: 'split', dir: 'h', sizes: [50, 50],
-          children: [
-            {
-              type: 'split', dir: 'h', sizes: [58, 42],
-              children: [
-                { type: 'leaf', panelId: 'mc-pru0-source' },
-                { type: 'leaf', panelId: 'mc-pru0-registers' },
-              ]
-            },
-            {
-              type: 'split', dir: 'h', sizes: [58, 42],
-              children: [
-                { type: 'leaf', panelId: 'mc-rtu0-source' },
-                { type: 'leaf', panelId: 'mc-rtu0-registers' },
-              ]
-            }
-          ]
-        },
-        {
-          type: 'split', dir: 'h', sizes: [50, 50],
-          children: [
-            {
-              type: 'split', dir: 'h', sizes: [58, 42],
-              children: [
-                { type: 'leaf', panelId: 'mc-x2-source' },
-                { type: 'leaf', panelId: 'mc-x2-registers' },
-              ]
-            },
-            {
-              type: 'split', dir: 'h', sizes: [58, 42],
-              children: [
-                { type: 'leaf', panelId: 'mc-x3-source' },
-                { type: 'leaf', panelId: 'mc-x3-registers' },
-              ]
-            }
-          ]
-        }
-      ]
-    },
-    ...MC_SHARED_COLUMNS
-  ]
-};
-
-// ---- Live state ------------------------------------------------------------
-let currentMode = 'sc';   // 'sc' | 'mc' | 'mc3' | 'mc4'
+let currentMode = 'sc';   // Core panes share this one tiling layout.
 let currentTree = null;
 let tileRoot    = null;
 let panelPool   = null;
 let hiddenPanelIds = new Set();
-const modePanelIds = { sc: [], mc: [], mc3: [], mc4: [] };
+const modePanelIds = { sc: [] };
 const PANEL_VISIBILITY_KEY = "pru-panel-visibility-";
 
 // ---- localStorage helpers --------------------------------------------------
@@ -298,8 +147,7 @@ function setPanelsVisibility(panelIds, visible) {
 
 function defaultTree(mode) {
   // Deep-clone so mutations don't corrupt the default
-  const trees = { mc: MC_DEFAULT_TREE, mc3: MC3_DEFAULT_TREE, mc4: MC4_DEFAULT_TREE };
-  return JSON.parse(JSON.stringify(trees[mode] || SC_DEFAULT_TREE));
+  return JSON.parse(JSON.stringify(SC_DEFAULT_TREE));
 }
 
 // ---- Tree rendering --------------------------------------------------------
@@ -645,7 +493,7 @@ function executeDrop(draggedId, targetId, side) {
 // ---- Public API ------------------------------------------------------------
 
 function initLayout(mode) {
-  currentMode = mode || 'sc';
+  currentMode = 'sc';
 
   tileRoot  = document.getElementById('tile-root');
   panelPool = document.getElementById('panel-pool');
@@ -661,18 +509,8 @@ function initLayout(mode) {
     'signal-graph': document.getElementById('signal-graph-panel'),
     'mem-graph':    document.getElementById('mem-graph-panel'),
   };
-  const MC_PANELS = {
-    'mc-pru0-source':    document.getElementById('mc-pru0-source-panel'),
-    'mc-pru0-registers': document.getElementById('mc-pru0-reg-panel'),
-    'mc-rtu0-source':    document.getElementById('mc-rtu0-source-panel'),
-    'mc-rtu0-registers': document.getElementById('mc-rtu0-reg-panel'),
-    'mc-x2-source':      document.getElementById('mc-x2-source-panel'),
-    'mc-x2-registers':   document.getElementById('mc-x2-reg-panel'),
-    'mc-x3-source':      document.getElementById('mc-x3-source-panel'),
-    'mc-x3-registers':   document.getElementById('mc-x3-reg-panel'),
-  };
-  Object.assign(PANEL_REGISTRY, SC_PANELS, MC_PANELS);
-  for (const mode of ["sc", "mc", "mc3", "mc4"]) modePanelIds[mode] = getLeafIds(defaultTree(mode));
+  Object.assign(PANEL_REGISTRY, SC_PANELS);
+  modePanelIds.sc = getLeafIds(defaultTree('sc'));
 
   // Invalidate saved layouts when panel set changes
   const LAYOUT_VERSION = 4;
@@ -692,18 +530,15 @@ function initLayout(mode) {
   notifyLayoutChanged();
 }
 
-function switchLayoutMode(newMode) {
-  // Save current layout
-  saveLayout(currentMode, currentTree);
-  currentMode = newMode;
-  currentTree = loadLayout(newMode) || defaultTree(newMode);
-  hiddenPanelIds = loadHiddenPanels(newMode);
-  sanitizeHiddenPanels(newMode);
-  render(currentTree);
-  notifyLayoutChanged();
-}
 
 function resetLayout() {
+  document.dispatchEvent(new CustomEvent('pru-cores-reset'));
+  for (const panel of Object.values(PANEL_REGISTRY)) {
+    if (!panel) continue;
+    panel.classList.remove('panel-collapsed');
+    const button = panel.querySelector('.panel-collapse-btn');
+    if (button) button.textContent = '−';
+  }
   localStorage.removeItem(`pru-layout-${currentMode}`);
   currentTree = defaultTree(currentMode);
   hiddenPanelIds.clear();

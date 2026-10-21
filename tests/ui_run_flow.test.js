@@ -18,7 +18,9 @@ function dashboard() {
   const button = { classList: { add() {}, remove() {} } };
   const context = vm.createContext({
     WebSocket: Socket, location: { host: 'localhost:8081' }, window: {}, console,
-    wsStatus: {}, btnRun: button, multiCoreMode: false,
+    wsStatus: {}, btnRun: button, multiCoreMode: false, clockChanging:false,
+    executionCores: () => context.multiCoreMode ? ['pru0','rtu0','pru1'] : ['pru0'],
+    updateCoresControl() {}, updateCoreState(state) { context.updateUI(state); },
     signalGraph: { recording: false }, mcShown: () => ['pru0', 'rtu0', 'pru1'],
     setButtonLabel: (element, text) => { element.textContent = text; },
     stopSim() {}, setTimeout() {}, showIepClock() {}, showAvailableCores() {},
@@ -27,7 +29,7 @@ function dashboard() {
     setInterval: fn => { const id = ++nextTimer; timers.set(id, fn); return id; },
     clearInterval: id => timers.delete(id),
   });
-  vm.runInContext(app.slice(app.indexOf('let ws ='), app.indexOf('// ---- Multi-core state')), context);
+  vm.runInContext(app.slice(app.indexOf('let ws ='), app.indexOf('// ---- Core selection:')), context);
   vm.runInContext(app.slice(app.indexOf('function connect()'), app.indexOf('// ---- UI update')), context);
   vm.runInContext(app.slice(app.indexOf('function startRun()'), app.indexOf('function startSim()')), context);
   context.connect();
@@ -130,4 +132,35 @@ test('Run does not send to a closed socket or duplicate a running timer', () => 
   d.state({ run_id: d.messages[0].run_id, halted: true });
   d.tick(50);
   assert.equal(d.messages.length, 1, 'HALT must stop every timer');
+});
+
+test('Run executes used cores even when hidden and does not force PRU0 as lead', () => {
+  const d = dashboard();
+  d.context.multiCoreMode = true;
+  d.context.executionCores = () => ['pru1', 'rtu0'];
+  d.context.startRun();
+  d.tick();
+  assert.equal(d.messages[0].core, 'pru1');
+  assert.deepEqual(d.messages[0].partners, ['rtu0']);
+});
+
+test('Space on a focused button keeps its native action instead of setting a breakpoint', () => {
+  const sent = [], listeners = {};
+  const context = vm.createContext({document:{addEventListener:(name,fn)=>listeners[name]=fn},
+    sourceList:{querySelector:()=>({id:'src-line-1'})},currentCore:'pru1',sendAction:a=>sent.push(a)});
+  const start = app.indexOf('// Keyboard shortcuts');
+  vm.runInContext(app.slice(start,app.indexOf('// ---- UART decoder controls',start)),context);
+  let prevented = false;
+  listeners.keydown({target:{tagName:'BUTTON'},key:' ',preventDefault:()=>{prevented=true;}});
+  assert.equal(prevented,false);
+  assert.deepEqual(sent,[]);
+});
+
+test('multicore Step while disconnected leaves no pending request to block reconnect', () => {
+  const context=vm.createContext({clockChanging:false,runPending:null,runSequence:0,
+    ws:{readyState:3},WebSocket:{OPEN:1},executionCores:()=>['pru0','pru1'],sendAction(){}});
+  const start=app.indexOf('function requestSelectedStep(');
+  vm.runInContext(app.slice(start,app.indexOf('// ---- Init',start)),context);
+  context.requestSelectedStep();
+  assert.equal(context.runPending,null);
 });

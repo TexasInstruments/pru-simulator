@@ -1,6 +1,7 @@
 from fractions import Fraction
 from pathlib import Path
 import shutil
+import re
 import struct
 
 import pytest
@@ -97,8 +98,7 @@ def test_reader_runtime_uses_exact_selected_core_clock(tmp_path):
 def test_documented_300mhz_run_uses_copied_config_and_constants_sidecar(tmp_path):
     project = Path(__file__).resolve().parents[1]
     data = (project / "memory.cfg").read_bytes()
-    data = data.replace(b"pru_clock_mhz = 250", b"pru_clock_mhz = 300", 1)
-    data = data.replace(b"pru1_clock_mhz = 250", b"pru1_clock_mhz = 300", 1)
+    data = re.sub(rb"(?m)^(pru1?_clock_mhz\s*=)[^\r\n]*", rb"\g<1> 300", data)
     config = tmp_path / "memory.cfg"
     config.write_bytes(data)
     sidecar = tmp_path / "config"
@@ -342,3 +342,78 @@ def test_failed_initial_reader_load_closes_only_its_resources(monkeypatch, failu
         runtime.load()
     existing.close()
     assert sim.io("pru1")["gpo_drive_mask"] == 0
+
+
+@pytest.mark.parametrize("failure", ["errors", "exception", "invalid config"])
+def test_failed_reader_reload_restores_last_successful_config(monkeypatch, failure):
+    sim = Simulator("memory.cfg")
+    with SSIRuntime(sim, position=0xABC) as runtime:
+        runtime.load(clock_delay_loops=20)
+        sim.step(runtime.core, 8)
+        config_before = sim.memory_read(abi.CONFIG_ADDRESS, abi.CONFIG_SIZE)
+        instructions = sim.cores[runtime.core].instructions
+        state_before = sim.status()[runtime.core]
+        drive_mask = sim.io(runtime.core)["gpo_drive_mask"]
+        load = sim.load
+        if failure == "errors":
+            monkeypatch.setattr(sim, "load", lambda core, *args, **kwargs: load(core, "ldi r0"))
+            expected = ValueError
+        elif failure == "exception":
+            def fail(*args, **kwargs):
+                raise OSError("reload failed")
+            monkeypatch.setattr(sim, "load", fail)
+            expected = OSError
+        else:
+            expected = ValueError
+        with pytest.raises(expected):
+            runtime.load(clock_delay_loops=-1 if failure == "invalid config" else 99)
+        assert sim.memory_read(abi.CONFIG_ADDRESS, abi.CONFIG_SIZE) == config_before
+        assert sim.cores[runtime.core].instructions is instructions
+        assert sim.status()[runtime.core] == state_before
+        assert sim.io(runtime.core)["gpo_drive_mask"] == drive_mask
+        assert sim.device_bus.devices == [runtime.encoder]
+        assert not runtime._closed and runtime._loaded
+        sim.reset(runtime.core)
+        assert runtime.run_until_frames(1, max_steps=16000)["mailbox"]["raw_frame"] == 0xABC
+
+
+def test_successful_reader_reload_cannot_return_a_previous_frame():
+    sim = Simulator("memory.cfg")
+    with SSIRuntime(sim, position=0xABC, resolution=12) as runtime:
+        runtime.load()
+        first = runtime.run_until_frames(1, max_steps=16000)
+        assert first["mailbox"]["raw_frame"] == 0xABC
+        runtime.step(6000)  # let the first frame's monoflop period finish
+        runtime.encoder.set_position(0x123)
+        runtime.load()
+        stale = runtime.run_until_frames(1, max_steps=0)
+        assert stale["reached"] is False
+        assert stale["mailbox"]["frame_count"] == 0
+        fresh = runtime.run_until_frames(1, max_steps=16000)
+        assert fresh["reached"] is True
+        assert fresh["steps"] > 0
+        assert fresh["mailbox"]["raw_frame"] == 0x123
+
+
+def test_ui_reader_loader_invalidates_the_previous_frame():
+    from pru_io.ssi_runtime import load_reader
+    sim = Simulator("memory.cfg")
+    with SSIRuntime(sim, position=0xABC, resolution=12) as runtime:
+        runtime.load()
+        assert runtime.run_until_frames(1, max_steps=16000)["reached"]
+        load_reader(sim, runtime.core, 12, 20, 2000)
+        assert runtime.run_until_frames(1, max_steps=0)["reached"] is False
+
+
+def test_failed_reader_reload_preserves_a_previously_received_mailbox():
+    sim = Simulator("memory.cfg")
+    with SSIRuntime(sim, position=0xABC, resolution=12) as runtime:
+        runtime.load()
+        assert runtime.run_until_frames(1, max_steps=16000)["reached"]
+        mailbox = sim.memory_read(abi.MAILBOX_ADDRESS, abi.MAILBOX_SIZE)
+        config = sim.memory_read(abi.CONFIG_ADDRESS, abi.CONFIG_SIZE)
+        with pytest.raises(ValueError):
+            runtime.load(clock_delay_loops=-1)
+        assert sim.memory_read(abi.MAILBOX_ADDRESS, abi.MAILBOX_SIZE) == mailbox
+        assert sim.memory_read(abi.CONFIG_ADDRESS, abi.CONFIG_SIZE) == config
+        assert runtime.run_until_frames(1, max_steps=0)["mailbox"]["raw_frame"] == 0xABC

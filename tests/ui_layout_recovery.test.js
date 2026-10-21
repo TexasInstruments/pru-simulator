@@ -7,7 +7,17 @@ import vm from 'node:vm';
 class Element {
   constructor(id = '') { this.id = id; this.children = []; this.style = {}; this.dataset = {}; this.className = ''; }
   get firstChild() { return this.children[0] || null; }
-  get classList() { return { contains: name => this.className.split(' ').includes(name) }; }
+  get classList() { return {
+    contains: name => this.className.split(' ').includes(name),
+    remove: name => { this.className = this.className.split(' ').filter(value => value !== name).join(' '); },
+    toggle: name => {
+      const names = new Set(this.className.split(' ').filter(Boolean));
+      const added = !names.delete(name);
+      if (added) names.add(name);
+      this.className = [...names].join(' ');
+      return added;
+    },
+  }; }
   appendChild(child) {
     child.parentNode?.removeChild(child);
     child.parentNode = this;
@@ -15,33 +25,43 @@ class Element {
     return child;
   }
   removeChild(child) { this.children.splice(this.children.indexOf(child), 1); child.parentNode = null; }
-  querySelector() { return null; }
+  closest(selector) {
+    for (let node = this; node; node = node.parentNode)
+      if (node.classList.contains(selector.slice(1))) return node;
+    return null;
+  }
+  querySelector(selector) {
+    return this.children.find(node => selector === '.panel-collapse-btn' &&
+      node.classList.contains('panel-collapse-btn')) || null;
+  }
   addEventListener() {}
   contains(child) { return this === child || this.children.some(node => node.contains(child)); }
 }
 const source = readFileSync(new URL('../ui/static/layout.js', import.meta.url), 'utf8');
-function dashboard(saved, mode = 'mc') {
-  const storage = new Map([['pru-layout-ver', '4'], [`pru-layout-${mode}`, JSON.stringify(saved)]]);
+function dashboard(saved, preferences = {}) {
+  const storage = new Map([['pru-layout-ver', '4'], ['pru-layout-sc', JSON.stringify(saved)],
+    ...Object.entries(preferences)]);
+  const events = [];
   const nodes = new Map();
   const get = id => {
     if (!nodes.has(id)) nodes.set(id, new Element(id));
     return nodes.get(id);
   };
   const context = vm.createContext({
-    document: { getElementById: get, createElement: () => new Element(), dispatchEvent() {} },
+    document: { getElementById: get, createElement: () => new Element(), dispatchEvent: event => events.push(event.type) },
     localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value),
       removeItem: key => storage.delete(key) },
-    CustomEvent: class {},
+    CustomEvent: class { constructor(type) { this.type = type; } },
   });
   const run = code => vm.runInContext(code, context);
   run(source);
   run("initLayout('sc')");
-  return { run, get, storage };
+  return { run, get, storage, events };
 }
 const split = (children, sizes, dir = 'h') => ({ type: 'split', dir, children, sizes });
 const leaf = panelId => ({ type: 'leaf', panelId });
 const invalidFullTree = change => {
-  const tree = dashboard(null).run("defaultTree('mc')");
+  const tree = dashboard(null).run("defaultTree('sc')");
   change(tree);
   return tree;
 };
@@ -56,40 +76,58 @@ for (const [name, saved] of [
   ['invalid direction', invalidFullTree(tree => { tree.dir = 'diagonal'; })],
   ['invalid size', invalidFullTree(tree => { tree.sizes[0] = null; })],
 ]) {
-  test(`multicore recovers from saved ${name}`, () => {
+  test(`shared layout recovers from saved ${name}`, () => {
     const d = dashboard(saved);
-    assert.doesNotThrow(() => d.run("switchLayoutMode('mc')"));
-    assert.equal(d.get('tile-root').contains(d.get('mc-pru0-source-panel')), true,
-      'an enabled PRU0 panel must be attached to the visible tile tree');
+    assert.equal(d.get('tile-root').contains(d.get('source-panel')), true,
+      'the shared source panel must be attached on first paint');
     assert.equal(d.get('tile-root').contains(d.get('signal-graph-panel')), true);
-    assert.equal(d.run('JSON.stringify(currentTree) === JSON.stringify(MC_DEFAULT_TREE)'), true);
-    assert.equal(JSON.parse(d.storage.get('pru-layout-mc')).children.length, 3,
+    assert.equal(d.run('JSON.stringify(currentTree) === JSON.stringify(SC_DEFAULT_TREE)'), true);
+    assert.equal(JSON.parse(d.storage.get('pru-layout-sc')).children.length, 3,
       'replace the invalid saved layout so it cannot return on reload');
   });
 }
 
-test('valid reordered panels and hidden preferences survive switching', () => {
-  const d = dashboard(null);
-  const saved = d.run("defaultTree('mc')");
+test('valid reordered panels and hidden preferences survive reload', () => {
+  const saved = dashboard(null).run("defaultTree('sc')");
   saved.children.reverse();
   saved.sizes.reverse();
-  d.storage.set('pru-layout-mc', JSON.stringify(saved));
-  d.storage.set('pru-panel-visibility-mc', JSON.stringify(['memory2']));
-  d.run("switchLayoutMode('mc')");
+  const d = dashboard(saved, { 'pru-panel-visibility-sc': JSON.stringify(['memory2']) });
   assert.equal(d.run('JSON.stringify(currentTree)'), JSON.stringify(saved));
   assert.equal(d.get('tile-root').contains(d.get('memory-panel-2')), false);
-  assert.equal(d.get('tile-root').contains(d.get('mc-pru0-source-panel')), true);
-  d.run("switchLayoutMode('sc'); switchLayoutMode('mc')");
+  assert.equal(d.get('tile-root').contains(d.get('source-panel')), true);
+  d.run("initLayout('sc')");
   assert.equal(d.run('JSON.stringify(currentTree)'), JSON.stringify(saved));
+  assert.equal(d.get('tile-root').contains(d.get('memory-panel-2')), false);
 });
 
-for (const mode of ['sc', 'mc3', 'mc4']) {
-  test(`${mode} recovers its own panels on first paint or mode switch`, () => {
-    const d = dashboard(split([], []), mode);
-    d.run(`switchLayoutMode('${mode}')`);
-    assert.equal(d.run(`JSON.stringify(currentTree) === JSON.stringify(defaultTree('${mode}'))`), true);
-    assert.equal(d.get('tile-root').contains(d.get('signal-graph-panel')), true);
-    if (mode === 'sc') assert.equal(d.get('tile-root').contains(d.get('source-panel')), true);
-    else assert.equal(d.get('tile-root').contains(d.get('mc-x2-source-panel')), true);
-  });
-}
+test('abandoned multicore layouts do not replace the shared layout', () => {
+  const d = dashboard(null, { 'pru-layout-mc': JSON.stringify(leaf('retired-panel')),
+    'pru-panel-visibility-mc': JSON.stringify(['source']) });
+  assert.equal(d.run('JSON.stringify(currentTree) === JSON.stringify(SC_DEFAULT_TREE)'), true);
+  assert.equal(d.get('tile-root').contains(d.get('source-panel')), true);
+  assert.equal(d.run('getLeafIds(currentTree).length'), 8);
+});
+
+// #61: the panel itself survives rebuilding its tile, including its collapsed class.
+test('Reset Layout expands minimized and hidden panels and resets core selection', () => {
+    const d = dashboard(null);
+    const panel = d.get('memory-panel');
+    const button = new Element();
+    button.className = 'panel-collapse-btn';
+    button.textContent = '−';
+    panel.appendChild(button);
+    d.run("togglePanelCollapse(PANEL_REGISTRY.memory1)");
+    assert.equal(panel.classList.contains('panel-collapsed'), true);
+    assert.equal(panel.closest('.tile-child').style.flex, '0 0 26px');
+    d.run("setPanelsVisibility(['memory1'], false)");
+    d.run('resetLayout()');
+    assert.equal(d.events.filter(type => type === 'pru-cores-reset').length, 1);
+    assert.equal(d.get('tile-root').contains(panel), true);
+    assert.equal(panel.classList.contains('panel-collapsed'), false);
+    assert.equal(button.textContent, '−');
+    assert.notEqual(panel.closest('.tile-child').style.flex, '0 0 26px');
+    assert.equal(d.run('hiddenPanelIds.size'), 0);
+    // The first click after Reset must minimize, rather than expand a stale state.
+    d.run("togglePanelCollapse(PANEL_REGISTRY.memory1)");
+    assert.equal(panel.classList.contains('panel-collapsed'), true);
+});

@@ -93,3 +93,9 @@ assert.equal(setter.value, '6', 'an acknowledged SSI setter follows the backend 
 assert.equal(setter.dataset.dirty, undefined);
 
 console.log('Device panel reports TCA state and keeps SSI setters in sync with the backend');
+
+// A single used core does not make it the device target: foreign state must not
+// replace the selected device panel or redirect subsequent device actions.
+const selectedRows = list.children.map(row => row.dataset.deviceName);
+harness.updateDevicePanel({device_bus:{devices:[{...tca,name:'foreign',core:'pru1'}]}},'pru1');
+assert.deepEqual(list.children.map(row=>row.dataset.deviceName),selectedRows);

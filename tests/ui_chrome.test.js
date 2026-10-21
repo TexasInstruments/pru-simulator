@@ -5,6 +5,7 @@ import vm from 'node:vm';
 const frames = [];
 const context = vm.createContext({ requestAnimationFrame: fn => { frames.push(fn); } });
 vm.runInContext(readFileSync(new URL('../ui/static/chrome.js', import.meta.url), 'utf8'), context);
+vm.runInContext(readFileSync(new URL('../ui/static/cores.js', import.meta.url), 'utf8'), context);
 const C = context.PruChrome;
 const plain = value => JSON.parse(JSON.stringify(value));
 
@@ -39,19 +40,11 @@ assert.equal(made.children.length, 1, 'labels are rewritten in place');
 assert.equal(made.querySelector('.text').textContent, 'Open');
 assert.equal(context.setButtonLabel, C.setButtonLabel, 'app.js calls it as a global');
 
-// Multi-core view: PRU0 leads, the partner is second, extras fill slots three and four.
-assert.deepEqual(plain(C.mcCores('rtu0', [])), ['pru0', 'rtu0']);
-assert.deepEqual(plain(C.mcCores('pru1', ['rtu1', 'rtu0'])), ['pru0', 'pru1', 'rtu0', 'rtu1'], 'extras keep core order');
-assert.deepEqual(plain(C.mcExtras('rtu0', ['rtu0', 'pru1', 'pru1', 'nope'])), ['pru1'], 'partner, duplicates and unknown cores dropped');
-assert.deepEqual(plain(C.MC_SLOTS), ['pru0', 'rtu0', 'x2', 'x3'], 'the first two slots keep the dual view ids');
-{
-  const shown = C.mcCores('pru1', ['rtu1']);
-  assert.equal(C.mcSlot(shown, 'pru0'), 'pru0');
-  assert.equal(C.mcSlot(shown, 'pru1'), 'rtu0', 'the partner renders into the second slot');
-  assert.equal(C.mcSlot(shown, 'rtu1'), 'x2');
-  assert.equal(C.mcSlot(shown, 'rtu0'), null, 'a core that is not shown has no slot');
-}
-assert.deepEqual([2, 3, 4].map(C.mcMode), ['mc', 'mc3', 'mc4']);
+// Core membership is canonical and independent of visible panes or a PRU0 lead.
+const selection = context.PruCores.normalize({ used: ['rtu1', 'pru1', 'rtu0', 'pru1', 'nope'],
+  shown: ['pru1'], focus: 'pru1' }, ['pru0', 'pru1', 'rtu0', 'rtu1']);
+assert.deepEqual(plain(selection.used), ['pru1', 'rtu0', 'rtu1']);
+assert.deepEqual(plain(selection.shown), ['pru1']);
 
 // Tabs keyboard model.
 assert.equal(C.nextTabIndex('ArrowRight', 0, 3), 1);
@@ -128,7 +121,7 @@ assert.deepEqual([...nav.matchAll(/data-workspace-view="(\w+)"/g)].map(m => m[1]
 assert.match(nav, /I\/O &amp; Devices/);
 assert.deepEqual([...html.matchAll(/data-io-tab="(\w+)"/g)].map(m => m[1]), ['devices', 'peripherals', 'events']);
 assert.equal((html.match(/class="view-glider"/g) || []).length, 2, 'one glider per tab strip');
-for (const id of ['btn-multicore', 'btn-step', 'btn-run', 'btn-sim', 'btn-reset', 'btn-hard-reset',
+for (const id of ['btn-step', 'btn-run', 'btn-sim', 'btn-reset', 'btn-hard-reset',
   'btn-config', 'btn-reset-layout', 'btn-help'])
   assert.match(html, new RegExp(`<button id="${id}" class="btn-17[^"]*"[^>]*><span class="text-container"><span class="text">`),
     `${id} wraps its label for the wipe`);
@@ -146,17 +139,60 @@ for (const id of ['spad', 'loopback', 'mem-btn', 'panel-toggle'])
 const app = readFileSync(new URL('../ui/static/app.js', import.meta.url), 'utf8');
 assert.ok(!/\bbtn(Run|Sim|Step|Reset|HardReset|Config|Help|Multicore)\.textContent\s*=/.test(app));
 
-// Run, Step, Reset and the shortcuts address every shown core, not a fixed pair.
-assert.match(app, /run_multicore[\s\S]{0,80}partners: mcShown\(\)\.slice\(1\)/);
-assert.equal((app.match(/for \(const core of mcShown\(\)\) sendAction\(\{ action: "step", core, count: 1 \}\)/g) || []).length, 3,
-  'Step button, SIM timer and ArrowRight step all shown cores');
+// Execute real Run, Step, SIM and keyboard handlers with hidden used cores.
+const messages = [];
+const intervals = [];
+const keys = {};
+const control = () => ({ listeners: {}, classList: { add() {}, remove() {} },
+  addEventListener(name, fn) { this.listeners[name] = fn; } });
+const stepButton = control();
+let activeCores = plain(selection.used);
+const execution = vm.createContext({
+  document: { addEventListener: (name, fn) => { keys[name] = fn; } },
+  btnStep: stepButton, btnRun: control(), btnSim: control(),
+  executionCores: () => activeCores, currentCore: 'pru1', multiCoreMode: true,
+  running: false, simRunning: false, clockChanging: false, runPending: null,
+  runSequence: 0, captureStride: null, signalGraph: { recording: false },
+  ws: { readyState: 1 }, WebSocket: { OPEN: 1 }, simIntervalInput: { value: '1.0' },
+  sendAction: action => messages.push(plain(action)), setButtonLabel() {},
+  updateCoresControl() {}, stopRun() {}, stopSim() {},
+  setInterval: fn => { intervals.push(fn); return intervals.length; },
+});
+function executeFunction(name) {
+  const start = app.indexOf(`function ${name}(`);
+  assert.ok(start >= 0, `${name} is implemented`);
+  let end = app.indexOf('{', start) + 1;
+  let depth = 1;
+  while (depth) { if (app[end] === '{') depth++; if (app[end] === '}') depth--; end++; }
+  vm.runInContext(app.slice(start, end), execution);
+}
+for (const name of ['requestSelectedStep', 'startRun', 'startSim']) executeFunction(name);
+vm.runInContext(app.slice(app.indexOf('btnStep.addEventListener('),
+  app.indexOf('btnRun.addEventListener(')), execution);
+vm.runInContext(app.slice(app.indexOf('// Keyboard shortcuts (Space'),
+  app.indexOf('// ---- UART decoder controls')), execution);
+for (const trigger of [() => stepButton.listeners.click(),
+  () => keys.keydown({ key: 'ArrowRight', target: { tagName: 'BODY' }, preventDefault() {} }),
+  () => { execution.startSim(); intervals.at(-1)(); },
+  () => { execution.startRun(); intervals.at(-1)(); }]) {
+  execution.runPending = null;
+  trigger();
+  assert.equal(messages.at(-1).action, 'run_multicore');
+  assert.equal(messages.at(-1).core, 'pru1', 'the first used core leads, even without PRU0');
+  assert.deepEqual(messages.at(-1).partners, ['rtu0', 'rtu1'], 'hidden used cores still execute');
+}
+execution.runPending = null;
+activeCores = ['rtu0'];
+execution.multiCoreMode = false;
+execution.currentCore = 'rtu0';
+stepButton.listeners.click();
+assert.deepEqual(messages.at(-1), { action: 'step', core: 'rtu0', count: 1 });
 
-// Multi-core markup: a panel pair per slot, and a toggle per candidate core.
-for (const slot of ['pru0', 'rtu0', 'x2', 'x3'])
-  for (const id of [`mc-${slot}-source-panel`, `mc-${slot}-reg-panel`, `mc-${slot}-source-list`, `mc-${slot}-reg-tbody`,
-    `mc-${slot}-pc`, `mc-${slot}-bp-add-btn`, `mc-${slot}-bp-chip-list`])
-    assert.ok(html.includes(`id="${id}"`), `multi-core slot ${slot} has ${id}`);
-assert.deepEqual([...html.matchAll(/data-mc-extra="(\w+)"/g)].map(m => m[1]), ['rtu0', 'pru1', 'rtu1']);
+// Source and registers retain one shared panel each; panes live inside them.
+for (const id of ['cores-control', 'source-panes', 'reg-body', 'source-core-chips', 'register-core-chips'])
+  assert.ok(html.includes(`id="${id}"`), `shared core presentation has ${id}`);
+for (const id of ['source-panel', 'registers-panel'])
+  assert.equal((html.match(new RegExp(`id="${id}"`, 'g')) || []).length, 1, `${id} exists once`);
 
 // IEP clock selector: runtime-only choice sent over the WebSocket, shown from state.
 const iepSelect = html.match(/<select id="iep-clock-select"[\s\S]*?<\/select>/)[0];
@@ -175,7 +211,7 @@ for (const file of ['app.js', 'workspace.js', 'layout.js', 'chrome.js']) {
 }
 console.log('Chrome helpers, glider, fault badge and markup contract pass');
 
-// Actual target capabilities constrain partners/extras even after a target reload.
-assert.deepEqual(plain(C.mcCores('rtu1', ['pru1', 'rtu1'], ['pru0', 'rtu0', 'pru1'])),
-  ['pru0', 'rtu0', 'pru1']);
-assert.deepEqual(plain(C.mcExtras('rtu0', ['pru1', 'rtu1'], ['pru0', 'rtu0', 'pru1'])), ['pru1']);
+// Actual target capabilities prune membership and visibility after a target reload.
+assert.deepEqual(plain(context.PruCores.normalize(selection, ['pru0', 'pru1', 'rtu0'])), {
+  used: ['pru1', 'rtu0'], shown: ['pru1'], focus: 'pru1', pinned: false,
+});

@@ -1,6 +1,7 @@
 """FastAPI + WebSocket backend for the PRU Simulator Dashboard."""
 
 import asyncio
+import configparser
 import copy
 import json
 import math
@@ -145,6 +146,7 @@ def _snapshot_core(c) -> dict:
         "gpi": c.io_port.gpi,
         "loopback_mask": c.io_port.loopback_mask,
         "gpo_drive_mask": c.io_port.gpo_drive_mask,
+        "gpio_loopback_mask": c.io_port.loopback_mask,
         "cycles": c.counters.cycles,
         "stall_cycles": c.counters.stall_cycles,
         "instruction_count": c.counters.instruction_count,
@@ -172,6 +174,7 @@ def _snapshot(core: str) -> dict:
         "loopback": sim._loopback.snapshot(),
         "mem": [bytes(r._data) for r in sim.memory.regions],
         "iep": sim.iep.snapshot(),
+        "paced_pending": copy.deepcopy(sim._paced_pending),
     }
 
 
@@ -213,6 +216,7 @@ def _restore(core: str, snap: dict) -> None:
     for i, region_data in enumerate(snap["mem"]):
         if i < len(sim.memory.regions):
             sim.memory.regions[i]._data[:] = region_data
+    sim._paced_pending = copy.deepcopy(snap.get("paced_pending", {}))
     if snap.get("iep") is not None:
         sim.iep.restore(snap["iep"])
         _apply_iep_override()
@@ -394,27 +398,61 @@ def _set_ini_value(text: str, section: str, key: str, value: str) -> str:
     return text[:match.start()] + header + new_body + text[match.end():]
 
 
+def _clock_speed_state() -> dict:
+    return {
+        "mhz": sim._pru_clock_mhz,
+        "groups": [
+            {"id": group, "mhz": mhz,
+             "cores": [name for name in members if name in sim.cores]}
+            for group, mhz, members in (
+                (0, sim._pru_clock_mhz, ("pru0", "rtu0")),
+                (1, sim._pru1_clock_mhz, ("pru1", "rtu1")),
+            )
+        ],
+        "choices_mhz": sorted(ALLOWED_CLOCK_MHZ),
+    }
+
+
 @app.get("/config/clock_speed")
 async def get_clock_speed():
-    return {"mhz": sim._pru_clock_mhz}
+    return _clock_speed_state()
 
 
 @app.put("/config/clock_speed")
 async def put_clock_speed(request: Request):
     global sim
-    body = await request.json()
+    try:
+        body = await request.json()
+    except (ValueError, UnicodeDecodeError):
+        return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
     mhz = body.get("mhz")
-    if mhz not in ALLOWED_CLOCK_MHZ:
+    if (isinstance(mhz, bool) or not isinstance(mhz, (int, float))
+            or mhz not in ALLOWED_CLOCK_MHZ):
         return JSONResponse(
             {"error": f"mhz must be one of {sorted(ALLOWED_CLOCK_MHZ)}"},
             status_code=400,
         )
+    group = body.get("group")
+    if "group" in body and (isinstance(group, bool) or not isinstance(group, (int, float))
+                            or group not in (0, 1)):
+        return JSONResponse({"error": "group must be 0 or 1"}, status_code=400)
     async with _config_lock:
         try:
             with open(config_path, "r") as f:
                 text = f.read()
-            text = _set_ini_value(text, "device", "pru_clock_mhz", str(mhz))
-            text = _set_ini_value(text, "device", "pru1_clock_mhz", str(mhz))
+            if group == 0:
+                cfg = configparser.ConfigParser()
+                cfg.read_string(text, source=config_path)
+                # An omitted second clock inherits the first. Pin its old rate
+                # before changing the first so the other cores keep their rate.
+                if not cfg.has_option("device", "pru1_clock_mhz") and mhz != sim._pru1_clock_mhz:
+                    text = _set_ini_value(text, "device", "pru1_clock_mhz", str(sim._pru1_clock_mhz))
+            if group is None or group == 0:
+                text = _set_ini_value(text, "device", "pru_clock_mhz", str(mhz))
+            if group is None or group == 1:
+                text = _set_ini_value(text, "device", "pru1_clock_mhz", str(mhz))
             sim = _replace_config(text)
             _apply_iep_override()
             _clear_history()
@@ -1073,6 +1111,7 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False, run_id=None
         "gpo_pins": gpo_pins,
         "gpi_pins": c.io_port.get_gpi_pins(),
         "gpo_drive_mask": c.io_port.gpo_drive_mask,
+        "gpio_loopback_mask": c.io_port.loopback_mask,
     }
     demo = ssi_demo_state(sim)
     if demo is not None:
@@ -1090,6 +1129,7 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False, run_id=None
     state = {
         "type": "state",
         "available_cores": list(sim.cores),
+        "clocks": _clock_speed_state(),
         "core": core,
         "pc": c.pc,
         "halted": c.halted,

@@ -431,7 +431,7 @@ def test_iep_configured_reset_retains_source_and_session_step_back(fresh_sim, mo
     ])
     assert not any(p['type'] == 'error' for p in sent)
     assert sent[1]['iep']['core_clock'] is True
-    assert sent[1]['iep']['clock_mhz'] == 250
+    assert sent[1]['iep']['clock_mhz'] == fresh_sim._pru_clock_mhz
     assert all(p['iep']['external_mhz'] == 333.333 for p in sent[2:6])
     assert sent[6]['iep']['external_mhz'] == 211.25
     assert sent[6]['iep']['override_mhz'] is None
@@ -648,3 +648,74 @@ def test_multicore_run_resumes_catchup_after_the_lead_finishes(fresh_sim, finish
         assert not incomplete
         assert lead["cycles"] == follow["cycles"] == 20002
         assert follow["registers"][1] == "0x00002711"  # all 10001 ADDs executed
+
+
+def test_reloading_unchanged_assembly_sends_complete_source_each_time(fresh_sim):
+    source = "ldi r0, 1\nhalt"
+    sent = _run_websocket_actions([
+        {"action": "load", "core": "pru0", "source": source},
+        {"action": "load", "core": "pru0", "source": source},
+    ])
+    states = [message for message in sent if message.get("type") == "state"]
+    assert len(states) == 2  # One complete reply per load.
+    for state in states[-2:]:
+        assert state["instructions"] == [
+            {"addr": 0, "text": "ldi r0, 1"}, {"addr": 1, "text": "halt"},
+        ]
+        assert state["pc"] == 0
+
+
+def test_gpio_loopback_state_is_reported_per_core(fresh_sim):
+    sent = _run_websocket_actions([
+        {'action': 'set_loopback', 'core': 'pru0', 'group': 0, 'enabled': True},
+        {'action': 'get_state', 'core': 'pru0'},
+        {'action': 'get_state', 'core': 'pru1'},
+    ])
+    states = [message for message in sent if message['type'] == 'state']
+    assert states[0]['io']['gpio_loopback_mask'] == 0xF
+    assert states[1]['io']['gpio_loopback_mask'] == 0
+
+
+@pytest.mark.parametrize("finish", ["halt", "nop"])
+def test_four_core_run_retries_catchup_and_acknowledges_the_final_state(fresh_sim, finish):
+    assert fresh_sim.load(
+        "pru0", f"ldi r0, 10000\nloop: sub r0, r0, 1\nqbne loop, r0, 0\n{finish}"
+    ) == []
+    followers = ["rtu0", "pru1", "rtu1"]
+    for core in followers:
+        assert fresh_sim.load(core, "add r1, r1, 1\njmp 0") == []
+    fresh_sim.step("pru0", 20001)
+
+    with client.websocket_connect("/ws") as ws:
+        for attempt in range(70):
+            ws.send_json({"action": "run_multicore", "core": "pru0",
+                          "partners": followers, "max_steps": 1, "run_id": attempt})
+            reply = ws.receive_json()
+            incomplete = reply["type"] == "error"
+            if incomplete:
+                assert reply["reason"] == "pacing_incomplete"
+                reply = ws.receive_json()
+            states = [reply] + [ws.receive_json() for _ in followers]
+            assert [state["core"] for state in states] == ["pru0"] + followers
+            assert all("run_id" not in state for state in states[:-1])
+            assert states[-1]["run_id"] == attempt
+            if not incomplete:
+                break
+
+    assert not incomplete
+    assert all(state["cycles"] == 20002 for state in states)
+    assert all(state["registers"][1] == "0x00002711" for state in states[1:])
+
+
+def test_state_reports_each_cores_actual_gpio_loopback_mask(fresh_sim):
+    import ui.server as srv
+
+    fresh_sim.set_loopback("pru0", 0, True)
+    class Sink:
+        async def send_json(self, payload):
+            self.payload = payload
+    sink = Sink()
+    asyncio.run(srv._send_state(sink, "pru0"))
+    assert sink.payload["io"]["gpio_loopback_mask"] == 0xF
+    asyncio.run(srv._send_state(sink, "pru1"))
+    assert sink.payload["io"]["gpio_loopback_mask"] == 0

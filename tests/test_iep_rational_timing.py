@@ -120,8 +120,8 @@ def test_rational_core_clock_preserves_exact_iep_cadence(tmp_path):
     assert sim.iep.count == 2500
 
 
-def test_repeated_global_cfg_firmware_writes_preserve_rational_tick_phase():
-    sim = Simulator("memory.cfg")
+def test_repeated_global_cfg_firmware_writes_preserve_rational_tick_phase(tmp_path):
+    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
     sim.iep.set_clock_mhz("200")
     sim.iep.global_cfg = 0x11
     assert sim.load(
@@ -203,8 +203,8 @@ def test_iep_clock_source_and_rate_transitions_reset_tick_phase():
     assert iep._tick_remainder == 2
 
 
-def test_repeated_iepclk_firmware_writes_preserve_tick_phase():
-    sim = Simulator("memory.cfg")
+def test_repeated_iepclk_firmware_writes_preserve_tick_phase(tmp_path):
+    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
     sim.iep.set_clock_mhz("200")
     sim.iep.global_cfg = 0x11
     assert sim.load("pru0", "ldi32 r0, 0x26030\nldi r1, 0\n"
@@ -237,8 +237,8 @@ def test_inactive_external_clock_change_preserves_ocp_phase():
     assert iep.count == 1
 
 
-def test_lbbo_and_wait_stalls_reach_the_cycle_observer():
-    sim = Simulator()
+def test_lbbo_and_wait_stalls_reach_the_cycle_observer(tmp_path):
+    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
     assert sim.load(
         "pru0",
         "ldi r0, 0\n"
@@ -352,8 +352,8 @@ def test_step_paced_many_counts_follower_wbs_stalls_as_elapsed_time(tmp_path):
     assert lead <= follow <= lead + Fraction(5)
 
 
-def test_single_core_reset_rejoins_global_time_and_hardware_reset_restarts_it():
-    sim = Simulator()
+def test_single_core_reset_rejoins_global_time_and_hardware_reset_restarts_it(tmp_path):
+    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
     _load_loop(sim, "pru0")
     _write32(sim, IEP_BASE + GLOBAL_CFG, 0x11)
     sim.step("pru0", 10)
@@ -451,8 +451,8 @@ def test_simulator_rejects_nonfinite_guards_before_execution(guard):
     assert sim.cores["pru0"].counters.cycles == 0
 
 
-def test_direct_core_reset_notifies_shared_timeline():
-    sim = Simulator()
+def test_direct_core_reset_notifies_shared_timeline(tmp_path):
+    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
     _load_loop(sim, "pru0")
     sim.step("pru0")
     assert sim.iep.now_ns == 4
@@ -461,8 +461,8 @@ def test_direct_core_reset_notifies_shared_timeline():
     assert sim.iep.now_ns == 8
 
 
-def test_backward_cycle_jump_is_absorbed_not_added_to_shared_time():
-    sim = Simulator()
+def test_backward_cycle_jump_is_absorbed_not_added_to_shared_time(tmp_path):
+    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
     _load_loop(sim, "pru0")
     sim.step("pru0", 20)
     assert sim.iep.now_ns == 80
@@ -518,8 +518,8 @@ def test_omitted_external_clock_defaults_to_the_trm_200_mhz_for_any_core_rate(tm
     assert Simulator("missing.cfg").iep.external_clock_hz == 200_000_000
 
 
-def test_reset_default_inc_counts_nanoseconds_at_the_default_iep_clock():
-    sim = Simulator()
+def test_reset_default_inc_counts_nanoseconds_at_250mhz_core_200mhz_iep(tmp_path):
+    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
     _load_loop(sim, "pru0")
     # Read-modify-write of the 0x550 reset value, as firmware does: DEFAULT_INC stays 5.
     _write32(sim, IEP_BASE + GLOBAL_CFG, _read32(sim, IEP_BASE + GLOBAL_CFG) | 1)
@@ -612,14 +612,14 @@ def test_bulk_compare_reset_every_tick_is_bounded(monkeypatch):
     assert iep.cmp_status == 3
 
 
-def test_default_clocks_stalled_firmware_and_cmp0():
-    sim = Simulator()
+def test_250mhz_core_200mhz_iep_stalled_firmware_and_cmp0(tmp_path):
+    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
     sim.iep.global_cfg = 0x11
     assert sim.load("pru0", "ldi32 r0, 0x2E000\nldi r1, 0x11\nloop: sbbo &r1, r0, 0, 4\nqba loop\n") == []
     assert sim.step("pru0", 302)["cycles"] == 452
     # 452 cycles at 250 MHz are 1808 ns, which is 361 ticks of the 200 MHz IEP.
     assert sim.iep.count == 361
-    sim = Simulator()
+    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
     _load_loop(sim, "pru0")
     sim.iep.global_cfg = 0x11
     sim.iep.compare[0] = 50
@@ -650,3 +650,134 @@ def test_rtu1_constants_write_and_clock_are_slice_local(tmp_path):
     sim.step("rtu1", 3)
     assert sim.memory_read(0x2000, 4) == bytes.fromhex("a5000000")
     assert sim.iep.now_ns == sim.cores["rtu1"].counters.cycles * 5
+
+
+def test_batched_pacing_reports_actual_lead_steps_on_capped_catchup(tmp_path):
+    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
+    for core in ("pru0", "pru1"):
+        _load_loop(sim, core)
+    sim.step("pru0", 10000)
+    before = sim.cores["pru0"].counters.instruction_count
+    result = sim.step_paced("pru0", "pru1", 500)
+    assert result["complete"] is False
+    assert result["reason"] == "pacing_incomplete"
+    assert sim.cores["pru0"].counters.instruction_count - before == 1
+    assert result["lead_steps"] == 1
+
+
+@pytest.mark.parametrize("count,source,executed", [
+    (0, "nop\njmp 0", 0), (5, "nop\njmp 0", 5), (5, "nop\nhalt", 2),
+])
+def test_batched_pacing_reports_actual_lead_steps_on_completion(tmp_path, count, source, executed):
+    sim = _clocked_sim(tmp_path)
+    assert sim.load("pru0", source) == []
+    _load_loop(sim, "pru1")
+    result = sim.step_paced("pru0", "pru1", count)
+    assert result["complete"] is True
+    assert result["lead_steps"] == executed
+    assert sim.cores["pru0"].counters.instruction_count == executed
+
+
+def test_batched_pacing_reports_lead_steps_on_stuck_follower(tmp_path, monkeypatch):
+    sim = _clocked_sim(tmp_path)
+    for core in ("pru0", "pru1"):
+        _load_loop(sim, core)
+    monkeypatch.setattr(sim.cores["pru1"], "step", lambda: None)
+    result = sim.step_paced("pru0", "pru1", 500)
+    assert result["reason"] == "pacing_catchup_failed"
+    assert result["lead_steps"] == 1
+
+
+def test_paced_retry_finishes_the_old_target_before_advancing_lead(tmp_path):
+    sim = _clocked_sim(tmp_path, pru="200", pru1="200", iep="200")
+    sim.memory.regions[0].read_latency = 2500
+    assert sim.load("pru0", "lbbo &r2, r0, 0, 4\nqba 0") == []
+    assert sim.load("pru1", "qba 0") == []
+    first = sim.step_paced("pru0", "pru1")
+    assert first["reason"] == "pacing_incomplete"
+    assert sim.cores["pru0"].counters.cycles == 2501
+    retry = sim.step_paced("pru0", "pru1")
+    assert retry["reason"] == "pacing_incomplete"
+    assert retry["lead_steps"] == 0
+    assert retry["targets"] == first["targets"]
+    assert sim.cores["pru0"].counters.cycles == 2501
+    assert sim.cores["pru1"].counters.cycles == 2000
+    complete = sim.step_paced("pru0", "pru1")
+    assert complete["complete"] is True
+    assert complete["lead_steps"] == 1
+    assert sim.cores["pru0"].counters.cycles == 2502
+    assert sim.cores["pru1"].counters.cycles == 2502
+
+
+def test_paced_retry_keeps_all_follower_targets_when_mux_changes(tmp_path):
+    sim = _clocked_sim(tmp_path, pru="200", pru1="200", iep="200")
+    sim.memory.regions[0].read_latency = 2500
+    assert sim.load("pru0", "lbbo &r2, r0, 0, 4\nqba 0") == []
+    for core in ("pru1", "rtu0"):
+        assert sim.load(core, "qba 0") == []
+    _write32(sim, 0x26008, 1 << 26)
+    _write32(sim, 0x2600C, 1 << 26)
+    first = sim.step_paced_many("pru0", ["pru1", "rtu0"])
+    assert first["reason"] == "pacing_incomplete"
+    # The pending guarded target must survive even when the route changes.
+    _write32(sim, 0x26008, 0)
+    retry = sim.step_paced_many("pru0", ["pru1", "rtu0"])
+    assert retry["lead_steps"] == 0
+    assert retry["targets"] == first["targets"]
+    assert set(retry["targets"]) == {"pru1", "rtu0"}
+    # Once the first follower is done, the second must not starve on each retry.
+    for _ in range(5):
+        result = sim.step_paced_many("pru0", ["pru1", "rtu0"])
+        if result["complete"]:
+            break
+    assert result["complete"] is True
+    assert sim.cores["rtu0"].counters.cycles >= 2501
+
+
+@pytest.mark.parametrize("reset", ["lead", "follower", "hardware"])
+def test_reset_discards_unfinished_pacing_targets(tmp_path, reset):
+    sim = _clocked_sim(tmp_path, pru="200", pru1="200", iep="200")
+    for core in ("pru0", "pru1"):
+        assert sim.load(core, "qba 0") == []
+    sim.step("pru0", 5000)
+    assert sim.step_paced("pru0", "pru1")["complete"] is False
+    if reset == "hardware":
+        sim.hard_reset()
+    else:
+        sim.cores["pru0" if reset == "lead" else "pru1"].reset()
+    # Reset rebases to the shared time. The next call is a new lead step.
+    assert sim.step_paced("pru0", "pru1")["lead_steps"] == 1
+
+
+def test_step_back_restores_an_unfinished_pacing_target(tmp_path, monkeypatch):
+    from ui import server
+    sim = _clocked_sim(tmp_path, pru="200", pru1="200", iep="200")
+    sim.memory.regions[0].read_latency = 2500
+    assert sim.load("pru0", "lbbo &r2, r0, 0, 4\nqba 0") == []
+    assert sim.load("pru1", "qba 0") == []
+    monkeypatch.setattr(server, "sim", sim)
+    first = sim.step_paced("pru0", "pru1")
+    snap = server._snapshot("pru1")
+    sim.step("pru1", 2000)  # finish the gap without advancing the lead
+    assert sim.step_paced("pru0", "pru1", count=0)["complete"] is True
+    server._restore("pru1", snap)
+    replay = sim.step_paced("pru0", "pru1")
+    assert replay["lead_steps"] == 0
+    assert replay["targets"] == first["targets"]
+
+
+def test_other_follower_selection_does_not_discard_a_pending_retry(tmp_path):
+    sim = _clocked_sim(tmp_path, pru="200", pru1="200", iep="200")
+    sim.memory.regions[0].read_latency = 2500
+    assert sim.load("pru0", "lbbo &r2, r0, 0, 4\nqba 0") == []
+    for core in ("pru1", "rtu0"):
+        assert sim.load(core, "qba 0") == []
+    first = sim.step_paced_many("pru0", ["pru1", "rtu0"])
+    assert first["reason"] == "pacing_incomplete"
+    before = sim.status()
+    assert sim.step_paced_many("pru0", [], count=0)["complete"]
+    assert sim.status() == before  # unselected cores must not execute
+    # Reordering the same followers is still a retry of the original targets.
+    retry = sim.step_paced_many("pru0", ["rtu0", "pru1"])
+    assert retry["lead_steps"] == 0
+    assert retry["targets"] == first["targets"]

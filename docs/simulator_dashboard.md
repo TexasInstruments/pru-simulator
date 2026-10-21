@@ -23,31 +23,89 @@ Use the Panels buttons to hide panels you do not need; remaining panels
 reclaim the space. The row wraps onto more lines instead of scrolling, and the
 Telemetry strip wraps too, so nothing is clipped at 1700, 1280 or 900 px.
 Drag the panel headers to rearrange them and the dividers to resize them.
-Visibility and layout are remembered separately for single-core and multicore
-modes. At least one panel stays visible. Reset Layout restores the current
-mode's panels and default sizes. The panel ids and the layout version did not
-change, so layouts saved before the reorganisation load as they were.
+The same eight panels serve every core selection: Source / Disassembly,
+Registers, Assembly Editor, two Memory panels, I/O Pins, Signal Graph and
+Memory Graph. Selecting more cores never adds tiles or changes the saved tile
+tree. At least one panel stays visible. Reset Layout restores the default
+panels and sizes, expands minimized panels, and returns to PRU0 used and shown
+with the deck unpinned. It does not rewrite clocks or reload the simulator.
 Saved layouts are checked before rendering. Empty trees, unknown or duplicated
-panels, missing panels, and invalid split directions or sizes restore that
-mode's default layout. Valid panel arrangements and hidden-panel preferences
-are kept. Execution controls wrap within their toolbar group in multicore mode,
-so Step, Run/Stop and SIM remain reachable beside the core selectors.
+panels, missing panels, and invalid split directions or sizes restore the
+default layout. The panel-set migration clears old duplicated-core tile trees;
+they do not decide which cores run. Execution controls wrap within their
+toolbar group so Step, Run/Stop and SIM remain reachable.
 
-Choose PRU0, PRU1, RTU0 or RTU1 in single-core mode. Multicore mode displays PRU0
-and a selected partner. The I/O & Devices view follows the selected core, with
-an explicit device-core selector in multicore mode.
+### CORES: execution and inspection
 
-**Three or four cores.** In multicore mode the **+RTU0 / +PRU1 / +RTU1** toggles
-next to the partner selector add a third and a fourth core (the partner's own
-toggle is pressed and locked). Each shown core gets a compact source panel
-(PC badge, breakpoints, double-click to toggle) and a register panel; three
-cores fill two rows (two over one), four cores a 2x2 grid, with their own saved
-layouts. Step, SIM, Reset, Run (`run_multicore` with a `partners` list, paced by
-core time) and the Space/Arrow shortcuts act on every shown core, and a
-breakpoint on any of them stops Run. Header counters, the I/O pins and the SPAD
-columns still follow PRU0 (and the counters the partner); the device-core
-selector offers PRU0 and the partner only. With no extra core toggled the view
-is the original two-core one.
+Hover **CORES** in Target to open its overlay, or focus the pill with the
+keyboard. Clicking the pill or the pin button pins it open. The padded hover
+bridge keeps it open while moving into the deck; Escape closes and unpins it,
+and clicking outside also closes it. Deck controls are buttons with pressed
+states and visible keyboard focus. The cards fan out with a short stagger;
+reduced-motion preferences disable the fan, pulse and last-core shake.
+
+**Use** selects the cores that participate in Run, Step and SIM. **Show** gives
+a used core a pane in Source and Registers; hiding it does not stop that core
+running. A newly used core stays hidden until Show is selected. An unused core has no Show
+control. At least one core stays used and one stays shown. Un-using a core also
+hides it, selecting the first remaining used core if necessary. **Use all**
+enables all available cores without adding panes; **Show all used** reveals their panes.
+Clicking a used card's name shows only that core. The collapsed pill shows
+full-name chips for shown cores at wide widths (abbreviated below 1840 px), dots for used hidden cores, rings for unused cores,
+and a SINGLE or MULTI count.
+
+With one shown core, Source and Registers have no extra pane heading. With two
+or more, Source splits inside its existing tile: two side by side, three as two
+above one, and four as a 2×2 grid. Registers has one column per shown core.
+Each pane has its core colour, PC or Carry readout, and an **×** to hide that
+core in both panels; hiding the last shown core does nothing. Panel headers
+show non-interactive core chips. Live state patches values in the existing
+panes and deck rather than replacing their controls on every tick.
+
+Telemetry buttons list used cores and choose the **focus core**. Choosing a
+hidden used core also shows it. If focus is hidden or un-used, focus moves to
+the first shown core. Telemetry, the Assembly Editor target, the shared
+breakpoint row, I/O Pins, SPAD and constant-table inspection follow focus.
+Double-clicking a source line toggles a breakpoint for that pane's own core;
+Space toggles the focused core's current-PC breakpoint. Arrow Right steps the
+used set and Arrow Left requests step-back for that set. A breakpoint on any
+used core stops Run, including a used core whose panes are hidden. I/O & Devices
+also retains an explicit device target drawn from available cores.
+
+Fresh browser state uses and shows only PRU0. Used, shown, focus and pin state
+are saved as browser preferences beside the panel layout. Saved selections are
+pruned to the target's available cores, and invalid or empty selections recover
+to a nonempty used/shown set. Explicit legacy multicore selections can migrate
+to used/shown; an old multicore tile tree alone does not enable cores. The
+first-use CORES hint hides while the deck is open and is dismissed permanently
+by **Got it** or a deck interaction. Reset Layout preserves that dismissal.
+
+### Core frequencies
+
+One frequency applies to PRU0 + RTU0 (`pru_clock_mhz`). The other applies
+to PRU1 + RTU1 (`pru1_clock_mhz`). Unsupported cores are omitted on targets
+such as AM263x. The controls list the affected cores, including hidden and
+unused cores. These pairings describe the current simulator implementation;
+they do not define hardware clock domains and may change in the future.
+Do not label them as slices or ICSSG instances. The API retains its existing
+`group` identifiers and configuration keys for compatibility.
+
+The presets are **200, 225, 250, 300 and 333 MHz**, supplied by
+`ui/server.py:ALLOWED_CLOCK_MHZ`. These are dashboard choices, not hardware
+limits. Configured finite positive custom rates, including fractions, are
+displayed unchanged; the arrows move to the next lower or higher preset.
+Omitting `pru_clock_mhz` uses the 200 MHz fallback; omitting
+`pru1_clock_mhz` inherits `pru_clock_mhz`. Editing `pru_clock_mhz` pins the old effective `pru1_clock_mhz`
+rate when necessary to preserve it. No independent RTU clock key is introduced.
+
+The deck explains before an edit that changing a group clock recreates the
+simulator and clears loaded programs. **Reload programs after editing.** This
+also resets registers, devices, step-back history and firmware's IEP source
+selection, then refreshes the dashboard. Steppers are disabled during Run/SIM,
+while an execution chunk or clock change is pending, or when no group member is
+used. A group edit preserves the other group's effective rate, the configured
+IEP rate and the external IEP session override. Layout restoration and Reset
+Layout never write either clock group.
 
 **Run and Stop.** Run waits for each instruction chunk to finish before sending
 another, including all core states in multicore mode. Stop prevents further
@@ -67,8 +125,8 @@ elapsed time; a sub-tick fraction is dropped when the active rate changes.
 Firmware's IEPCLK bit 0 selects the core clock independently. Session overrides
 survive core-clock reload and step-back; saving a valid config clears them.
 Reset uses the existing session semantics (hardware reset clears the source
-bit, retaining the external session rate). The project chose 250 MHz as its
-core-clock starting point. An omitted external IEP rate defaults to 200 MHz,
+bit, retaining the external session rate). An omitted core-clock rate uses
+200 MHz. An omitted external IEP rate defaults to 200 MHz,
 as documented in the AM64x/AM243x TRM. Core and external IEP rates remain
 independently configurable. The configured-rate reset follows these backend
 defaults; it does not force the IEP to match the core.
@@ -109,10 +167,11 @@ Cards use the protocol names. Each attaches through the generic
   OUTPUT, POLARITY and CONFIG registers, the number of bus events and faults,
   the protocol state and the last transaction. It is a `tca9538` profile device,
   so its faults also reach the badge and Events.
-- **UART.** The decoder and the RX inject controls, moved here unchanged. The
-  decoder works on the GPO0 trace recorded by the Signal Graph, so capture with
-  the Signal Graph REC button in the Simulator view first; inject sends frames
-  onto GPI0-3 with the same `uart_inject` action as before.
+- **UART.** Click **Record** next to Decode, run the firmware, stop recording,
+  then click **Decode** to read the GPO0 trace. UART Record and Signal Graph REC
+  share the same capture buffer and recording state. RX Inject sends frames
+  onto GPI0-3. **Reset inputs** restores its form defaults and clears injection
+  feedback. It does not reset the core or cancel an already armed injection.
 
 ### SSI demos in the dashboard
 
@@ -129,7 +188,7 @@ the step-back history. Loading prepares the example; **Run** starts it.
    **Set next position**. Requested position changes immediately; received
    position changes only when the reader publishes a later frame.
 2. Choose **Load encoder + reader**, then **Run**. The dashboard selects only
-   PRU0 and PRU1 in multicore mode. PRU0 runs the reader; PRU1 runs encoder
+   PRU0 and PRU1 as used and shown. PRU0 runs the reader; PRU1 runs encoder
    firmware. The setup wires PRU0 GPO0 to PRU1 GPI0 (clock), and PRU1 GPO16 to
    PRU0 GPI16 (data). The same received values and position setter work here.
    No host encoder model is attached in this mode.
@@ -148,8 +207,8 @@ IEP rate, reload the encoder firmware example to recalculate its timeout; a
 hardware reset disables that timer and the status asks for the same reload.
 
 For a common demonstration rate, choose **250 MHz** in the IEP selector before
-loading. This is our software convention, chosen to match the project's usual
-250 MHz core clock; it is not a universal hardware default. The examples do
+loading. This is our software convention, chosen to match a selected
+250 MHz demonstration core clock; it is not a universal hardware default. The examples do
 not force 200 or 250 MHz. A user may choose any finite positive IEP rate,
 including fractional rates, and a separate core rate. This example setting
 does not change the omitted external IEP default of 200 MHz.
@@ -191,8 +250,10 @@ messages.
 The default **Dark** theme is the red-brand operator workbench: raised and inset
 surfaces, a red accent (`--accent`, `--brand-red`), outlined uppercase toolbar
 buttons with a filled red **Run**, and panels with a red bar before an uppercase
-title. The header is split into labelled groups (Target, Execute, Session,
-Status, Theme), a segmented view switcher (Simulator, I/O & Devices), a **Panels** row of icon toggle buttons, and a Telemetry strip. Below
+title. At full-screen width, the two toolbar rows distribute their space independently: Execute and Session fit their contents, CORES and IEP stay side by side, and the telemetry core buttons precede readable 12 px counters on one line. Telemetry receives its content width from the panel bar; when that bar becomes constrained, decorative panel icons yield before panel names. The separate Telemetry label and duplicate focus name are omitted.
+
+The header contains the compact PRU SIM/CORES/IEP group, Execute, Session,
+and combined Status/Theme controls, a segmented view switcher (Simulator, I/O & Devices), a **Panels** row of icon toggle buttons, and a Telemetry strip. Below
 about 1760 px the groups flow and wrap instead of sharing fixed columns. UI text
 uses the `Segoe UI Variable` / `Inter` / system sans stack and code, registers
 and memory use `Cascadia Code` / `Consolas`; no web fonts are loaded, so the page
@@ -207,6 +268,8 @@ The signal graph, memory graph, memory-fill preview read
 their colours from the `--graph-*` tokens when they draw and redraw when the
 theme changes.
 
+The round half-filled-circle icon switches between Dark and High contrast; its tooltip names the next theme. The IEP rate and SIM seconds field use the same rounded pill surface and border as the toolbar buttons. The Target label and persistent clock summary are removed; active/configured IEP details remain in the rate selector tooltip, and group rates remain in the CORES deck.
+
 Dark and High contrast themes, view selection, the I/O & Devices sub-tab and
 panel visibility are local browser preferences. Navigation and panel toggles
 are keyboard-accessible buttons with visible focus and pressed state. On narrow screens, the simulator
@@ -218,8 +281,10 @@ branch's protocol-specific run shortcuts or mailbox-coupled model controls.
 
 ## Motion
 
-Two small animations are CSS only (no JavaScript animation loops, no layout
-shift) and are switched off when the browser asks for reduced motion.
+The tab and button animations are CSS only (no JavaScript animation loops, no
+layout shift) and are switched off when the browser asks for reduced motion.
+The CORES deck also respects that preference for its card fan, status/coaching
+pulses and last-used-core feedback.
 
 - **Tab glider.** One highlight slides under the active tab of the top
   workspace tabs and of the I/O & Devices sub-tabs. A small script reads the
@@ -229,7 +294,7 @@ shift) and are switched off when the browser asks for reduced motion.
   first frame, and a hidden strip is measured when it is first shown), and
   reduced motion moves it instantly. In forced-colours (Windows high contrast)
   mode the active tab is marked by an outline and underline instead of shadows.
-- **Button wipe.** Hovering a neutral text button (the toolbar's Multi-core, Step, SIM,
+- **Button wipe.** Hovering a neutral text button (the toolbar's Step, SIM,
   Config, Reset Layout, Help, and the panel, memory, breakpoint, device,
   and dialog buttons) sweeps two skewed `--wipe` coloured shapes across
   the pill while the label inverts (`mix-blend-mode: difference`) and rolls
@@ -251,8 +316,8 @@ shift) and are switched off when the browser asks for reduced motion.
 
 ## Target cores and GPIO directions
 
-Every core selector, multi-core partner/extra, load target, and device target
-follows `available_cores` from the simulator. AM263x offers PRU0, RTU0 and PRU1,
+The CORES deck, telemetry, load target, and device target follow
+`available_cores` from the simulator. AM263x offers PRU0, RTU0 and PRU1,
 with no RTU1. Reloading a target returns unsupported selections to an available
 core; invalid WebSocket core requests report an error and keep the session.
 
@@ -260,7 +325,7 @@ The I/O panel separates R30 values from GPIO output enable. Each pin's
 **Drive / Release** button switches its direction without changing R30. Device
 leases reserve their pins' directions; attempting to change them shows an
 inline error and preserves the mask/R30 until that device is detached. In the
-multi-core view these GPIO controls operate on the displayed PRU0 pins.
+multi-core view these GPIO controls operate on the focus core's pins.
 
 The WebSocket `set_gpio_drive_mask` action accepts either a 20-bit integer
 `mask` to replace all directions or an integer `pin` from 0 to 19 to toggle
@@ -269,3 +334,18 @@ dashboard sends pin intents, so clicks made before state feedback accumulate
 in arrival order; two clicks on the same pin cancel. Both forms enforce device
 direction leases and leave R30 unchanged. Errors return the `gpio` tag followed
 by current state.
+
+## UI issue regression checks
+
+- [#53](https://github.com/TexasInstruments/pru-simulator/issues/53): load the
+  same assembly twice. Both replies must keep Source / Disassembly visible.
+  Switching between cores with identical firmware must also keep the listing.
+- [#55](https://github.com/TexasInstruments/pru-simulator/issues/55): in
+  I/O & Devices → Devices → UART, use Record. Signal Graph REC must show the
+  same recording state. Stop recording and Decode the captured GPO0 trace.
+- [#56](https://github.com/TexasInstruments/pru-simulator/issues/56): edit the
+  UART RX injection fields and click Inject. Click Reset inputs; the feedback
+  disappears and the input defaults return without restarting Python.
+- [#61](https://github.com/TexasInstruments/pru-simulator/issues/61): minimize
+  and hide panels, then click Reset Layout. The current layout returns to its
+  default sizes with panels visible and expanded. Repeat with 2, 3 and 4 cores.

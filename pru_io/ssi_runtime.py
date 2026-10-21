@@ -29,6 +29,7 @@ def load_reader(sim, core: str, frame_bits: int, clock_delay_loops: int,
                       include_paths=[str(_FIRMWARE.parent.parent)])
     if errors:
         raise ValueError("SSI reader assembly failed: " + "; ".join(errors))
+    sim.memory.write(abi.MAILBOX_ADDRESS, bytes(abi.MAILBOX_SIZE))
 
 
 class SSIRuntime:
@@ -68,13 +69,17 @@ class SSIRuntime:
         """Pack the reader config into shared memory and load its assembly."""
         if self._closed:
             raise RuntimeError("SSI reader runtime is closed")
+        previous_config = (self.sim.memory_read(abi.CONFIG_ADDRESS, abi.CONFIG_SIZE)
+                           if self._loaded else None)
         try:
             if idle_delay_loops is None:
                 idle_delay_loops = ceil(self.encoder.monoflop_cycles / 2) + 8
             load_reader(self.sim, self.core, self.encoder.resolution,
                         clock_delay_loops, idle_delay_loops)
         except BaseException:
-            if not self._loaded:
+            if self._loaded:
+                self.sim.memory.write(abi.CONFIG_ADDRESS, previous_config)
+            else:
                 self.close()
             raise
         self.sim.reset(self.core)

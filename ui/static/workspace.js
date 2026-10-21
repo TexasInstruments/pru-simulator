@@ -101,15 +101,21 @@
   try { theme.value = localStorage.getItem('pru-workspace-theme') === 'contrast' ? 'contrast' : 'dark'; } catch (_) {}
   function applyTheme() {
     document.documentElement.dataset.theme = theme.value;
+    const action = theme.value === 'contrast' ? 'Switch to dark theme' : 'Switch to high contrast';
+    theme.setAttribute('aria-pressed', String(theme.value === 'contrast'));
+    theme.setAttribute('aria-label', action);
+    theme.title = action;
     try { localStorage.setItem('pru-workspace-theme', theme.value); } catch (_) {}
     // Canvases read their colours from the theme tokens, so they redraw on a change.
     document.dispatchEvent(new CustomEvent('pru-theme-changed', { detail: { theme: theme.value } }));
   }
-  theme.addEventListener('change', applyTheme);
+  theme.addEventListener('click', () => {
+    theme.value = theme.value === 'contrast' ? 'dark' : 'contrast';
+    applyTheme();
+  });
   applyTheme();
 
-  // Icon and short label for each panel toggle; the multi-core panels derive
-  // theirs from the partner core name shown in the panel title.
+  // Icon and short label for each shared panel toggle.
   const PANEL_TOGGLES = {
     source: ['\u25a4', 'Source / Disassembly'], registers: ['\u25a6', 'Registers'],
     io: ['\u2194', 'I/O Pins'], 'signal-graph': ['\u223f', 'Signal Graph'],
@@ -117,14 +123,12 @@
     memory2: ['M2', 'Memory 2'], editor: ['\u270e', 'Assembly Editor'],
   };
   function panelToggleInfo(id) {
-    if (PANEL_TOGGLES[id]) return PANEL_TOGGLES[id];
-    const title = PANEL_REGISTRY[id]?.querySelector('[data-panel-id] span');
-    return [id.endsWith('registers') ? '\u25a6' : '\u25a4', title?.textContent.trim() || id];
+    return PANEL_TOGGLES[id];
   }
 
   function updatePanels() {
     panelButtons.replaceChildren();
-    const order = id => { const at = Object.keys(PANEL_TOGGLES).indexOf(id); return at >= 0 ? at : (id.startsWith('mc-') ? -1 : 99); };
+    const order = id => { const at = Object.keys(PANEL_TOGGLES).indexOf(id); return at >= 0 ? at : 99; };
     for (const id of [...modePanelIds[currentMode]].sort((a, b) => order(a) - order(b))) {
       const button = document.createElement('button');
       button.type = 'button';

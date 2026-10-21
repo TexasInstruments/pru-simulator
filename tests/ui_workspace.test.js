@@ -11,6 +11,7 @@ class Element {
   }
   get classList() {
     return { contains: name => (this.className || '').split(' ').includes(name),
+      remove: name => { this.className = (this.className || '').split(' ').filter(value => value !== name).join(' '); },
       add: name => { if (!(this.className || '').split(' ').includes(name)) this.className = `${this.className || ''} ${name}`.trim(); },
       toggle: name => {
         const names = new Set((this.className || '').split(' ').filter(Boolean));
@@ -70,15 +71,13 @@ const context = vm.createContext({ document,
 });
 const run = source => vm.runInContext(source, context);
 const html = readFileSync(new URL('../ui/static/index.html', import.meta.url), 'utf8');
-for (const selector of ['core-select', 'mc-partner-select', 'mc-load-core']) {
-  const select = html.match(new RegExp(`<select[^>]*id="${selector}"[^>]*>([\\s\\S]*?)</select>`));
-  assert.ok(select, `${selector} exists`);
-  assert.match(select[1], /value="rtu1"/, `${selector} supports RTU1`);
-}
+assert.match(html, /id="cores-control"/, 'the shared core deck has a host');
+assert.match(html, /id="assembly-core-target"/, 'Assembly shows the Telemetry focus target');
 run(readFileSync(new URL('../ui/static/chrome.js', import.meta.url), 'utf8'));
 run(readFileSync(new URL('../ui/static/layout.js', import.meta.url), 'utf8'));
-run(`PANEL_REGISTRY.source = {querySelector: () => null};
-  PANEL_REGISTRY.editor = {querySelector: () => null};
+context.PanelElement = Element;
+run(`PANEL_REGISTRY.source = new PanelElement();
+  PANEL_REGISTRY.editor = new PanelElement();
   modePanelIds.sc = ['source', 'editor']; currentTree = SC_DEFAULT_TREE;
   render = () => {};`);
 run(readFileSync(new URL('../ui/static/workspace.js', import.meta.url), 'utf8'));
@@ -219,11 +218,17 @@ assert.deepEqual(visiblePanes(), ['peripherals-view'], 'the saved sub-tab is res
 buttons[0].listeners.click();
 const themeEvents = [];
 listeners['pru-theme-changed'] = event => themeEvents.push(event.detail.theme);
-elements.get('workspace-theme').value = 'contrast';
-elements.get('workspace-theme').listeners.change();
+elements.get('workspace-theme').listeners.click();
 assert.equal(document.documentElement.dataset.theme, 'contrast');
 assert.equal(storage.get('pru-workspace-theme'), 'contrast');
 assert.deepEqual(themeEvents, ['contrast'], 'theme changes are announced so canvases can redraw');
+assert.equal(elements.get('workspace-theme').attributes['aria-pressed'], 'true');
+assert.match(elements.get('workspace-theme').attributes['aria-label'], /dark/i);
+elements.get('workspace-theme').listeners.click();
+assert.equal(document.documentElement.dataset.theme, 'dark');
+assert.equal(storage.get('pru-workspace-theme'), 'dark');
+assert.equal(elements.get('workspace-theme').attributes['aria-pressed'], 'false');
+assert.deepEqual(themeEvents, ['contrast', 'dark']);
 
 const firstToggle = elements.get('panel-visibility-buttons').children[0];
 assert.equal(firstToggle.children[0].className, 'panel-toggle-icon', 'panel toggles carry an icon');
@@ -233,8 +238,11 @@ assert.equal(run("getPanelVisibility('source')"), false);
 assert.equal(run("setPanelsVisibility(['editor'], false)"), false, 'cannot hide every panel');
 run('resetLayout()');
 assert.equal(run("getPanelVisibility('source')"), true);
-run("setPanelsVisibility(['source'], false); switchLayoutMode('mc'); switchLayoutMode('sc');");
-assert.equal(run("getPanelVisibility('source')"), false, 'visibility survives mode changes');
+run("setPanelsVisibility(['source'], false)");
+buttons[1].listeners.click();
+buttons[0].listeners.click();
+assert.equal(run("getPanelVisibility('source')"), false, 'visibility survives workspace navigation');
+assert.deepEqual(JSON.parse(storage.get('pru-panel-visibility-sc')), ['source']);
 
 context.window.updateWorkspaceEvents({ core: 'pru0', io: { device_bus: {
   devices: [{ name: '<encoder>', core: 'pru1' }],
@@ -257,16 +265,11 @@ assert.match(elements.get('device-event-log').textContent, /No device events/);
 // Default Simulator layout: the I/O Pins tile is tall enough for R30 and R31.
 assert.equal(run("SC_DEFAULT_TREE.children[1].sizes.join(',')"), '30,45,25');
 
-// Three and four core layouts show every core's source and registers once.
-for (const [mode, cores] of [['mc', ['pru0', 'rtu0']], ['mc3', ['pru0', 'rtu0', 'x2']], ['mc4', ['pru0', 'rtu0', 'x2', 'x3']]]) {
-  const leaves = run(`getLeafIds(defaultTree('${mode}'))`);
-  assert.equal(new Set(leaves).size, leaves.length, `${mode}: no panel twice`);
-  for (const core of cores) for (const kind of ['source', 'registers'])
-    assert.ok(leaves.includes(`mc-${core}-${kind}`), `${mode} shows mc-${core}-${kind}`);
-  assert.equal(leaves.filter(id => id.startsWith('mc-')).length, cores.length * 2, `${mode}: only its own cores`);
-  for (const shared of ['editor', 'io', 'signal-graph', 'mem-graph', 'memory1', 'memory2'])
-    assert.ok(leaves.includes(shared), `${mode} keeps ${shared}`);
-}
+// All cores share one source/register pair and the same eight tiling panels.
+const leaves = Array.from(run("getLeafIds(defaultTree('sc'))"));
+assert.equal(new Set(leaves).size, 8, 'no tiling panel is duplicated');
+assert.deepEqual(leaves.slice().sort(),
+  ['source', 'registers', 'editor', 'io', 'signal-graph', 'mem-graph', 'memory1', 'memory2'].sort());
 
 // Resize correctly persists the pair when a hidden sibling sits between them.
 run(`hiddenPanelIds = new Set(['hidden']);

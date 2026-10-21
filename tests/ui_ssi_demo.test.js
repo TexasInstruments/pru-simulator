@@ -29,7 +29,8 @@ const context = vm.createContext({ document, window: {}, Event: class { construc
   coreSelect: get('core-select'), mcPartnerSelect: get('mc-partner-select'),
   memAddrInput: get('mem-addr'), memLenInput: get('mem-len'), memAutoRefreshBox: get('mem-auto'),
   graphResizeWindow() {}, graphSetRecording() {}, drawGraph() {}, refreshMemory() {},
-  toggleMultiCore() { context.multiCoreMode = !context.multiCoreMode; },
+  availableCores:['pru0','pru1','rtu0','rtu1'],coreSelection:{used:['pru1','rtu0'],shown:['pru1'],focus:'pru1',pinned:false},
+  applyCoreSelection(next) {context.coreSelection=next;context.currentCore=next.focus;context.multiCoreMode=next.used.length>1;},
   applyMCCores() {}, syncDeviceCoreSelect() {},
   openFileAsTab: (path, source) => files.push([path, source]),
   fetch: async path => ({ ok: true, text: async () => path }),
@@ -40,6 +41,7 @@ get('core-select').addEventListener('change', () => {
   coreChanges++;
   context.currentCore = get('core-select').value;
 });
+vm.runInContext(readFileSync(new URL('../ui/static/cores.js', import.meta.url), 'utf8'), context);
 const app = readFileSync(new URL('../ui/static/app.js', import.meta.url), 'utf8');
 const setterStart = app.indexOf('function syncSsiSetter(');
 const setterEnd = app.indexOf('\n}\n', setterStart) + 3;
@@ -94,8 +96,8 @@ context.populateScenarios([scenario]);
 assert.equal(single.disabled, true);
 assert.equal(multi.disabled, false);
 await context.applyScenario(scenario);
-assert.deepEqual(Array.from(context.mcExtras), [], 'old extra cores must not run in the two-core demo');
-assert.equal(context.mcPartner, 'pru1');
+assert.deepEqual(Array.from(context.coreSelection.used), ['pru0','pru1'], 'only the example cores run');
+assert.deepEqual(Array.from(context.coreSelection.shown), ['pru0','pru1']);
 assert.equal(context.currentCore, 'pru0');
 assert.equal(context.devicePanelCore, 'pru0');
 assert.match(view, /ioTab|io-tab/);
@@ -105,5 +107,6 @@ context.multiCoreMode = false;
 const changesBefore = coreChanges;
 await context.applyScenario({ ...scenario, name: single.dataset.scenario,
   cores: ['pru0'], multicore: false, firmware: { pru0: scenario.firmware.pru0 } });
-assert.equal(coreChanges, changesBefore + 1, 'single-core demo runs normal core-switch housekeeping');
+assert.deepEqual(Array.from(context.coreSelection.used), ['pru0']);
+assert.equal(context.coreSelection.focus, 'pru0');
 console.log('SSI demos render received frames, preserve drafts and select exactly the required cores');

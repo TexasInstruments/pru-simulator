@@ -28,10 +28,10 @@ LOCAL_PROPERTIES = {"--glider-x", "--glider-w", "--skew", "--progress"}
 
 
 def _used_tokens() -> set:
-    used = set(re.findall(r"var\((--[\w-]+)", HTML))
+    used = set(re.findall(r"var\((--[\w-]+)(?=\s*[,)])", HTML))
     for script in STATIC.glob("*.js"):
         source = script.read_text(encoding="utf-8")
-        used |= set(re.findall(r"var\((--[\w-]+)", source))
+        used |= set(re.findall(r"var\((--[\w-]+)(?=\s*[,)])", source))
         used |= set(re.findall(r"(?:ThemeColor|themeColor)\(\s*['\"](--[\w-]+)", source))
     return used - LOCAL_PROPERTIES
 
@@ -71,7 +71,7 @@ def test_every_token_the_ui_uses_is_defined():
 
 
 def test_high_contrast_redefines_every_colour_token():
-    colour_tokens = {name for name in DARK if not name.startswith("--font-")}
+    colour_tokens = {name for name, value in DARK.items() if value.startswith("#")}
     missing = colour_tokens - set(CONTRAST)
     assert not missing, f"High contrast does not override: {sorted(missing)}"
 
@@ -147,13 +147,13 @@ def test_panel_wipe_label_is_readable_on_the_default_fill(theme):
     assert contrast(label, tokens["--btn"]) >= 4.5, f"{theme}: label {label} on --btn"
 
 
-def test_neutral_buttons_wipe_but_filled_and_danger_buttons_swap_colours():
-    """difference would turn Run's white label cyan: the wipe is for neutral buttons only."""
-    assert ".btn-17:not(.btn-run):not(.btn-reset)::before" in STYLE
+def test_all_buttons_share_wipe_motion_with_readable_coloured_labels():
+    """Red buttons share the wipe, with neutral-only difference blending."""
+    assert ".btn-17::before," in STYLE
     assert "mix-blend-mode: difference" in STYLE
     blend = re.findall(r"([^{}]*)\{[^{}]*mix-blend-mode: difference", STYLE)
     assert blend and all(":not(.btn-run):not(.btn-reset)" in selector for selector in blend)
-    assert re.search(r"\.btn-17\.btn-run:hover:not\(:disabled\),\s*\.btn-17\.btn-reset:hover", STYLE)
+    assert re.search(r"\.btn-17\.btn-run::before,.*?\.btn-17\.btn-reset::after\s*\{\s*background: var\(--panel-inset\)", STYLE, re.S)
 
 
 def test_wipe_respects_reduced_motion_and_hover_capability():

@@ -12,6 +12,7 @@
        redefines every colour token below under :root[data-theme="contrast"]. */
     :root {
       color-scheme: dark;
+      --control-radius: 5px;
       --brand-red: #b5202c;
       --brand-red-bright: #ff7c84;
       --on-brand: #ffffff;
@@ -122,7 +123,7 @@
       color: var(--text);
       border: 1px solid var(--border-strong);
       padding: 4px 12px;
-      border-radius: 5px;
+      border-radius: var(--control-radius);
       font-family: inherit;
       font-size: 13px;
       cursor: pointer;
@@ -138,7 +139,7 @@
       background: var(--panel-inset);
       color: var(--text);
       border: 1px solid var(--border-strong);
-      border-radius: 5px;
+      border-radius: var(--control-radius);
       font-family: inherit;
       font-size: 12px;
     }
@@ -180,7 +181,7 @@
       padding: 3px 6px;
       background: var(--panel-raised);
       border: 1px solid var(--border);
-      border-radius: 5px;
+      border-radius: var(--control-radius);
       white-space: nowrap;
       transition: border-color 160ms ease-out;
     }
@@ -201,7 +202,6 @@
     .toolbar-execution { grid-area: execution; flex-wrap: wrap; row-gap: 4px; }
     .toolbar-execution > * { flex-shrink: 0; }
     .toolbar-actions { grid-area: actions; }
-        .toolbar-context::before { content: "Target"; }
     .toolbar-execution::before { content: "Execute"; }
     .toolbar-actions::before { content: "Session"; }
     .toolbar-status::before { content: "Status"; }
@@ -219,10 +219,10 @@
     .toolbar-group button {
       min-height: 30px;
       padding: 4px 9px;
-      border: 2px solid var(--border);
+      border: 1px solid var(--border-strong);
       background: var(--panel-inset);
       font-size: 12px;
-      font-weight: 800;
+      font-weight: 600;
       letter-spacing: 0.02em;
       text-transform: uppercase;
     }
@@ -231,29 +231,21 @@
     #controls .btn-run:hover:not(:disabled) { background: var(--btn-active); }
     #controls .btn-reset { background: var(--highlight); border-color: var(--brand-red-bright); color: var(--halted); }
     #controls .btn-reset:hover:not(:disabled) { background: var(--btn-hover); }
-    #mc-extra-cores { display: inline-flex; flex-wrap: wrap; max-width: 100%; gap: 3px; }
-    #mc-extra-cores button { padding: 3px 6px; font-size: 11px; }
-    #mc-extra-cores button[aria-pressed="true"] { background: var(--highlight); border-color: var(--accent); }
-    #btn-multicore.mc-active { background: var(--highlight); border-color: var(--accent); color: var(--text); }
     #btn-reset-layout { font-size: 11px; }
 
     .toolbar-context { flex-wrap: wrap; max-width: 100%; min-width: 0; }
-    #iep-clock-status { flex-basis: 100%; white-space: normal; font-size: 11px; color: var(--text-dim); overflow-wrap: anywhere; }
     #iep-clock-custom-form { display: flex; align-items: center; gap: 4px; }
-    #iep-clock-custom-form[hidden], #mc-extra-cores button[hidden] { display: none; }
+    #iep-clock-custom-form[hidden] { display: none; }
     #iep-clock-custom { width: 90px; }
     #iep-clock-error, #gpio-drive-error { color: var(--halted); font-size: 12px; }
     #gpio-drive-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(76px, 1fr)); gap: 4px; }
     #gpio-drive-controls button { font: inherit; padding: 5px 3px; }
     #gpio-drive-controls button[aria-pressed="true"] { color: var(--green); }
-    #core-select,
-    #mc-partner-select,
-    #pru-speed-select,
     #iep-clock-select,
     #sim-interval {
       background: var(--panel-inset);
       border: 1px solid var(--border-strong);
-      border-radius: 5px;
+      border-radius: var(--control-radius);
       color: var(--text);
       font-family: inherit;
       font-size: 13px;
@@ -272,13 +264,12 @@
       padding: 3px 9px;
       background: var(--panel-raised);
       border: 1px solid var(--border);
-      border-radius: 5px;
+      border-radius: var(--control-radius);
       font-size: 12px;
       color: var(--text-dim);
       flex-wrap: wrap;
       row-gap: 2px;
     }
-    #counters::before { content: "Telemetry"; color: var(--accent); }
     #counters span { white-space: nowrap; flex: 0 0 auto; }
     #counters .val { color: var(--text); font-weight: 600; }
 
@@ -287,7 +278,7 @@
       padding: 3px 8px;
       min-height: 22px;
       border: 1px solid var(--border-strong);
-      border-radius: 5px;
+      border-radius: var(--control-radius);
       background: var(--panel-inset);
       font-size: 10px;
       font-weight: 700;
@@ -310,7 +301,7 @@
       padding: 4px 6px;
       background: var(--panel-raised);
       border: 1px solid var(--border);
-      border-radius: 5px;
+      border-radius: var(--control-radius);
     }
     .view-switch, .subtabs {
       position: relative;
@@ -332,7 +323,7 @@
       padding: 4px 10px;
       background: transparent;
       border: 1px solid transparent;
-      border-radius: 5px;
+      border-radius: var(--control-radius);
       color: var(--text-dim);
       font-size: 11px;
       font-weight: 700;
@@ -358,7 +349,7 @@
       transform: translateX(var(--glider-x, 0));
       background: var(--panel-raised);
       border: 1px solid var(--border-strong);
-      border-radius: 5px;
+      border-radius: var(--control-radius);
       box-shadow: inset 0 -2px 0 var(--brand-red), 0 2px 5px var(--shadow);
       opacity: 0;
       pointer-events: none;
@@ -632,7 +623,7 @@
       background: var(--highlight);
       color: var(--halted);
       border: 1px solid var(--brand-red-bright);
-      border-radius: 5px;
+      border-radius: var(--control-radius);
       padding: 1px 4px 1px 8px;
       font-size: 11px;
       cursor: default;
@@ -716,13 +707,6 @@
     #carry-row { padding: 4px 6px; color: var(--text-dim); font-size: 12px; flex-shrink: 0; }
     #carry-row .val { color: var(--accent2); }
 
-    .mc-reg-title { display: flex; align-items: center; gap: 0; font-size: 11px; flex-wrap: wrap; }
-    .mc-carry-row { color: var(--text-dim); margin-left: 10px; font-size: 11px; }
-    .mc-carry-val { color: var(--text); margin-left: 3px; }
-    .mc-mac-row { color: var(--text-dim); margin-left: 8px; font-size: 11px; }
-    .mc-mac-mode { color: var(--text); font-weight: bold; margin: 0 3px; }
-    .mc-mac-carry { color: var(--changed); font-weight: bold; }
-    .mc-pc-badge { margin-left: auto; color: var(--text); font-size: 11px; font-weight: normal; }
 
     .mc-crc-row { color: var(--text-dim); margin-left: 8px; font-size: 11px; }
     .mc-crc-mode { color: var(--text); font-weight: bold; margin: 0 3px; }
@@ -755,7 +739,7 @@
     .lb-btn {
       padding: 2px 8px;
       min-height: 26px;
-      border-radius: 5px;
+      border-radius: var(--control-radius);
       font-size: 10px;
       background: var(--btn);
       border: 1px solid var(--border-strong);
@@ -790,7 +774,7 @@
     .uart-output {
       background: var(--panel-inset);
       border: 1px solid var(--border-strong);
-      border-radius: 5px;
+      border-radius: var(--control-radius);
       padding: 8px 10px;
       font-size: 12px;
       color: var(--text);
@@ -804,7 +788,7 @@
     .uart-inject-mode-toggle {
       display: inline-flex;
       border: 1px solid var(--border-strong);
-      border-radius: 5px;
+      border-radius: var(--control-radius);
       overflow: hidden;
     }
     .uart-inj-mode {
@@ -823,7 +807,7 @@
       min-height: 27px;
       padding: 4px 6px;
       font-size: 11px;
-      border-radius: 5px;
+      border-radius: var(--control-radius);
     }
     .uart-inj-input { flex: 1; font-family: var(--font-mono); min-width: 120px; }
     .uart-inj-num { width: 44px; text-align: right; font-family: var(--font-mono); }
@@ -903,7 +887,7 @@
       position: relative;
       background: var(--graph-bg);
       border: 1px solid var(--border);
-      border-radius: 5px;
+      border-radius: var(--control-radius);
       height: 140px;
       overflow: hidden;
       flex-shrink: 0;
@@ -986,7 +970,7 @@
     .mem-btn-group {
       display: flex;
       border: 1px solid var(--border-strong);
-      border-radius: 5px;
+      border-radius: var(--control-radius);
       overflow: hidden;
       flex-shrink: 0;
     }
@@ -1207,10 +1191,7 @@
     .tile-divider:hover, .tile-divider.dragging { background: var(--accent); }
     .tile-divider.tile-divider-v { width: auto; height: 4px; cursor: row-resize; }
 
-    #mc-pru0-reg-panel .panel-body,
-    #mc-rtu0-reg-panel .panel-body,
-    #mc-x2-reg-panel .panel-body,
-    #mc-x3-reg-panel .panel-body { overflow-y: auto; padding: 0; }
+
 
     .tile-drag-ghost {
       position: fixed;
@@ -1485,17 +1466,16 @@
     /* ---- Text buttons: skewed wipe on hover --------------------------------------
        Neutral buttons: two skewed --wipe parallelograms sweep across the pill
        and the label (blend-mode: difference) inverts where they pass, ending
-       as dark text on --wipe. Filled and danger buttons (Run, Reset, HW Reset,
-       Stop) keep a plain colour swap, because a difference blend would turn
-       their white label cyan, so primary buttons carry .btn-run. The toolbar pill
-       shape is scoped to #controls; panel buttons keep their own size. Labels live in .text-container > .text; write
+       as dark text on --wipe. Filled and danger buttons use the same motion with a dark wipe and
+       unblended labels to preserve their semantic text colours. The shared control
+       shape also applies in #controls; panel buttons keep their own size. Labels live in .text-container > .text; write
        them with setButtonLabel(), never button.textContent. Hover only on
        devices that can hover; reduced motion gets a border change only. */
     /* overflow clips the skewed wipe shapes, so keep the button from shrinking below its label. */
     .btn-17 { position: relative; isolation: isolate; overflow: hidden; flex-shrink: 0; }
     #controls .btn-17 {
       flex: 0 0 auto;
-      border-radius: 99rem;
+      border-radius: var(--control-radius);
       padding: 4px 11px;
       line-height: 1.5;
     }
@@ -1503,8 +1483,8 @@
     .btn-17 .text { display: block; position: relative; }
     .btn-17:not(.btn-run):not(.btn-reset) { color: var(--wipe); }
     .btn-17:not(.btn-run):not(.btn-reset) .text-container { mix-blend-mode: difference; }
-    .btn-17:not(.btn-run):not(.btn-reset)::before,
-    .btn-17:not(.btn-run):not(.btn-reset)::after {
+    .btn-17::before,
+    .btn-17::after {
       --skew: 0.2;
       --progress: 0%;
       content: "";
@@ -1519,11 +1499,11 @@
       transition: transform 200ms cubic-bezier(0.23, 1, 0.32, 1);
       pointer-events: none;
     }
-    .btn-17:not(.btn-run):not(.btn-reset)::after { left: calc(50% + 50% * var(--skew)); top: 100%; z-index: -1; }
+    .btn-17::after { left: calc(50% + 50% * var(--skew)); top: 100%; z-index: -1; }
     @media (hover: hover) and (pointer: fine) {
-      .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled)::before { --progress: 100%; }
-      .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled)::after { --progress: -102%; }
-      .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled) .text { animation: btn-label-roll 0.3s forwards; }
+      .btn-17:hover:not(:disabled)::before { --progress: 100%; }
+      .btn-17:hover:not(:disabled)::after { --progress: -102%; }
+      .btn-17:hover:not(:disabled) .text { animation: btn-label-roll 0.3s forwards; }
     }
     @keyframes btn-label-roll {
       0% { transform: translateY(0); }
@@ -1531,27 +1511,25 @@
       51% { transform: translateY(-80%); }
       to { transform: translateY(0); }
     }
-    /* Filled and danger: plain colour swap (Run, Reset, HW Reset, Stop, primary). */
-    .btn-17.btn-run:hover:not(:disabled),
-    .btn-17.btn-reset:hover:not(:disabled),
-    #controls .btn-17.btn-run:hover:not(:disabled),
-    #controls .btn-17.btn-reset:hover:not(:disabled) { background: var(--on-brand); color: var(--brand-red); }
+    /* Keep coloured labels readable while sharing the neutral buttons’ wipe motion. */
+    .btn-17.btn-run::before, .btn-17.btn-run::after,
+    .btn-17.btn-reset::before, .btn-17.btn-reset::after { background: var(--panel-inset); }
     .btn-17:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
     .btn-17:disabled { opacity: 0.4; cursor: default; }
     @media (prefers-reduced-motion: reduce) {
       .btn-17, .btn-17::before, .btn-17::after, .btn-17 .text {
         animation: none !important; transition: none !important;
       }
-      .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled)::before,
-      .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled)::after { --progress: 0%; }
+      .btn-17:hover:not(:disabled)::before,
+      .btn-17:hover:not(:disabled)::after { --progress: 0%; }
       .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled) { color: var(--text); }
       .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled) .text-container { mix-blend-mode: normal; }
     }
     @media (forced-colors: active) {
       /* The difference blend inverts the forced text backplate (black boxes). */
       .btn-17:not(.btn-run):not(.btn-reset) .text-container { mix-blend-mode: normal; }
-      .btn-17:not(.btn-run):not(.btn-reset)::before,
-      .btn-17:not(.btn-run):not(.btn-reset)::after { display: none; }
+      .btn-17::before,
+      .btn-17::after { display: none; }
     }
 
     /* ---- Responsive -------------------------------------------------------------------------------------------- */
@@ -1621,29 +1599,19 @@
       button:active:not(:disabled) { transform: none; }
     }
   </style>
+  <link rel="stylesheet" href="/static/cores.css">
 </head>
 <body>
 
   <!-- Controls bar: labelled groups (target / execute / session / status), workspace tools, telemetry -->
   <div id="controls">
+    <div id="toolbar-main">
     <div class="toolbar-group toolbar-context" role="group" aria-label="Target selection">
-      <span class="logo" title="PRU Simulator v0.3.1">PRU SIM</span>
+      <span class="logo" title="PRU Simulator v0.4.0">PRU SIM</span>
 
-      <select id="core-select">
-        <option value="pru0">PRU0</option>
-        <option value="rtu0">RTU0</option>
-        <option value="pru1">PRU1</option>
-        <option value="rtu1" hidden disabled>RTU1</option>
-      </select>
-
-      <select id="pru-speed-select" title="PRU core clock speed (applies to all available PRU and RTU cores)">
-        <option value="200">200 MHz</option>
-        <option value="225">225 MHz</option>
-        <option value="250">250 MHz</option>
-        <option value="300">300 MHz</option>
-        <option value="333">333 MHz</option>
-      </select>
-
+      <div id="cores-control"></div>
+      <label class="toolbar-rate-pill">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></svg>
       <select id="iep-clock-select" title="IEP counter clock (this session only; memory.cfg is not changed)" aria-label="IEP counter clock">
         <option value="configured">IEP configured rate</option>
         <option value="200">IEP 200 MHz</option>
@@ -1652,34 +1620,24 @@
         <option value="300">IEP 300 MHz</option>
         <option value="333">IEP 333 MHz</option>
         <option value="custom">IEP custom rate…</option>
-      </select>
+      </select><svg class="toolbar-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4"/></svg>
+      </label>
       <form id="iep-clock-custom-form" hidden>
         <label>IEP MHz <input id="iep-clock-custom" type="number" step="any" aria-label="Custom IEP rate in MHz" required></label>
         <button type="submit">Apply rate</button>
       </form>
-      <span id="iep-clock-status" role="status"></span>
       <span id="iep-clock-error" role="alert" hidden></span>
     </div>
 
     <div class="toolbar-group toolbar-execution" role="group" aria-label="Execution controls">
-      <button id="btn-multicore" class="btn-17" title="Toggle multi-core debug view (PRU0 plus up to three more cores)"><span class="text-container"><span class="text">Multi-core</span></span></button>
-      <select id="mc-partner-select" title="Second core in multi-core view" style="display:none;">
-        <option value="rtu0">RTU0</option>
-        <option value="pru1">PRU1</option>
-        <option value="rtu1" hidden disabled>RTU1</option>
-      </select>
-
-      <span id="mc-extra-cores" role="group" aria-label="Additional cores in the multi-core view" style="display:none;">
-        <button type="button" data-mc-extra="rtu0" aria-pressed="false" title="Also show RTU0">+RTU0</button>
-        <button type="button" data-mc-extra="pru1" aria-pressed="false" title="Also show PRU1">+PRU1</button>
-        <button type="button" data-mc-extra="rtu1" hidden disabled aria-pressed="false" title="Also show RTU1">+RTU1</button>
-      </span>
-
       <button id="btn-step" class="btn-17 btn-step"><span class="text-container"><span class="text">Step</span></span></button>
       <button id="btn-run" class="btn-17 btn-run"><span class="text-container"><span class="text">Run</span></span></button>
       <button id="btn-sim" class="btn-17 btn-sim"><span class="text-container"><span class="text">SIM</span></span></button>
-      <input id="sim-interval" type="text" value="1.0" placeholder="1.0" title="SIM step interval in seconds (e.g. 0.01)" />
-      <span style="font-size:11px;color:var(--text-dim)">s</span>
+      <label class="toolbar-time-pill" title="SIM step interval in seconds">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M9 2h6m-3 3v3m0 2v4l2 2"/></svg>
+        <input id="sim-interval" type="text" inputmode="decimal" value="1.0" placeholder="1.0" aria-label="SIM step interval in seconds" />
+        <span aria-hidden="true">s</span>
+      </label>
     </div>
 
     <div class="toolbar-group toolbar-actions" role="group" aria-label="Session actions">
@@ -1694,13 +1652,16 @@
       <div class="toolbar-group toolbar-status" role="group" aria-label="Runtime status">
         <span id="status-badge" role="status" aria-live="polite">IDLE</span>
         <span id="ws-status" role="status" aria-live="polite">Connecting...</span>
-      </div>
-      <div class="toolbar-group toolbar-theme">
-        <label class="workspace-control-label" for="workspace-theme">Theme</label>
-        <select id="workspace-theme"><option value="dark">Dark</option><option value="contrast">High contrast</option></select>
-      </div>
+        <span class="status-theme-divider" aria-hidden="true"></span>
+      <div class="toolbar-theme">
+        <button id="workspace-theme" type="button" value="dark" aria-label="Switch to high contrast" aria-pressed="false" title="Switch to high contrast">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path class="theme-icon-half" d="M12 4a8 8 0 0 1 0 16Z"/></svg>
+        </button>
+      </div></div>
     </div>
 
+    </div><!-- /#toolbar-main -->
+    <div id="toolbar-secondary">
     <div id="workspace-tools" role="group" aria-label="Workspace controls">
       <nav class="view-switch" aria-label="Workspace views">
         <button type="button" data-workspace-view="simulator" aria-controls="main" aria-pressed="true">Simulator</button>
@@ -1713,19 +1674,14 @@
     </div>
 
     <div id="counters" role="group" aria-label="Runtime telemetry">
-      <span id="cnt-p0-label" style="display:none;color:var(--accent);font-weight:bold;">PRU0</span>
+      <span id="telemetry-cores" role="group" aria-label="Telemetry and assembly target"></span>
       <span id="cnt-cycles-wrap">Cycles: <span class="val" id="cnt-cycles">0</span></span>
       <span id="cnt-stalls-wrap">Stalls: <span class="val" id="cnt-stalls">0</span></span>
       <span id="cnt-instrs-wrap">Instructions: <span class="val" id="cnt-instrs">0</span></span>
       <span id="cnt-ipc-wrap">IPC: <span class="val" id="cnt-ipc">0.000</span></span>
       <span id="cnt-pc-wrap">PC: <span class="val" id="cnt-pc">0</span></span>
-      <!-- RTU0 counters — visible in MC mode only -->
-      <span id="cnt-sep" style="display:none;color:var(--border);">│</span>
-      <span id="cnt-p1-label" style="display:none;color:var(--accent2);font-weight:bold;">RTU0</span>
-      <span id="cnt-rtu-cycles-wrap" style="display:none;">Cycles: <span class="val" id="cnt-rtu-cycles">0</span></span>
-      <span id="cnt-rtu-stalls-wrap" style="display:none;">Stalls: <span class="val" id="cnt-rtu-stalls">0</span></span>
-      <span id="cnt-rtu-pc-wrap"     style="display:none;">PC: <span class="val" id="cnt-rtu-pc">0</span></span>
     </div>
+    </div><!-- /#toolbar-secondary -->
   </div>
 
 
@@ -1743,16 +1699,16 @@
 
       <!-- Source panel -->
       <div class="panel" id="source-panel">
-        <div class="panel-title" data-panel-id="source">Source / Disassembly</div>
+        <div class="panel-title" data-panel-id="source"><span>Source / Disassembly</span><span class="shown-core-chips" id="source-core-chips"></span></div>
         <div class="bp-bar" id="bp-bar">
-          <span class="bp-bar-label">Breakpoints:</span>
+          <span class="bp-bar-label">Breakpoints <b id="bp-focus-core">PRU0</b>:</span>
           <span class="bp-chip-list" id="bp-chip-list"></span>
           <input type="text" id="bp-addr-input" placeholder="addr" title="Set a breakpoint at an address (hex 0x.. or decimal)">
           <button class="bp-action btn-17" id="bp-add-btn" title="Set breakpoint at address"><span class="text-container"><span class="text">Set</span></span></button>
           <button class="bp-action btn-17" id="bp-clear-btn" title="Clear all breakpoints on this core"><span class="text-container"><span class="text">Clear all</span></span></button>
         </div>
-        <div class="panel-body">
-          <ul id="source-list"></ul>
+        <div class="core-panes source-panes" id="source-panes">
+          <section class="core-pane" id="source-focus-pane"><div class="core-pane-heading"></div><div class="core-scroll"><ul class="source-list" id="source-list"></ul></div></section>
         </div>
       </div>
 
@@ -1760,12 +1716,7 @@
       <div class="panel" id="editor-panel">
         <div class="panel-title" data-panel-id="editor">
           <span>Assembly Editor</span>
-          <select id="mc-load-core" style="display:none;background:var(--btn);color:var(--text);border:1px solid var(--border);padding:2px 4px;border-radius:3px;font-family:inherit;font-size:12px;" title="Load target core">
-            <option value="pru0">→ PRU0</option>
-            <option value="rtu0">→ RTU0</option>
-            <option value="pru1">→ PRU1</option>
-            <option value="rtu1" hidden disabled>→ RTU1</option>
-          </select>
+          <span id="assembly-core-target" class="core-chip" title="Select the target in Telemetry">→ PRU0</span>
           <input type="file" id="file-input" accept=".asm,.inc,.s,.out" style="display:none" />
           <button id="btn-file" class="btn-load btn-17"><span class="text-container"><span class="text">Open</span></span></button>
           <button id="btn-open-project" class="btn-load btn-17"><span class="text-container"><span class="text">Project</span></span></button>
@@ -1784,7 +1735,7 @@ Example:
       <!-- Registers panel -->
       <div class="panel" id="registers-panel">
         <div class="panel-title" data-panel-id="registers" style="display:flex;align-items:center;gap:4px;">
-          <span>Registers</span>
+          <span>Registers</span><span class="shown-core-chips" id="register-core-chips"></span>
           <button id="ctable-toggle" title="Show/hide PRU constant table (C0–C31)" class="btn-17"><span class="text-container"><span class="text">C-Table</span></span></button>
           <span style="margin-left:6px;font-size:10px;color:var(--text-dim);">SPAD:</span>
           <button class="spad-btn" data-bank="bank0" title="Toggle SPAD Bank 0 (device 10)">B0</button>
@@ -1795,10 +1746,10 @@ Example:
           <button id="btn-xfr-shift" class="spad-btn" title="Toggle XFR_SHIFT_EN (ICSSG_SPP_REG[1])">SHF</button>
         </div>
         <div id="carry-row">Carry: <span class="val" id="reg-carry">0</span><span id="mac-row">MAC: <span id="mac-mode-label">MPY</span><span id="mac-carry-label"></span></span><span id="crc-row">CRC: <span id="crc-mode-label">CRC16</span><span id="crc-value-label">0000</span></span></div>
-        <div class="panel-body" id="reg-body">
-          <table id="reg-table" class="reg-table">
-            <tbody id="reg-tbody"></tbody>
-          </table>
+        <div class="panel-body core-panes register-panes" id="reg-body">
+          <section class="core-pane" id="register-focus-pane"><div class="core-pane-heading"></div><div class="core-scroll">
+            <table id="reg-table" class="reg-table"><tbody id="reg-tbody"></tbody></table>
+          </div></section>
         </div>
         <div id="ctable-divider" class="inner-divider-h" style="display:none;"></div>
         <div id="ctable-section">
@@ -1956,133 +1907,6 @@ Example:
         </div>
       </div>
 
-      <!-- MC PRU0 source panel -->
-      <div class="panel" id="mc-pru0-source-panel">
-        <div class="panel-title" data-panel-id="mc-pru0-source" style="display:flex;align-items:center;">
-          <span>PRU0 Source</span>
-          <span class="mc-pc-badge" id="mc-pru0-pc">PC: 0</span>
-        </div>
-        <div class="bp-bar" id="mc-pru0-bp-bar">
-          <span class="bp-bar-label">Breakpoints:</span>
-          <span class="bp-chip-list" id="mc-pru0-bp-chip-list"></span>
-          <input type="text" id="mc-pru0-bp-addr-input" placeholder="addr" title="Set a breakpoint at an address (hex 0x.. or decimal)">
-          <button class="bp-action btn-17" id="mc-pru0-bp-add-btn" title="Set breakpoint at address"><span class="text-container"><span class="text">Set</span></span></button>
-          <button class="bp-action btn-17" id="mc-pru0-bp-clear-btn" title="Clear all breakpoints on this core"><span class="text-container"><span class="text">Clear all</span></span></button>
-        </div>
-        <div class="panel-body">
-          <ul class="source-list" id="mc-pru0-source-list"></ul>
-        </div>
-      </div>
-
-      <!-- MC PRU0 register panel -->
-      <div class="panel" id="mc-pru0-reg-panel">
-        <div class="panel-title mc-reg-title" data-panel-id="mc-pru0-registers">
-          <span>PRU0 Registers</span>
-          <span class="mc-carry-row">Carry: <span class="mc-carry-val" id="mc-pru0-carry">0</span></span>
-          <span class="mc-mac-row">MAC: <span class="mc-mac-mode" id="mc-pru0-mac-mode">MPY</span><span class="mc-mac-carry" id="mc-pru0-mac-carry"></span></span>
-          <span class="mc-crc-row">CRC: <span class="mc-crc-mode" id="mc-pru0-crc-mode">CRC16</span><span class="mc-crc-value" id="mc-pru0-crc-value">0000</span></span>
-          <span style="margin-left:6px;font-size:10px;color:var(--text-dim);">SPAD:</span>
-          <button class="spad-btn mc-spad-btn" data-bank="bank0" title="Toggle SPAD Bank 0">B0</button>
-          <button class="spad-btn mc-spad-btn" data-bank="bank1" title="Toggle SPAD Bank 1">B1</button>
-          <button class="spad-btn mc-spad-btn" data-bank="bank2" title="Toggle SPAD Bank 2">B2</button>
-          <button class="spad-btn mc-spad-btn" data-bank="ipc"   title="Toggle IPC_SP R2-R9">IPC</button>
-        </div>
-        <div class="panel-body">
-          <table class="reg-table"><tbody id="mc-pru0-reg-tbody"></tbody></table>
-        </div>
-      </div>
-
-      <!-- MC RTU0 source panel -->
-      <div class="panel" id="mc-rtu0-source-panel">
-        <div class="panel-title" data-panel-id="mc-rtu0-source" style="display:flex;align-items:center;">
-          <span id="mc-partner-source-title">RTU0 Source</span>
-          <span class="mc-pc-badge" id="mc-rtu0-pc">PC: 0</span>
-        </div>
-        <div class="bp-bar" id="mc-rtu0-bp-bar">
-          <span class="bp-bar-label">Breakpoints:</span>
-          <span class="bp-chip-list" id="mc-rtu0-bp-chip-list"></span>
-          <input type="text" id="mc-rtu0-bp-addr-input" placeholder="addr" title="Set a breakpoint at an address (hex 0x.. or decimal)">
-          <button class="bp-action btn-17" id="mc-rtu0-bp-add-btn" title="Set breakpoint at address"><span class="text-container"><span class="text">Set</span></span></button>
-          <button class="bp-action btn-17" id="mc-rtu0-bp-clear-btn" title="Clear all breakpoints on this core"><span class="text-container"><span class="text">Clear all</span></span></button>
-        </div>
-        <div class="panel-body">
-          <ul class="source-list" id="mc-rtu0-source-list"></ul>
-        </div>
-      </div>
-
-      <!-- MC RTU0 register panel -->
-      <div class="panel" id="mc-rtu0-reg-panel">
-        <div class="panel-title mc-reg-title" data-panel-id="mc-rtu0-registers">
-          <span id="mc-partner-reg-title">RTU0 Registers</span>
-          <span class="mc-carry-row">Carry: <span class="mc-carry-val" id="mc-rtu0-carry">0</span></span>
-          <span class="mc-mac-row">MAC: <span class="mc-mac-mode" id="mc-rtu0-mac-mode">MPY</span><span class="mc-mac-carry" id="mc-rtu0-mac-carry"></span></span>
-          <span class="mc-crc-row">CRC: <span class="mc-crc-mode" id="mc-rtu0-crc-mode">CRC16</span><span class="mc-crc-value" id="mc-rtu0-crc-value">0000</span></span>
-        </div>
-        <div class="panel-body">
-          <table class="reg-table"><tbody id="mc-rtu0-reg-tbody"></tbody></table>
-        </div>
-      </div>
-
-      <!-- MC third core source panel -->
-      <div class="panel" id="mc-x2-source-panel">
-        <div class="panel-title" data-panel-id="mc-x2-source" style="display:flex;align-items:center;">
-          <span id="mc-x2-source-title">Core 3 Source</span>
-          <span class="mc-pc-badge" id="mc-x2-pc">PC: 0</span>
-        </div>
-        <div class="bp-bar" id="mc-x2-bp-bar">
-          <span class="bp-bar-label">Breakpoints:</span>
-          <span class="bp-chip-list" id="mc-x2-bp-chip-list"></span>
-          <input type="text" id="mc-x2-bp-addr-input" placeholder="addr" title="Set a breakpoint at an address (hex 0x.. or decimal)">
-          <button class="bp-action btn-17" id="mc-x2-bp-add-btn" title="Set breakpoint at address"><span class="text-container"><span class="text">Set</span></span></button>
-          <button class="bp-action btn-17" id="mc-x2-bp-clear-btn" title="Clear all breakpoints on this core"><span class="text-container"><span class="text">Clear all</span></span></button>
-        </div>
-        <div class="panel-body">
-          <ul class="source-list" id="mc-x2-source-list"></ul>
-        </div>
-      </div>
-
-      <!-- MC third core register panel -->
-      <div class="panel" id="mc-x2-reg-panel">
-        <div class="panel-title mc-reg-title" data-panel-id="mc-x2-registers">
-          <span id="mc-x2-reg-title">Core 3 Registers</span>
-          <span class="mc-carry-row">Carry: <span class="mc-carry-val" id="mc-x2-carry">0</span></span>
-          <span class="mc-mac-row">MAC: <span class="mc-mac-mode" id="mc-x2-mac-mode">MPY</span><span class="mc-mac-carry" id="mc-x2-mac-carry"></span></span>
-        </div>
-        <div class="panel-body">
-          <table class="reg-table"><tbody id="mc-x2-reg-tbody"></tbody></table>
-        </div>
-      </div>
-
-      <!-- MC fourth core source panel -->
-      <div class="panel" id="mc-x3-source-panel">
-        <div class="panel-title" data-panel-id="mc-x3-source" style="display:flex;align-items:center;">
-          <span id="mc-x3-source-title">Core 4 Source</span>
-          <span class="mc-pc-badge" id="mc-x3-pc">PC: 0</span>
-        </div>
-        <div class="bp-bar" id="mc-x3-bp-bar">
-          <span class="bp-bar-label">Breakpoints:</span>
-          <span class="bp-chip-list" id="mc-x3-bp-chip-list"></span>
-          <input type="text" id="mc-x3-bp-addr-input" placeholder="addr" title="Set a breakpoint at an address (hex 0x.. or decimal)">
-          <button class="bp-action btn-17" id="mc-x3-bp-add-btn" title="Set breakpoint at address"><span class="text-container"><span class="text">Set</span></span></button>
-          <button class="bp-action btn-17" id="mc-x3-bp-clear-btn" title="Clear all breakpoints on this core"><span class="text-container"><span class="text">Clear all</span></span></button>
-        </div>
-        <div class="panel-body">
-          <ul class="source-list" id="mc-x3-source-list"></ul>
-        </div>
-      </div>
-
-      <!-- MC fourth core register panel -->
-      <div class="panel" id="mc-x3-reg-panel">
-        <div class="panel-title mc-reg-title" data-panel-id="mc-x3-registers">
-          <span id="mc-x3-reg-title">Core 4 Registers</span>
-          <span class="mc-carry-row">Carry: <span class="mc-carry-val" id="mc-x3-carry">0</span></span>
-          <span class="mc-mac-row">MAC: <span class="mc-mac-mode" id="mc-x3-mac-mode">MPY</span><span class="mc-mac-carry" id="mc-x3-mac-carry"></span></span>
-        </div>
-        <div class="panel-body">
-          <table class="reg-table"><tbody id="mc-x3-reg-tbody"></tbody></table>
-        </div>
-      </div>
-
     </div><!-- /#panel-pool -->
 
     <!-- Tile root: layout engine renders here -->
@@ -2189,7 +2013,7 @@ Example:
         <table class="help-table">
           <tr><td><kbd>→</kbd></td><td>Step — execute one instruction</td></tr>
           <tr><td><kbd>←</kbd></td><td>Step Back — reverse one instruction</td></tr>
-          <tr><td><kbd>Space</kbd></td><td>Toggle breakpoint at current PC (both cores in Multi-core mode)</td></tr>
+          <tr><td><kbd>Space</kbd></td><td>Toggle a breakpoint at the focused core’s current PC</td></tr>
           <tr><td><kbd>?</kbd></td><td>Open / close this help window</td></tr>
           <tr><td><kbd>Esc</kbd></td><td>Close open modal (help, config)</td></tr>
         </table>
@@ -2204,7 +2028,7 @@ Example:
           <tr><td><b>SIM</b></td><td>Toggle timed simulation mode</td></tr>
           <tr><td><b>Reset</b></td><td>Soft reset — registers and PC to 0, plus this core's Peripheral Interface status/FIFOs</td></tr>
           <tr><td><b>HW Reset</b></td><td>Hard reset — clears SPAD, XFR config, and every core's Peripheral Interface state (FIFOs, overrun/underrun, RX valid/overflow, busy); perif config registers, GP Mux and loopback settings are kept</td></tr>
-          <tr><td><b>Multi-core</b></td><td>Toggle dual-core (PRU0 + RTU0) debug view</td></tr>
+          <tr><td><b>CORES</b></td><td>Use selects execution cores; Show splits the shared Source and Registers panels. One frequency applies to PRU0 + RTU0; the other applies to PRU1 + RTU1. This simulator pairing may change. Telemetry selects the inspection and assembly target.</td></tr>
           <tr><td><b>Config</b></td><td>Edit simulator configuration (JSON)</td></tr>
           <tr><td><b>⊞ Reset Layout</b></td><td>Restore default panel layout</td></tr>
         </table>
@@ -2239,8 +2063,10 @@ Example:
           <tr><td><b>GPO pins</b></td><td>Live R30 bit indicators — updated every step</td></tr>
           <tr><td><b>Loopback strip</b></td><td>Five toggle buttons between GPO and GPI rows; each wires a 4-bit group (3:0, 7:4, …) of GPO directly to GPI combinatorially</td></tr>
           <tr><td><b>GPI pins</b></td><td>R31 bit indicators — click any pin to drive it high/low when SD is disabled</td></tr>
+          <tr><td><b>UART Record / Stop recording</b></td><td>Start or stop the shared Signal Graph capture. Run firmware while recording, then Decode GPO0.</td></tr>
           <tr><td><b>▶ Decode</b></td><td>UART decode of recorded GPO0 transitions (8N1, auto-detect baud); shows hex + ASCII bytes</td></tr>
           <tr><td><b>Clear</b></td><td>Clear UART decode output</td></tr>
+          <tr><td><b>UART Reset inputs</b></td><td>Restore the RX injection form defaults and clear its feedback.</td></tr>
           <tr><td><b>SD panel</b></td><td>Appears when firmware sets sd_en (R30 bit 25); shows R30 decode bar, per-channel CIC accumulator values, pattern generator controls, and OSR config chips</td></tr>
         </table>
       </section>
@@ -2402,12 +2228,13 @@ Example:
             <div class="uart-controls">
               <span class="uart-label">Pin: <span class="uart-pin">GPO0</span></span>
               <span class="uart-label">Format: <span class="uart-pin">8N1</span></span>
+              <button id="uart-record-btn" class="graph-btn btn-17" type="button" aria-pressed="false" title="Record GPO0 using the Signal Graph capture buffer"><span class="text-container"><span class="text">Record</span></span></button>
               <button id="uart-decode-btn" class="graph-btn btn-17" style="border-color:#3a5a8a;"><span class="text-container"><span class="text">&#9654; Decode</span></span></button>
               <button id="uart-clear-btn"  class="graph-btn btn-17"><span class="text-container"><span class="text">Clear</span></span></button>
             </div>
             <div id="uart-status" class="uart-status" style="display:none;"></div>
             <div id="uart-output" class="uart-output" style="display:none;"></div>
-            <div id="uart-hint"   class="uart-hint">Capture GPO0 with Signal Graph &#9679; REC in the Simulator view first</div>
+            <div id="uart-hint"   class="uart-hint">Click Record, then run the firmware to capture GPO0. Stop recording, then click Decode.</div>
           </div>
           <div class="io-section" id="uart-rx-inject">
             <div class="io-section-title">UART RX Inject</div>
@@ -2435,9 +2262,10 @@ Example:
               <span class="uart-label">Frames:</span>
               <input type="text" id="uart-inj-frames" class="uart-inj-num" style="width:28px;text-align:center;" value="1" />
               <button id="uart-inj-btn" class="graph-btn btn-17" style="border-color:#3a5a8a;margin-left:auto;"><span class="text-container"><span class="text">&#9654; Inject</span></span></button>
+              <button id="uart-inj-reset-btn" class="graph-btn btn-17" type="button" title="Restore input defaults and clear feedback"><span class="text-container"><span class="text">Reset inputs</span></span></button>
             </div>
             <!-- Status line -->
-            <div id="uart-inj-status" class="uart-hint" style="display:none;"></div>
+            <div id="uart-inj-status" class="uart-hint" role="status" style="display:none;"></div>
           </div>
         </section>
       </div>
@@ -2503,7 +2331,9 @@ Example:
   </section>
   <script src="/static/chrome.js"></script>
   <script src="/static/layout.js"></script>
-  <script src="/static/app.js?v=20260729"></script>
+  <script src="/static/cores.js"></script>
+  <script src="/static/cores-deck.js"></script>
+  <script src="/static/app.js?v=20261015-cores"></script>
   <script src="/static/workspace.js"></script>
 </body>
 </html>

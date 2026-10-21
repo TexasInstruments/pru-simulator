@@ -365,6 +365,10 @@ class Parser:
         if (opcode in ("WBS", "WBC") and len(operands) == 2
                 and not isinstance(operands[0], Register)):
             raise SyntaxError(f"line {source_line}: {opcode} source must be a register")
+        if opcode in ("WBS", "WBC"):
+            bit = operands[-1]
+            if isinstance(bit, Label) or (isinstance(bit, Immediate) and not 0 <= bit.value <= 31):
+                raise SyntaxError(f"line {source_line}: {opcode} bit position must be 0-31 or a register")
 
         self._validate_operand_ranges(opcode, operands, source_line)
         self._validate_branch_reach(opcode, operands, address, source_line)
