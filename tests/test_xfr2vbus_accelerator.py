@@ -12,7 +12,7 @@ import struct
 
 import pytest
 
-from core.pru_core import PRUCore
+from core.pru_core import PRUCore, UnsupportedXFRError
 from mem.memory_bus import MemoryBus
 from mem.regions import MemoryRegion
 from pru_io.io_port import IOPort
@@ -795,9 +795,10 @@ class TestPositionalWrites:
 
 
 # ===========================================================================
-# Registration is load-bearing (mutation proving PR #30's fail-loud path
-# still applies to a genuinely unmodelled ID, and that removing the
-# registration reverts these IDs to that same fail-loud path).
+# Registration is load-bearing (mutation proving the unsupported-XFR
+# diagnostic still applies to a genuinely unmodelled ID, and that removing
+# the registration reverts these IDs to that same path; strict mode turns
+# it into an error).
 # ===========================================================================
 
 class TestRegistrationIsLoadBearing:
@@ -805,7 +806,8 @@ class TestRegistrationIsLoadBearing:
     def test_removing_registration_reverts_to_unsupported_xfr_path(self, device_id):
         core = make_core(f"xin {device_id}, &r2, 4\nhalt\n")
         del core.accelerators[device_id]
-        with pytest.raises(RuntimeError, match=rf"XIN XFR device ID {device_id}.*not modelled"):
+        core.strict_unsupported_xfr = True
+        with pytest.raises(UnsupportedXFRError, match=rf"XIN XFR device ID {device_id}.*not modelled"):
             core.run(4)
 
     def test_registered_ids_do_not_hit_the_unsupported_xfr_path(self):
@@ -822,5 +824,6 @@ class TestRegistrationIsLoadBearing:
         (see docs/xfr2vbus-trm-model-table.md)."""
         core = make_core(op + "\nhalt\n")
         assert 0x64 not in core.accelerators
-        with pytest.raises(RuntimeError, match=r"XFR device ID 100 \(0x64\).*not modelled"):
+        core.strict_unsupported_xfr = True
+        with pytest.raises(UnsupportedXFRError, match=r"XFR device ID 100 \(0x64\).*not modelled"):
             core.run(4)

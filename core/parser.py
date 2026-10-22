@@ -41,7 +41,7 @@ _EXPECTED_OPS: dict[str, int | tuple[int, ...]] = {
     "LOOP": 2,
     # Misc
     "ZERO": 2, "FILL": 2,
-    "WBS":  1, "WBC":  1, "SLP": 1,
+    "WBS":  (1, 2), "WBC":  (1, 2), "SLP": 1,
     "HALT": 0, "NOP":  0,
     # Register file indirect
     "MVIB": 2, "MVIW": 2, "MVID": 2,
@@ -54,6 +54,14 @@ _EXPECTED_OPS: dict[str, int | tuple[int, ...]] = {
 # the only slots where a symbol cannot possibly be meant - everywhere else a
 # label or .set constant is ordinary assembler.
 _BIT_POSITION_OPCODES = frozenset({"LSL", "LSR", "SET", "CLR", "QBBS", "QBBC"})
+
+# Branches that encode a signed 10-bit word offset (relative to the branch
+# instruction) rather than an absolute 16-bit address like JMP/JAL.
+_QUICK_BRANCH_OPCODES = frozenset({
+    "QBA", "QBEQ", "QBNE", "QBGT", "QBGE", "QBLT", "QBLE", "QBBS", "QBBC",
+})
+_BRANCH_OFFSET_MIN = -512
+_BRANCH_OFFSET_MAX = 511
 
 _OPERAND_RANGES: dict[str, list[tuple[int, int, str]]] = {
     # LDI: 16-bit immediate
@@ -354,7 +362,16 @@ class Parser:
                     f"{'s' if max(counts) != 1 else ''}, got {len(operands)}{hint}"
                 )
 
+        if (opcode in ("WBS", "WBC") and len(operands) == 2
+                and not isinstance(operands[0], Register)):
+            raise SyntaxError(f"line {source_line}: {opcode} source must be a register")
+        if opcode in ("WBS", "WBC"):
+            bit = operands[-1]
+            if isinstance(bit, Label) or (isinstance(bit, Immediate) and not 0 <= bit.value <= 31):
+                raise SyntaxError(f"line {source_line}: {opcode} bit position must be 0-31 or a register")
+
         self._validate_operand_ranges(opcode, operands, source_line)
+        self._validate_branch_reach(opcode, operands, address, source_line)
 
         return Instruction(
             address=address,
@@ -363,6 +380,36 @@ class Parser:
             source_line=source_line,
             source_text=source_text,
         )
+
+    @staticmethod
+    def _validate_branch_reach(
+        opcode: str, operands: list, address: int, source_line: int,
+    ) -> None:
+        """Raise SyntaxError if a quick-branch target is outside its encodable reach.
+
+        QBA and the QB* family encode a signed 10-bit word offset relative to
+        the branch itself; only JMP/JAL carry a full 16-bit address.
+        """
+        if opcode not in _QUICK_BRANCH_OPCODES or not operands:
+            return
+        target = operands[0]
+        if isinstance(target, Label):
+            # An undefined label has no address to measure.
+            if target.resolved_addr < 0:
+                return
+            target_addr, name = target.resolved_addr, f"'{target.name}'"
+        elif isinstance(target, Immediate):
+            target_addr, name = target.value, str(target.value)
+        else:
+            return
+        offset = target_addr - address
+        if not _BRANCH_OFFSET_MIN <= offset <= _BRANCH_OFFSET_MAX:
+            raise SyntaxError(
+                f"line {source_line}: {opcode} target {name} is {offset:+d} "
+                f"instructions away, outside the signed 10-bit branch range "
+                f"({_BRANCH_OFFSET_MIN} to +{_BRANCH_OFFSET_MAX}); "
+                f"use JMP for longer jumps"
+            )
 
     @staticmethod
     def _validate_operand_ranges(opcode: str, operands: list, source_line: int) -> None:

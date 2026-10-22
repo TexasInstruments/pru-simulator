@@ -3,7 +3,7 @@ LP-AM243 silicon (ICSSG0 PRU0 and RTU_PRU0, no PSI-L peer configured)."""
 
 import pytest
 
-from core.pru_core import PRUCore
+from core.pru_core import PRUCore, UnsupportedXFRError
 from mem.memory_bus import MemoryBus
 from mem.regions import MemoryRegion
 from pru_io.io_port import IOPort
@@ -114,10 +114,11 @@ def test_xchg_with_empty_rx_retires_blank_data_and_enqueues_tx():
 
 
 def test_registration_removal_is_caught_by_the_status_vector(monkeypatch):
-    """Mutation check: the PR #30 boundary fails loudly without 0x50."""
+    """Mutation check: without the 0x50 registration the ID is reported as unmodelled."""
     core = make_core("xin 0x50, &r2, 8\nhalt\n")
     monkeypatch.delitem(core.accelerators, 0x50)
-    with pytest.raises(RuntimeError, match="XFR device ID 80 \\(0x50\\).*not modelled"):
+    core.strict_unsupported_xfr = True
+    with pytest.raises(UnsupportedXFRError, match="XFR device ID 80 \\(0x50\\).*not modelled"):
         core.run()
 
 
@@ -179,3 +180,104 @@ def test_a_full_transmit_thread_drops_writes_without_stalling():
     assert core.registers.read_full(3) == 0x0
     assert len(dma.tx_fifos[1]) == dma.tx_max
     assert dma.tx_dropped == 36 - dma.tx_max
+
+
+# --- Qodo review findings on PR #35 ----------------------------------------
+
+
+def test_xin_longer_than_head_packet_does_not_merge_next_packet():
+    """A receive transfer returns at most the head packet; the next stays queued.
+
+    Unmeasured on silicon (the LP-AM243 run had no PSI-L peer); a PSI-L
+    packet is a unit, so one transfer must not span two of them."""
+    core = make_core("xin 0x51, &r2, 8\nxin 0x51, &r4, 8\nhalt\n")
+    dma = bridge(core)
+    dma.inject_rx(1, b"abcd")
+    dma.inject_rx(1, b"efgh")
+    core.step()
+    assert core.registers.read_full(2).to_bytes(4, "little") == b"abcd"
+    assert core.registers.read_full(3) == 0           # short packet is zero padded
+    assert dma.rx_depth(1) == 1                        # second packet still queued
+    core.step()
+    assert core.registers.read_full(4).to_bytes(4, "little") == b"efgh"
+    assert dma.rx_depth(1) == 0
+
+
+def test_xchg_longer_than_head_packet_does_not_merge_next_packet():
+    core = make_core("ldi r2, 0x11\nxchg 0x51, &r2, 8\nxin 0x51, &r4, 8\nhalt\n")
+    dma = bridge(core)
+    dma.inject_rx(1, b"abcd")
+    dma.inject_rx(1, b"efgh")
+    core.step()   # ldi
+    core.step()   # xchg
+    assert core.registers.read_full(2).to_bytes(4, "little") == b"abcd"
+    assert core.registers.read_full(3) == 0
+    assert dma.rx_depth(1) == 1
+    core.step()   # xin picks up the second packet on its own
+    assert core.registers.read_full(4).to_bytes(4, "little") == b"efgh"
+    assert dma.rx_depth(1) == 0
+
+
+def test_partial_read_keeps_the_rest_of_the_head_packet_ahead_of_the_next():
+    dma = XFRDMAAccelerator(XFRDMABridge(), 0x51)
+    dma.bridge.inject_rx(1, b"abcdef")
+    dma.bridge.inject_rx(1, b"gh")
+    assert dma.xin(2, 4) == b"abcd"
+    assert dma.xin(2, 4) == b"ef\0\0"                  # remainder only, padded
+    assert dma.xin(2, 4) == b"gh\0\0"
+
+
+def _held_core(asm: str) -> PRUCore:
+    core = make_core(asm)
+    dma = bridge(core)
+    dma.stall_when_full = True
+    for _ in range(dma.tx_max):
+        dma.fill_tx(1)
+    return core
+
+
+@pytest.mark.parametrize("opcode", ["xout", "xchg"])
+def test_held_xfr_counts_stall_cycles_not_retired_instructions(opcode):
+    """A held XOUT/XCHG consumes a cycle but retires nothing."""
+    core = _held_core(f"ldi r2, 0x55\n{opcode} 0x51, &r2, 4\nhalt\n")
+    dma = bridge(core)
+    core.step()                                         # ldi retires
+    assert (core.counters.cycles, core.counters.instruction_count) == (1, 1)
+    for held in range(1, 4):
+        core.step()
+        assert core.pc == 1
+        assert core.counters.stall_cycles == held
+        assert core.counters.instruction_count == 1     # nothing new retired
+        assert core.counters.cycles == 1 + held         # one cycle per step
+    dma.tx_fifos[1].popleft()                           # free a slot
+    core.step()                                         # retry succeeds
+    assert core.pc == 2
+    assert core.counters.instruction_count == 2
+    assert core.counters.stall_cycles == 3
+    assert core.counters.cycles == 5
+    core.run()
+    assert (core.counters.cycles, core.counters.instruction_count, core.counters.stall_cycles) == (6, 3, 3)
+
+
+def test_held_xin_counts_stall_cycles_not_retired_instructions():
+    class HoldingReader:
+        hold_pc = True
+
+        def xin(self, start_reg, length, start_byte=0):
+            return bytes(length)
+
+    core = make_core("xin 0x7e, &r2, 4\nhalt\n")
+    reader = HoldingReader()
+    core.accelerators[0x7E] = reader
+    for held in range(1, 4):
+        core.step()
+        assert core.pc == 0
+        assert core.counters.instruction_count == 0
+        assert core.counters.stall_cycles == held
+        assert core.counters.cycles == held
+    reader.hold_pc = False
+    core.step()
+    assert core.pc == 1
+    assert core.counters.instruction_count == 1
+    assert core.counters.stall_cycles == 3
+    assert core.counters.cycles == 4

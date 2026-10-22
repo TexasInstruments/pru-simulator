@@ -5,6 +5,7 @@ import pytest
 from perif.perif_registers import PerifRegisters
 from perif.perif_channel import PerifChannel, IDLE, WIRE, TST, TRANSMIT, CLKRUN
 from perif.peripheral_interface import PeripheralInterface
+from simulator import Simulator
 
 _BASE = 0x260E0
 
@@ -408,6 +409,17 @@ class TestTopLevel:
         p.process_r30((1 << 16) | 0x5A, wstrb=0x1)
         assert p.channels[1].tx_fifo == [0x5A]
         assert p.channels[0].tx_fifo == []
+
+    def test_r30_bit25_reaches_legacy_perif_while_gpo_stays_20_bit(self):
+        sim = Simulator()
+        perif = sim.cores["pru0"].io_port.perif
+        sim.gpcfg_write("pru0", 1)
+        assert sim.load("pru0", "MOV r30, 0x02000000") == []
+
+        sim.step("pru0")
+
+        assert perif.channels[1].rx_en is True
+        assert sim.cores["pru0"].io_port.gpo == 0
 
     def test_r30_no_push_without_byte0_strobe(self):
         p = self._mk()

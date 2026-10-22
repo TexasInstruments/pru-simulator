@@ -210,16 +210,19 @@ class XFRDMAAccelerator(Accelerator):
         return rx_ready.to_bytes(4, "little") + tx_ready.to_bytes(4, "little")
 
     def _consume_rx(self, length: int) -> bytes:
-        result = bytearray()
+        # One transfer never spans packets: a PSI-L packet is a unit, so a read
+        # longer than the head packet returns its remainder zero padded and the
+        # next packet stays queued.  Unmeasured on silicon (the LP-AM243 run had
+        # no PSI-L peer); this is the conservative packet-preserving model.
         fifo = self.bridge.rx_fifos[self.thread]
-        while len(result) < length and fifo:
-            packet = fifo[0]
-            take = min(length - len(result), len(packet))
-            result.extend(packet[:take])
-            del packet[:take]
-            if not packet:
-                fifo.popleft()
-        return bytes(result).ljust(length, b"\0")
+        if not fifo:
+            return bytes(length)
+        packet = fifo[0]
+        result = bytes(packet[:length])
+        del packet[:length]
+        if not packet:
+            fifo.popleft()
+        return result.ljust(length, b"\0")
 
     def _is_tx(self) -> bool:
         """True for the transmit thread (0x51).  A write to a receive-only
