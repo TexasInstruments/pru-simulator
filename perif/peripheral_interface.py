@@ -26,6 +26,7 @@ class PeripheralInterface:
         self.ch_sel = 0
         self._now_ns = 0.0
         self._period_ns = 1000.0 / pru_clock_mhz  # nominal core-clock period
+        self.cycle_time_ns = None  # Simulator's absolute timeline; standalone uses cycles
 
     def build_channels(self) -> None:
         """Instantiate the 3 channels once `self.registers` is wired."""
@@ -120,6 +121,7 @@ class PeripheralInterface:
             ch.reset()
             if self.registers is not None:
                 self.registers.set_busy(ch.index, False)
+        self.advance_cycles(0)
 
     # ==================================================================
     # Timeline
@@ -133,8 +135,10 @@ class PeripheralInterface:
                 self.registers.set_busy(ch.index, ch.busy)
 
     def advance_cycles(self, cycles: int) -> None:
-        """Advance using the core cycle count and this core's nominal period."""
-        self.advance(cycles * self._period_ns)
+        """Advance on the shared simulator timeline, or standalone core time."""
+        now_ns = (self.cycle_time_ns(cycles) if self.cycle_time_ns is not None
+                  else cycles * self._period_ns)
+        self.advance(float(now_ns))
 
     # ==================================================================
     # Snapshot / state

@@ -1,8 +1,10 @@
 """Tests for core/pru_core.py — PRU Core execution engine."""
 
+import logging
+
 import pytest
 
-from core.pru_core import PRUCore
+from core.pru_core import PRUCore, UnsupportedXFRError
 from mem.memory_bus import MemoryBus
 from mem.regions import MemoryRegion
 from xfr.xfr_bus import XFRBus
@@ -35,12 +37,68 @@ def reg(core: PRUCore, n: int) -> int:
     return core.registers.read_full(n)
 
 
+def core_warnings(caplog) -> list[str]:
+    """Warnings emitted by the core itself, excluding lower-level bus logging."""
+    return [r.getMessage() for r in caplog.records if r.name == "core.pru_core"]
+
+
+def test_unmodelled_xfr_keeps_hardware_zero_semantics_and_is_recorded(caplog):
+    """An unconnected broadside ID reads zeros on hardware; it must here too.
+
+    The simulator's job is to make the event visible, not to invent a trap the
+    silicon does not have -- so the run continues, and the record is what tells
+    a caller the result came from an unmodelled widget rather than a real one.
+    """
+    core = make_core("ldi r2, 0x1234\nxin 99, &r2, 4\nxin 99, &r2, 4\nhalt\n")
+    with caplog.at_level(logging.WARNING, logger="core.pru_core"):
+        run_to_halt(core)
+    assert reg(core, 2) == 0
+    record = core.unsupported_xfr[99]
+    assert record["core"] == "PRU0"
+    assert record["opcodes"] == ["XIN"]
+    assert record["count"] == 2
+    assert record["first_pc"] == 1
+    # Warned once per device ID, not once per transfer.
+    assert len(core_warnings(caplog)) == 1
+
+
+def test_unmodelled_xout_is_a_no_op_and_does_not_halt_the_run():
+    """XOUT to an unconnected ID is ignored on hardware; the run must survive it."""
+    core = make_core("ldi r2, 0x1234\nxout 99, &r2, 4\nhalt\n")
+    run_to_halt(core)
+    assert core.halted
+    assert reg(core, 2) == 0x1234
+    assert core.unsupported_xfr[99]["opcodes"] == ["XOUT"]
+
+
+def test_registered_scratchpad_is_not_reported_as_unmodelled():
+    """Guard against the diagnostic misclassifying a device the bus does model."""
+    core = make_core("ldi r2, 0x1234\nxout 10, &r2, 4\n"
+                     "ldi r2, 0\nxin 10, &r2, 4\nhalt\n")
+    core.strict_unsupported_xfr = True   # a false positive would raise here
+    run_to_halt(core)
+    assert reg(core, 2) == 0x1234
+    assert core.unsupported_xfr == {}
+
+
+def test_reset_clears_the_unsupported_xfr_record():
+    core = make_core("xin 99, &r2, 4\nhalt\n")
+    run_to_halt(core)
+    assert 99 in core.unsupported_xfr
+    core.reset()
+    assert core.unsupported_xfr == {}
+
+
 @pytest.mark.parametrize("opcode", ["xin", "xout", "xchg"])
-def test_unknown_xfr_fails_loudly_at_core_boundary(opcode: str):
-    """Unknown broadside IDs must not silently read zeros or discard writes."""
+def test_strict_mode_fails_the_run_on_an_unmodelled_device(opcode: str):
+    """Opt-in oracle check: a caller can demand a failure instead of zero data."""
     core = make_core(f"{opcode} 99, &r2, 4\nhalt\n")
-    with pytest.raises(RuntimeError, match=rf"{opcode.upper()} XFR device ID 99.*R2.b0.*4 byte"):
+    core.strict_unsupported_xfr = True
+    with pytest.raises(UnsupportedXFRError,
+                       match=rf"{opcode.upper()} XFR device ID 99 \(0x63\)"
+                             rf".*4 byte\(s\).*R2\.b0"):
         core.run(4)
+    assert core.unsupported_xfr[99]["opcodes"] == [opcode.upper()]
 
 
 # ---------------------------------------------------------------------------
@@ -603,6 +661,87 @@ class TestReset:
         assert core.counters.cycles == 0
 
 
+@pytest.mark.parametrize(
+    ("opcode", "instruction", "constant_base"),
+    [
+        ("LBBO", "ldi r1, 0x3000\nlbbo &r0, r1, 0, 4", False),
+        ("LBCO", "lbco &r0, c3, 0, 4", True),
+        ("SBCO", "sbco &r0, c3, 0, 4", True),
+        ("SBBO", "ldi r1, 0x3000\nsbbo &r0, r1, 0, 4", False),
+    ],
+)
+def test_memory_faults_are_recorded_and_reset_clears_them(
+    opcode, instruction, constant_base
+):
+    core = make_core(f"{instruction}\nhalt")
+    if constant_base:
+        core.constant_table.set(3, 0x3000)
+
+    run_to_halt(core)
+
+    assert core.fault == {
+        "type": "memory",
+        "opcode": opcode,
+        "address": 0x3000,
+        "pc": 0 if constant_base else 1,
+        "error": "No memory region mapped at address 0x00003000",
+    }
+    assert core.halted
+
+    core.reset()
+    assert core.fault is None
+
+
+@pytest.mark.parametrize(
+    "load",
+    [
+        lambda core: core.load_asm("nop\nhalt"),
+        lambda core: core.load_binary([], b"", 0),
+    ],
+    ids=["load_asm", "load_binary"],
+)
+def test_loading_a_program_clears_the_previous_programs_fault(load):
+    """A fault belongs to the program that raised it, so a load drops it.
+
+    Only `fault` is cleared. `halted` and `pc` are deliberately left alone:
+    a halted core staying halted across a load predates the fault field, and
+    changing it is a separate decision.
+    """
+    core = make_core("ldi r1, 0x3000\nlbbo &r0, r1, 0, 4\nhalt")
+    run_to_halt(core)
+    assert core.fault is not None
+
+    assert load(core) == []
+
+    assert core.fault is None
+
+
+@pytest.mark.parametrize(
+    "load",
+    [
+        lambda core: core.load_asm("ldi r1\n"),
+        lambda core: core.load_binary(["not a word"], b"", 0),
+        lambda core: core.load_binary([], b"x", 0xF0000000),
+    ],
+    ids=["load_asm", "bad_disassembly", "unmapped_data"],
+)
+def test_a_failed_load_keeps_the_faulting_program_and_its_fault(load):
+    """A load that fails installs nothing, so the fault still explains the halt."""
+    core = make_core("ldi r1, 0x3000\nlbbo &r0, r1, 0, 4\nhalt")
+    run_to_halt(core)
+    fault = core.fault
+    program = core.instructions
+    labels = core._parser.labels.copy()
+    assert fault is not None
+
+    assert load(core) != []
+
+    assert core.fault == fault
+    assert core.instructions is program
+    assert core._parser.labels == labels
+    assert core.halted
+
+
 # ---------------------------------------------------------------------------
 # load_asm error handling
 # ---------------------------------------------------------------------------
@@ -741,3 +880,33 @@ class TestWaitBitInstructions:
         for _ in range(10):
             core.step()
         assert core.counters.stall_cycles > 0
+
+    @pytest.mark.parametrize(
+        ("instruction", "wait_value", "release_value", "io_source"),
+        [
+            ("wbs 0", 0, 1, True),
+            ("wbs r3, 0", 0, 1, False),
+            ("wbc 0", 1, 0, True),
+            ("wbc r3, 0", 1, 0, False),
+        ],
+    )
+    def test_assembler_wait_forms_stall_then_release(
+        self, instruction, wait_value, release_value, io_source
+    ):
+        core = make_core(f"{instruction}\nhalt")
+        if io_source:
+            core.io_port.set_gpi_pin(0, bool(wait_value))
+        else:
+            core.registers.write_full(3, wait_value)
+
+        core.step()
+        assert core.pc == 0
+        assert not core.halted
+
+        if io_source:
+            core.io_port.set_gpi_pin(0, bool(release_value))
+        else:
+            core.registers.write_full(3, release_value)
+        core.step()
+
+        assert core.pc == 1

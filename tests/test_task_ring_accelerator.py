@@ -22,7 +22,7 @@ so.
 
 import pytest
 
-from core.pru_core import PRUCore
+from core.pru_core import PRUCore, UnsupportedXFRError
 from mem.memory_bus import MemoryBus
 from mem.regions import MemoryRegion
 from pru_io.io_port import IOPort
@@ -171,12 +171,14 @@ class TestCorePlacement:
         assert admitted.task_ring.tr_msrc_base == SRC_BASE
 
         refused = make_core(asm, name="PRU0")
-        with pytest.raises(RuntimeError, match="0x70"):
+        refused.strict_unsupported_xfr = True
+        with pytest.raises(UnsupportedXFRError, match="0x70"):
             refused.run(max_steps=50)
 
     def test_tx_pru_is_also_refused_through_the_same_path(self):
         refused = make_core(SETUP_ASM + "    halt\n", name="TX_PRU0")
-        with pytest.raises(RuntimeError, match="0x70"):
+        refused.strict_unsupported_xfr = True
+        with pytest.raises(UnsupportedXFRError, match="0x70"):
             refused.run(max_steps=50)
 
 

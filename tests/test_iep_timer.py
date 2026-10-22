@@ -45,6 +45,47 @@ def test_counter_does_not_run_until_cnt_enable(iep):
     assert r32(iep, COUNT_REG0) == 10
 
 
+@pytest.mark.parametrize("reset_method", ["reset", "hardware_reset"])
+def test_reset_register_literals_from_am243x_trm(iep, reset_method):
+    # AM64x/AM243x TRM SPRUIM2J (April 2026), https://www.ti.com/lit/pdf/spruim2:
+    # p6908 Table 14-10907 GLOBAL_CFG: CMP_INC=5, DEFAULT_INC=5, CNT_ENABLE=0.
+    # p6914 Table 14-10925 CAP_CFG: CAP_ASYNC_EN=0x7f; other defined fields=0.
+    # Reserved fields have reset X; assert only documented fields for these two.
+    # Zero: GLOBAL_STATUS Table 14-10910 p6909; COUNT_LO/HI Tables 14-10919/10922
+    # pp6912–6913; CAP_STATUS Table 14-10928 p6915; CMP_CFG/STATUS Tables
+    # 14-10991/10994 pp6936–6937. Capture pairs pp6916–6935 (CAPR0 Tables
+    # 14-10931/10934) and compare pairs pp6938–6969 (CMP0 Tables 14-10997/11000).
+    w32(iep, GLOBAL_CFG, 0x11)
+    w32(iep, COUNT_REG0, 17)
+    w32(iep, COUNT_REG1, 9)
+    w32(iep, CMP_CFG, 0x1fffe)
+    for slot in range(16):
+        w32(iep, CMP0_REG0 + 8 * slot, slot + 1)
+        w32(iep, CMP0_REG0 + 8 * slot + 4, 9)
+    iep.cmp_status = 0xffff
+    iep.global_status = 1
+    w32(iep, 0x18, 0x3ff)
+    for slot in range(10):
+        assert iep.capture_event(slot)
+
+    getattr(iep, reset_method)()
+
+    assert r32(iep, GLOBAL_CFG) & 0xffff1 == 0x550
+    assert r32(iep, 0x18) & 0xffffff == 0x1fc00
+    assert r32(iep, 0x04) & 1 == 0
+    assert r32(iep, COUNT_REG0) == 0
+    assert r32(iep, COUNT_REG1) == 0
+    assert r32(iep, CMP_CFG) & 0x3ffff == 0
+    assert r32(iep, CMP_STATUS) & 0xffff == 0
+    assert r32(iep, 0x1c) & 0x3ff == 0
+    for slot in range(16):
+        assert r32(iep, CMP0_REG0 + 8 * slot) == 0
+        assert r32(iep, CMP0_REG0 + 8 * slot + 4) == 0
+    for slot in range(10):
+        assert r32(iep, 0x20 + 8 * slot) == 0
+        assert r32(iep, 0x24 + 8 * slot) == 0
+
+
 def test_default_inc_is_the_step_size(iep):
     """IEP_GLOBAL_CFG_REG[7:4] DEFAULT_INC, not a hardcoded +1."""
     w32(iep, GLOBAL_CFG, (5 << 4) | 1)
@@ -174,7 +215,7 @@ class TestIepThroughFirmware:
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
         from simulator import Simulator
         sim = Simulator(config_path="nonexistent.cfg")
-        sim.constant_table.set(26, 0x0002E000)
+        sim.cores["pru0"].constant_table.set(26, 0x0002E000)
         return sim
 
     def test_poll_on_count_terminates(self):
@@ -339,16 +380,16 @@ def test_first_mode_keeps_the_first_event():
     assert iep.read32(CAPR0_REG0) == 5
 
 
-def test_last_mode_overwrites():
+def test_capture_enable_bit_seven_does_not_select_slot_zero_overwrite():
     iep = _running_iep()
-    iep.write32(CAP_CFG, 0x1 | (1 << 7))          # slot 0, last mode
-    for _ in range(5):
-        iep.tick()
-    iep.capture_event(0)
-    for _ in range(50):
-        iep.tick()
-    assert iep.capture_event(0) is True
-    assert iep.read32(CAPR0_REG0) == 55
+    iep.write32(CAP_CFG, 0x81)  # CAP_EN[0] and CAP_EN[7], Table 14-10925
+    iep.count = 5
+    assert iep.capture_event(0)
+    iep.count = 55
+    assert iep.capture_event(7)
+    assert not iep.capture_event(0)
+    assert iep.read32(CAPR0_REG0) == 5
+    assert iep.read32(CAPR0_REG0 + 8 * 7) == 55
 
 
 def test_clearing_the_valid_bit_re_arms_first_mode():
@@ -393,3 +434,155 @@ def test_an_out_of_range_slot_is_rejected():
     iep = _running_iep()
     with pytest.raises(ValueError):
         iep.capture_event(NUM_CAPTURE)
+
+
+# ---------------------------------------------------------------------------
+# Timing: the IEP runs on its own clock, driven by simulated time
+# ---------------------------------------------------------------------------
+# Previously every instruction on every core ticked the IEP once, so stall
+# cycles were lost and two cores stepping together ran it at twice the rate.
+
+import os                                                          # noqa: E402
+import sys                                                         # noqa: E402
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from simulator import Simulator                                    # noqa: E402
+
+_ENABLE = "\n".join([
+    "ldi32 r1, 0x0002E000",
+    "ldi32 r0, 0x11",
+    "sbbo &r0, r1, 0, 4",          # CNT_ENABLE, DEFAULT_INC=1
+])
+
+
+def _cfg(tmp_path, **device):
+    lines = ["[device]"] + [f"{k} = {v}" for k, v in device.items()] + [
+        "[DRAM0]", "base = 0x0", "size = 0x2000",
+        "read_latency = 5", "write_latency = 0", "jitter = 0",
+    ]
+    path = tmp_path / "memory.cfg"
+    path.write_text("\n".join(lines) + "\n")
+    return str(path)
+
+
+def _step_until_enabled(sim, core="pru0"):
+    for _ in range(20):
+        if sim.iep.count_enabled:
+            return
+        sim.step(core, 1)
+    raise AssertionError("firmware never enabled the IEP")
+
+
+def _cycles(sim, core="pru0"):
+    return sim.status()[core]["cycles"]
+
+
+def _spin_sim(cfg, pru1=True):
+    sim = Simulator(config_path=cfg)
+    assert sim.load("pru0", _ENABLE + "\nspin:\n    jmp spin") == []
+    if pru1:
+        assert sim.load("pru1", "spin:\n    jmp spin") == []
+    return sim
+
+
+def test_iep_counts_stall_cycles_not_instructions(tmp_path):
+    """Each LBBO from a 5-cycle DRAM costs 6 core cycles; the IEP sees all 6."""
+    sim = Simulator(config_path=_cfg(tmp_path, pru_clock_mhz=200))
+    assert sim.load("pru0", _ENABLE + "\n" + "\n".join(
+        ["ldi r2, 0"] + ["lbbo &r3, r2, 0, 4"] * 10 + ["halt"])) == []
+    _step_until_enabled(sim)
+    start_count, start_cycles = sim.iep.count, _cycles(sim)
+    steps = 0
+    while not sim.step("pru0", 1)["halted"]:
+        steps += 1
+    cycles = _cycles(sim) - start_cycles
+    assert cycles >= steps + 10 * 5          # every load stalled 5 cycles
+    assert sim.iep.count - start_count == cycles
+
+
+def test_two_cores_stepping_together_do_not_double_the_rate(tmp_path):
+    sim = _spin_sim(_cfg(tmp_path, pru_clock_mhz=250, pru1_clock_mhz=250,
+                         iep_clock_mhz=250))
+    _step_until_enabled(sim)
+    start = sim.iep.count
+    for _ in range(1000):
+        sim.step("pru0", 1)
+        sim.step("pru1", 1)
+    assert sim.iep.count - start == 1000
+
+
+def test_paced_multicore_run_advances_at_the_iep_clock(tmp_path):
+    sim = _spin_sim(_cfg(tmp_path, pru_clock_mhz=250, pru1_clock_mhz=250,
+                         iep_clock_mhz=250))
+    _step_until_enabled(sim)
+    start_count, start_ns = sim.iep.count, sim.iep.now_ns
+    sim.step_paced("pru0", "pru1", 2000)
+    elapsed_ns = sim.iep.now_ns - start_ns
+    assert sim.iep.count - start_count == round(elapsed_ns * 250 / 1000)
+
+
+@pytest.mark.parametrize("core_mhz,iep_mhz,steps,expected", [
+    (200, 100, 1000, 500),        # IEP at half the core clock
+    (250, 500, 1000, 2000),       # IEP faster than the core
+    (250, 333, 250, 333),         # 1 us of core time -> 333 IEP edges
+    (333, 250, 333, 250),
+])
+def test_iep_clock_is_independent_of_the_pru_clock(tmp_path, core_mhz, iep_mhz,
+                                                  steps, expected):
+    cfg = _cfg(tmp_path, pru_clock_mhz=core_mhz, iep_clock_mhz=iep_mhz)
+    sim = _spin_sim(cfg, pru1=False)
+    _step_until_enabled(sim)
+    start = sim.iep.count
+    sim.step("pru0", steps)
+    assert abs((sim.iep.count - start) - expected) <= 1
+
+
+def test_iep_clock_defaults_to_200_mhz_independently_of_the_pru0_clock(tmp_path):
+    sim = Simulator(config_path=_cfg(tmp_path, pru_clock_mhz=250, pru1_clock_mhz=200))
+    assert sim.iep.clock_mhz == 200
+
+
+def test_iep_clock_can_be_changed_at_runtime_without_a_jump(tmp_path):
+    sim = _spin_sim(_cfg(tmp_path, pru_clock_mhz=200), pru1=False)
+    _step_until_enabled(sim)
+    sim.step("pru0", 100)
+    mid = sim.iep.count
+    sim.set_iep_clock_mhz(100)
+    assert sim.iep.count == mid
+    sim.step("pru0", 100)                    # 500 ns at 100 MHz = 50 edges
+    assert sim.iep.count - mid == 50
+
+
+def test_core_reset_does_not_freeze_the_iep(tmp_path):
+    sim = _spin_sim(_cfg(tmp_path, pru_clock_mhz=200), pru1=False)
+    _step_until_enabled(sim)
+    sim.step("pru0", 500)
+    before = sim.iep.count
+    sim.reset("pru0")                        # cycles restart at 0
+    sim.step("pru0", 10)
+    assert sim.iep.count - before == _cycles(sim) >= 10
+
+
+def test_invalid_iep_clock_is_rejected():
+    with pytest.raises(ValueError):
+        IepTimer(clock_mhz=0)
+    with pytest.raises(ValueError):
+        IepTimer().set_clock_mhz(-1)
+
+
+@pytest.mark.parametrize("reset_method", ["reset", "hardware_reset"])
+@pytest.mark.parametrize("slot", range(10))
+def test_reset_async_bits_do_not_overwrite_capture(slot, reset_method):
+    timer = IepTimer()
+    timer.cap_cfg = 0xFFFFFF
+    getattr(timer, reset_method)()
+    # Table 14-10925: bits 9:0 enable captures, 17:10 synchronize inputs.
+    timer.write32(CAP_CFG, timer.read32(CAP_CFG) | (1 << slot))
+    timer.count = 7
+    assert timer.capture_event(slot)
+    timer.count = 19
+    assert not timer.capture_event(slot)
+    assert timer.read32(CAPR0_REG0 + 8 * slot) == 7
+    timer.write32(CAP_STATUS, 1 << slot)
+    assert timer.capture_event(slot)
+    assert timer.read32(CAPR0_REG0 + 8 * slot) == 19
