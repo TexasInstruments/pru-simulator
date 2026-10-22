@@ -1,0 +1,377 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>PRU Assembly Skill Map</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: one column document, wide dependency diagram in a scroll box, workflow as a wrapping card row.
+   Palette: solder-mask green board, copper accent, silkscreen grey. */
+:root {
+  --bg: #eef2f1;
+  --surface: #f9fbfa;
+  --ink: #12211d;
+  --muted: #53665f;
+  --line: #c3d0cb;
+  --board: #0f5c4d;
+  --board-soft: #d6e8e2;
+  --copper: #a8601a;
+  --copper-soft: #f3e3d0;
+  --ext: #3b4f8c;
+  --ext-soft: #dde3f4;
+  --warn: #9a3412;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  --sans: "IBM Plex Sans", system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0b1512; --surface: #12211d; --ink: #e3eeea; --muted: #94aaa2; --line: #2a403a;
+  --board: #5fc3a9; --board-soft: #173a31; --copper: #e0a15f; --copper-soft: #3a2a17;
+  --ext: #9db0ec; --ext-soft: #1f2a4d; --warn: #f0a070; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #0b1512; --surface: #12211d; --ink: #e3eeea; --muted: #94aaa2; --line: #2a403a;
+  --board: #5fc3a9; --board-soft: #173a31; --copper: #e0a15f; --copper-soft: #3a2a17;
+  --ext: #9db0ec; --ext-soft: #1f2a4d; --warn: #f0a070; color-scheme: dark; }
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 400 16px/1.55 var(--sans); }
+main { max-width: 1040px; margin-inline: auto; padding: 40px 16px 64px; display: grid; gap: 48px; }
+h1, h2, h3 { font-family: var(--mono); text-wrap: balance; margin: 0; letter-spacing: -0.01em; }
+h1 { font-size: clamp(1.7rem, 4vw, 2.4rem); line-height: 1.15; font-weight: 600; }
+h2 { font-size: 1.2rem; font-weight: 600; color: var(--board); }
+h3 { font-size: 0.95rem; font-weight: 600; }
+p { margin: 0; max-width: 68ch; }
+code, .mono { font-family: var(--mono); font-size: 0.88em; }
+code { background: var(--board-soft); padding: 1px 5px; border-radius: 3px; }
+.lede { color: var(--muted); font-size: 1.05rem; margin-top: 12px; }
+.eyebrow { font: 500 0.72rem var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--copper); margin-bottom: 10px; }
+section { display: grid; gap: 16px; }
+.scroll { overflow-x: auto; border: 1px solid var(--line); background: var(--surface); border-radius: 6px; }
+svg { display: block; min-width: 940px; width: 100%; height: auto; }
+svg text { font-family: var(--mono); fill: var(--ink); }
+.n-skill { fill: var(--board); stroke: var(--board); }
+.n-skill-t { fill: var(--surface) !important; }
+.n-ref { fill: var(--board-soft); stroke: var(--board); }
+.n-scr { fill: var(--copper-soft); stroke: var(--copper); }
+.n-ext { fill: var(--ext-soft); stroke: var(--ext); }
+.node { stroke-width: 1.5; }
+.edge { fill: none; stroke-width: 1.5; }
+.e-ref { stroke: var(--board); stroke-dasharray: 5 4; }
+.e-scr { stroke: var(--copper); }
+.e-ext { stroke: var(--ext); }
+.sub { font-size: 10.5px; fill: var(--muted) !important; }
+.col { font-size: 11px; letter-spacing: 0.12em; fill: var(--muted) !important; }
+.legend a { color: var(--board); }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 20px; font: 0.8rem var(--mono); color: var(--muted); }
+.legend i { display: inline-block; width: 22px; height: 0; border-top: 2px solid; vertical-align: middle; margin-right: 6px; }
+.steps { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; padding: 0; margin: 0; list-style: none; counter-reset: s; }
+.steps li { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 14px; display: grid; gap: 6px; align-content: start; counter-increment: s; }
+.steps li::before { content: "Step " counter(s); font: 500 0.72rem var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--copper); }
+.steps small { color: var(--muted); font-size: 0.85rem; }
+.steps .tag { font: 0.75rem var(--mono); color: var(--ext); }
+.loop { font: 0.85rem var(--mono); color: var(--warn); }
+table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font: 600 0.72rem var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); background: var(--surface); }
+td:first-child { font-family: var(--mono); font-size: 0.85rem; white-space: nowrap; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 16px; display: grid; gap: 8px; align-content: start; }
+.card ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 0.9rem; }
+.pit { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--warn); border-radius: 4px; padding: 12px 14px; font-size: 0.92rem; }
+.pit b { font-family: var(--mono); font-size: 0.85rem; }
+.tw { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+.tw table { min-width: 560px; }
+
+.flow { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; }
+.flow .fs { flex: 1 1 220px; background: var(--surface); border: 1px solid var(--line); border-top: 3px solid var(--board); border-radius: 6px; padding: 14px; display: grid; gap: 6px; align-content: start; }
+.flow .fs b { font-family: var(--mono); font-size: 0.9rem; color: var(--board); }
+.flow small, .small { color: var(--muted); font-size: 0.88rem; }
+.flow .fa { align-self: center; font: 1.4rem var(--mono); color: var(--copper); }
+.note { color: var(--muted); font-size: 0.88rem; }
+.stack { display: grid; gap: 16px; }
+.card.wide header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; align-items: baseline; }
+.chip { font: 500 0.72rem var(--mono); color: var(--copper); background: var(--copper-soft); padding: 2px 8px; border-radius: 3px; }
+.pipe { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 0.82rem; }
+.pipe span { background: var(--board-soft); border-radius: 4px; padding: 5px 9px; }
+.pipe i { font-style: normal; color: var(--copper); font-family: var(--mono); }
+pre { margin: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 12px; font: 0.8rem/1.5 var(--mono); overflow-x: auto; color: var(--ink); }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.two > div { min-width: 0; display: grid; gap: 8px; align-content: start; }
+h4 { margin: 0; font: 600 0.78rem var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.prompt { margin: 0; padding: 16px 18px; background: var(--board); color: var(--surface); border-radius: 6px; font-size: 1.05rem; max-width: 68ch; }
+.trace { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; border-left: 2px solid var(--line); margin-left: 6px; }
+.trace li { display: grid; grid-template-columns: 96px 1fr; gap: 12px; padding: 12px 0 12px 16px; position: relative; }
+.trace li::before { content: ""; position: absolute; left: -6px; top: 18px; width: 10px; height: 10px; border-radius: 50%; background: var(--copper); }
+.trace .who { font: 600 0.75rem var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--copper); padding-top: 2px; }
+.trace div { min-width: 0; }
+@media (max-width: 560px) { .trace li { grid-template-columns: 1fr; gap: 2px; } .flow .fa { display: none; } }
+footer { color: var(--muted); font-size: 0.82rem; }
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+</style>
+
+<main>
+<header>
+  <div class="eyebrow">Claude Code skill · skills/pru-assembly</div>
+  <h1>PRU assembly skill: features and dependencies</h1>
+  <p class="lede">One <code>SKILL.md</code> that drives an 8-step workflow for TI PRU cores (PRU-ICSS, PRU_ICSSG, PRUSS), backed by 6 on-demand reference files, 3 scripts and 4 external tools. It triggers on PRU, ICSS, clpru, pasm, OpenPRU, pru-simulator, R30/R31 bit-banging and cycle-exact timing requests.</p>
+</header>
+
+<section>
+  <nav class="legend" aria-label="Sections"><a href="#trigger">Triggers</a><a href="#scripts">Scripts</a><a href="#mcp">Simulator tools</a><a href="#example">Example prompt</a></nav>
+  <h2>Dependency map</h2>
+  <p>Claude reads <code>SKILL.md</code> first, loads a reference file only when the task needs it, and runs the scripts unchanged. Scripts in turn depend on tools outside the skill.</p>
+  <div class="scroll"><svg viewBox="0 0 1000 560" role="img" aria-label="Dependency map: SKILL.md links to six reference files and three scripts; scripts depend on Python, clpru and pru-simulator; pru-simulator exposes an MCP server.">
+    <defs>
+      <marker id="a-ref" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" fill="var(--board)"/></marker>
+      <marker id="a-scr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" fill="var(--copper)"/></marker>
+      <marker id="a-ext" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" fill="var(--ext)"/></marker>
+    </defs>
+    <text class="col" x="10" y="22">REFERENCES (read on demand)</text>
+    <text class="col" x="528" y="22">SCRIPTS (run unchanged)</text>
+    <text class="col" x="760" y="22">EXTERNAL (not shipped)</text>
+
+    <!-- references -->
+    <g>
+      <rect class="node n-ref" x="10" y="36" width="210" height="62" rx="4"/><text x="22" y="58" font-size="13" font-weight="600">isa-quick-ref.md</text><text class="sub" x="22" y="76">operands, branch table, core revs</text>
+      <rect class="node n-ref" x="10" y="112" width="210" height="62" rx="4"/><text x="22" y="134" font-size="13" font-weight="600">timing.md</text><text class="sub" x="22" y="152">cycle model, loop budgets</text>
+      <rect class="node n-ref" x="10" y="188" width="210" height="62" rx="4"/><text x="22" y="210" font-size="13" font-weight="600">soc-am335x.md</text><text class="sub" x="22" y="228">legacy PSSP, remoteproc names</text>
+      <rect class="node n-ref" x="10" y="264" width="210" height="62" rx="4"/><text x="22" y="286" font-size="13" font-weight="600">c-interop.md</text><text class="sub" x="22" y="304">C ABI, resource table, loaders</text>
+      <rect class="node n-ref" x="10" y="340" width="210" height="62" rx="4"/><text x="22" y="362" font-size="13" font-weight="600">simulator.md</text><text class="sub" x="22" y="380">install, MCP setup, tool list</text>
+      <rect class="node n-ref" x="10" y="416" width="210" height="62" rx="4"/><text x="22" y="438" font-size="13" font-weight="600">openpru.md</text><text class="sub" x="22" y="456">AM243x/AM64x/AM62x/AM26x repo</text>
+    </g>
+
+    <!-- skill -->
+    <rect class="node n-skill" x="290" y="190" width="170" height="110" rx="6"/>
+    <text class="n-skill-t" x="375" y="232" font-size="16" font-weight="600" text-anchor="middle">SKILL.md</text>
+    <text class="n-skill-t" x="375" y="252" font-size="11" text-anchor="middle">8-step workflow</text>
+    <text class="n-skill-t" x="375" y="268" font-size="11" text-anchor="middle">conventions, pitfalls</text>
+    <text class="n-skill-t" x="375" y="284" font-size="11" text-anchor="middle">templates</text>
+
+    <!-- skill to refs -->
+    <path class="edge e-ref" marker-end="url(#a-ref)" d="M290 225 C 255 225, 255 67, 222 67"/>
+    <path class="edge e-ref" marker-end="url(#a-ref)" d="M290 232 C 260 232, 255 143, 222 143"/>
+    <path class="edge e-ref" marker-end="url(#a-ref)" d="M290 240 C 265 240, 255 219, 222 219"/>
+    <path class="edge e-ref" marker-end="url(#a-ref)" d="M290 252 C 265 252, 255 295, 222 295"/>
+    <path class="edge e-ref" marker-end="url(#a-ref)" d="M290 260 C 260 260, 255 371, 222 371"/>
+    <path class="edge e-ref" marker-end="url(#a-ref)" d="M290 270 C 250 270, 255 447, 222 447"/>
+
+    <!-- scripts -->
+    <g>
+      <rect class="node n-scr" x="520" y="60" width="200" height="62" rx="4"/><text x="532" y="82" font-size="13" font-weight="600">lint_pru.py</text><text class="sub" x="532" y="100">step 4 · errors + warnings</text>
+      <rect class="node n-scr" x="520" y="160" width="200" height="62" rx="4"/><text x="532" y="182" font-size="13" font-weight="600">build.sh</text><text class="sub" x="532" y="200">step 5 · clpru wrapper</text>
+      <rect class="node n-scr" x="520" y="260" width="200" height="62" rx="4"/><text x="532" y="282" font-size="13" font-weight="600">simulate.py</text><text class="sub" x="532" y="300">steps 6–7 · run, edges</text>
+    </g>
+    <path class="edge e-scr" marker-end="url(#a-scr)" d="M460 215 C 490 215, 490 91, 518 91"/>
+    <path class="edge e-scr" marker-end="url(#a-scr)" d="M460 235 C 490 235, 490 191, 518 191"/>
+    <path class="edge e-scr" marker-end="url(#a-scr)" d="M460 255 C 490 255, 490 291, 518 291"/>
+
+    <!-- externals -->
+    <g>
+      <rect class="node n-ext" x="760" y="60" width="230" height="62" rx="4"/><text x="772" y="82" font-size="13" font-weight="600">Python 3</text><text class="sub" x="772" y="100">standard library only</text>
+      <rect class="node n-ext" x="760" y="160" width="230" height="62" rx="4"/><text x="772" y="182" font-size="13" font-weight="600">TI clpru (PRU-CGT)</text><text class="sub" x="772" y="200">env PRU_CGT</text>
+      <rect class="node n-ext" x="760" y="250" width="230" height="62" rx="4"/><text x="772" y="272" font-size="13" font-weight="600">TI pru-simulator</text><text class="sub" x="772" y="290">env PRU_SIM_DIR · AM243x, AM263x</text>
+      <rect class="node n-ext" x="760" y="338" width="230" height="62" rx="4"/><text x="772" y="360" font-size="13" font-weight="600">MCP server (pru_*)</text><text class="sub" x="772" y="378">needs Python mcp &lt; 2</text>
+      <rect class="node n-ext" x="760" y="420" width="230" height="62" rx="4"/><text x="772" y="442" font-size="13" font-weight="600">MCU+ SDK (gmake)</text><text class="sub" x="772" y="460">step 8 · BUILD_MCUPLUS=y</text>
+      <rect class="node n-ext" x="760" y="494" width="230" height="52" rx="4"/><text x="772" y="516" font-size="13" font-weight="600">open-pru repo</text><text class="sub" x="772" y="534">AGENTS.md, makefiles</text>
+    </g>
+    <path class="edge e-ext" marker-end="url(#a-ext)" d="M720 91 H758"/>
+    <path class="edge e-ext" marker-end="url(#a-ext)" d="M720 191 H758"/>
+    <path class="edge e-ext" marker-end="url(#a-ext)" d="M720 291 H758"/>
+    <path class="edge e-ext" marker-end="url(#a-ext)" d="M875 312 V336"/>
+    <!-- doc-only hints -->
+    <path class="edge e-ref" marker-end="url(#a-ref)" d="M220 447 C 400 520, 600 520, 758 520"/>
+  </svg></div>
+  <div class="legend">
+    <span><i style="color:var(--board);border-top-style:dashed"></i>read on demand / documents</span>
+    <span><i style="color:var(--copper)"></i>runs</span>
+    <span><i style="color:var(--ext)"></i>depends on</span>
+  </div>
+</section>
+
+<section>
+  <h2>Workflow</h2>
+  <p>Any task that produces or changes code ticks through this checklist. A failure returns to the step that owns it, never a patch around it.</p>
+  <ol class="steps">
+    <li><h3>Confirm target</h3><small>Device, subsystem and core, toolchain, host side, timing in ns or cycles.</small><span class="tag">openpru.md · soc-am335x.md</span></li>
+    <li><h3>Plan registers and cycles</h3><small>Fill the register map and cycle budget templates before writing code.</small><span class="tag">timing.md · isa-quick-ref.md</span></li>
+    <li><h3>Write the code</h3><small>Conventions: lowercase mnemonics, <code>.set</code> constants, <code>m_</code> macros, <code>FN_</code> functions, cycle comments, end with <code>halt</code>.</small><span class="tag">c-interop.md if C is linked</span></li>
+    <li><h3>Lint</h3><small>Column-1 mnemonics, immediate ranges, register fields, labels, missing halt, per-function register use, macros and includes, OpenPRU headers.</small><span class="tag">scripts/lint_pru.py</span></li>
+    <li><h3>Build</h3><small>OpenPRU makefiles, or <code>build.sh</code> for AM335x and standalone files. No flag changes.</small><span class="tag">scripts/build.sh · clpru</span><span class="loop">fail → step 3</span></li>
+    <li><h3>Simulate</h3><small>Run to halt or a condition, check registers, memory and pins. Skip with a stated reason if unmodelled.</small><span class="tag">scripts/simulate.py run</span><span class="loop">wrong → step 3</span></li>
+    <li><h3>Verify timing</h3><small>Compare each critical path to its budget. Under about 5% margin, recommend a hardware check.</small><span class="tag">simulate.py edges · timing.md</span><span class="loop">over budget → step 2</span></li>
+    <li><h3>Build MCU+ project</h3><small>OpenPRU devices: <code>BUILD_MCUPLUS=y</code>, then <code>gmake -s</code>, so the R5F app embeds the PRU firmware. Flash only if asked. No deploy script.</small><span class="tag">openpru.md</span></li>
+  </ol>
+</section>
+
+<section>
+  <h2>Features by file</h2>
+  <div class="tw"><table>
+    <thead><tr><th>File</th><th>What it provides</th><th>Read when</th></tr></thead>
+    <tbody>
+      <tr><td>SKILL.md</td><td>Workflow, freedom table, register map and function header templates, coding conventions, six pitfalls, source-trust order</td><td>Always</td></tr>
+      <tr><td>isa-quick-ref.md</td><td>Operand limits, register fields and fixed-register users, QB comparison table, loop/call/halt, core revisions V3/V4, clpru vs pasm syntax</td><td>Writing or reviewing instructions</td></tr>
+      <tr><td>timing.md</td><td>1-cycle model, instruction costs, worked loop budget, measuring, what breaks determinism, a known error in OpenPRU's best_practices.md</td><td>Any timing requirement</td></tr>
+      <tr><td>c-interop.md</td><td>Register roles under the C ABI, C-to-assembly and assembly-to-C calls, remoteproc vs MCU+ loading, project layout</td><td>Mixing C and assembly</td></tr>
+      <tr><td>simulator.md</td><td>What the simulator models and doesn't, install, <code>simulate.py</code>, MCP setup, 15 MCP tools, headless runner, verification pattern</td><td>Simulating or timing without hardware</td></tr>
+      <tr><td>openpru.md</td><td>Supported devices (V3/V4), the repo's AI-agent entry points, files worth reading, build, MCU+ and Linux host flows, easy-to-miss rules</td><td>AM243x, AM64x, AM62x, AM261x, AM263x, AM263Px</td></tr>
+      <tr><td>soc-am335x.md</td><td>Cores and clock, memory map, constants table, enabling off-subsystem access, R31 events, control registers, broadside IDs, remoteproc names</td><td>Legacy AM335x / BeagleBone</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="trigger">
+  <h2>How it is triggered</h2>
+  <p>The skill never runs by itself. Claude Code shows the model each skill's name and description at session start. Loading the body, running scripts and calling MCP tools are separate steps, each triggered by the one before.</p>
+  <div class="flow">
+    <div class="fs"><b>1 · Match</b><small>Your message mentions PRU, ICSS, clpru, pasm, OpenPRU, R30/R31, pru-simulator or cycle-exact timing. Or you type <code>/pru-assembly</code>.</small></div>
+    <div class="fa">→</div>
+    <div class="fs"><b>2 · Load</b><small>Claude calls the <code>Skill</code> tool. <code>SKILL.md</code> (118 lines) enters the context. Nothing else loads yet.</small></div>
+    <div class="fa">→</div>
+    <div class="fs"><b>3 · Route</b><small>The task decides what is read: a reference file through <code>Read</code>, a script through <code>Bash</code>, or a simulator tool via <code>mcp__pru-simulator__*</code>.</small></div>
+  </div>
+  <div class="tw"><table>
+    <thead><tr><th>Piece</th><th>Triggered by</th><th>Claude uses</th></tr></thead>
+    <tbody>
+      <tr><td>SKILL.md</td><td>Description match, or <code>/pru-assembly</code></td><td>Skill tool</td></tr>
+      <tr><td>references/*.md</td><td>The table in SKILL.md, by task: ISA question, timing requirement, C interop, simulator use, OpenPRU or AM335x target</td><td>Read tool</td></tr>
+      <tr><td>lint_pru.py</td><td>Step 4, after code is written</td><td>Bash</td></tr>
+      <tr><td>build.sh</td><td>Step 5, AM335x and standalone files only</td><td>Bash</td></tr>
+      <tr><td>simulate.py</td><td>Steps 6 and 7</td><td>Bash</td></tr>
+      <tr><td>MCU+ project build</td><td>Step 8, OpenPRU devices (<code>gmake -s</code>)</td><td>Bash</td></tr>
+      <tr><td>pru_* MCP tools</td><td>Step-by-step debugging that a one-shot run can't answer</td><td>MCP tool calls</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="scripts">
+  <h2>What each script does</h2>
+  <div class="stack">
+    <article class="card wide">
+      <header><h3>lint_pru.py</h3><span class="chip">step 4 · no install</span></header>
+      <p>Static checks the TI assembler misses or reports one error at a time. It reports every problem in a file in one pass.</p>
+      <div class="pipe"><span>read .asm</span><i>→</i><span>strip comments, parse labels, <code>.set</code> symbols, functions and macros</span><i>→</i><span>check instructions, register use and includes</span><i>→</i><span>print <code>file:line: error|warning [rule]</code></span></div>
+      <pre>$ python3 scripts/lint_pru.py [--openpru] [--c-abi] [-I dir] file.asm
+bad.asm:2: error [immediate] ADD operand 3 = 300 is outside OP(255)
+bad.asm:3: error [label] QBNE target 'nowhere' is not defined in this file
+bad.asm:0: warning [nohalt] no HALT and no return (JMP r3.w2 / RET) found
+bad.asm:4: warning [PRU-M001] 'mymacro' is not an instruction and no macro ...
+bad.asm: 2 error(s), 2 warning(s)          # exit 1</pre>
+      <div class="tw"><table>
+        <thead><tr><th>Rule</th><th>Checks</th></tr></thead>
+        <tbody>
+          <tr><td>column1, immediate, register, label</td><td>Errors: mnemonic in column 1, literal outside operand range, invalid register or field, branch to undefined label</td></tr>
+          <tr><td>extern, r31event, nohalt</td><td>Warnings: unresolved JMP/CALL symbol, R31 write without bit 5, no halt or return</td></tr>
+          <tr><td>PRU-C001 · C003 · C004</td><td>Per function: read before write (header-named inputs count), discarded write, and with <code>--c-abi</code> r4–r13 written but never read</td></tr>
+          <tr><td>PRU-M001 · M003 · M004 · M005</td><td>Macros and includes: undefined macro, self-invoking, redefined with a different body, unresolved <code>.include</code> (search folders via <code>-I</code>)</td></tr>
+          <tr><td>tab, width, todo, include, PRU-D001–D003</td><td><code>--openpru</code> only: style rules and function or macro headers (Description, PEAK cycles, Parameters, Registers modified, Returns, Pseudo code)</td></tr>
+        </tbody>
+      </table></div>
+      <p class="small">Exit 0 clean, 1 errors, 2 usage. Examples of ranges it knows: ALU immediates 0–255, shifts and bit ops 0–31, <code>ldi</code> 0–65535, byte counts 1–124, <code>loop</code> 1–256. Every warning needs a fix or a one-line reason.</p>
+    </article>
+
+    <article class="card wide">
+      <header><h3>build.sh</h3><span class="chip">step 5 · needs clpru</span></header>
+      <p>Compiles each source with <code>clpru</code>, then links with your linker command file. Run it unchanged; the AM335x target flags are fixed in the script.</p>
+      <div class="pipe"><span>find <code>$PRU_CGT/bin/clpru</code></span><i>→</i><span>compile each file to <code>obj/*.object</code></span><i>→</i><span>link with <code>libc.a</code></span><i>→</i><span>write <code>.out</code> and <code>.map</code></span></div>
+      <pre>$ PRU_CGT=/usr/share/ti/cgt-pru scripts/build.sh out/fw.out AM335x_PRU.cmd main.asm
+Compiling main.asm
+Linking out/fw.out
+Built out/fw.out (map: out/fw.map)</pre>
+      <p class="small">Fails fast with an install hint when <code>clpru</code> or the linker file is missing. Inside an OpenPRU checkout the repo makefiles replace it.</p>
+    </article>
+
+    <article class="card wide">
+      <header><h3>simulate.py</h3><span class="chip">steps 6–7 · needs pru-simulator</span></header>
+      <p>A thin wrapper over TI's simulator that prints the same fixed summary every time. Finds the simulator through <code>PRU_SIM_DIR</code>, <code>./pru-simulator</code> or <code>~/pru-simulator</code>.</p>
+      <div class="two">
+        <div><h4>run: end state</h4>
+<pre>$ simulate.py run uart_tx.asm --target am263x
+target:       am263x  core: pru0
+result:       PASS (halted)
+cycles:       34735 (stall 0, instructions 34735)
+halted:       True  pc: 20
+registers≠0:  r30=0x00000002</pre>
+        <p class="small">Stops at <code>halt</code> or a condition: <code>cycles&gt;=N</code>, <code>reg:rN==V</code>, <code>mem32:ADDR==V</code>, <code>gpi:N==V</code>, <code>gpo:N==V</code>.</p></div>
+        <div><h4>edges: pin timing</h4>
+<pre>$ simulate.py edges uart_tx.asm \
+    --target am263x --pin 1 --edges 6
+pin 1 edges (cycle, level):
+  [(1,1),(8,0),(1744,1),(3480,0),(5216,1),(6952,0)]
+cycles between edges:
+  [7, 1736, 1736, 1736, 1736]</pre>
+        <p class="small">Runs until pin N changes, N times, and prints the cycle gaps.</p></div>
+      </div>
+      <p class="small">Exit 0 ok, 2 load error, 3 condition unmet or budget spent, 4 simulator error, 5 simulator not installed. Models AM243x and AM263x only, at one cycle per instruction.</p>
+    </article>
+  </div>
+</section>
+
+<section id="mcp">
+  <h2>The simulator tools</h2>
+  <p>The <code>pru_*</code> tools come from the pru-simulator MCP server (set up per <code>references/simulator.md</code>). They keep a core alive between calls, so Claude can stop, look and continue, which <code>simulate.py</code> cannot do.</p>
+  <div class="grid">
+    <div class="card"><h3>Load</h3><ul><li><code>pru_load</code>: assemble source text onto a core</li><li><code>pru_elf_load</code>: load a clpru <code>.out</code></li><li><code>pru_reset</code>: clear a core</li></ul></div>
+    <div class="card"><h3>Run</h3><ul><li><code>pru_step</code>: N instructions</li><li><code>pru_run_until</code>: halt, cycles, register, memory or pin condition</li><li><code>pru_step_multicore</code>: two cores in lockstep</li><li><code>pru_breakpoint</code></li></ul></div>
+    <div class="card"><h3>Inspect</h3><ul><li><code>pru_registers</code>: all 32 plus carry</li><li><code>pru_memory</code>: read only</li><li><code>pru_io</code>: GPO and GPI pins</li><li><code>pru_status</code>: all cores</li></ul></div>
+    <div class="card"><h3>Stimulate and export</h3><ul><li><code>pru_set_input</code>: drive a GPI pin</li><li><code>pru_uart_inject</code>, <code>pru_i2c_attach</code>: test harnesses</li><li><code>pru_vcd_export</code>: waveform file</li></ul></div>
+  </div>
+  <div class="tw"><table>
+    <thead><tr><th>Question</th><th>Use</th></tr></thead>
+    <tbody>
+      <tr><td>Does it finish, and what is left in the registers?</td><td><code>simulate.py run</code></td></tr>
+      <tr><td>How many cycles between pin edges?</td><td><code>simulate.py edges</code></td></tr>
+      <tr><td>Why is r3 wrong at the 5th iteration?</td><td><code>pru_breakpoint</code>, <code>pru_run_until</code>, <code>pru_registers</code></td></tr>
+      <tr><td>What does the waveform look like?</td><td><code>pru_vcd_export</code></td></tr>
+      <tr><td>Does it handle an input pin going high?</td><td><code>pru_set_input</code> then <code>pru_step</code></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="example">
+  <h2>Example prompt, step by step</h2>
+  <p>This is eval 5 from the skill's own test set. The numbers below come from running a bit-bang UART TX program (<code>uart_tx.asm</code>, not shipped with the skill) through the scripts.</p>
+  <blockquote class="prompt">Here's my bit-bang UART TX for AM263x. Check in the simulator that each bit is 1736 cycles at 115200 baud.</blockquote>
+  <ol class="trace">
+    <li><span class="who">Trigger</span><div><b>"bit-bang", "AM263x", "simulator" match the description.</b> Claude calls the Skill tool and <code>SKILL.md</code> loads.</div></li>
+    <li><span class="who">Steps 1–2</span><div><b>Target and budget.</b> AM263x ICSS-M PRU0 at 200 MHz. 200,000,000 / 115,200 = 1736.1, so the budget is 1736 cycles per bit. Claude reads <code>references/simulator.md</code> and <code>timing.md</code>.</div></li>
+    <li><span class="who">Step 4</span><div><b>Lint first.</b> <code>lint_pru.py uart_tx.asm</code> gives <code>0 error(s), 0 warning(s)</code>. The simulator reports only the first error it meets, so a clean lint avoids a confusing failure.</div></li>
+    <li><span class="who">Step 6</span><div><b>Does it run to the end?</b> <code>simulate.py run</code> reports PASS, halted at pc 20 after 34,735 cycles, with r30 = 0x2 (TX line idle high).</div></li>
+    <li><span class="who">Step 7</span><div><b>Measure the bit time.</b> <code>simulate.py edges --pin 1</code> returns gaps <code>[7, 1736, 1736, 1736, 1736]</code>. The first 7 is idle setup, not a bit. Every bit is exactly 1736 cycles, matching the budget.</div></li>
+    <li><span class="who">Report</span><div><b>Numbers, with the source named.</b> "Each bit measures 1736 cycles, 8.68 µs, budget 1736, simulated on am263x." The skill's rule: under about 5% margin, recommend a hardware check. The stop bit between bytes runs a few cycles long because of per-byte setup, which UART allows.</div></li>
+  </ol>
+  <h3>More prompts and what they fire</h3>
+  <div class="tw"><table>
+    <thead><tr><th>Prompt</th><th>Skill parts used</th></tr></thead>
+    <tbody>
+      <tr><td>"My loop should run 10 times but only runs once. It ends with <code>QBLT loop, r1, 10</code>."</td><td>Pitfall 1 and <code>isa-quick-ref.md</code>. QBLT branches when 10 &lt; r1, so the fix is <code>QBGT</code>. No script needed.</td></tr>
+      <tr><td>"Write PRU0 firmware for my BeagleBone Black that outputs 1 MHz on pr1_pru0_pru_r30_5."</td><td>AM335x path: <code>soc-am335x.md</code>, register map and cycle budget (100-cycle half period), lint, <code>build.sh</code>, simulate the loop logic, then stop at the built <code>.out</code> and tell you it needs loading.</td></tr>
+      <tr><td>"From my C firmware, call an assembly routine that sums 64 uint32 values in shared RAM."</td><td><code>c-interop.md</code>: argument and return in r14, return with <code>jmp r3.w2</code>, keep <code>lbbo</code> within 124 bytes, add a resource table.</td></tr>
+      <tr><td>"In my open-pru checkout, create an AM243x project that toggles r30 bit 3 every 1 µs."</td><td><code>openpru.md</code>: read the repo's AGENTS.md first, lint with <code>--openpru</code>, verify the 200-cycle period with <code>simulate.py edges --target am243x</code>.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+
+<section>
+  <h2>Targets covered</h2>
+  <div class="tw"><table>
+    <thead><tr><th>Device</th><th>Subsystem</th><th>Cores</th><th>Rev</th><th>Path</th><th>Simulated</th></tr></thead>
+    <tbody>
+      <tr><td>AM243x, AM64x</td><td>PRU_ICSSG</td><td>pru, rtu_pru, tx_pru × 2</td><td>V4</td><td>OpenPRU</td><td>AM243x</td></tr>
+      <tr><td>AM261x, AM263x, AM263Px</td><td>PRU-ICSSM</td><td>pru0, pru1</td><td>V3</td><td>OpenPRU</td><td>AM263x</td></tr>
+      <tr><td>AM62x</td><td>PRUSS</td><td>pru0, pru1</td><td>V3</td><td>OpenPRU</td><td>no</td></tr>
+      <tr><td>AM335x (BeagleBone)</td><td>PRU-ICSS</td><td>pru0, pru1</td><td>V3</td><td>PSSP + build.sh</td><td>core logic only</td></tr>
+    </tbody>
+  </table></div>
+  <p>Not simulated: INTC, UART, eCAP, CRC, broadside RAM, task manager, MII/MDIO, PWM, shift-in/out modes.</p>
+</section>
+
+<section>
+  <h2>The six pitfalls it guards against</h2>
+  <div class="pit"><b>1 · Branch order.</b> <code>qbgt label, r1, r2</code> branches if r2 &gt; r1. Every branch costs 1 cycle, taken or not.</div>
+  <div class="pit"><b>2 · Immediates.</b> Most are 0–255. Use <code>ldi</code> or <code>ldi32</code> for larger values.</div>
+  <div class="pit"><b>3 · Zero byte count.</b> A zero length in <code>r0.bN</code> hangs the core for lbbo, sbbo, lbco, sbco, xin, xout.</div>
+  <div class="pit"><b>4 · Broadside registers.</b> Multiplier owns r25–r29, broadside RAM owns r1–r9.</div>
+  <div class="pit"><b>5 · Address maps.</b> They differ per subsystem. Never reuse AM335x values on newer devices.</div>
+  <div class="pit"><b>6 · C ABI.</b> r2 and r3.w2 belong to the compiler, and r3.w2–r13 must be preserved.</div>
+</section>
+
+<footer>Updated 2026-10-21 to match the current skill files. Source order when documents disagree: TI guides, hardware measurement, simulator run, this skill's references.</footer>
+</main>
+
+</body></html>
