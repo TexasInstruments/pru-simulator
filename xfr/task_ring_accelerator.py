@@ -381,6 +381,9 @@ class XFR2TRRing:
                 self._cycles_left = tr_copy_cycles(self.tr_size)
             elif landed:
                 # Pointer difference 0: idle, whatever the slots still hold.
+                # Those IDs are abandoned, not queued (point 7), so a later
+                # submit into their slots is not an overwrite.
+                self._unlatched = [False] * SUBMIT_FIFO_DEPTH
                 self._busy_tail = BUSY_TAIL_CYCLES
 
     def _land(self, tr_id: int) -> None:

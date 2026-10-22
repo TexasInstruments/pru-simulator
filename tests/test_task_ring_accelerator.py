@@ -853,6 +853,157 @@ class TestPointerDifferenceEngine:
         assert got == [1, 20]
 
 
+    def test_a_fresh_submit_after_the_stop_is_not_an_overflow(self):
+        """Qodo review of PR #37 (2026-10-19, finding 3).  The IDs left in the
+        slots when the engine stops are abandoned, not queued (module point
+        7), so writing a fresh ID over one of them is not an overwrite of a
+        queued ID.  The stop alone and the stop plus one more ID must count
+        the same overflows."""
+        _, stopped = self._run("    ldi r2, 17\n    xout 0x72, &r2, 2\n")
+        got, resumed = self._run(
+            "    ldi r2, 17\n    xout 0x72, &r2, 2\n"
+            + WAIT_FOR_IDLE_ASM.replace("wait_idle", "wait_idle0").replace("halt", "")
+            + "    ldi r2, 20\n    xout 0x72, &r2, 2\n")
+        assert got == [1, 20]
+        assert resumed.overflow_events == stopped.overflow_events
+
+
+class TestTwoCoreDelivery:
+    """Qodo review of PR #37 (inline 4290176845): a real two-core scenario.
+
+    RTU0 owns the XFR2TR block (Table 6-60); PRU0 shares the ICSS shared RAM
+    and reads the Send list the accelerator built.  Expected values come from
+    the submitted ID order (module point 1: landing order is submission
+    order) and the all-ID-k-bytes source table, not from running the model.
+    """
+
+    IDS = [5, 3, 7, 1, 6, 2, 4, 0]
+
+    def _sim(self):
+        from simulator import Simulator
+        sim = Simulator(config_path="nonexistent.cfg")
+        for tr_id in range(32):
+            sim.memory.write(SRC_BASE + tr_id * 8, bytes([tr_id]) * 8)
+        return sim
+
+    def test_pru0_observes_rtu0_send_list_in_submission_order(self):
+        sim = self._sim()
+        packed = [self.IDS[2 * i] | (self.IDS[2 * i + 1] << 16) for i in range(4)]
+        submit = "".join(f"    ldi32 r{2 + i}, 0x{w:08X}\n" for i, w in enumerate(packed))
+        sim.load("rtu0", SETUP_ASM + submit + "    xout 0x72, &r2, 16\n"
+                 + WAIT_FOR_IDLE_ASM)
+        sim.load("pru0", """
+    ldi32 r0, 0x11000
+    lbbo &r10, r0, 0, 64
+    halt
+""")
+
+        for _ in range(500):
+            if sim.cores["rtu0"].halted:
+                break
+            sim.step("rtu0")
+        assert sim.cores["rtu0"].halted
+
+        sim.step("pru0", 3)
+        regs = sim.registers("pru0")
+        # entry k = 8 bytes of value id -> r10+2k and r11+2k hold id*0x01010101
+        got = [regs[10 + 2 * k] & 0xFF for k in range(8)]
+        assert got == self.IDS
+        assert all(regs[10 + 2 * k] == regs[11 + 2 * k] == self.IDS[k] * 0x01010101
+                   for k in range(8))
+
+    def test_pru0_cannot_use_the_task_ring(self):
+        sim = self._sim()
+        sim.set_strict_unsupported_xfr(True)
+        sim.load("pru0", """
+    xin 0x71, &r7, 4
+    halt
+""")
+        with pytest.raises(UnsupportedXFRError, match="0x71"):
+            sim.step("pru0")
+
+
+class TestHaltedCoreDrain:
+    """Qodo review of PR #37: the copy engine does not need the core
+    (inline 4290176856), and the time it takes after HALT is simulated time
+    like any other (2026-10-19, finding 2)."""
+
+    _HALT_WITH_TWO_QUEUED = SETUP_ASM + """
+    ldi32 r2, 0x00030009
+    xout 0x72, &r2, 4
+    halt
+"""
+
+    def _sim(self):
+        from simulator import Simulator
+        sim = Simulator(config_path="nonexistent.cfg")
+        for tr_id in range(32):
+            sim.memory.write(SRC_BASE + tr_id * 8, bytes([tr_id]) * 8)
+        return sim
+
+    def _halt_rtu0(self, sim):
+        sim.load("rtu0", self._HALT_WITH_TWO_QUEUED)
+        for _ in range(100):
+            if sim.cores["rtu0"].halted:
+                break
+            sim.step("rtu0")
+        assert sim.cores["rtu0"].halted
+        assert sim.cores["rtu0"].task_ring.busy is True
+        return sim.cores["rtu0"]
+
+    def test_ring_lands_after_rtu0_halts(self):
+        sim = self._sim()
+        self._halt_rtu0(sim)
+        sim.step("rtu0", 40)
+        ring = sim.cores["rtu0"].task_ring
+        assert ring.busy is False
+        assert ring.wrt_ptr == ptr(2)
+        assert sim.memory_read(RING_BASE, 16) == bytes([9]) * 8 + bytes([3]) * 8
+
+    def test_run_keeps_going_until_the_ring_is_idle_after_halt(self):
+        bus = make_memory()
+        fill_source_table(bus)
+        core = make_core(self._HALT_WITH_TWO_QUEUED, bus=bus)
+        core.run(max_steps=1000)
+        assert core.halted
+        assert core.task_ring.busy is False
+        assert core.task_ring.wrt_ptr == ptr(2)
+        assert (ring_entry(bus, 0), ring_entry(bus, 1)) == (9, 3)
+
+    def test_post_halt_drain_advances_the_core_clock_and_the_iep(self):
+        """Each post-HALT step is one cycle: the cycle count and the IEP move
+        with the copy, and no instruction retires."""
+        sim = self._sim()
+        core = self._halt_rtu0(sim)
+        cycles, retired = core.counters.cycles, core.counters.instruction_count
+        iep_before = sim.iep.global_time_units
+
+        steps = 0
+        while core.task_ring.busy:
+            sim.step("rtu0")
+            steps += 1
+            assert steps < 100, "ring never went idle"
+
+        assert core.counters.cycles == cycles + steps
+        assert core.counters.instruction_count == retired
+        assert sim.iep.global_time_units > iep_before
+
+        # Once the ring is idle a halted core is frozen again.
+        sim.step("rtu0", 5)
+        assert core.counters.cycles == cycles + steps
+
+    def test_run_counts_the_drain_cycles(self):
+        bus = make_memory()
+        fill_source_table(bus)
+        core = make_core(self._HALT_WITH_TWO_QUEUED, bus=bus)
+        steps = core.run(max_steps=1000)
+        retired = core.counters.instruction_count
+        # Every instruction and every post-HALT drain step took >= 1 cycle.
+        assert core.counters.cycles >= steps
+        assert steps > retired
+        assert core.counters.cycles - core.counters.stall_cycles == steps
+
+
 def drain(ring: XFR2TRRing, limit: int = 4096) -> int:
     """Tick until the accelerator reports idle; return the ticks taken.
 
