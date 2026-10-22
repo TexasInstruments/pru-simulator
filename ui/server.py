@@ -27,6 +27,8 @@ from perif.gpcfg import MUX_SD
 from pru_io.device_profiles import discover_device_profiles
 from pru_io.scenarios import SCENARIOS, apply_scenario, ssi_demo_state, set_ssi_demo_position
 from pru_io.ssi_encoder_model import SSIEncoderModel
+from ui.live_sessions import DashboardConnection
+from xfr.crc_accelerator import CRCAccelerator
 from xfr.xfr_bus import SPAD_BANK0, SPAD_BANK1, SPAD_BANK2, IPC_SPAD
 
 app = FastAPI(title="PRU Simulator Dashboard")
@@ -56,6 +58,22 @@ def _safe_source_subpath(path: str) -> pathlib.Path | None:
 sim = Simulator(config_path=config_path)
 _device_api = PRUSimulatorMCP(config_path=config_path, simulator=sim)
 _config_lock = asyncio.Lock()
+_connections: set[DashboardConnection] = set()
+_execution_owner = None
+_execution_mode = None
+
+
+def _execution_state(connection=None):
+    return {"type": "execution", "running": _execution_owner is not None,
+            "owner": _execution_owner is not None and _execution_owner is connection,
+            "mode": _execution_mode}
+
+
+def _stop_execution():
+    global _execution_owner, _execution_mode
+    _execution_owner = _execution_mode = None
+    for connection in _connections:
+        connection.publish(_execution_state(connection))
 
 
 def _reject_legacy_i2c_conflict(core: str) -> None:
@@ -338,6 +356,8 @@ async def put_config(request: Request):
             sim = _replace_config(text)
             _iep_clock_override = None   # a saved config speaks for itself
             _clear_history()
+            _stop_execution()
+            _publish_updates()
             return {"ok": True}
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=400)
@@ -456,6 +476,8 @@ async def put_clock_speed(request: Request):
             sim = _replace_config(text)
             _apply_iep_override()
             _clear_history()
+            _stop_execution()
+            _publish_updates()
             return {"ok": True}
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=400)
@@ -463,13 +485,33 @@ async def put_clock_speed(request: Request):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    global _execution_owner, _execution_mode
     await websocket.accept()
+    websocket = DashboardConnection(websocket)
+    _connections.add(websocket)
     try:
         while True:
             data = await websocket.receive_text()
             msg = json.loads(data)
             action = msg.get("action")
             core = msg.get("core", "pru0")
+
+            if action == "start_execution":
+                if msg.get("mode") not in {"run", "sim"}:
+                    await websocket.send_json({"type": "error", "errors": ["mode must be run or sim"]})
+                    continue
+                if _execution_owner in (None, websocket):
+                    _execution_owner, _execution_mode = websocket, msg["mode"]
+                reply = _execution_state(websocket)
+                if "request_id" in msg:
+                    reply["request_id"] = msg["request_id"]
+                await websocket.send_json(reply)
+                for connection in _connections - {websocket}:
+                    connection.publish(_execution_state(connection))
+                continue
+            if action == "stop_execution":
+                _stop_execution()
+                continue
 
             if not isinstance(core, str) or core not in sim.cores:
                 await websocket.send_json({"type": "error", "tag": "core",
@@ -479,7 +521,20 @@ async def websocket_endpoint(websocket: WebSocket):
                                   run_id=msg.get("run_id") if action in ("run", "run_multicore") else None)
                 continue
 
-            if action == "load":
+            if action in {"step", "run", "run_multicore"}:
+                if ((_execution_owner is not None and _execution_owner is not websocket)
+                        or (msg.get("managed") and _execution_owner is not websocket)):
+                    await websocket.send_json({"type": "error", "errors": ["Execution stopped or controlled by another tab"]})
+                    await _send_state(websocket, core, run_id=msg.get("run_id"))
+                    continue
+            elif action in {"load", "load_elf", "reset", "hard_reset", "step_back", "scenario_load"}:
+                if _execution_owner is not None:
+                    _stop_execution()
+
+            if action == "subscribe_capture":
+                websocket.capture = bool(msg.get("enabled", False))
+                await websocket.send_json({"type": "capture_subscription", "enabled": websocket.capture})
+            elif action == "load":
                 _clear_history()
                 sim._scenario = None
                 filename = msg.get("filename")
@@ -720,7 +775,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await _send_state(websocket, core)
             elif action == "run":
                 max_steps = int(msg.get("max_steps", 1000))
-                capture = bool(msg.get("capture", False))
+                capture = bool(msg.get("capture", False)) or any(c.capture for c in _connections)
                 stride = _capture_stride(msg)
                 pru = sim.cores[core]
                 at_breakpoint = False
@@ -743,7 +798,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                   captured=capture, run_id=msg.get("run_id"))
             elif action == "run_multicore":
                 max_steps = int(msg.get("max_steps", 1000))
-                capture = bool(msg.get("capture", False))
+                capture = bool(msg.get("capture", False)) or any(c.capture for c in _connections)
                 stride = _capture_stride(msg)
                 # "partners" runs three or four cores together; "partner" is the
                 # original single follower.
@@ -938,11 +993,29 @@ async def websocket_endpoint(websocket: WebSocket):
             else:
                 await websocket.send_json({"type": "error", "tag": "ws",
                                            "errors": [f"unknown action {action!r}"]})
+            if action not in {"get_state", "read_memory", "device_discover", "scenario_list", "subscribe_capture"}:
+                captured_cores = {core, *partners} if action == "run_multicore" and capture else (
+                    {core} if action == "run" and capture else set())
+                breakpoint_cores = set()
+                if action in {"step", "run", "run_multicore"}:
+                    stepped = [core, *partners] if action == "run_multicore" else [core]
+                    breakpoint_cores = {name for name in stepped
+                                        if sim.cores[name].pc in sim.cores[name].breakpoints}
+                    if _execution_owner is websocket and (breakpoint_cores or any(
+                            sim.cores[name].halted or sim.cores[name].pc >= len(sim.cores[name].instructions)
+                            for name in stepped)):
+                        _stop_execution()
+                _publish_updates(websocket, captured_cores, breakpoint_cores)
     except WebSocketDisconnect:
         return
     except Exception as e:
         import traceback
         traceback.print_exc()
+    finally:
+        _connections.discard(websocket)
+        if _execution_owner is websocket:
+            _stop_execution()
+        await websocket.close()
 
 
 def _read_mac(core) -> dict:
@@ -955,9 +1028,9 @@ def _read_mac(core) -> dict:
 
 def _read_crc(core) -> dict:
     """Return CRC accelerator status for the given PRUCore."""
-    acc = core.accelerators.get(1)
+    acc = core.accelerators.get(CRCAccelerator.DEVICE_ID)
     if acc is None:
-        return {"mode": "CRC16", "value": "0000"}
+        return {"mode": "—", "value": "—"}
     if acc.crc32_mode:
         mode = "CRC32"
         value = f"{acc.crc_reg:08X}"
@@ -1021,7 +1094,10 @@ def _capture_stride(msg: dict) -> int:
     """Instructions per Signal Graph sample outside peripheral mode (client may ask finer)."""
     stride = msg.get("stride", CAPTURE_STRIDE_GP)
     if isinstance(stride, bool) or not isinstance(stride, int):
-        return CAPTURE_STRIDE_GP
+        stride = CAPTURE_STRIDE_GP
+    scenario = getattr(sim, "_scenario", None)
+    if scenario is not None:
+        stride = min(stride, scenario.ui.get("capture_stride", CAPTURE_STRIDE_GP))
     return max(1, min(stride, CAPTURE_STRIDE_GP))
 
 
@@ -1090,9 +1166,41 @@ async def _send_capture(ws, core, samples, partners=None):
     if partners:
         msg["partners"] = partners   # names for the trailing [r30, gpi] pairs
     await ws.send_json(msg)
+    for connection in _connections - {ws}:
+        if connection.capture:
+            connection.publish(msg)
 
 
 async def _send_state(ws, core, at_breakpoint=False, captured=False, run_id=None):
+    state = _state(core, at_breakpoint, captured)
+    state["execution"] = _execution_state(ws)
+    if run_id is not None:
+        state["run_id"] = run_id
+    await ws.send_json(state)
+
+
+def _publish_updates(origin=None, captured_cores=(), breakpoint_cores=()):
+    """Publish shared data; request acknowledgements and view choices stay local."""
+    observers = _connections - {origin}
+    if not observers:
+        return
+    states = [_state(core, at_breakpoint=core in breakpoint_cores, captured=core in captured_cores)
+              for core in sim.cores]
+    for connection in observers:
+        for state in states:
+            connection.publish({**state, "execution": _execution_state(connection)})
+        for tag, addr_attr, len_attr in (("mem1", "_mem_addr", "_mem_len"),
+                                         ("mem2", "_mem_addr2", "_mem_len2")):
+            if hasattr(connection, addr_attr):
+                addr, length = getattr(connection, addr_attr), getattr(connection, len_attr)
+                try:
+                    connection.publish({"type": "memory", "tag": tag, "addr": addr,
+                                        "length": length, "data": list(sim.memory_read(addr, length))})
+                except ValueError:
+                    pass  # a new configuration may remove this tab's memory range
+
+
+def _state(core, at_breakpoint=False, captured=False):
     c = sim.cores[core]
     # R31 display reflects live GPI state (registers.regs[31] is never updated by set_gpi_pin)
     regs = list(c.registers.regs)
@@ -1163,9 +1271,7 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False, run_id=None
         "mac": _read_mac(c),
         "crc": _read_crc(c),
     }
-    if run_id is not None:
-        state["run_id"] = run_id
-    await ws.send_json(state)
+    return state
 
 
 DEFAULT_HOST = "127.0.0.1"

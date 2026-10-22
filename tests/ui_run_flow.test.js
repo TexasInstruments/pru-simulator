@@ -6,14 +6,22 @@ import vm from 'node:vm';
 const app = readFileSync(new URL('../ui/static/app.js', import.meta.url), 'utf8');
 
 // Drive the real connection handlers and Run timer with withheld network replies.
-function dashboard() {
+function dashboard({autoSessions = true} = {}) {
   const timers = new Map();
   const messages = [];
+  const sessionCommands = [];
   let nextTimer = 0;
   class Socket {
     static OPEN = 1;
     readyState = Socket.OPEN;
-    send(text) { messages.push(JSON.parse(text)); }
+    send(text) {
+      const command = JSON.parse(text);
+      if (['start_execution', 'stop_execution'].includes(command.action)) {
+        sessionCommands.push(command);
+        if (autoSessions) this.onmessage({data:JSON.stringify({type:'execution', running:command.action === 'start_execution',
+          owner:command.action === 'start_execution', mode:command.mode || null, request_id:command.request_id})});
+      } else messages.push(command);
+    }
   }
   const button = { classList: { add() {}, remove() {} } };
   const context = vm.createContext({
@@ -35,7 +43,8 @@ function dashboard() {
   context.connect();
   const socket = () => vm.runInContext('ws', context);
   return {
-    context, messages, button, socket,
+    context, messages, sessionCommands, button, socket,
+    session(fields) { socket().onmessage({data:JSON.stringify({type:'execution', ...fields})}); },
     tick(count = 1) { for (let i = 0; i < count; i++) for (const fn of [...timers.values()]) fn(); },
     state(fields = {}) { socket().onmessage({ data: JSON.stringify({ type: 'state', core: 'pru0', ...fields }) }); },
   };
@@ -58,6 +67,43 @@ test('Run waits for its chunk reply even while other states arrive', () => {
   d.tick(100);
   assert.equal(d.messages.length, 2);
   assert.notEqual(d.messages[1].run_id, first.run_id);
+});
+
+test('an observing tab shows shared execution without starting a second timer', () => {
+  const d = dashboard();
+  d.session({running:true, owner:false, mode:'run'});
+  d.context.startRun();
+  d.tick(50);
+  assert.equal(d.messages.length, 0);
+  assert.equal(d.sessionCommands.length, 0);
+});
+
+test('a shared stop releases the controlling tabs timer without sending another stop', () => {
+  const d = dashboard();
+  d.context.startRun();
+  d.tick();
+  assert.equal(d.messages.length, 1);
+  d.session({running:false, owner:false, mode:null});
+  d.tick(50);
+  assert.equal(d.messages.length, 1);
+  assert.deepEqual(d.sessionCommands.map(command => command.action), ['start_execution']);
+});
+
+test('a delayed stop from the previous run cannot cancel a newly requested run', () => {
+  const d = dashboard({autoSessions:false});
+  d.context.startRun();
+  d.session({running:true,owner:true,mode:'run',request_id:d.sessionCommands[0].request_id});
+  d.tick();
+  d.context.stopRun();
+  d.context.startRun();
+  const restart = d.sessionCommands.at(-1);
+  d.session({running:false,owner:false,mode:null}); // reply to the earlier stop
+  d.tick();
+  assert.equal(d.messages.length, 1, 'wait for the new start acknowledgement');
+  d.session({running:true,owner:true,mode:'run',request_id:restart.request_id});
+  d.state({run_id:d.messages[0].run_id});
+  d.tick();
+  assert.equal(d.messages.length, 2, 'the restarted run must still have a timer');
 });
 
 test('Stop leaves at most one chunk in flight and Start waits for it', () => {

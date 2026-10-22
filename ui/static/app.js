@@ -20,6 +20,8 @@ let _flashTimer = null;
 let clientBreakpoints = new Set();
 let _lastSourceKey = '';
 let captureStride = null;   // Signal Graph sample interval requested by the loaded example
+let sharedExecution = {running:false, owner:false, mode:null};
+let executionStartPending = null;
 
 // ---- Core selection: execution membership is separate from inspection -------
 let availableCores = [...PruCores.ORDER];
@@ -340,6 +342,7 @@ function connect() {
     }
     sendAction({ action: "device_discover" });
     sendAction({ action: "scenario_list" });
+    sendAction({ action: "subscribe_capture", enabled: signalGraph.recording });
     refreshMemory();
     refreshMemory2();
     loadRegions();
@@ -349,6 +352,8 @@ function connect() {
     wsStatus.textContent = "Disconnected";
     wsStatus.className = "error";
     runPending = null;
+    executionStartPending = null;
+    sharedExecution = {running:false,owner:false,mode:null};
     stopRun();
     // Attempt reconnect after 2 s
     setTimeout(connect, 2000);
@@ -363,6 +368,7 @@ function connect() {
     try {
       const msg = JSON.parse(event.data);
       if (msg.type === "state") {
+        if (msg.execution) receiveExecution(msg.execution);
         if (msg.run_id === runPending) runPending = null;
         if (msg.available_cores) showAvailableCores(msg.available_cores);
         if (msg.iep) showIepClock(msg.iep);
@@ -370,6 +376,8 @@ function connect() {
         window.updateWorkspaceEvents?.(msg, multiCoreMode ? executionCores() : [currentCore]);
         if (msg.clocks) { clockState = msg.clocks; }
         updateCoreState(msg);
+      } else if (msg.type === "execution") {
+        receiveExecution(msg);
       } else if (msg.type === "capture") {
         graphHandleCapture(msg);
         drawGraph();
@@ -434,6 +442,16 @@ function sendAction(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(obj));
   }
+}
+
+function receiveExecution(state) {
+  sharedExecution = state;
+  if (executionStartPending !== null) {
+    if (state.request_id !== executionStartPending) { updateCoresControl(); return; }
+    executionStartPending = null;
+  }
+  if (!state.running || !state.owner) { stopRun(false); stopSim(false); }
+  updateCoresControl();
 }
 
 // ---- UI update ------------------------------------------------------------
@@ -2010,7 +2028,9 @@ btnStep.addEventListener("click", () => {
 
 
 btnRun.addEventListener("click", () => {
-  if (running) {
+  if (sharedExecution.running && !running) {
+    sendAction({action:'stop_execution'});
+  } else if (running) {
     stopRun();
   } else {
     startRun();
@@ -2098,6 +2118,7 @@ btnLoad.addEventListener("click", async () => {
 
 function graphSetRecording(on) {
   signalGraph.recording = on;
+  sendAction({ action: "subscribe_capture", enabled: on });
   const btn = document.getElementById("graph-rec-btn");
   const dot = document.getElementById("graph-rec-dot");
   if (btn) btn.classList.toggle("rec-on", on);
@@ -2573,16 +2594,18 @@ document.addEventListener("keydown", (e) => {
 // ---- Run mode -------------------------------------------------------------
 
 function startRun() {
-  if (running || clockChanging) return;
+  if (running || clockChanging || !ws || ws.readyState !== WebSocket.OPEN || (sharedExecution.running && !sharedExecution.owner)) return;
   stopSim();
   running = true;
+  executionStartPending = ++runSequence;
+  sendAction({action:'start_execution',mode:'run',request_id:executionStartPending});
   setButtonLabel(btnRun, "Stop");
   btnRun.classList.add("btn-reset");
   btnRun.classList.remove("btn-run");
   runInterval = setInterval(() => {
     // Device chunks can take longer than this timer interval. Wait for the
     // final state of our chunk so Run and Stop never build up a command queue.
-    if (runPending !== null || !ws || ws.readyState !== WebSocket.OPEN) return;
+    if (executionStartPending !== null || runPending !== null || !ws || ws.readyState !== WebSocket.OPEN) return;
     const run_id = ++runSequence;
     runPending = run_id;
     // While recording, the server samples the graph inside its run loop and
@@ -2593,17 +2616,19 @@ function startRun() {
     const max_steps = 1000;
     if (multiCoreMode) {
       sendAction({ action: "run_multicore", core: executionCores()[0],
-                   partners: executionCores().slice(1), max_steps, capture, run_id, stride: captureStride });
+                   partners: executionCores().slice(1), max_steps, capture, run_id, stride: captureStride, managed:true });
     } else {
-      sendAction({ action: "run", core: currentCore, max_steps, capture, run_id, stride: captureStride });
+      sendAction({ action: "run", core: currentCore, max_steps, capture, run_id, stride: captureStride, managed:true });
     }
   }, 10);
   updateCoresControl();
 }
 
-function stopRun() {
+function stopRun(notify = true) {
   if (!running) return;
   running = false;
+  executionStartPending = null;
+  if (notify) sendAction({action:'stop_execution'});
   setButtonLabel(btnRun, "Run");
   btnRun.classList.add("btn-run");
   btnRun.classList.remove("btn-reset");
@@ -2615,9 +2640,11 @@ function stopRun() {
 }
 
 function startSim() {
-  if (clockChanging) return;
+  if (clockChanging || !ws || ws.readyState !== WebSocket.OPEN || (sharedExecution.running && !sharedExecution.owner)) return;
   stopRun();
   simRunning = true;
+  executionStartPending = ++runSequence;
+  sendAction({action:'start_execution',mode:'sim',request_id:executionStartPending});
   setButtonLabel(btnSim, "Stop SIM");
   btnSim.classList.add("btn-reset");
   btnSim.classList.remove("btn-sim");
@@ -2628,9 +2655,11 @@ function startSim() {
   updateCoresControl();
 }
 
-function stopSim() {
+function stopSim(notify = true) {
   if (!simRunning) return;
   simRunning = false;
+  executionStartPending = null;
+  if (notify) sendAction({action:'stop_execution'});
   setButtonLabel(btnSim, "SIM");
   btnSim.classList.remove("btn-reset");
   btnSim.classList.add("btn-sim");
@@ -2642,7 +2671,8 @@ function stopSim() {
 }
 
 btnSim.addEventListener("click", () => {
-  if (simRunning) { stopSim(); } else { startSim(); }
+  if (sharedExecution.running && !simRunning) sendAction({action:'stop_execution'});
+  else if (simRunning) { stopSim(); } else { startSim(); }
 });
 
 // ---- GPI pin click --------------------------------------------------------
@@ -4090,7 +4120,7 @@ function updateCoreState(state) {
 function updateCoresControl() {
   if (!coresDeck) return;
   coresDeck.update({selection:coreSelection, available:availableCores, states:coreStates,
-    clocks:clockState, running:running || simRunning, busy:clockChanging || runPending !== null});
+    clocks:clockState, running:running || simRunning || sharedExecution.running, busy:clockChanging || runPending !== null});
   const label = currentCore.toUpperCase();
   for (const id of ['assembly-core-target','bp-focus-core']) {
     const el = document.getElementById(id);
@@ -4111,18 +4141,21 @@ function updateCoresControl() {
   }
   for (const button of tele.children) button.setAttribute('aria-pressed',String(button.dataset.core === currentCore));
   const anyBreak = coreSelection.used.some(core => coreStates[core]?.at_breakpoint);
-  const active = running || simRunning;
+  const active = running || simRunning || sharedExecution.running;
   statusBadge.textContent = anyBreak ? 'BREAK' : active ? 'RUNNING' : 'HALTED';
   statusBadge.className = active ? 'running' : 'halted';
+  setButtonLabel(btnRun, active ? 'Stop' : 'Run');
+  btnRun.classList.toggle('btn-reset', active);
+  btnRun.classList.toggle('btn-run', !active);
 }
 
 function requestSelectedStep() {
-  if (clockChanging || runPending !== null || !ws || ws.readyState !== WebSocket.OPEN) return;
+  if (clockChanging || runPending !== null || !ws || ws.readyState !== WebSocket.OPEN || executionStartPending !== null) return;
   const cores = executionCores();
   if (cores.length > 1) {
     const run_id = ++runSequence; runPending = run_id;
-    sendAction({action:'run_multicore',core:cores[0],partners:cores.slice(1),max_steps:1,run_id});
-  } else sendAction({action:'step',core:cores[0],count:1});
+    sendAction({action:'run_multicore',core:cores[0],partners:cores.slice(1),max_steps:1,run_id,managed:simRunning});
+  } else sendAction({action:'step',core:cores[0],count:1,managed:simRunning});
 }
 
 // ---- Init -----------------------------------------------------------------

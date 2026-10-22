@@ -266,6 +266,8 @@ v0.4.0 — hover over **PRU SIM** in the dashboard header to confirm.
 ### Changelog
 
 **v0.4.0**
+
+- **Linked browser tabs** — open the same dashboard URL on multiple screens. Code, registers, signals, devices, memory and execution status come from one simulator. Each view keeps its own selected page, core and layout. Run/Stop is shared; opening another tab does not start another run.
 - **Redesigned dashboard** — Simulator and I/O & Devices workspaces, persistent layouts, compact controls, consistent button motion, and dark/high-contrast themes.
 - **CORES deck** — select which cores execute and which are shown. The default uses one shared source/register view; selected cores can be expanded into separate panes. Clock controls show the affected cores without claiming a hardware clock-domain layout.
 - **Device demos and diagnostics** — run SSI model/reader and encoder-emulator demos, inspect TCA9538, UART, sigma-delta and Peripheral Interface state, and review device events and faults. Motor control follows in a separate release.

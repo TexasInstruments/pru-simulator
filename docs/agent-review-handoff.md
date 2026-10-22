@@ -344,3 +344,32 @@ Verified this follow-up: 46 frontend checks pass. Firefox geometry checks at 176
 ## Readable core names and telemetry — 15 October
 
 The CORES pill displays PRU0/PRU1/RTU0/RTU1 for shown cores at widths from 1840 px and compact P0/P1/R0/R1 below that. Telemetry is 12 px with 11 px core buttons, taking extra width from the panel bar. A container query hides decorative panel glyphs when needed while retaining panel names. Firefox checks passed at 1760/1920/2560 px with four cores and ten-digit counters; mobile has no page overflow. All 46 frontend checks pass. Screenshot: workspace `artifacts/ui/previews/readable-core-labels-desktop.png`.
+
+
+## Linked browser tabs — 22 October 2026
+
+The UI branch integrates main `14ef2e6`. The linked-tab changes were verified
+before publication and committed/pushed only after explicit user authorization.
+These changes let multiple browser
+tabs at the same URL observe the same simulator, with independent page/core
+inspection and layouts. State, memory ranges and requested signal captures are
+published to other connections. Run/SIM has one controlling timer, shared stop
+and status, and stops when that controlling connection closes. Request-local
+acknowledgements are not broadcast. Ordered, bounded per-connection outputs
+prevent stale replies from overtaking live updates. Pending start IDs prevent
+an older Stop/state reply from cancelling a newly requested run.
+
+Real two-connection regressions cover load, step, inputs, reset, shared memory,
+configuration, late joins, both SSI demos with capture enabled only in the
+observing tab, run ownership, disconnect and breakpoint status. Frontend tests
+cover delayed replies and closed connections. No connected browser was
+available for a rendered two-window check.
+
+The CRC display part of #63 now uses the accelerator's named device ID and
+shows dashes when absent. #53/#55/#56/#61 remain covered. #62 and #66 are not
+claimed fixed; see `docs/dashboard_issue_status.md` for the open-issue audit.
+
+Fresh verification: 2671 Python tests passed, two expected failures; 57
+frontend checks passed; generated SSI ABI check passed. The standard merged
+configuration was used for the full suite, then the user's original
+`memory.cfg` was restored byte-for-byte. The saved configuration stays unstaged.

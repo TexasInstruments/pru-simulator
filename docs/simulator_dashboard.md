@@ -341,6 +341,41 @@ by current state.
 
 ## UI issue regression checks
 
+### One simulator on multiple screens
+
+Start the dashboard once. Open the **same full URL, including the port**, in
+each browser tab or window. You can show Simulator in both, or Simulator in
+one and I/O & Devices in the other. Page selection, core inspection, layout,
+recording and unsaved editor drafts stay local to each view. Loaded firmware,
+registers, inputs, memory, devices, clocks and execution status are shared.
+
+One Run or SIM timer advances the backend at a time. All views receive its
+updates. Use Stop in either view to stop that run. Closing its controlling
+tab stops execution after the current chunk; other tabs remain connected to
+the same simulator. Loading firmware, resetting or replacing the configuration
+also stops the current run. Reopening a tab reads the current state rather
+than restarting the simulator.
+
+To check SSI on two screens:
+
+1. In the first tab, select I/O & Devices and load either SSI example.
+2. In the second tab, select Simulator. The loaded code must appear there.
+3. Enable Signal Graph REC in the second tab. You can turn recording off in
+   the first tab; the second tab still receives the firmware's signal samples.
+4. Press Run in the first tab. Check that the second tab's PC, registers and
+   traces advance while the first tab shows received SSI frames and position.
+5. Change the SSI position. Both tabs must show the new received position
+   after the next frame. Press Stop in either tab; both status badges must stop.
+6. Open a third tab at the same URL. It must show the current code and counter
+   values without resetting or executing another copy of the firmware.
+
+Signal buffers begin when that view starts recording; earlier samples and
+unsaved editor text are not copied between browser tabs. A view too slow to
+receive updates reconnects instead of blocking the run or silently dropping
+signal samples.
+
+### Existing issue checks
+
 - [#53](https://github.com/TexasInstruments/pru-simulator/issues/53): load the
   same assembly twice. Both replies must keep Source / Disassembly visible.
   Switching between cores with identical firmware must also keep the listing.

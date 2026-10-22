@@ -149,12 +149,14 @@ const stepButton = control();
 let activeCores = plain(selection.used);
 const execution = vm.createContext({
   document: { addEventListener: (name, fn) => { keys[name] = fn; } },
+  sharedExecution:{running:false,owner:false,mode:null}, executionStartPending:null,
   btnStep: stepButton, btnRun: control(), btnSim: control(),
   executionCores: () => activeCores, currentCore: 'pru1', multiCoreMode: true,
   running: false, simRunning: false, clockChanging: false, runPending: null,
   runSequence: 0, captureStride: null, signalGraph: { recording: false },
   ws: { readyState: 1 }, WebSocket: { OPEN: 1 }, simIntervalInput: { value: '1.0' },
-  sendAction: action => messages.push(plain(action)), setButtonLabel() {},
+  sendAction: action => { messages.push(plain(action));
+    if (action.action === "start_execution") execution.executionStartPending = null; }, setButtonLabel() {},
   updateCoresControl() {}, stopRun() {}, stopSim() {},
   setInterval: fn => { intervals.push(fn); return intervals.length; },
 });
@@ -176,17 +178,19 @@ for (const trigger of [() => stepButton.listeners.click(),
   () => { execution.startSim(); intervals.at(-1)(); },
   () => { execution.startRun(); intervals.at(-1)(); }]) {
   execution.runPending = null;
+  execution.executionStartPending = null;
   trigger();
   assert.equal(messages.at(-1).action, 'run_multicore');
   assert.equal(messages.at(-1).core, 'pru1', 'the first used core leads, even without PRU0');
   assert.deepEqual(messages.at(-1).partners, ['rtu0', 'rtu1'], 'hidden used cores still execute');
 }
 execution.runPending = null;
+execution.executionStartPending = null;
 activeCores = ['rtu0'];
 execution.multiCoreMode = false;
 execution.currentCore = 'rtu0';
 stepButton.listeners.click();
-assert.deepEqual(messages.at(-1), { action: 'step', core: 'rtu0', count: 1 });
+assert.deepEqual(messages.at(-1), { action: 'step', core: 'rtu0', count: 1, managed: true });
 
 // Source and registers retain one shared panel each; panes live inside them.
 for (const id of ['cores-control', 'source-panes', 'reg-body', 'source-core-chips', 'register-core-chips'])
