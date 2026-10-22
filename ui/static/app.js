@@ -3985,6 +3985,7 @@ function applyCoreSelection(next) {
     // Inspection must not detach a running device or change execution membership.
     prevRegisters = mcFreshRegs(); _lastSourceKey = '';
     sourceList.replaceChildren(); initSpadState();
+    syncGpioLoopback({});
     devicePanelCore = currentCore;
     updateCtableForCore();
   }

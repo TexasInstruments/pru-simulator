@@ -765,8 +765,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     steps = 0
                     while steps < max_steps:
                         pacing = sim.step_paced_many(core, partners, 1)
-                        steps += 1
-                        if capture and _capture_due(lead_pru, steps, stride):
+                        steps += pacing["lead_steps"]
+                        if capture and pacing["lead_steps"] and _capture_due(lead_pru, steps, stride):
                             samples.append(_capture_sample(lead_pru, partner_prus))
                         if not pacing["complete"]:
                             await websocket.send_json({

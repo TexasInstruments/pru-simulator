@@ -22,7 +22,7 @@ const sent = [];
 const storage = new Map();
 const context = vm.createContext({ document: { getElementById: get,
   createElement: tag => { const element = new Element(); element.tagName = tag; return element; },
-  activeElement: null },
+  activeElement: null, querySelectorAll: () => [] },
   localStorage: { setItem: (key, value) => storage.set(key, value) },
   sendAction: action => sent.push(action), currentCore: 'rtu1',
   availableCores: ['pru0','pru1','rtu0','rtu1'],
@@ -44,7 +44,7 @@ function loadFunction(name) {
   vm.runInContext(app.slice(start, end), context);
 }
 for (const name of ['persistCoreSelection', 'applyCoreSelection', 'syncDeviceCoreSelect',
-  'showAvailableCores', 'showIepClock', 'buildGpioDirectionControls', 'updateGpioDirections']) loadFunction(name);
+  'syncGpioLoopback', 'showAvailableCores', 'showIepClock', 'buildGpioDirectionControls', 'updateGpioDirections']) loadFunction(name);
 context.showAvailableCores(['pru0', 'rtu0', 'pru1']);
 assert.equal(context.currentCore, 'pru0');
 assert.deepEqual(JSON.parse(JSON.stringify(context.coreSelection)), {

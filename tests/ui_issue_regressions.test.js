@@ -70,6 +70,7 @@ test('#53: switching cores with identical assembly keeps the source visible', ()
   const d = dashboard();
   d.loadFunction('updateSource');
   d.run(readFileSync(new URL('../ui/static/cores.js', import.meta.url), 'utf8'));
+  d.loadFunction('syncGpioLoopback');
   d.loadFunction('applyCoreSelection');
   const instructions = [{ addr: 0, text: 'halt' }];
   d.context.updateSource(instructions, 0, {});

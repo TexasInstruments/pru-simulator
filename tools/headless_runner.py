@@ -295,9 +295,11 @@ def _next_instruction_cycle_bounds(sim: Simulator, core: str) -> tuple[int, int]
     region._check_bounds(address, length)
     words = region._word_count(address, length)
     if instruction.opcode in ("LBBO", "LBCO"):
-        minimum = 1 + region.read_latency + (words - 1)
+        minimum = 1 + region.read_latency + (words - 1) * region.per_word_latency
         return minimum, minimum + region.jitter
-    cycles = 1 + region.write_latency + (words - 1)
+    # Stores are deterministic: ask the region, so penalties such as the
+    # misaligned multi-word store cost (#77) are never re-derived here.
+    cycles = 1 + region.calc_write_stalls(address, length)
     return cycles, cycles
 
 

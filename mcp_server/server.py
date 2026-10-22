@@ -230,14 +230,17 @@ class PRUSimulatorMCP:
                 "fault": dict(c.fault) if c.fault is not None else None,
             }
 
+        lead_steps = 0
         for _ in range(count):
             pacing = self.sim.step_paced(lead, follow, 1, guard_ns=guard_ns)
+            lead_steps += pacing["lead_steps"]
             lead_core = self.sim.cores[lead]
             follow_core = self.sim.cores[follow]
             if lead_core.fault is not None or follow_core.fault is not None:
                 return {
                     "success": False,
                     "reason": "core_fault",
+                    "lead_steps": lead_steps,
                     "lead": state(lead),
                     "follow": state(follow),
                 }
@@ -251,6 +254,7 @@ class PRUSimulatorMCP:
                 return {
                     "success": False,
                     "reason": pacing["reason"],
+                    "lead_steps": lead_steps,
                     "target_ns": float(target_ns),
                     "follow_ns": float(follow_ns),
                     "lead": state(lead),
@@ -260,6 +264,7 @@ class PRUSimulatorMCP:
         return {
             "success": True,
             "reason": "stepped",
+            "lead_steps": lead_steps,
             "lead": state(lead),
             "follow": state(follow),
         }

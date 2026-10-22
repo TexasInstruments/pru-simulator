@@ -552,7 +552,7 @@ def test_unknown_device_target_is_rejected_instead_of_dropping_rtu1(tmp_path):
         with pytest.raises(ValueError) as excinfo:
             Simulator(str(config))
         assert repr(target) in str(excinfo.value)
-        assert "AM243x, AM64x, AM263x" in str(excinfo.value)
+        assert "AM243x, AM64x, AM261x, AM263x" in str(excinfo.value)
 
     # An inline comment, as the design spec writes `target = AM243x    # V4: ...`,
     # is not part of the target name.

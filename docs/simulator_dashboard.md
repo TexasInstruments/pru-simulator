@@ -72,6 +72,10 @@ used set and Arrow Left requests step-back for that set. A breakpoint on any
 used core stops Run, including a used core whose panes are hidden. I/O & Devices
 also retains an explicit device target drawn from available cores.
 
+Step-back cannot restore XFRDMA queues, XFR2VBUS transfers and external VBUS
+memory, or task-ring queues and pending work. Reset and rerun programs that
+use those accelerators instead of using undo to validate their results.
+
 Fresh browser state uses and shows only PRU0. Used, shown, focus and pin state
 are saved as browser preferences beside the panel layout. Saved selections are
 pruned to the target's available cores, and invalid or empty selections recover
