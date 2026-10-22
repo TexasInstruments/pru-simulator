@@ -30,6 +30,7 @@ from xfr.xfr_bus import XFRBus, IPC_SPAD, SPAD_BANK0, SPAD_BANK1, SPAD_BANK2
 from pru_io.io_port import IOPort
 from xfr.accelerator import Accelerator
 from xfr.mac_accelerator import MACAccelerator
+from xfr.xfrdma_accelerator import XFRDMAAccelerator, XFRDMABridge, XFRDMA_STATUS_ID, XFRDMA_THREAD_IDS
 from xfr.crc_accelerator import CRCAccelerator
 from xfr.bswap_accelerator import (
     BSWAP_4_8,
@@ -38,6 +39,14 @@ from xfr.bswap_accelerator import (
     BSwapAccelerator,
 )
 from xfr.task_ring_accelerator import attach_task_ring
+from xfr.xfr2vbus_accelerator import (
+    RD_ID0,
+    RD_ID1,
+    WR_ID0,
+    WR_ID1,
+    XFR2VBUSReadAccelerator,
+    XFR2VBUSWriteAccelerator,
+)
 
 
 # A memory fault whose base register is an uninitialised R2 is almost always
@@ -96,6 +105,7 @@ class PRUCore:
     def __init__(self, name: str, memory: MemoryBus, xfr: XFRBus, io_port: IOPort,
                  constant_table: ConstantTable | None = None,
                  dram_swap: bool = False,
+                 vbus_memory: MemoryBus | None = None,
                  cycle_observer: Callable[[int], None] | None = None,
                  reset_observer: Callable[[], None] | None = None):
         self.name = name
@@ -112,6 +122,12 @@ class PRUCore:
         # PRU1/RTU1 see DRAM1 at local 0x0000 and DRAM0 at 0x2000. See
         # _map_data_addr.
         self.dram_swap = dram_swap
+        # XFR2VBUS (TRM 6.4.6.3.1) reaches SoC CBASS0/MSMC memory, a distinct
+        # 48-bit address space from the ICSSG-local `memory` bus above. Public
+        # so tests back it with a real MemoryBus/MemoryRegion instead of
+        # reaching into accelerator internals; defaults to an empty bus (any
+        # access without a configured region fails loud, same as `memory`).
+        self.vbus_memory: MemoryBus = vbus_memory if vbus_memory is not None else MemoryBus()
         self.pc: int = 0
         self.halted: bool = False
         self.fault: dict | None = None
@@ -126,12 +142,19 @@ class PRUCore:
 
         self._parser = Parser()
         self._branch = BranchUnit()
+        xfrdma_bridge = XFRDMABridge()
         self.accelerators: dict[int, Accelerator] = {
             MACAccelerator.DEVICE_ID: MACAccelerator(self.registers),
+            XFRDMA_STATUS_ID: XFRDMAAccelerator(xfrdma_bridge, XFRDMA_STATUS_ID),
+            **{device_id: XFRDMAAccelerator(xfrdma_bridge, device_id) for device_id in XFRDMA_THREAD_IDS},
             CRCAccelerator.DEVICE_ID: CRCAccelerator(self.registers),
             BSWAP_BYTE_ORDER: BSwapAccelerator(self.registers, BSWAP_BYTE_ORDER),
             BSWAP_4_8: BSwapAccelerator(self.registers, BSWAP_4_8),
             BSWAP_4_16: BSwapAccelerator(self.registers, BSWAP_4_16),
+            RD_ID0: XFR2VBUSReadAccelerator(self.vbus_memory, RD_ID0),
+            RD_ID1: XFR2VBUSReadAccelerator(self.vbus_memory, RD_ID1),
+            WR_ID0: XFR2VBUSWriteAccelerator(self.vbus_memory, WR_ID0),
+            WR_ID1: XFR2VBUSWriteAccelerator(self.vbus_memory, WR_ID1),
         }
         # XFR2TR ring accelerator, broadside IDs 0x70/0x71/0x72.  TRM SPRUIM2J
         # Table 6-60 places it on RTU_PRU1/0 only, so `attach_task_ring`
@@ -139,6 +162,11 @@ class PRUCore:
         # IDs fall through to the unsupported-XFR handling (recorded diagnostic,
         # or an error in strict mode).
         self.task_ring = attach_task_ring(self)
+        # Accelerators whose state changes with time (XFR2VBUS read latency,
+        # WR_BUSY) expose advance(cycles); step() feeds them core cycles.
+        self._timed_accelerators = tuple(
+            acc for acc in self.accelerators.values() if hasattr(acc, "advance")
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -227,8 +255,13 @@ class PRUCore:
         if self.io_port.uart_generator is not None:
             self.io_port.uart_generator.tick(self.counters.cycles)
 
+
+        # The MAC samples R28/R29 one instruction late (silicon, upstream #58).
+        self.accelerators[MACAccelerator.DEVICE_ID].begin_step()
+
         instr = self.instructions[self.pc]
         branch_taken = False
+        xfr_held = False
 
         # Dispatch
         op = instr.opcode
@@ -512,8 +545,18 @@ class PRUCore:
             start_reg = reg_op.index if isinstance(reg_op, Register) else 0
             start_byte = (reg_op.offset // 8) if isinstance(reg_op, Register) else 0
             if device_id in self.accelerators:
-                data = self.accelerators[device_id].xin(start_reg, length, start_byte)
-                self._write_registers_from_bytes(start_reg, data, start_byte)
+                accelerator = self.accelerators[device_id]
+                data = accelerator.xin(start_reg, length, start_byte)
+                if getattr(accelerator, "hold_pc", False):
+                    # A stalled broadside read holds the pipeline: the
+                    # destination registers keep their previous contents until
+                    # the transfer actually completes.  Writing the placeholder
+                    # here would make the stall observable as register damage.
+                    branch_taken = True
+                    xfr_held = True
+                    self.counters.stall_cycles += 1
+                else:
+                    self._write_registers_from_bytes(start_reg, data, start_byte)
             elif self.xfr.xfr_shift_en and device_id in (SPAD_BANK0, SPAD_BANK1, SPAD_BANK2):
                 self._xin_shifted(device_id, start_reg, length)
             else:
@@ -532,7 +575,12 @@ class PRUCore:
             start_byte = (reg_op.offset // 8) if isinstance(reg_op, Register) else 0
             if device_id in self.accelerators:
                 data = self._read_registers_to_bytes(start_reg, length, start_byte)
-                self.accelerators[device_id].xout(start_reg, data, start_byte)
+                accelerator = self.accelerators[device_id]
+                accelerator.xout(start_reg, data, start_byte)
+                if getattr(accelerator, "hold_pc", False):
+                    branch_taken = True
+                    xfr_held = True
+                    self.counters.stall_cycles += 1
             elif self.xfr.xfr_shift_en and device_id in (SPAD_BANK0, SPAD_BANK1, SPAD_BANK2):
                 self._xout_shifted(device_id, start_reg, length)
             else:
@@ -551,8 +599,15 @@ class PRUCore:
             start_byte = (reg_op.offset // 8) if isinstance(reg_op, Register) else 0
             if device_id in self.accelerators:
                 data = self._read_registers_to_bytes(start_reg, length, start_byte)
-                old_data = self.accelerators[device_id].xchg(start_reg, data, start_byte)
-                self._write_registers_from_bytes(start_reg, old_data, start_byte)
+                accelerator = self.accelerators[device_id]
+                old_data = accelerator.xchg(start_reg, data, start_byte)
+                if getattr(accelerator, "hold_pc", False):
+                    # Held XCHG: neither side moved, so leave the registers alone.
+                    branch_taken = True
+                    xfr_held = True
+                    self.counters.stall_cycles += 1
+                else:
+                    self._write_registers_from_bytes(start_reg, old_data, start_byte)
             elif self.xfr.xfr_shift_en and device_id in (SPAD_BANK0, SPAD_BANK1, SPAD_BANK2):
                 self._xchg_shifted(device_id, start_reg, length)
             else:
@@ -639,8 +694,20 @@ class PRUCore:
         if self.io_port.perif is not None:
             self.io_port.perif.advance_cycles(self.counters.cycles)
 
+        # ---- Advance timed XFR accelerators -----------------------------
+        # Every core cycle this instruction took, memory stalls included (+1
+        # for the instruction cycle counted just below).
+        elapsed = self.counters.cycles - cycles_before + 1
+        for acc in self._timed_accelerators:
+            acc.advance(elapsed)
+
         # ---- Count instruction cycle ------------------------------------
-        self.counters.tick()
+        if xfr_held:
+            # A held XFR consumes a cycle (stall_cycles was bumped above) but
+            # retires nothing, so it must not count as an instruction.
+            self.counters.cycles += 1
+        else:
+            self.counters.tick()
         # Time-driven devices advance by the cycles this step consumed, stalls
         # included, so a core built without a Simulator still ticks them. With
         # no device attached only the cycle count moves; it stays exact so a
