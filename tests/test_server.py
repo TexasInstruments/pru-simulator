@@ -299,6 +299,21 @@ def test_multicore_run_reports_incomplete_catchup_without_blocking(fresh_sim):
 
 
 @pytest.mark.parametrize("finish", ["halt", "nop"])
+def test_finished_multicore_run_does_not_capture_an_unexecuted_step(fresh_sim, finish):
+    assert fresh_sim.load("pru0", finish) == []
+    fresh_sim.step("pru0", 1)
+    fresh_sim.gpcfg_write("pru0", 1)
+    before = fresh_sim.cores["pru0"].counters.cycles
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "run_multicore", "core": "pru0",
+                      "partner": "pru1", "capture": True, "max_steps": 5})
+        lead = ws.receive_json()
+        assert lead["type"] == "state"
+        assert lead["cycles"] == before
+        assert ws.receive_json()["type"] == "state"
+
+
+@pytest.mark.parametrize("finish", ["halt", "nop"])
 def test_multicore_run_resumes_catchup_after_the_lead_finishes(fresh_sim, finish):
     assert fresh_sim.load(
         "pru0", f"ldi r0, 10000\nloop: sub r0, r0, 1\nqbne loop, r0, 0\n{finish}"

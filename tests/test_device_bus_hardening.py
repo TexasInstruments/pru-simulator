@@ -670,6 +670,36 @@ def test_last_detach_restores_active_loopback(mode, gpo):
     assert _level(port.gpi, 4) == _level(gpo, 4)
 
 
+@pytest.mark.parametrize("mode", ["standalone", "unwired", "wired"])
+@pytest.mark.parametrize("device_level", [0, 1])
+def test_repeated_r30_preserves_device_input_over_loopback(mode, device_level):
+    if mode == "standalone":
+        port = IOPort()
+    else:
+        sim = Simulator()
+        port = sim.cores["pru0"].io_port
+    port.set_loopback_group(1, True)
+    gpo = ((1 - device_level) << 4) | (1 << 5)
+    port.write_r30(gpo)
+    if mode == "wired":
+        sim.add_gpio_wire("pru0", 4, "rtu0", 6)
+        device = sim.attach_device("rtu0", _PinDevice(6, value=device_level))
+    else:
+        device = port.attach_device(_PinDevice(4, value=device_level))
+    assert _level(port.read_r31(), 4) == device_level
+    calls = len(device.calls)
+
+    for _ in range(3):
+        port.write_r30(gpo)
+        assert _level(port.read_r31(), 4) == device_level
+        assert _level(port.read_r31(), 5) == 1  # unmanaged loopback still works
+    assert len(device.calls) == calls
+
+    port.write_r30(gpo & ~(1 << 5))
+    assert _level(port.read_r31(), 4) == device_level
+    assert _level(port.read_r31(), 5) == 0
+
+
 class _ReactiveRelay(DeviceModel):
     def __init__(self, input_pin, output_pin):
         self.name = "relay"
@@ -681,6 +711,61 @@ class _ReactiveRelay(DeviceModel):
     def tick(self, cycle, bus):
         self.calls.append((cycle, bus))
         return 1 << self.output_pin, _level(bus, self.input_pin) << self.output_pin
+
+
+@pytest.mark.parametrize("through_port", [False, True])
+def test_standalone_detach_propagates_release_to_reactive_peer(through_port):
+    from pru_io.device_model import DeviceBus
+    port = IOPort() if through_port else None
+    bus = port.device_bus if port else DeviceBus()
+    attach = port.attach_device if port else bus.attach
+    low = attach(_PinDevice(0, value=0))
+    peer = attach(_ReactiveRelay(0, 4))
+    assert _level(bus.get_state()["bus"], 4) == 0
+    bus.settle(100, 0)
+    if port:
+        port.advance_devices(110)
+    else:
+        bus.advance_cycles(None, 10, first_cycle=101)
+    calls = len(peer.calls)
+
+    (port.detach_device if port else bus.detach)(low)
+
+    assert len(peer.calls) > calls
+    assert _level(peer.calls[-1][1], 0) == 1
+    assert peer.calls[-1][0] == 110
+    assert _level(bus.get_state()["bus"], 4) == 1
+    if port:
+        assert _level(port.read_r31(), 4) == 1
+
+
+def test_standalone_detach_uses_restored_bus_time():
+    from pru_io.device_model import DeviceBus
+    bus = DeviceBus()
+    low = bus.attach(_PinDevice(0, value=0))
+    peer = bus.attach(_ReactiveRelay(0, 4))
+    bus.settle(100, 0)
+    snap = bus.snapshot()
+    bus.settle(200, 0)
+    bus.restore(snap)
+
+    bus.detach(low)
+
+    assert peer.calls[-1][0] == 100
+
+
+def test_standalone_attach_samples_current_r30_and_updates_r31():
+    port = IOPort()
+    port.set_gpo_drive_mask(1)
+    port.write_r30(1)
+
+    peer = port.attach_device(_ReactiveRelay(0, 4))
+
+    assert _level(peer.calls[0][1], 0) == 1
+    assert _level(port.read_r31(), 4) == 1
+    calls = len(peer.calls)
+    port.write_r30(1)
+    assert len(peer.calls) == calls  # an unchanged write is not a new edge
 
 
 @pytest.mark.parametrize("mode", ["standalone", "unwired", "wired"])

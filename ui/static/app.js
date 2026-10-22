@@ -2340,7 +2340,8 @@ function onLoopbackToggle(btn) {
   const group = parseInt(btn.dataset.group, 10);
   const enabled = !btn.classList.contains('active');
   btn.classList.toggle('active', enabled);
-  sendAction({ action: 'set_loopback', core: currentCore, group, enabled });
+  const core = multiCoreMode ? 'pru0' : currentCore;
+  sendAction({ action: 'set_loopback', core, group, enabled });
 }
 
 document.querySelectorAll('#loopback-strip .lb-btn').forEach(btn => {

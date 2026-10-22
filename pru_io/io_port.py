@@ -49,8 +49,8 @@ class IOPort:
         instruction wrote); the Peripheral Interface uses it to gate FIFO
         pushes / clock-mode / RX-enable latches.
 
-        When sd_en (R30 bit 25) is clear, applies loopback_mask: masked GPO bits
-        are immediately reflected into GPI (combinatorial, matching hardware).
+        When sd_en (R30 bit 25) is clear, loopback immediately reflects GPO
+        into GPI for pins not managed by the device bus.
         """
         old_gpo = self.gpo
         self.gpo = value & _MASK_20
@@ -59,7 +59,10 @@ class IOPort:
         if self.sd_filter is not None:
             self.sd_filter.process_r30(value)
         if not (value & (1 << 25)) and self.loopback_mask:
-            self.gpi = (self.gpi & ~self.loopback_mask) | (self.gpo & self.loopback_mask)
+            managed = (self._device_pin_mask if self._device_endpoint is None
+                       else self.device_bus._managed_masks[self._device_endpoint])
+            loopback = self.loopback_mask & ~managed
+            self.gpi = (self.gpi & ~loopback) | (self.gpo & loopback)
         if self.i2c_device is not None:
             scl = bool(value & (1 << _I2C_SCL_BIT))
             sda_master = bool(value & (1 << _I2C_SDA_BIT))
@@ -86,8 +89,13 @@ class IOPort:
         if (self.i2c_device is not None and isinstance(device, TCA9538Model)
                 and {0, 1}.intersection(device.nets)):
             raise ValueError("generic TCA9538 pins overlap the legacy I2C device")
-        return self.device_bus.attach(device, port=self._device_endpoint,
-                                      cycle=self._device_cycle)
+        if self._device_endpoint is None:
+            self.device_bus._last_gpo = self.gpo
+        attached = self.device_bus.attach(device, port=self._device_endpoint,
+                                         cycle=self._device_cycle)
+        if self._device_endpoint is None:
+            self._update_device_gpi(self.device_bus._bus)
+        return attached
 
     def bind_device_bus(self, bus: DeviceBus, endpoint: str) -> None:
         """Join a simulator-wide electrical bus under this core's name."""
@@ -158,7 +166,7 @@ class IOPort:
 
     def detach_device(self, device) -> None:
         """Detach one model and release its previous output pins."""
-        self.device_bus.detach(device)
+        self.device_bus.detach(device, cycle=self._device_cycle)
         if self._device_endpoint is None:
             self._update_device_gpi(self.device_bus._bus)
 
