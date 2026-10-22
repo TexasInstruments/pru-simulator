@@ -82,3 +82,74 @@ def test_penalty_defaults_to_off_for_a_region_that_does_not_set_it():
     assert region.calc_write_stalls(1, 4) == 3
     assert region.calc_write_stalls(0, 4) == 1          # aligned: unchanged
     assert region.calc_write_stalls(1, 2) == 1          # one word: unchanged
+
+
+# --- shipped presets -------------------------------------------------------
+# The cases above use the sim_config fixture.  The presets are separate files,
+# and a preset that omits the penalty silently charges 1 + W (PR #78 review:
+# config/memory_am261x.cfg did).  LP-AM261 is the board the table came from.
+
+import configparser
+import glob
+import os
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PRESETS = {
+    "AM261x": os.path.join(REPO_ROOT, "config", "memory_am261x.cfg"),
+    "AM243x": os.path.join(REPO_ROOT, "config", "memory_am243x.cfg"),
+}
+SHIPPED_CONFIGS = sorted(
+    glob.glob(os.path.join(REPO_ROOT, "config", "memory*.cfg"))
+    + glob.glob(os.path.join(REPO_ROOT, "memory*.cfg"))
+)
+LOCAL_RAM = ("DRAM0", "DRAM1", "ICSS_SHARED")
+
+
+def _preset_cost(cfg_path: str, setup: str, instr: str) -> int:
+    sim = Simulator(cfg_path)
+    core = sim.cores["pru0"]
+    assert sim.load("pru0", setup + instr + "\nhalt\n") == []
+    target = len(core.instructions) - 2
+    while core.pc != target:
+        sim.step("pru0")
+    before = core.counters.cycles
+    sim.step("pru0")
+    return core.counters.cycles - before
+
+
+@pytest.mark.parametrize("preset", sorted(PRESETS))
+@pytest.mark.parametrize("length", sorted(SHARED_ROWS))
+@pytest.mark.parametrize("offset", range(4))
+def test_preset_shared_ram_store_matches_silicon(preset, offset, length):
+    cost = _preset_cost(PRESETS[preset], SETUP, f"sbco &r4, c28, {offset}, {length}")
+    assert cost == SHARED_ROWS[length][offset]
+
+
+@pytest.mark.parametrize("preset", sorted(PRESETS))
+@pytest.mark.parametrize("length", [2, 4, 8])
+@pytest.mark.parametrize("offset", range(4))
+def test_preset_own_dram_store_matches_silicon(preset, offset, length):
+    cost = _preset_cost(PRESETS[preset], SETUP, f"sbco &r4, c24, {0x40 + offset}, {length}")
+    assert cost == SHARED_ROWS[length][offset]
+
+
+@pytest.mark.parametrize("offset", range(4))
+def test_am261x_preset_msram_store_has_no_penalty(offset):
+    cfg = configparser.ConfigParser()
+    cfg.read(PRESETS["AM261x"])
+    base = int(cfg["MS_RAM"]["base"], 0)
+    words = (offset + 4 + 3) // 4
+    setup = SETUP + f"ldi32 r1, 0x{base:08X}\n"
+    assert _preset_cost(PRESETS["AM261x"], setup, f"sbbo &r4, r1, {offset}, 4") == 1 + words
+
+
+@pytest.mark.parametrize("path", SHIPPED_CONFIGS, ids=os.path.basename)
+def test_every_shipped_config_sets_the_local_ram_penalty(path):
+    cfg = configparser.ConfigParser()
+    cfg.read(path)
+    for section in LOCAL_RAM:
+        if section in cfg:
+            assert cfg[section].getint("misaligned_write_penalty", 0) == 1, (
+                f"{os.path.basename(path)} [{section}] must set misaligned_write_penalty = 1")
+    if "MS_RAM" in cfg:
+        assert cfg["MS_RAM"].getint("misaligned_write_penalty", 0) == 0
