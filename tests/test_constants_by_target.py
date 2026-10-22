@@ -15,7 +15,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _sim(tmp_path, target):
-    """Simulator on a throw-away root config with [device] target = `target`."""
+    """Simulator constant table on a throw-away root config with [device] target = `target`."""
     cfg = configparser.ConfigParser()
     cfg.read(os.path.join(_REPO_ROOT, "memory.cfg"))
     cfg["device"]["target"] = target
@@ -23,7 +23,11 @@ def _sim(tmp_path, target):
     with open(path, "w") as f:
         cfg.write(f)
     shutil.copytree(os.path.join(_REPO_ROOT, "config"), tmp_path / "config")
-    return Simulator(str(path))
+    # Simulator() rejects targets it cannot run (e.g. AM261x), so exercise the
+    # constant-table lookup on its own.
+    sim = Simulator.__new__(Simulator)
+    sim.constant_table = sim._load_constants(str(path))
+    return sim
 
 
 def _table(sim):
