@@ -129,6 +129,11 @@ class Simulator:
         self.xfr = XFRBus()
         self.memory = self._load_memory(config_path)
         self.constant_table = self._load_constants(config_path)
+        # XFR2VBUS reaches SoC CBASS0/MSMC memory, a single external bus
+        # shared by every core's accelerator instances (TRM 6.4.6.3.1) —
+        # mirrors how self.memory above is already shared across cores. No
+        # region is registered by default; see PRUCore.vbus_memory.
+        self.vbus_memory = MemoryBus()
         dev = self._get_device_config(config_path)
         pru_clock = dev.get("pru_clock_mhz", "200")
         pru1_clock = dev.get("pru1_clock_mhz", pru_clock)
@@ -138,12 +143,14 @@ class Simulator:
         io_pru1 = IOPort()
         io_rtu1 = IOPort()
         self.cores: dict[str, PRUCore] = {
-            "pru0": PRUCore("PRU0", self.memory, self.xfr, io_pru0, copy.deepcopy(self.constant_table)),
-            "rtu0": PRUCore("RTU0", self.memory, self.xfr, io_rtu0, copy.deepcopy(self.constant_table)),
+            "pru0": PRUCore("PRU0", self.memory, self.xfr, io_pru0, copy.deepcopy(self.constant_table),
+                            vbus_memory=self.vbus_memory),
+            "rtu0": PRUCore("RTU0", self.memory, self.xfr, io_rtu0, copy.deepcopy(self.constant_table),
+                            vbus_memory=self.vbus_memory),
             "pru1": PRUCore("PRU1", self.memory, self.xfr, io_pru1, copy.deepcopy(self.constant_table),
-                            dram_swap=True),
+                            dram_swap=True, vbus_memory=self.vbus_memory),
             "rtu1": PRUCore("RTU1", self.memory, self.xfr, io_rtu1, copy.deepcopy(self.constant_table),
-                            dram_swap=True),
+                            dram_swap=True, vbus_memory=self.vbus_memory),
         }
 
         # configparser keeps inline comments, which the design spec uses on target
