@@ -159,8 +159,9 @@ def test_time_driven_device_ticks_on_a_bare_core_as_under_a_simulator(monkeypatc
 
     for source, steps, expected in (
         ("nop\n" * 5 + "halt\n", 5, 5),
-        # ldi32 is two cycles; the 8-word LBBO is 1 + MS_RAM's 40 + 7 more words.
-        ("ldi32 r1, 0x70000000\nlbbo &r2, r1, 0, 32\nhalt\n", 3, 2 + 1 + 40 + 7),
+        # ldi32 is two cycles; the 8-word AM243x MSRAM LBBO is 21 + 7 more
+        # words (silicon-measured cost, #67).
+        ("ldi32 r1, 0x70000000\nlbbo &r2, r1, 0, 32\nhalt\n", 3, 2 + 21 + 7),
     ):
         bare = PRUCore("PRU0", memory, XFRBus(), IOPort())
         owned = Simulator().cores["pru0"]

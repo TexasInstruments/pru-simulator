@@ -148,11 +148,12 @@ class Simulator:
 
         # configparser keeps inline comments, which the design spec uses on target
         target = dev.get("target", "AM243x").split("#", 1)[0].strip()
-        if target.lower() not in ("am243x", "am64x", "am263x"):
+        if target.lower() not in ("am243x", "am64x", "am261x", "am263x"):
             raise ValueError(
                 f"Unknown device target {target!r}; "
-                "expected one of AM243x, AM64x, AM263x")
-        if target.lower() == "am263x":
+                "expected one of AM243x, AM64x, AM261x, AM263x")
+        # AM261x and AM263x both carry a two-core ICSS-M.
+        if target.lower() in ("am261x", "am263x"):
             del self.cores["rtu1"]
 
         # SPRUIM2J Table 6-65: these fixed entries depend on the executing
@@ -165,7 +166,8 @@ class Simulator:
                 "rtu1": {10: 0x2A300, 11: 0x23800, 22: 0x9000},
             }
         else:
-            # TI OpenPRU AM263x_PRU0/1.cmd: C10 is reserved on this target.
+            # TI OpenPRU AM263x_PRU0/1.cmd (AM261x_PRU0/1.cmd is identical):
+            # C10 is reserved on these targets.
             # The legacy simulated RTU0 has no AM263x hardware equivalent;
             # leave its common table unchanged rather than inventing a map.
             core_constants = {
@@ -301,21 +303,21 @@ class Simulator:
                     read_latency=int(cfg[section].get("read_latency", "0")),
                     write_latency=int(cfg[section].get("write_latency", "0")),
                     jitter=int(cfg[section].get("jitter", "0")),
+                    per_word_latency=int(cfg[section].get("per_word_latency", "1")),
                 ))
         return bus
 
     def _load_constants(self, config_path: str) -> ConstantTable:
-        """Load constants from the project root or its config directory."""
+        """Load constant table from constants_am243x.cfg next to the config.
+
+        A root-level config (memory.cfg) finds it in its config/ subdirectory;
+        a preset inside config/ (config/memory_am261x.cfg) finds it alongside.
+        """
         table = ConstantTable()
-        project_root = os.path.dirname(os.path.abspath(config_path))
-        candidates = (
-            os.path.join(project_root, "config", "constants_am243x.cfg"),
-            os.path.join(project_root, "constants_am243x.cfg"),
-        )
-        constants_path = next(
-            (path for path in candidates if os.path.exists(path)),
-            None,
-        )
+        cfg_dir = os.path.dirname(os.path.abspath(config_path))
+        candidates = [os.path.join(cfg_dir, "config", "constants_am243x.cfg"),
+                      os.path.join(cfg_dir, "constants_am243x.cfg")]
+        constants_path = next((p for p in candidates if os.path.exists(p)), None)
         if constants_path is None:
             return table
         cfg = configparser.ConfigParser()
