@@ -38,6 +38,7 @@ from xfr.bswap_accelerator import (
     BSWAP_BYTE_ORDER,
     BSwapAccelerator,
 )
+from xfr.task_ring_accelerator import attach_task_ring
 from xfr.xfr2vbus_accelerator import (
     RD_ID0,
     RD_ID1,
@@ -155,6 +156,12 @@ class PRUCore:
             WR_ID0: XFR2VBUSWriteAccelerator(self.vbus_memory, WR_ID0),
             WR_ID1: XFR2VBUSWriteAccelerator(self.vbus_memory, WR_ID1),
         }
+        # XFR2TR ring accelerator, broadside IDs 0x70/0x71/0x72.  TRM SPRUIM2J
+        # Table 6-60 places it on RTU_PRU1/0 only, so `attach_task_ring`
+        # registers nothing on the other cores and their XFR accesses to those
+        # IDs fall through to the unsupported-XFR handling (recorded diagnostic,
+        # or an error in strict mode).
+        self.task_ring = attach_task_ring(self)
         # Accelerators whose state changes with time (XFR2VBUS read latency,
         # WR_BUSY) expose advance(cycles); step() feeds them core cycles.
         self._timed_accelerators = tuple(
@@ -237,6 +244,14 @@ class PRUCore:
     def step(self) -> None:
         """Execute one instruction."""
         if self.halted or self.pc >= len(self.instructions):
+            # The XFR2TR copy engine runs independently of the core: queued
+            # TRs still land after HALT / end of program.  Each such step is
+            # one cycle of simulated time, so the core's cycle count, the
+            # IEP (via cycle_observer) and the other time-driven devices move
+            # with the copy instead of freezing at the HALT.  No instruction
+            # retires, so instruction_count stays put.
+            if self.task_ring is not None and self.task_ring.busy:
+                self._advance_idle_cycle()
             return
         cycles_before = self.counters.cycles
 
@@ -707,13 +722,43 @@ class PRUCore:
             io_port.advance_devices(elapsed_cycles)
         else:
             io_port._device_cycle += elapsed_cycles
+        # XFR2TR runs independently for every elapsed core cycle, including
+        # stalls.  Keep it separate from the shared device bus because it is
+        # attached only to RTU_PRU0/1.
+        if self.task_ring is not None:
+            self.task_ring.tick(elapsed_cycles)
         if self.cycle_observer is not None:
             self.cycle_observer(elapsed_cycles)
+
+    def _advance_idle_cycle(self) -> None:
+        """Advance simulated time by one cycle with no instruction retiring.
+
+        The same clocks a retired instruction moves at the end of ``step()``:
+        timed XFR accelerators, the Peripheral Interface timeline, the device
+        bus, the XFR2TR ring and the cycle observer (the IEP under
+        ``Simulator``).  Used while a halted core waits for its ring to drain.
+        """
+        for acc in self._timed_accelerators:
+            acc.advance(1)
+        self.counters.cycles += 1
+        io_port = self.io_port
+        if io_port.perif is not None:
+            io_port.perif.advance_cycles(self.counters.cycles)
+        if io_port.device_bus.devices:
+            io_port.advance_devices(1)
+        else:
+            io_port._device_cycle += 1
+        self.task_ring.tick(1)
+        if self.cycle_observer is not None:
+            self.cycle_observer(1)
 
     def run(self, max_steps: int = 100_000) -> int:
         """Run until halted or max_steps reached. Returns steps executed."""
         steps = 0
-        while not self.halted and self.pc < len(self.instructions) and steps < max_steps:
+        while steps < max_steps:
+            running = not self.halted and self.pc < len(self.instructions)
+            if not running and not (self.task_ring is not None and self.task_ring.busy):
+                break
             if self.pc in self.breakpoints:
                 break
             self.step()
