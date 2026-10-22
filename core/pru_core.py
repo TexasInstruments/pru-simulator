@@ -30,6 +30,7 @@ from xfr.xfr_bus import XFRBus, IPC_SPAD, SPAD_BANK0, SPAD_BANK1, SPAD_BANK2
 from pru_io.io_port import IOPort
 from xfr.accelerator import Accelerator
 from xfr.mac_accelerator import MACAccelerator
+from xfr.xfrdma_accelerator import XFRDMAAccelerator, XFRDMABridge, XFRDMA_STATUS_ID, XFRDMA_THREAD_IDS
 from xfr.crc_accelerator import CRCAccelerator
 from xfr.bswap_accelerator import (
     BSWAP_4_8,
@@ -125,8 +126,11 @@ class PRUCore:
 
         self._parser = Parser()
         self._branch = BranchUnit()
+        xfrdma_bridge = XFRDMABridge()
         self.accelerators: dict[int, Accelerator] = {
             MACAccelerator.DEVICE_ID: MACAccelerator(self.registers),
+            XFRDMA_STATUS_ID: XFRDMAAccelerator(xfrdma_bridge, XFRDMA_STATUS_ID),
+            **{device_id: XFRDMAAccelerator(xfrdma_bridge, device_id) for device_id in XFRDMA_THREAD_IDS},
             CRCAccelerator.DEVICE_ID: CRCAccelerator(self.registers),
             BSWAP_BYTE_ORDER: BSwapAccelerator(self.registers, BSWAP_BYTE_ORDER),
             BSWAP_4_8: BSwapAccelerator(self.registers, BSWAP_4_8),
@@ -222,6 +226,7 @@ class PRUCore:
 
         instr = self.instructions[self.pc]
         branch_taken = False
+        xfr_held = False
 
         # Dispatch
         op = instr.opcode
@@ -505,8 +510,18 @@ class PRUCore:
             start_reg = reg_op.index if isinstance(reg_op, Register) else 0
             start_byte = (reg_op.offset // 8) if isinstance(reg_op, Register) else 0
             if device_id in self.accelerators:
-                data = self.accelerators[device_id].xin(start_reg, length, start_byte)
-                self._write_registers_from_bytes(start_reg, data, start_byte)
+                accelerator = self.accelerators[device_id]
+                data = accelerator.xin(start_reg, length, start_byte)
+                if getattr(accelerator, "hold_pc", False):
+                    # A stalled broadside read holds the pipeline: the
+                    # destination registers keep their previous contents until
+                    # the transfer actually completes.  Writing the placeholder
+                    # here would make the stall observable as register damage.
+                    branch_taken = True
+                    xfr_held = True
+                    self.counters.stall_cycles += 1
+                else:
+                    self._write_registers_from_bytes(start_reg, data, start_byte)
             elif self.xfr.xfr_shift_en and device_id in (SPAD_BANK0, SPAD_BANK1, SPAD_BANK2):
                 self._xin_shifted(device_id, start_reg, length)
             else:
@@ -525,7 +540,12 @@ class PRUCore:
             start_byte = (reg_op.offset // 8) if isinstance(reg_op, Register) else 0
             if device_id in self.accelerators:
                 data = self._read_registers_to_bytes(start_reg, length, start_byte)
-                self.accelerators[device_id].xout(start_reg, data, start_byte)
+                accelerator = self.accelerators[device_id]
+                accelerator.xout(start_reg, data, start_byte)
+                if getattr(accelerator, "hold_pc", False):
+                    branch_taken = True
+                    xfr_held = True
+                    self.counters.stall_cycles += 1
             elif self.xfr.xfr_shift_en and device_id in (SPAD_BANK0, SPAD_BANK1, SPAD_BANK2):
                 self._xout_shifted(device_id, start_reg, length)
             else:
@@ -544,8 +564,15 @@ class PRUCore:
             start_byte = (reg_op.offset // 8) if isinstance(reg_op, Register) else 0
             if device_id in self.accelerators:
                 data = self._read_registers_to_bytes(start_reg, length, start_byte)
-                old_data = self.accelerators[device_id].xchg(start_reg, data, start_byte)
-                self._write_registers_from_bytes(start_reg, old_data, start_byte)
+                accelerator = self.accelerators[device_id]
+                old_data = accelerator.xchg(start_reg, data, start_byte)
+                if getattr(accelerator, "hold_pc", False):
+                    # Held XCHG: neither side moved, so leave the registers alone.
+                    branch_taken = True
+                    xfr_held = True
+                    self.counters.stall_cycles += 1
+                else:
+                    self._write_registers_from_bytes(start_reg, old_data, start_byte)
             elif self.xfr.xfr_shift_en and device_id in (SPAD_BANK0, SPAD_BANK1, SPAD_BANK2):
                 self._xchg_shifted(device_id, start_reg, length)
             else:
@@ -633,7 +660,12 @@ class PRUCore:
             self.io_port.perif.advance_cycles(self.counters.cycles)
 
         # ---- Count instruction cycle ------------------------------------
-        self.counters.tick()
+        if xfr_held:
+            # A held XFR consumes a cycle (stall_cycles was bumped above) but
+            # retires nothing, so it must not count as an instruction.
+            self.counters.cycles += 1
+        else:
+            self.counters.tick()
         # Time-driven devices advance by the cycles this step consumed, stalls
         # included, so a core built without a Simulator still ticks them. With
         # no device attached only the cycle count moves; it stays exact so a
