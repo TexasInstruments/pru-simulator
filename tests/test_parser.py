@@ -52,6 +52,24 @@ class TestBasicInstructions:
         assert instrs[0].opcode == "HALT"
         assert instrs[0].operands == []
 
+    @pytest.mark.parametrize("opcode", ["WBS", "WBC"])
+    @pytest.mark.parametrize("operands, expected", [
+        ("5", [Immediate(5)]),
+        ("r31, 5", [Register(31, 0, 32), Immediate(5)]),
+        ("r3, 5", [Register(3, 0, 32), Immediate(5)]),
+    ])
+    def test_wait_bit_accepts_implicit_and_explicit_source(self, opcode, operands, expected):
+        instr = parse(f"{opcode} {operands}")[0]
+        assert instr.opcode == opcode
+        assert instr.operands == expected
+
+
+@pytest.mark.parametrize("opcode", ["WBS", "WBC"])
+@pytest.mark.parametrize("source", ["0", "31", "label"])
+def test_wait_bit_rejects_non_register_explicit_source(opcode, source):
+    with pytest.raises(SyntaxError, match="source.*register"):
+        parse(f"label: nop\n{opcode} {source}, 0")
+
 
 # ---------------------------------------------------------------------------
 # Sub-register operands
@@ -324,3 +342,68 @@ class TestPreprocessorIntegration:
         assert ops[1] == Register(1, 0, 32)   # r1
         assert ops[2] == Immediate(0)          # 0
         assert ops[3] == Immediate(4)          # 4
+
+
+# ---------------------------------------------------------------------------
+# Quick-branch reach: signed 10-bit word offset (-512..+511)
+# ---------------------------------------------------------------------------
+
+def _branch_src(branch: str, distance: int, backward: bool = False) -> str:
+    """Build a program with *distance* NOPs between the branch and its target."""
+    nops = "nop\n" * distance
+    if backward:
+        return f"tgt:\n{nops}{branch}\n"
+    return f"{branch}\n{nops}tgt:\nnop\n"
+
+
+class TestQuickBranchReach:
+    @pytest.mark.parametrize("branch", [
+        "qba tgt", "qbeq tgt, r1, 5", "qbne tgt, r1, r2", "qbgt tgt, r1, 5",
+        "qbge tgt, r1, 5", "qblt tgt, r1, 5", "qble tgt, r1, 5",
+        "qbbs tgt, r1, 3", "qbbc tgt, r1, 3",
+    ])
+    def test_forward_limit_accepted(self, branch):
+        # target address = distance + 1, offset = +511
+        parse(_branch_src(branch, 510))
+
+    @pytest.mark.parametrize("branch", [
+        "qba tgt", "qbeq tgt, r1, 5", "qbne tgt, r1, r2", "qbgt tgt, r1, 5",
+        "qbge tgt, r1, 5", "qblt tgt, r1, 5", "qble tgt, r1, 5",
+        "qbbs tgt, r1, 3", "qbbc tgt, r1, 3",
+    ])
+    def test_forward_beyond_limit_rejected(self, branch):
+        with pytest.raises(SyntaxError, match="10-bit branch range"):
+            parse(_branch_src(branch, 511))
+
+    def test_backward_limit_accepted(self):
+        parse(_branch_src("qba tgt", 512, backward=True))  # offset -512
+
+    def test_backward_beyond_limit_rejected(self):
+        with pytest.raises(SyntaxError, match="use JMP"):
+            parse(_branch_src("qba tgt", 513, backward=True))  # offset -513
+
+    def test_jmp_not_limited(self):
+        instrs = parse(_branch_src("jmp tgt", 2000))
+        assert instrs[0].opcode == "JMP"
+
+    def test_undefined_label_not_reported_as_range(self):
+        # An unresolved label is a different problem; don't mis-report it.
+        parse("qba nowhere")
+
+
+@pytest.mark.parametrize("opcode", ["WBS", "WBC"])
+@pytest.mark.parametrize("source", ["", "r31, "])
+@pytest.mark.parametrize("bit", ["-1", "32", "40", "missing", "target"])
+def test_wait_bit_rejects_invalid_bit_operands(opcode, source, bit):
+    with pytest.raises(SyntaxError, match="bit position"):
+        parse(f"target:\n{opcode} {source}{bit}")
+
+
+@pytest.mark.parametrize("opcode", ["WBS", "WBC"])
+@pytest.mark.parametrize("source", ["", "r31, "])
+@pytest.mark.parametrize("bit", ["0", "31", "r2.b0", "LIMIT"])
+def test_wait_bit_accepts_valid_immediate_register_and_constant_bits(opcode, source, bit):
+    instructions = parse(f"LIMIT .set 31\n{opcode} {source}{bit}")
+    assert instructions[0].opcode == opcode
+    expected = Register(2, 0, 8) if bit == "r2.b0" else Immediate(0 if bit == "0" else 31)
+    assert instructions[0].operands[-1] == expected

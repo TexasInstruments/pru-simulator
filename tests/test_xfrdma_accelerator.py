@@ -3,7 +3,7 @@ LP-AM243 silicon (ICSSG0 PRU0 and RTU_PRU0, no PSI-L peer configured)."""
 
 import pytest
 
-from core.pru_core import PRUCore
+from core.pru_core import PRUCore, UnsupportedXFRError
 from mem.memory_bus import MemoryBus
 from mem.regions import MemoryRegion
 from pru_io.io_port import IOPort
@@ -114,10 +114,11 @@ def test_xchg_with_empty_rx_retires_blank_data_and_enqueues_tx():
 
 
 def test_registration_removal_is_caught_by_the_status_vector(monkeypatch):
-    """Mutation check: the PR #30 boundary fails loudly without 0x50."""
+    """Mutation check: without the 0x50 registration the ID is reported as unmodelled."""
     core = make_core("xin 0x50, &r2, 8\nhalt\n")
     monkeypatch.delitem(core.accelerators, 0x50)
-    with pytest.raises(RuntimeError, match="XFR device ID 80 \\(0x50\\).*not modelled"):
+    core.strict_unsupported_xfr = True
+    with pytest.raises(UnsupportedXFRError, match="XFR device ID 80 \\(0x50\\).*not modelled"):
         core.run()
 
 

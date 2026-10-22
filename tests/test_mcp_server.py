@@ -81,3 +81,37 @@ class TestMCPTools:
         detach = self.mcp.pru_i2c_attach(core="pru0", enabled=False)
         assert detach["success"] is True
         assert self.mcp.sim.i2c_state("pru0") is None
+
+
+def test_generic_gpio_drive_mask_query_set_and_validation():
+    mcp = PRUSimulatorMCP(config_path="nonexistent.cfg")
+    assert mcp.pru_gpio_drive_mask() == {"core": "pru0", "drive_mask": 0}
+    assert mcp.pru_gpio_drive_mask("pru1", 7) == {"core": "pru1", "drive_mask": 7}
+    assert mcp.pru_gpio_drive_mask("pru1") == {"core": "pru1", "drive_mask": 7}
+    for invalid in (-1, 1 << 20, True, False):
+        with pytest.raises(ValueError):
+            mcp.pru_gpio_drive_mask(mask=invalid)
+
+
+class TestStdioServer:
+    """Covers tool registration for the MCP stdio server (mcp >= 2.0)."""
+
+    @pytest.fixture
+    def tools(self):
+        pytest.importorskip("mcp.server")
+        import asyncio
+        from mcp_server.server import build_server
+
+        server = build_server()
+        return {tool.name: tool for tool in asyncio.run(server.list_tools())}
+
+    def test_registers_every_public_method(self, tools):
+        expected = {name for name in dir(PRUSimulatorMCP)
+                    if not name.startswith("_") and callable(getattr(PRUSimulatorMCP, name))}
+        assert set(tools) == expected
+
+    def test_list_parameters_are_arrays(self, tools):
+        payload = tools["pru_uart_inject"].input_schema["properties"]["payload"]
+        assert payload["type"] == "array"
+        include_paths = tools["pru_load"].input_schema["properties"]["include_paths"]
+        assert {"type": "array", "items": {"type": "string"}} in include_paths["anyOf"]

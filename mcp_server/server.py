@@ -5,11 +5,29 @@ import os
 import base64
 import binascii
 import struct
+import copy
+import math
+import random
 
 # Allow imports from parent directory when run directly
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from simulator import Simulator
+from pru_io.device_profiles import create_device, discover_device_profiles
+from pru_io.device_model import PUSH_PULL
+from mcp_server.vcd_export import export_pin_waveform
+
+
+def _require_int(name: str, value) -> None:
+    """Reject bool and non-int values for an integer tool parameter."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{name} must be an integer")
+
+
+def _require_bool(name: str, value) -> None:
+    """Accept only a real bool: strings are truthy and 0/1 are not booleans."""
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be a boolean")
 
 
 class PRUSimulatorMCP:
@@ -18,6 +36,15 @@ class PRUSimulatorMCP:
     def __init__(self, config_path: str = "memory.cfg"):
         self._config_path = config_path
         self.sim = Simulator(config_path)
+
+    def pru_gpio_drive_mask(self, core: str = "pru0", mask: int | None = None) -> dict:
+        """Query or set the twenty GPIO output-enable bits without changing R30."""
+        if mask is not None:
+            if (isinstance(mask, bool) or not isinstance(mask, int)
+                    or not 0 <= mask < (1 << 20)):
+                raise ValueError("GPIO drive mask must be a 20-bit integer")
+            self.sim.set_gpio_drive_mask(core, mask)
+        return {"core": core, "drive_mask": self.sim.io(core)["gpo_drive_mask"]}
 
     def pru_load(self, source: str, core: str = "pru0",
                  include_paths: list[str] | None = None) -> dict:
@@ -145,6 +172,8 @@ class PRUSimulatorMCP:
             errors = candidate.load_elf(core, elf_data)
             if not errors:
                 candidate.cores[core].pc = entry_pc
+                self.sim.device_bus.detach_all()
+                self.sim.device_bus.release_all_core_outputs()
                 self.sim = candidate
         except (OSError, ValueError, binascii.Error) as exc:
             errors = [f"ELF load failed: {exc}"]
@@ -160,6 +189,7 @@ class PRUSimulatorMCP:
 
     def pru_step(self, core: str = "pru0", count: int = 1) -> dict:
         """Execute count instructions on the specified core."""
+        _require_int("count", count)
         result = self.sim.step(core, count)
         # Add instruction_text from last executed instruction
         c = self.sim.cores[core]
@@ -169,17 +199,162 @@ class PRUSimulatorMCP:
         result["instruction_text"] = inst_text
         return result
 
-    def pru_run_until(self, core: str = "pru0", condition: str = "halt", max_steps: int = 10000) -> dict:
-        """Run the core until halted or max_steps reached."""
+    def pru_step_multicore(self, lead: str = "pru0", follow: str = "pru1",
+                           count: int = 1, guard_ns: float = 0.0) -> dict:
+        """Step two cores with elapsed-time pacing and return both core states.
+
+        ``guard_ns`` is how far the follow core may trail the lead while both
+        Peripheral Interfaces are enabled. Otherwise both cores are paced by
+        exact elapsed core time with no guard.
+        """
+        _require_int("count", count)
+        if isinstance(guard_ns, bool) or not isinstance(guard_ns, (int, float)):
+            raise ValueError("guard_ns must be a number")
+        if isinstance(guard_ns, float) and not math.isfinite(guard_ns):
+            raise ValueError("guard_ns must be finite")
+        if count < 0:
+            raise ValueError("count must be non-negative")
+        if guard_ns < 0:
+            raise ValueError("guard_ns must be non-negative")
+        if lead == follow:
+            raise ValueError("lead and follow must name different cores")
+
+        def state(core: str) -> dict:
+            c = self.sim.cores[core]
+            return {
+                "core": core,
+                "pc": c.pc,
+                "cycles": c.counters.cycles,
+                "halted": c.halted,
+                "fault": dict(c.fault) if c.fault is not None else None,
+            }
+
+        lead_steps = 0
+        for _ in range(count):
+            pacing = self.sim.step_paced(lead, follow, 1, guard_ns=guard_ns)
+            lead_steps += pacing["lead_steps"]
+            lead_core = self.sim.cores[lead]
+            follow_core = self.sim.cores[follow]
+            if lead_core.fault is not None or follow_core.fault is not None:
+                return {
+                    "success": False,
+                    "reason": "core_fault",
+                    "lead_steps": lead_steps,
+                    "lead": state(lead),
+                    "follow": state(follow),
+                }
+            if not pacing["complete"]:
+                target_units = pacing["targets"][follow]
+                follow_units = self.sim.iep.core_time_units(
+                    follow, follow_core.counters.cycles
+                )
+                target_ns = float(self.sim.iep.time_units_to_ns(target_units))
+                follow_ns = float(self.sim.iep.time_units_to_ns(follow_units))
+                return {
+                    "success": False,
+                    "reason": pacing["reason"],
+                    "lead_steps": lead_steps,
+                    "target_ns": float(target_ns),
+                    "follow_ns": float(follow_ns),
+                    "lead": state(lead),
+                    "follow": state(follow),
+                }
+
+        return {
+            "success": True,
+            "reason": "stepped",
+            "lead_steps": lead_steps,
+            "lead": state(lead),
+            "follow": state(follow),
+        }
+
+    def pru_run_until(self, core: str = "pru0", condition: str = "halt",
+                      max_steps: int = 10000, max_cycles: int = 0) -> dict:
+        """Run until a condition, step limit, or cycle budget is reached.
+
+        Conditions: ``halt``, ``cycles>N``, ``reg:rN==V``, ``mem:ADDR!=V``
+        (32-bit little-endian), and ``pin:N==V``/``gpi:N==V``/``gpo:N==V``.
+        ``pin`` is an alias for GPI; input and output predicates are never ORed.
+        A positive ``max_cycles`` is an inclusive budget measured from this call.
+        """
+        _require_int("max_steps", max_steps)
+        _require_int("max_cycles", max_cycles)
+        if max_steps < 0:
+            raise ValueError("max_steps must be non-negative")
+        if max_cycles < 0:
+            raise ValueError("max_cycles must be non-negative")
         c = self.sim.cores[core]
+        start_cycles = c.counters.cycles
+
+        def condition_met() -> bool:
+            if condition == "halt":
+                return c.halted
+            if condition.startswith("cycles>"):
+                return c.counters.cycles > int(condition[7:], 0)
+            if condition.startswith("reg:"):
+                register, value = condition[4:].split("==", 1)
+                if not register.lower().startswith("r"):
+                    raise ValueError(f"Invalid register condition: {condition}")
+                index = int(register[1:])
+                if not 0 <= index < 32:
+                    raise ValueError(f"Invalid register condition: {condition}")
+                return c.registers.read_full(index) == int(value, 0)
+            if condition.startswith("mem:"):
+                address, value = condition[4:].split("!=", 1)
+                actual = int.from_bytes(self.sim.memory_read(int(address, 0), 4), "little")
+                return actual != int(value, 0)
+            pin_prefix = next((prefix for prefix in ("pin:", "gpi:", "gpo:")
+                               if condition.startswith(prefix)), None)
+            if pin_prefix:
+                pin, value = condition[len(pin_prefix):].split("==", 1)
+                index = int(pin, 0)
+                target = int(value, 0)
+                if not 0 <= index < 20 or target not in (0, 1):
+                    raise ValueError(f"Invalid pin condition: {condition}")
+                io_state = self.sim.io(core)
+                kind = "gpo" if pin_prefix == "gpo:" else "gpi"
+                return io_state[f"{kind}_pins"][index] == target
+            raise ValueError(f"Unsupported run condition: {condition}")
+
+        reason = None
         for _ in range(max_steps):
-            if c.halted:
+            if condition_met():
+                reason = "halted" if condition == "halt" else "condition_met"
                 break
+            if c.pc in c.breakpoints:
+                reason = "breakpoint"
+                break
+            if max_cycles:
+                # An instruction may add memory stall cycles.  Predict it on a
+                # private copy, and do not mutate the live simulator unless the
+                # complete instruction fits inside the inclusive budget.
+                rng_state = random.getstate()
+                try:
+                    projected = copy.deepcopy(self.sim)
+                    projected_core = projected.cores[core]
+                    projected_core.step()
+                finally:
+                    # Memory read jitter uses the module RNG.  The live step
+                    # must draw the same value as the projection.
+                    random.setstate(rng_state)
+                projected_delta = projected_core.counters.cycles - c.counters.cycles
+                if c.counters.cycles - start_cycles + projected_delta > max_cycles:
+                    return {
+                        "pc": c.pc,
+                        "cycles": c.counters.cycles,
+                        "reason": "budget_exceeded",
+                        "budget_exceeded": True,
+                        "condition_met": False,
+                    }
             c.step()
+        if reason is None and condition_met():
+            reason = "halted" if condition == "halt" else "condition_met"
         return {
             "pc": c.pc,
             "cycles": c.counters.cycles,
-            "reason": "halted" if c.halted else "max_steps",
+            "reason": reason or "max_steps",
+            "budget_exceeded": False,
+            "condition_met": reason in ("halted", "condition_met"),
         }
 
     def pru_registers(self, core: str = "pru0") -> dict:
@@ -191,6 +366,8 @@ class PRUSimulatorMCP:
 
     def pru_memory(self, addr: int, length: int) -> dict:
         """Read length bytes from shared memory at addr."""
+        _require_int("addr", addr)
+        _require_int("length", length)
         data = self.sim.memory_read(addr, length)
         return {
             "hex_dump": data.hex(),
@@ -203,13 +380,97 @@ class PRUSimulatorMCP:
 
     def pru_set_input(self, core: str = "pru0", pin: int = 0, value: bool = False) -> dict:
         """Set a single GPI pin on the specified core's I/O port."""
+        _require_int("pin", pin)
+        _require_bool("value", value)
         self.sim.set_input(core, pin, value)
         return {"ok": True}
 
+    def pru_vcd_export(self, path: str, core: str = "pru0", max_steps: int = 10000,
+                       pins: str = "0-19", include_gpi: bool = False) -> dict:
+        """Run a loaded core and export selected GPIO pins as deterministic VCD."""
+        _require_int("max_steps", max_steps)
+        _require_bool("include_gpi", include_gpi)
+        return export_pin_waveform(
+            self.sim, core, path, max_steps=max_steps, pins=pins,
+            include_gpi=include_gpi,
+        )
+
     def pru_i2c_attach(self, core: str = "pru0", enabled: bool = True, address: int = 0x23) -> dict:
         """Attach or detach a TCA9538 I2C device model on SCL=bit0/SDA=bit1 of the specified core."""
+        _require_bool("enabled", enabled)
+        _require_int("address", address)
         self.sim.i2c_attach(core, enabled, address)
         return {"success": True, "core": core, "enabled": enabled, "address": address}
+
+    def pru_device_discover(self) -> dict:
+        """Discover supported generic device profiles and attached devices."""
+        return {
+            "profiles": discover_device_profiles(),
+            "devices": self.sim.device_state()["devices"],
+        }
+
+    def pru_device_attach(self, profile: str, core: str = "pru0",
+                          config: dict | None = None) -> dict:
+        """Attach one validated generic device profile to a core's GPIO pins."""
+        default_core_clock_hz = (
+            self.sim.iep.core_clock_hz(core) if profile == "ssi_encoder" else None
+        )
+        device = create_device(
+            profile, config, default_core_clock_hz=default_core_clock_hz)
+        if any(attached.name == device.name for attached in self.sim.device_bus.devices):
+            raise ValueError(f"device name {device.name!r} is already attached")
+
+        if profile == "ssi_encoder":
+            drive_mask = 1 << device.clock_pin
+            managed_mask = drive_mask | (1 << device.data_pin)
+        else:
+            drive_mask = (1 << device.scl_pin) | (1 << device.sda_pin)
+            managed_mask = drive_mask
+        self.sim.lease_gpio_outputs(core, managed_mask, device,
+                                    drive_mask=drive_mask)
+        try:
+            self.sim.attach_device(core, device)
+        except BaseException:
+            self.sim.device_bus.release_core_outputs(device)
+            raise
+        return {"success": True, "core": core, "device": device.get_state()}
+
+    def pru_device_detach(self, device_name: str) -> dict:
+        """Detach a generic device by name and release its bus ownership."""
+        device = self._get_device(device_name)
+        self.sim.detach_device(device)
+        return {"success": True, "device": device_name}
+
+    def pru_device_state(self) -> dict:
+        """Return attached device state, bus levels, events, and faults."""
+        return self.sim.device_state()
+
+    def pru_device_events(self, device_name: str = "") -> dict:
+        """Read generic bus events, optionally filtered to one device."""
+        if device_name:
+            device = self._get_device(device_name)
+            return {"device": device_name, "events": device.events()}
+        return {"events": self.sim.device_bus.events()}
+
+    def pru_device_faults(self, device_name: str = "") -> dict:
+        """Read generic bus/device faults, optionally filtered to one device."""
+        if device_name:
+            device = self._get_device(device_name)
+            return {
+                "device": device_name,
+                "faults": self.sim.device_bus.faults_for_device(device),
+                "contentions": self.sim.device_bus.contentions_for_device(device),
+            }
+        return {"faults": self.sim.device_bus.faults()}
+
+    def _get_device(self, name: str):
+        matches = [device for device in self.sim.device_bus.devices
+                   if device.name == name]
+        if not matches:
+            raise KeyError(f"No attached device named {name!r}")
+        if len(matches) > 1:
+            raise ValueError(f"more than one attached device is named {name!r}")
+        return matches[0]
 
     def pru_reset(self, core: str = "pru0") -> dict:
         """Reset the specified core to its initial state."""
@@ -218,6 +479,7 @@ class PRUSimulatorMCP:
 
     def pru_breakpoint(self, core: str = "pru0", address: int = 0) -> dict:
         """Add a breakpoint at the specified address for the specified core."""
+        _require_int("address", address)
         self.sim.cores[core].breakpoints.add(address)
         return {"id": len(self.sim.cores[core].breakpoints)}
 
@@ -237,6 +499,13 @@ class PRUSimulatorMCP:
         Loads assembly source, attaches a UARTFrameGenerator, runs the PRU,
         and returns the received data from DRAM0.
         """
+        for name, value in (("baudrate", baudrate), ("frames", frames), ("pin", pin),
+                            ("dram0_offset", dram0_offset), ("max_steps", max_steps)):
+            _require_int(name, value)
+        if not isinstance(payload, list) or any(
+                isinstance(byte, bool) or not isinstance(byte, int) for byte in payload):
+            raise ValueError("payload must be a list of integers")
+
         # Reset and load
         self.sim.reset(core)
         errors = self.sim.load(core, source)
@@ -284,74 +553,34 @@ class PRUSimulatorMCP:
         return {"cores": self.sim.status()}
 
 
+def build_server():
+    """Build an MCP server with every public PRUSimulatorMCP method registered as a tool.
+
+    Requires the 'mcp' SDK (>= 2.0) to be installed.
+    """
+    import inspect
+    from mcp.server import MCPServer
+
+    server = MCPServer("pru-simulator")
+    mcp_wrapper = PRUSimulatorMCP()
+
+    # The input schema of each tool is derived from the method signature.
+    for name, method in inspect.getmembers(mcp_wrapper, predicate=inspect.ismethod):
+        if name.startswith("_"):
+            continue
+        server.add_tool(method, name=name, description=method.__doc__ or name)
+    return server
+
+
 def run_stdio_server():
-    """Start the MCP stdio server. Requires the 'mcp' SDK to be installed."""
+    """Start the MCP stdio server."""
     try:
-        import mcp  # noqa: F401
-        from mcp.server import Server
-        from mcp.server.stdio import stdio_server
-        from mcp.types import Tool, TextContent
-        import asyncio
-        import inspect
-        import json
-
-        server = Server("pru-simulator")
-        mcp_wrapper = PRUSimulatorMCP()
-
-        # Build tool list from PRUSimulatorMCP public methods
-        _TOOLS = []
-        for name, method in inspect.getmembers(mcp_wrapper, predicate=inspect.ismethod):
-            if name.startswith("_"):
-                continue
-            sig = inspect.signature(method)
-            properties = {}
-            required = []
-            for param_name, param in sig.parameters.items():
-                if param_name == "self":
-                    continue
-                ptype = "string"
-                annotation = param.annotation
-                if annotation in (int,):
-                    ptype = "integer"
-                elif annotation in (bool,):
-                    ptype = "boolean"
-                prop = {"type": ptype}
-                if param.default is inspect.Parameter.empty:
-                    required.append(param_name)
-                else:
-                    prop["default"] = param.default
-                properties[param_name] = prop
-            _TOOLS.append(Tool(
-                name=name,
-                description=method.__doc__ or name,
-                inputSchema={
-                    "type": "object",
-                    "properties": properties,
-                    "required": required,
-                },
-            ))
-
-        @server.list_tools()
-        async def list_tools():
-            return _TOOLS
-
-        @server.call_tool()
-        async def call_tool(name, arguments):
-            method = getattr(mcp_wrapper, name, None)
-            if method is None:
-                raise ValueError(f"Unknown tool: {name}")
-            result = method(**arguments)
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
-
-        async def main():
-            async with stdio_server() as (read_stream, write_stream):
-                await server.run(read_stream, write_stream, server.create_initialization_options())
-
-        asyncio.run(main())
-
-    except ImportError:
-        print("Error: 'mcp' SDK is not installed. Install it with: pip install mcp", file=sys.stderr)
+        server = build_server()
+    except ImportError as exc:
+        print(f"Error: could not import the 'mcp' SDK ({exc}). "
+              "Install or upgrade it with: pip install 'mcp>=2.0'", file=sys.stderr)
         sys.exit(1)
+    server.run("stdio")
 
 
 if __name__ == "__main__":

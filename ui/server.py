@@ -1,12 +1,15 @@
 """FastAPI + WebSocket backend for the PRU Simulator Dashboard."""
 
 import asyncio
+import copy
 import json
 import math
 import os
 import pathlib
 import re
+import shutil
 import sys
+import tempfile
 
 # Ensure project root is on path so simulator can be imported
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -50,12 +53,43 @@ _config_lock = asyncio.Lock()
 
 # ---- Step history (for step-back) ----------------------------------------
 _MAX_HISTORY = 500
-_history: dict[str, list] = {"pru0": [], "rtu0": [], "pru1": []}
+_history: dict[str, list] = {"pru0": [], "rtu0": [], "pru1": [], "rtu1": []}
+_history_order: list[tuple[str, dict]] = []
 
 
-def _snapshot(core: str) -> dict:
-    """Capture full PRU core + memory state before a step."""
-    c = sim.cores[core]
+def _clear_history() -> None:
+    for history in _history.values():
+        history.clear()
+    _history_order.clear()
+
+
+def _record_step(core: str) -> None:
+    snapshot = _snapshot(core)
+    _history[core].append(snapshot)
+    _history_order.append((core, snapshot))
+    if len(_history_order) > _MAX_HISTORY:
+        oldest_core, oldest_snapshot = _history_order.pop(0)
+        _history[oldest_core][:] = [
+            item for item in _history[oldest_core] if item is not oldest_snapshot
+        ]
+
+
+def _step_back(core: str) -> bool:
+    for index in range(len(_history_order) - 1, -1, -1):
+        event_core, snapshot = _history_order[index]
+        if event_core != core:
+            continue
+        _restore(core, snapshot)
+        discarded = {id(item) for _, item in _history_order[index:]}
+        del _history_order[index:]
+        for history in _history.values():
+            history[:] = [item for item in history if id(item) not in discarded]
+        return True
+    return False
+
+
+def _snapshot_core(c) -> dict:
+    """Capture one core's mutable state for the shared simulator history."""
     ls = c.loop_state
     sd = c.io_port.sd_filter
     perif = c.io_port.perif
@@ -63,45 +97,95 @@ def _snapshot(core: str) -> dict:
     return {
         "pc": c.pc,
         "halted": c.halted,
+        "fault": dict(c.fault) if c.fault is not None else None,
         "loop_state": {"count": ls.count, "start_address": ls.start_address,
                        "end_address": ls.end_address} if ls else None,
         "regs": list(c.registers.regs),
         "carry": c.registers.carry,
         "gpo": c.io_port.gpo,
         "gpi": c.io_port.gpi,
+        "loopback_mask": c.io_port.loopback_mask,
+        "gpo_drive_mask": c.io_port.gpo_drive_mask,
         "cycles": c.counters.cycles,
         "stall_cycles": c.counters.stall_cycles,
         "instruction_count": c.counters.instruction_count,
-        "mem": [bytes(r._data) for r in sim.memory.regions],
         "sd": sd.snapshot() if sd is not None else None,
         "perif": perif.snapshot() if perif is not None else None,
+        "i2c_device": i2c,
         "i2c": i2c.snapshot() if i2c is not None else None,
+        "uart_generator": c.io_port.uart_generator,
+        "accelerators": {
+            device_id: accelerator.snapshot()
+            for device_id, accelerator in c.accelerators.items()
+            if callable(getattr(accelerator, "snapshot", None))
+        },
+        "unsupported_xfr": copy.deepcopy(c.unsupported_xfr),
     }
 
 
-def _restore(core: str, snap: dict) -> None:
-    """Restore PRU core + memory state from a snapshot."""
-    c = sim.cores[core]
+def _snapshot(core: str) -> dict:
+    """Capture every core plus shared memory and devices before a step."""
+    return {
+        "cores": {name: _snapshot_core(c) for name, c in sim.cores.items()},
+        "device_bus": sim.device_bus.snapshot(),
+        "xfr": sim.xfr.snapshot(),
+        "gpcfg": sim._gpcfg.snapshot(),
+        "loopback": sim._loopback.snapshot(),
+        "mem": [bytes(r._data) for r in sim.memory.regions],
+        "iep": sim.iep.snapshot(),
+        "paced_pending": copy.deepcopy(sim._paced_pending),
+    }
+
+
+def _restore_core(c, snap: dict) -> None:
     c.pc = snap["pc"]
     c.halted = snap["halted"]
+    c.fault = dict(snap["fault"]) if snap["fault"] is not None else None
     c.loop_state = LoopState(**snap["loop_state"]) if snap["loop_state"] else None
     c.registers.regs = list(snap["regs"])
     c.registers.carry = snap["carry"]
     c.io_port.gpo = snap["gpo"]
     c.io_port.gpi = snap["gpi"]
+    c.io_port.loopback_mask = snap.get("loopback_mask", c.io_port.loopback_mask)
+    c.io_port.gpo_drive_mask = snap.get("gpo_drive_mask", c.io_port.gpo_drive_mask)
     c.counters.cycles = snap["cycles"]
     c.counters.stall_cycles = snap["stall_cycles"]
     c.counters.instruction_count = snap["instruction_count"]
-    for i, region_data in enumerate(snap["mem"]):
-        if i < len(sim.memory.regions):
-            sim.memory.regions[i]._data[:] = region_data
     if snap.get("sd") is not None and c.io_port.sd_filter is not None:
         c.io_port.sd_filter.restore(snap["sd"])
     if snap.get("perif") is not None and c.io_port.perif is not None:
         c.io_port.perif.restore(snap["perif"])
+    if "i2c_device" in snap:
+        c.io_port.i2c_device = snap["i2c_device"]
     if snap.get("i2c") is not None and c.io_port.i2c_device is not None:
         c.io_port.i2c_device.restore(snap["i2c"])
+    c.io_port.uart_generator = snap.get("uart_generator")
+    for device_id, accelerator_snap in snap.get("accelerators", {}).items():
+        accelerator = c.accelerators.get(device_id)
+        if accelerator is not None:
+            accelerator.restore(accelerator_snap)
+    c.unsupported_xfr = copy.deepcopy(snap.get("unsupported_xfr", {}))
 
+
+def _restore(core: str, snap: dict) -> None:
+    """Restore every core and shared device to the same saved point in time."""
+    for core_name, core_snap in snap.get("cores", {core: snap}).items():
+        if core_name in sim.cores:
+            _restore_core(sim.cores[core_name], core_snap)
+    for i, region_data in enumerate(snap["mem"]):
+        if i < len(sim.memory.regions):
+            sim.memory.regions[i]._data[:] = region_data
+    sim._paced_pending = copy.deepcopy(snap.get("paced_pending", {}))
+    if snap.get("iep") is not None:
+        sim.iep.restore(snap["iep"])
+    if snap.get("device_bus") is not None:
+        sim.device_bus.restore(snap["device_bus"])
+    if snap.get("xfr") is not None:
+        sim.xfr.restore(snap["xfr"])
+    if snap.get("gpcfg") is not None:
+        sim._gpcfg.restore(snap["gpcfg"])
+    if snap.get("loopback") is not None:
+        sim._loopback.restore(snap["loopback"])
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -114,6 +198,11 @@ async def index():
 @app.get("/regions")
 async def get_regions():
     return [{"name": r.name, "base": r.base_addr, "size": r.size} for r in sim.memory.regions]
+
+
+@app.get("/cores")
+async def get_cores():
+    return list(sim.cores)
 
 
 @app.get("/config")
@@ -170,18 +259,42 @@ async def put_source_file(path: str, request: Request):
     return {"ok": True}
 
 
+def _replace_config(text: str) -> Simulator:
+    """Build a Simulator from *text*, then make *text* the content of config_path.
+
+    The text is validated through a temp file beside config_path (so lookups
+    relative to the config directory resolve the same way) and only replaces
+    config_path once the Simulator built; a bad config leaves the file as it was."""
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=".memory-", suffix=".cfg.tmp",
+        dir=os.path.dirname(os.path.abspath(config_path)),
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        if os.path.exists(config_path):
+            shutil.copymode(config_path, tmp_path)
+        try:
+            new_sim = Simulator(config_path=tmp_path)
+        except Exception as e:
+            # Parser errors quote the file name; report config_path, not the temp file.
+            msg = str(e).replace(repr(tmp_path)[1:-1], repr(config_path)[1:-1])
+            raise ValueError(msg.replace(tmp_path, config_path)) from e
+        os.replace(tmp_path, config_path)
+        return new_sim
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
 @app.put("/config")
 async def put_config(request: Request):
     global sim
     text = (await request.body()).decode("utf-8")
     async with _config_lock:
         try:
-            with open(config_path, "w") as f:
-                f.write(text)
-            sim = Simulator(config_path=config_path)
-            _history["pru0"].clear()
-            _history["rtu0"].clear()
-            _history["pru1"].clear()
+            sim = _replace_config(text)
+            _clear_history()
             return {"ok": True}
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=400)
@@ -234,12 +347,8 @@ async def put_clock_speed(request: Request):
                 text = f.read()
             text = _set_ini_value(text, "device", "pru_clock_mhz", str(mhz))
             text = _set_ini_value(text, "device", "pru1_clock_mhz", str(mhz))
-            with open(config_path, "w") as f:
-                f.write(text)
-            sim = Simulator(config_path=config_path)
-            _history["pru0"].clear()
-            _history["rtu0"].clear()
-            _history["pru1"].clear()
+            sim = _replace_config(text)
+            _clear_history()
             return {"ok": True}
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=400)
@@ -256,7 +365,7 @@ async def websocket_endpoint(websocket: WebSocket):
             core = msg.get("core", "pru0")
 
             if action == "load":
-                _history[core].clear()
+                _clear_history()
                 filename = msg.get("filename")
                 include_paths = None
                 if filename and isinstance(filename, str) and '\\' not in filename and len(filename) <= 300:
@@ -274,7 +383,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json({"type": "error", "errors": errors})
                 await _send_state(websocket, core)
             elif action == "load_elf":
-                _history[core].clear()
+                _clear_history()
                 # ELF binary sent as base64-encoded string
                 elf_b64 = msg.get("data", "")
                 try:
@@ -287,9 +396,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json({"type": "error", "errors": errors})
                 await _send_state(websocket, core)
             elif action == "step":
-                _history[core].append(_snapshot(core))
-                if len(_history[core]) > _MAX_HISTORY:
-                    _history[core].pop(0)
+                _record_step(core)
                 at_breakpoint = False
                 try:
                     sim.step(core, msg.get("count", 1))
@@ -320,12 +427,11 @@ async def websocket_endpoint(websocket: WebSocket):
                         except ValueError:
                             pass
             elif action == "reset":
-                _history[core].clear()
+                _clear_history()
                 sim.reset(core)
                 await _send_state(websocket, core)
             elif action == "hard_reset":
-                for k in _history:
-                    _history[k].clear()
+                _clear_history()
                 sim.hard_reset()
                 await _send_state(websocket, core)
             elif action == "set_input":
@@ -373,9 +479,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     c.io_port.set_gpi_word(val)
                 await _send_state(websocket, core)
             elif action == "step_back":
-                if _history[core]:
-                    _restore(core, _history[core].pop())
-                await _send_state(websocket, core)
+                if _step_back(core):
+                    for state_core in sim.cores:
+                        await _send_state(websocket, state_core)
+                else:
+                    await _send_state(websocket, core)
             elif action == "toggle_breakpoint":
                 addr = int(msg.get("addr", 0))
                 pru = sim.cores[core]
@@ -491,17 +599,24 @@ async def websocket_endpoint(websocket: WebSocket):
                 samples = []
                 try:
                     steps = 0
-                    while (steps < max_steps and not lead_pru.halted
-                           and lead_pru.pc < len(lead_pru.instructions)):
-                        sim.step_paced(core, partner, 1)
-                        steps += 1
-                        if capture and _capture_due(lead_pru, steps):
+                    while steps < max_steps:
+                        pacing = sim.step_paced(core, partner, 1)
+                        steps += pacing["lead_steps"]
+                        if capture and pacing["lead_steps"] and _capture_due(lead_pru, steps):
                             samples.append(_capture_sample(lead_pru))
+                        if not pacing["complete"]:
+                            await websocket.send_json({
+                                "type": "error", "reason": pacing["reason"],
+                                "errors": ["Follower catch-up is incomplete; run again to continue"],
+                            })
+                            break
                         if lead_pru.pc in lead_pru.breakpoints:
                             lead_bp = True
                             break
                         if partner_pru.pc in partner_pru.breakpoints:
                             partner_bp = True
+                            break
+                        if lead_pru.halted or lead_pru.pc >= len(lead_pru.instructions):
                             break
                 except ValueError as ve:
                     await websocket.send_json({"type": "error", "errors": [str(ve)]})
@@ -580,6 +695,20 @@ def _read_mac(core) -> dict:
     if acc is None:
         return {"mode": False, "acc_carry": False}
     return {"mode": acc.mac_mode, "acc_carry": acc.acc_carry}
+
+
+def _read_crc(core) -> dict:
+    """Return CRC accelerator status for the given PRUCore."""
+    acc = core.accelerators.get(1)
+    if acc is None:
+        return {"mode": "CRC16", "value": "0000"}
+    if acc.crc32_mode:
+        mode = "CRC32"
+        value = f"{acc.crc_reg:08X}"
+    else:
+        mode = "CRC16-MOD" if acc.mod_en else "CRC16"
+        value = f"{acc.crc_reg:04X}"
+    return {"mode": mode, "value": value}
 
 
 def _read_spad(sim_obj) -> dict:
@@ -705,7 +834,11 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False):
         "mux_sel": mux_sel,
         "gpo_pins": gpo_pins,
         "gpi_pins": c.io_port.get_gpi_pins(),
+        "gpio_loopback_mask": c.io_port.loopback_mask,
+        "gpo_drive_mask": c.io_port.gpo_drive_mask,
     }
+    if sim.device_bus.active:
+        io_section["device_bus"] = sim.device_state()
     if sd_data is not None:
         io_section["sd"] = sd_data
     if perif_data is not None:
@@ -718,6 +851,7 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False):
         "core": core,
         "pc": c.pc,
         "halted": c.halted,
+        "fault": dict(c.fault) if c.fault is not None else None,
         "at_breakpoint": at_breakpoint,
         # True when a "capture" message already carried this chunk's graph
         # samples, so the client must not sample this state push as well.
@@ -735,14 +869,72 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False):
         "spad": _read_spad(sim),
         "xfr_shift_en": sim.xfr.xfr_shift_en,
         "mac": _read_mac(c),
+        "crc": _read_crc(c),
     }
     await ws.send_json(state)
 
 
-def start_dashboard(host="127.0.0.1", port=8080):
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 8080
+
+
+def _port_is_free(host, port):
+    """Return True when a listening socket can be bound to host:port.
+
+    uvicorn's own bind failure surfaces as a bare OSError traceback that never
+    names the port, so probe first to report something actionable. The probe
+    must make the same bind decision uvicorn will: asyncio sets SO_REUSEADDR on
+    POSIX, but deliberately does not on Windows (where it would permit
+    hijacking an active listener). Mirroring that avoids a false "in use" for a
+    POSIX port sitting in TIME_WAIT.
+    """
+    import socket
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if os.name != "nt":
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind((host, port))
+        except OSError:
+            return False
+        return True
+    finally:
+        probe.close()
+
+
+def start_dashboard(host=DEFAULT_HOST, port=DEFAULT_PORT):
     import uvicorn
+
+    if not _port_is_free(host, port):
+        raise SystemExit(
+            f"Port {port} on {host} is already in use.\n"
+            f"Start the dashboard on another port, e.g.:\n"
+            f"    python ui/server.py --port {port + 1}\n"
+            f"    PRU_SIM_UI_PORT={port + 1} python ui/server.py"
+        )
+
     uvicorn.run(app, host=host, port=port)
 
 
+def _parse_args(argv=None):
+    import argparse
+
+    parser = argparse.ArgumentParser(description="PRU Simulator Dashboard")
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("PRU_SIM_UI_HOST", DEFAULT_HOST),
+        help=f"bind address (default {DEFAULT_HOST}, env PRU_SIM_UI_HOST)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("PRU_SIM_UI_PORT", DEFAULT_PORT)),
+        help=f"bind port (default {DEFAULT_PORT}, env PRU_SIM_UI_PORT)",
+    )
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
-    start_dashboard()
+    args = _parse_args()
+    start_dashboard(host=args.host, port=args.port)
