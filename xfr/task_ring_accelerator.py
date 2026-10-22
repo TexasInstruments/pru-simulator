@@ -519,8 +519,8 @@ def attach_task_ring(core) -> XFR2TRRing | None:
 
     Returns the ring (which the caller stores on ``core.task_ring``) or
     ``None`` for cores that have no XFR2TR block -- whose XFR accesses to
-    0x70-0x72 then fall through to the simulator's fail-loud
-    unsupported-device-ID path.
+    0x70-0x72 then fall through to the simulator's unsupported-XFR
+    handling (a recorded diagnostic, or an error in strict mode).
     """
     if core.name not in ALLOWED_CORE_NAMES:
         return None

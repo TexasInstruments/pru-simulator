@@ -136,7 +136,8 @@ class PRUCore:
         # XFR2TR ring accelerator, broadside IDs 0x70/0x71/0x72.  TRM SPRUIM2J
         # Table 6-60 places it on RTU_PRU1/0 only, so `attach_task_ring`
         # registers nothing on the other cores and their XFR accesses to those
-        # IDs fall through to the fail-loud unsupported-device-ID path.
+        # IDs fall through to the unsupported-XFR handling (recorded diagnostic,
+        # or an error in strict mode).
         self.task_ring = attach_task_ring(self)
 
     # ------------------------------------------------------------------
