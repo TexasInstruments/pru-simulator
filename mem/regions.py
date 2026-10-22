@@ -15,6 +15,7 @@ class MemoryRegion:
         write_latency: int,
         jitter: int = 0,
         misaligned_write_penalty: int = 0,
+        per_word_latency: int = 1,
     ):
         self.name = name
         self.base_addr = base_addr
@@ -26,6 +27,9 @@ class MemoryRegion:
         # two or more words. ICSS-local RAM (DRAM0/1, Shared RAM) charges 1 on
         # silicon (LP-AM261 ICSSM and LP-AM243 ICSSG); MSRAM charges 0.
         self.misaligned_write_penalty = misaligned_write_penalty
+        # Cycles charged for each 32-bit word after the first of a burst read.
+        # 1 is the original model; LP-AM261 MSRAM measures 10 on silicon.
+        self.per_word_latency = per_word_latency
         self._data = bytearray(size)
 
     # ------------------------------------------------------------------
@@ -72,7 +76,7 @@ class MemoryRegion:
         """Return the number of stall cycles for a read of *length* bytes at *addr*."""
         self._check_bounds(addr, length)
         words = self._word_count(addr, length)
-        return self.read_latency + random.randint(0, self.jitter) + (words - 1)
+        return self.read_latency + random.randint(0, self.jitter) + (words - 1) * self.per_word_latency
 
     def calc_write_stalls(self, addr: int, length: int) -> int:
         """Return the number of stall cycles for a write of *length* bytes at *addr*."""

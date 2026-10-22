@@ -26,7 +26,7 @@ EXIT_OK = 0
 EXIT_INPUT = 2
 EXIT_UNMET = 3
 EXIT_INTERNAL = 4
-_CORES = ("pru0", "pru1", "rtu0")
+_CORES = ("pru0", "pru1", "rtu0", "rtu1")
 _ELF_HEADER_SIZE = 52
 _ELF_SECTION_HEADER_SIZE = 40
 _ELF_PROGRAM_HEADER_SIZE = 32
@@ -295,7 +295,7 @@ def _next_instruction_cycle_bounds(sim: Simulator, core: str) -> tuple[int, int]
     region._check_bounds(address, length)
     words = region._word_count(address, length)
     if instruction.opcode in ("LBBO", "LBCO"):
-        minimum = 1 + region.read_latency + (words - 1)
+        minimum = 1 + region.read_latency + (words - 1) * region.per_word_latency
         return minimum, minimum + region.jitter
     cycles = 1 + region.write_latency + (words - 1)
     return cycles, cycles
@@ -317,6 +317,8 @@ def run(args: argparse.Namespace) -> tuple[int, dict]:
 
     try:
         sim = Simulator(args.config)
+        if args.core not in sim.cores:
+            raise ValueError(f"Core {args.core} is unavailable for the configured target")
         condition_met = _compile_condition(sim, args.core, args.until)
         if args.assembly:
             include_paths = [str(input_path.resolve().parent)]
