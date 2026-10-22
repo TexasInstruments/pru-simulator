@@ -193,3 +193,26 @@ def test_rtu1_headless_selection_and_unsupported_target(tmp_path):
     assert result.returncode == 2
     assert payload["reason"] == "input_error"
     assert "am234x" in payload["errors"][0]
+
+
+def test_cycle_budget_counts_the_misaligned_store_penalty(tmp_path):
+    """PR #78 review: a misaligned 4-byte store to Shared RAM spans two words
+    and costs 2 + W = 4 cycles (#77).  With 3 cycles left the runner must
+    refuse it rather than run past --max-cycles."""
+    source = tmp_path / "store.asm"
+    source.write_text(
+        "ldi32 r1, 0x00010001\nsbbo &r4, r1, 0, 4\nhalt\n", encoding="utf-8"
+    )
+
+    result, payload = invoke("--assembly", source, "--max-cycles", 5)
+
+    assert result.returncode == 3
+    assert payload["reason"] == "cycle_budget_pre_instruction_refusal"
+    assert payload["state"]["cycles"] == 2
+    assert payload["budget_refusal"]["next_instruction_cycles"] == {
+        "maximum": 4, "minimum": 4,
+    }
+
+    # The prediction is what the simulator then charges.
+    result, payload = invoke("--assembly", source, "--max-cycles", 6)
+    assert payload["state"]["cycles"] == 6
