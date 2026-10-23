@@ -12,9 +12,11 @@ import re
 from fractions import Fraction
 
 from core.pru_core import PRUCore
+from core.device_capabilities import get_device_capabilities
 from mem.memory_bus import MemoryBus
 from mem.regions import MemoryRegion
 from perif.iep import IepTimer, IEP_SIZE, IEP_DEFAULT_CLOCK_MHZ
+from perif.pwm import IcssgPwm
 from mem.constant_table import ConstantTable
 from xfr.xfr_bus import XFRBus
 from pru_io.device_model import DeviceBus, DeviceModel
@@ -122,6 +124,48 @@ class IepClockRegisterRegion(MemoryRegion):
         self._iep.write_iepclk(int.from_bytes(value, "little"))
 
 
+class IepSaMxRegisterRegion(MemoryRegion):
+    """ICSSG_SA_MX_REG at ICSS CFG + 0x40 (SPRUIM2J Table 14-10186).
+
+    Bit 16 PWM_EFC_EN makes the IEP clear CMP_STATUS on the next IEP clock. The
+    word is owned by the IEP model so that it follows IEP hardware reset and
+    step-back snapshots. ICSSG only: the register does not exist on the ICSSM
+    targets, so it is not mapped there.
+    """
+
+    BASE_ADDR = 0x00026040
+
+    def __init__(self, iep: IepTimer):
+        super().__init__("ICSS_SA_MX", self.BASE_ADDR, 4, 2, 1, 0)
+        self._iep = iep
+
+    def read(self, addr: int, length: int) -> bytes:
+        self._check_bounds(addr, length)
+        local = addr - self.base_addr
+        return self._iep.sa_mx.to_bytes(4, "little")[local : local + length]
+
+    def write(self, addr: int, data: bytes) -> None:
+        self._check_bounds(addr, length=len(data))
+        local = addr - self.base_addr
+        value = bytearray(self._iep.sa_mx.to_bytes(4, "little"))
+        value[local : local + len(data)] = data
+        self._iep.write_sa_mx(int.from_bytes(value, "little"))
+
+
+class PwmRegisterRegion(MemoryRegion):
+    """ICSSG PWM configuration and state words at CFG + 0x130."""
+    BASE_ADDR = 0x00026130
+    def __init__(self, pwm: IcssgPwm):
+        super().__init__("ICSS_PWM", self.BASE_ADDR, 0x40, 2, 1, 0)
+        self._pwm = pwm
+    def read(self, addr: int, length: int) -> bytes:
+        self._check_bounds(addr, length)
+        return self._pwm.read(addr - self.base_addr + 0x130, length)
+    def write(self, addr: int, data: bytes) -> None:
+        self._check_bounds(addr, length=len(data))
+        self._pwm.write(addr - self.base_addr + 0x130, data)
+
+
 class Simulator:
     """Orchestrates ICSSG cores sharing memory, XFR, and one IEP timer."""
 
@@ -138,30 +182,17 @@ class Simulator:
         pru_clock = dev.get("pru_clock_mhz", "200")
         pru1_clock = dev.get("pru1_clock_mhz", pru_clock)
         iep_clock = dev.get("iep_clock_mhz", IEP_DEFAULT_CLOCK_MHZ)
-        io_pru0 = IOPort()
-        io_rtu0 = IOPort()
-        io_pru1 = IOPort()
-        io_rtu1 = IOPort()
-        self.cores: dict[str, PRUCore] = {
-            "pru0": PRUCore("PRU0", self.memory, self.xfr, io_pru0, copy.deepcopy(self.constant_table),
-                            vbus_memory=self.vbus_memory),
-            "rtu0": PRUCore("RTU0", self.memory, self.xfr, io_rtu0, copy.deepcopy(self.constant_table),
-                            vbus_memory=self.vbus_memory),
-            "pru1": PRUCore("PRU1", self.memory, self.xfr, io_pru1, copy.deepcopy(self.constant_table),
-                            dram_swap=True, vbus_memory=self.vbus_memory),
-            "rtu1": PRUCore("RTU1", self.memory, self.xfr, io_rtu1, copy.deepcopy(self.constant_table),
-                            dram_swap=True, vbus_memory=self.vbus_memory),
-        }
-
-        # configparser keeps inline comments, which the design spec uses on target
         target = dev.get("target", "AM243x").split("#", 1)[0].strip()
-        if target.lower() not in ("am243x", "am64x", "am261x", "am263x"):
-            raise ValueError(
-                f"Unknown device target {target!r}; "
-                "expected one of AM243x, AM64x, AM261x, AM263x")
-        # AM261x and AM263x both carry a two-core ICSS-M.
-        if target.lower() in ("am261x", "am263x"):
-            del self.cores["rtu1"]
+        self.capabilities = get_device_capabilities(target)
+        core_names = (["pru0", "rtu0", "pru1", "rtu1"] if self.capabilities.rtu
+                      else ["pru0", "pru1"])
+        self.cores: dict[str, PRUCore] = {
+            name: PRUCore(name.upper(), self.memory, self.xfr, IOPort(),
+                          copy.deepcopy(self.constant_table),
+                          dram_swap=name.endswith("1"),
+                          vbus_memory=self.vbus_memory, target=target)
+            for name in core_names
+        }
 
         # SPRUIM2J Table 6-65: these fixed entries depend on the executing
         # core. A shared sidecar cannot provide all four sets of addresses.
@@ -175,8 +206,6 @@ class Simulator:
         else:
             # TI OpenPRU AM263x_PRU0/1.cmd (AM261x_PRU0/1.cmd is identical):
             # C10 is reserved on these targets.
-            # The legacy simulated RTU0 has no AM263x hardware equivalent;
-            # leave its common table unchanged rather than inventing a map.
             core_constants = {
                 "pru0": {11: 0x22000, 22: 0x8000},
                 "pru1": {11: 0x24000, 22: 0x9000},
@@ -207,13 +236,16 @@ class Simulator:
         self.memory.add_region(SDRegisterRegion(pru0_sd.registers))
 
         # RTU0 shares the same register space (same physical hardware)
-        rtu0_sd = self.cores["rtu0"].io_port.sd_filter
-        rtu0_sd.registers = pru0_sd.registers
+        rtu0_sd = (self.cores["rtu0"].io_port.sd_filter
+                   if self.capabilities.rtu else None)
+        if rtu0_sd is not None:
+            rtu0_sd.registers = pru0_sd.registers
 
         # Wire callback to update both cores' channel state on register writes
         def _combined_config_change(ch, field, value):
             pru0_sd._on_config_change(ch, field, value)
-            rtu0_sd._on_config_change(ch, field, value)
+            if rtu0_sd is not None:
+                rtu0_sd._on_config_change(ch, field, value)
         pru0_sd.registers.on_config_change = _combined_config_change
 
         # ---- Peripheral Interface (3-channel SCU): PRU0 + PRU1 --------------
@@ -258,6 +290,10 @@ class Simulator:
         )
         self.memory.add_region(IepRegisterRegion(self.iep))
         self.memory.add_region(IepClockRegisterRegion(self.iep))
+        if self.capabilities.icssg_pwm:
+            self.memory.add_region(IepSaMxRegisterRegion(self.iep))
+            self.pwm = IcssgPwm(self.iep)
+            self.memory.add_region(PwmRegisterRegion(self.pwm))
         self._paced_pending: dict[tuple[str, frozenset[str]], dict[str, int | Fraction]] = {}
         for name, core in self.cores.items():
             core.iep = self.iep
@@ -516,11 +552,24 @@ class Simulator:
             "gpo_pins": pru.io_port.get_gpo_pins(),
             "gpi_pins": pru.io_port.get_gpi_pins(),
             "gpo_drive_mask": pru.io_port.gpo_drive_mask,
+            # Dedicated PWM pads are distinct from GPIO/R31.  None is the
+            # TRM's Z state, intentionally not coerced into an input level.
+            "pwm_pins": list(self.pwm.levels) if hasattr(self, "pwm") else [],
         }
 
     def set_input(self, core: str, pin: int, value: bool) -> None:
         """Set a single GPI pin on *core*'s I/O port."""
         self._get_core(core).io_port.set_gpi_pin(pin, value)
+
+    def set_pwm_trip_input(self, setno: int, source: int, value: bool) -> None:
+        """Drive a PWM trip source pin (TRIP_VEC encoding 0..8; 5 = PWMn_TZ_IN).
+
+        ICSSG targets only.  This is the external-pad stimulus; it is not a GPI
+        pin and never appears in R31.
+        """
+        if not hasattr(self, "pwm"):
+            raise ValueError("this device has no ICSSG PWM module")
+        self.pwm.set_trip_input(setno, source, value)
 
     def set_gpio_drive_mask(self, core: str, mask: int) -> None:
         """Set the GPIO output-enable bits for one core without changing R30."""
@@ -644,8 +693,9 @@ class Simulator:
     def set_strict_unsupported_xfr(self, enabled: bool) -> None:
         """Choose what happens when firmware drives an unmodelled XFR device ID.
 
-        The default (``False``) keeps the hardware-faithful result -- XIN reads
-        zeros, XOUT is ignored -- and records the event.  ``True`` makes such a
+        The default (``False``) keeps a simulator fallback -- XIN reads zeros,
+        XOUT is ignored -- and records the event.  That result is unverified on
+        hardware except for AM261x BSWAP_4_8 XIN.  ``True`` makes such a
         transfer raise :class:`~core.pru_core.UnsupportedXFRError` instead, for
         callers that would rather a run fail than continue on zero data.
         """
@@ -672,6 +722,8 @@ class Simulator:
         perif config registers, GPCFG mux, loopback parameters -- is kept.
         """
         self.iep.hardware_reset()
+        if hasattr(self, "pwm"):
+            self.pwm.reset()
         for core in self.cores.values():
             core.reset()
         self.xfr.reset()

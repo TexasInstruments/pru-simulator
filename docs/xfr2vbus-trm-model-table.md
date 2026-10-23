@@ -32,7 +32,7 @@ that field; see "Corrections" below).
 | 0x61 | RD_ID1 | same as RD_ID0, independent state | yes |
 | 0x62 | WR_ID0 | XOUT (data/addr) / XIN (status) | yes, `XFR2VBUSWriteAccelerator` |
 | 0x63 | WR_ID1 | same as WR_ID0, independent state | yes |
-| 0x64 | TX_PRU RD | — | not modelled — TX_PRU core is not simulated by this repo (`simulator.py` only instantiates pru0/rtu0/pru1) |
+| 0x64 | TX_PRU RD | — | not modelled — TX_PRU core is not simulated by this repo (`simulator.py` does not instantiate a TX_PRU core) |
 
 RD_ID0/RD_ID1 and WR_ID0/WR_ID1 are TRM's "2 x XFR2VBUS RX threads" / "2 x
 XFR2VBUS TX threads" (line 7321-7322): independent hardware channels, not

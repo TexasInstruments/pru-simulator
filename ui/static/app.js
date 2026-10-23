@@ -687,6 +687,16 @@ function updatePins(io) {
       pin.classList.toggle("high", !!val);
     }
   });
+
+  const pwmBox = document.getElementById("pwm-pads");
+  const pwm = io.pwm_pins || [];
+  if (pwmBox) {
+    pwmBox.style.display = pwm.length ? "" : "none";
+    const row = document.getElementById("pwm-pads-row");
+    if (row) {
+      row.textContent = pwm.map((v, i) => `${Math.floor(i / 6)}.${Math.floor((i % 6) / 2)}${i % 2 ? "N" : "P"}=${v === null ? "Z" : v}`).join("  ");
+    }
+  }
 }
 
 // ---- SD Interface rendering ----
