@@ -65,7 +65,27 @@ rates do not accumulate float drift. Memory and wait stalls count as elapsed
 core cycles. Resetting one core rebases it at the current shared time; a full
 hardware reset clears the timer registers and timeline.
 
-Not modelled: shadow mode (IEP_CMP_CFG_REG[17] SHADOW_EN), slow compensation,
+SHADOW MODE AND PWM EFFICIENCY (see docs/iep_shadow_compare.md)
+
+IEP_CMP_CFG_REG[17] SHADOW_EN selects a 32-bit controller counter. In that mode
+CMPj_REG0 is the read-only ACTIVE compare and CMPj_REG1 is the read/write
+SHADOW copy (SPRUIM2J 6.4.13.2.3, PDF pp731-732); it is not a write buffer on
+REG0. Shadow values are copied into the active registers when the counter is
+reset by CMP0 and when the 32-bit counter rolls over, and also at once while
+the counter is stopped with COUNT == 0. Enabling shadow mode keeps the active
+values already programmed in 64-bit mode; REG1 keeps its previous contents (the
+old upper word of the 64-bit compare) and is not seeded from the active value.
+A write to CMPj_REG0 discards its data, copies REG1 into REG0 and clears
+CMP_STATUS[j]. Measured on LP-AM243 / LP-AM261 (register level).
+
+ICSSG_SA_MX_REG[16] PWM_EFC_EN (ICSS CFG + 0x40, SPRUIM2J Table 14-10186)
+makes the model clear CMP_STATUS on the IEP clock after a hit set it (the
+CMP_STATUS description: "hardware will auto clear the bit on next clock
+cycle"). Every compare hit is also delivered to listeners registered with
+`add_compare_listener()`, so a consumer such as a PWM state machine still sees
+hits that the status auto-clear has already removed.
+
+Not modelled: slow compensation,
 sync/EHRPWM counter reset, interrupt routing, and the pin/event routing that
 decides WHICH external signal drives capture event n - here the event is raised
 by the harness or by another model calling `capture_event()`. Reads of
@@ -90,6 +110,13 @@ CAP_STATUS = 0x1C
 CAPR0_REG0 = 0x20
 CMP0_REG0 = 0x78
 
+CMP_CFG_SHADOW_EN = 1 << 17
+# ICSSG_SA_MX_REG lives in ICSS CFG at +0x40. Only the fields the TRM marks R/W
+# are stored: [16] PWM_EFC_EN, [11:8] PWM3/PWM0_REMAP_EN, [7:0] G_MUX_EN and
+# the R/W reserved bits. [31:17] and [15:12] are read-only reserved.
+SA_MX_PWM_EFC_EN = 1 << 16
+SA_MX_WRITABLE = 0x00010FFF
+
 NUM_COMPARE = 16
 # 0x20..0x6C is 0x50 bytes = ten 64-bit pairs.
 NUM_CAPTURE = 10
@@ -105,6 +132,19 @@ _MASK64 = 0xFFFFFFFFFFFFFFFF
 def _mhz_to_hz(clock_mhz: float | str) -> Fraction:
     """Convert a configured MHz value without introducing float drift."""
     return Fraction(str(clock_mhz)) * 1_000_000
+
+
+@dataclass(frozen=True)
+class CompareEvent:
+    """One compare hit: compare *index* matched *count* on IEP clock *tick*.
+
+    *tick* numbers the IEP clocks processed with the counter enabled since the
+    last hardware reset, so events from different compares can be ordered.
+    """
+
+    index: int
+    count: int
+    tick: int
 
 
 @dataclass
@@ -154,7 +194,13 @@ class IepTimer:
         if self.ocp_clock_hz <= 0:
             raise ValueError(f"OCP clock must be positive, got {ocp_clock_mhz}")
         self.iepclk = 0
+        self.sa_mx = 0
         self._global_cfg = 0
+        self._cmp_cfg = 0
+        self._compare_listeners: list = []
+        self._clock_ticks = 0
+        self._pending_cmp0_reset = False
+        self._counter_reset = False
         self.reset()
 
     def reset(self) -> None:
@@ -162,9 +208,13 @@ class IepTimer:
         self._global_cfg = 0x550
         self.global_status = 0
         self.count = 0                       # 64-bit
-        self.cmp_cfg = 0
+        self._cmp_cfg = 0
         self.cmp_status = 0                  # 16 bits, write-1-to-clear
-        self.compare = [0] * NUM_COMPARE     # each 64-bit
+        # In 64-bit mode each compare is the whole 64-bit value. In shadow mode
+        # it is the 32-bit ACTIVE value (CMPj_REG0) and `shadow` is CMPj_REG1.
+        self.compare = [0] * NUM_COMPARE
+        self.shadow = [0] * NUM_COMPARE      # each 32-bit, shadow mode only
+        self._pending_cmp0_reset = False
         # SPRUIM2J Table 14-10925: CAP_ASYNC_EN=0x7f, captures disabled.
         self.cap_cfg = 0x1FC00
         self.cap_status = 0                  # valid bits, write-1-to-clear
@@ -176,6 +226,8 @@ class IepTimer:
         """Reset both IEP registers and the shared hardware timeline."""
         self.reset()
         self.iepclk = 0
+        self.sa_mx = 0
+        self._clock_ticks = 0
         self._global_time_units = 0
         self._tick_remainder = 0
         self._refresh_tick_rate()
@@ -213,6 +265,15 @@ class IepTimer:
         if self.active_clock_hz != previous_rate:
             self._tick_remainder = 0
             self._refresh_tick_rate()
+
+    def write_sa_mx(self, value: int) -> None:
+        """Store ICSSG_SA_MX_REG (ICSS CFG + 0x40); read-only bits stay zero."""
+        self.sa_mx = value & SA_MX_WRITABLE
+
+    @property
+    def pwm_efc_en(self) -> bool:
+        """ICSSG_SA_MX_REG[16] PWM_EFC_EN: auto-clear CMP_STATUS."""
+        return bool(self.sa_mx & SA_MX_PWM_EFC_EN)
 
     @property
     def global_time_units(self) -> int:
@@ -298,6 +359,71 @@ class IepTimer:
             self._tick_remainder = 0
             self._refresh_tick_rate()
 
+    @property
+    def cmp_cfg(self) -> int:
+        return self._cmp_cfg
+
+    @cmp_cfg.setter
+    def cmp_cfg(self, value: int) -> None:
+        value &= _MASK32
+        was_shadow = self.shadow_en
+        self._cmp_cfg = value
+        if self.shadow_en != was_shadow:
+            self._shadow_mode_changed()
+
+    @property
+    def shadow_en(self) -> bool:
+        """IEP_CMP_CFG_REG[17] SHADOW_EN: 32-bit counter, shadowed compares."""
+        return bool(self._cmp_cfg & CMP_CFG_SHADOW_EN)
+
+    def _shadow_mode_changed(self) -> None:
+        self._pending_cmp0_reset = False
+        if not self.shadow_en:
+            return
+        # Measured on LP-AM243 ICSSG0 and LP-AM261 ICSSM0 (register level):
+        # entering shadow mode keeps the active low word and does NOT seed the
+        # shadow from it. CMPj_REG1 keeps its previous contents, the old upper
+        # word of the 64-bit compare (normally 0), so the next shadow->active
+        # copy loads that word.
+        for j in range(NUM_COMPARE):
+            self.shadow[j] = (self.compare[j] >> 32) & _MASK32
+            self.compare[j] &= _MASK32
+        self.count &= _MASK32
+        if self._shadow_copy_is_transparent():
+            self._load_shadow()
+
+    def _shadow_copy_is_transparent(self) -> bool:
+        """True while the shadow->active copy also runs between resets.
+
+        Measured: with the counter stopped and COUNT == 0 the active register
+        follows the shadow at once. With COUNT != 0 stopped there is no copy
+        until the first reset or rollover after the counter is enabled.
+        """
+        return self.shadow_en and not self.count_enabled and self.count == 0
+
+    def _load_shadow(self) -> None:
+        """Copy every shadow compare into its active register."""
+        for j in range(NUM_COMPARE):
+            self.compare[j] = self.shadow[j] & _MASK32
+
+    def add_compare_listener(self, listener) -> None:
+        """Call *listener*(CompareEvent) on every compare hit."""
+        self._compare_listeners.append(listener)
+
+    def remove_compare_listener(self, listener) -> None:
+        self._compare_listeners.remove(listener)
+
+    def _emit_compare_event(self, index: int) -> None:
+        if self._compare_listeners:
+            event = CompareEvent(index, self.count, self._clock_ticks)
+            for listener in list(self._compare_listeners):
+                listener(event)
+
+    @property
+    def _event_mode(self) -> bool:
+        """True when behaviour needs event-by-event evaluation."""
+        return bool(self.shadow_en or self.pwm_efc_en or self._compare_listeners)
+
     def _refresh_tick_rate(self) -> None:
         if not self.count_enabled:
             self._tick_numerator = 0
@@ -319,6 +445,10 @@ class IepTimer:
     def _advance_ticks(self, ticks: int) -> None:
         if ticks <= 0 or not self.count_enabled:
             return
+        if self._event_mode:
+            self._advance_events(ticks)
+            return
+        self._clock_ticks += ticks
         increment = self.default_inc
         if not (self.cmp_cfg & 0x1FFFE):
             self.count = (self.count + ticks * increment) & _MASK64
@@ -359,6 +489,106 @@ class IepTimer:
             ticks %= reset_period
         record_hits(0, ticks)
         self.count = (ticks * increment) & _MASK64
+
+    def _step_one(self) -> None:
+        """Advance exactly one IEP clock in shadow/efficiency/listener mode.
+
+        This is the reference for the mode; `_advance_events` only skips clocks
+        on which nothing observable happens and then calls this one.
+        """
+        shadow = self.shadow_en
+        mask = _MASK32 if shadow else _MASK64
+        self._clock_ticks += 1
+        if self.pwm_efc_en:
+            # SPRUIM2J CMP_STATUS: "If PWM_EFC_EN is set, hardware will auto
+            # clear the bit on next clock cycle." Done before this clock's
+            # compares so a hit on this clock is still visible afterwards.
+            self.cmp_status = 0
+        if self._pending_cmp0_reset:
+            # CMP0_RST_CNT_EN resets the counter on the clock after the hit.
+            # The reset clock loads the shadow copies and is not itself
+            # compared (a compare of 0 never fires; upstream #73).
+            self._pending_cmp0_reset = False
+            self.count = 0
+            self._load_shadow()
+            self._counter_reset = True
+            return
+        total = self.count + self.default_inc
+        self.count = total & mask
+        if shadow and total > mask:
+            # 32-bit rollover also loads the shadow copies.
+            self._load_shadow()
+        hit0 = False
+        for j in range(NUM_COMPARE):
+            if self.cmp_enabled(j) and self.count == self.compare[j]:
+                self.cmp_status |= 1 << j
+                self._emit_compare_event(j)
+                if j == 0:
+                    hit0 = True
+        if hit0 and self.cmp0_rst_cnt_en:
+            if shadow:
+                self._pending_cmp0_reset = True
+            else:
+                self.count = 0
+                self._counter_reset = True
+
+    def _clocks_to_next_event(self, increment: int, mask: int) -> int | None:
+        """Clocks until the next one that changes more than the count."""
+        if self._pending_cmp0_reset or (self.pwm_efc_en and self.cmp_status):
+            return 1
+        modulus = mask + 1
+        best = None
+        if self.shadow_en and increment:
+            best = (modulus - self.count + increment - 1) // increment
+        divisor = gcd(increment, modulus)
+        period = modulus // divisor
+        inverse = pow(increment // divisor, -1, period) if increment else 0
+        for j in range(NUM_COMPARE):
+            if not self.cmp_enabled(j):
+                continue
+            delta = (self.compare[j] - self.count) & mask
+            if not increment:
+                distance = 1 if delta == 0 else None
+            elif delta % divisor:
+                distance = None
+            else:
+                distance = (((delta // divisor) * inverse) % period) or period
+            if distance is not None and (best is None or distance < best):
+                best = distance
+        return best
+
+    def _advance_events(self, ticks: int) -> None:
+        increment = self.default_inc
+        mask = _MASK32 if self.shadow_en else _MASK64
+        last_key = None
+        last_remaining = 0
+        while ticks > 0:
+            distance = self._clocks_to_next_event(increment, mask)
+            if distance is None or distance > ticks:
+                self.count = (self.count + ticks * increment) & mask
+                self._clock_ticks += ticks
+                return
+            quiet = distance - 1
+            if quiet:
+                self.count = (self.count + quiet * increment) & mask
+                self._clock_ticks += quiet
+            self._counter_reset = False
+            self._step_one()
+            ticks -= distance
+            if self._counter_reset and not self._compare_listeners:
+                # Two consecutive resets that leave identical state mean the
+                # sequence repeats every `period` clocks; skip whole periods.
+                key = (tuple(self.compare), self.cmp_status,
+                       self._pending_cmp0_reset)
+                if key == last_key:
+                    period = last_remaining - ticks
+                    skipped = (ticks // period) * period
+                    ticks -= skipped
+                    self._clock_ticks += skipped
+                    last_key = None
+                else:
+                    last_key = key
+                    last_remaining = ticks
 
     # -- configuration views --------------------------------------------
     @property
@@ -407,6 +637,10 @@ class IepTimer:
         """Advance one ICSSG_IEP_CLK cycle."""
         if not self.count_enabled:
             return
+        if self._event_mode:
+            self._step_one()
+            return
+        self._clock_ticks += 1
         self.count = (self.count + self.default_inc) & _MASK64
 
         hit0 = False
@@ -430,6 +664,8 @@ class IepTimer:
         if offset == COUNT_REG0:
             return self.count & _MASK32
         if offset == COUNT_REG1:
+            if self.shadow_en:
+                return 0                      # 32-bit counter: no upper word
             return (self.count >> 32) & _MASK32
         if offset == CMP_CFG:
             return self.cmp_cfg
@@ -445,6 +681,10 @@ class IepTimer:
             return v & _MASK32 if half == 0 else (v >> 32) & _MASK32
         if CMP0_REG0 <= offset < CMP0_REG0 + NUM_COMPARE * 8:
             j, half = divmod(offset - CMP0_REG0, 8)
+            if self.shadow_en:
+                # REG0 = read-only active value, REG1 = read/write shadow.
+                return (self.compare[j] & _MASK32 if half == 0
+                        else self.shadow[j])
             v = self.compare[j]
             return v & _MASK32 if half == 0 else (v >> 32) & _MASK32
         return 0
@@ -458,7 +698,8 @@ class IepTimer:
         elif offset == COUNT_REG0:
             self.count = (self.count & ~_MASK32) | value
         elif offset == COUNT_REG1:
-            self.count = (self.count & _MASK32) | (value << 32)
+            if not self.shadow_en:            # 32-bit counter: no upper word
+                self.count = (self.count & _MASK32) | (value << 32)
         elif offset == CMP_CFG:
             self.cmp_cfg = value
         elif offset == CMP_STATUS:
@@ -475,7 +716,17 @@ class IepTimer:
             pass
         elif CMP0_REG0 <= offset < CMP0_REG0 + NUM_COMPARE * 8:
             j, half = divmod(offset - CMP0_REG0, 8)
-            if half == 0:
+            if self.shadow_en:
+                if half != 0:
+                    self.shadow[j] = value
+                    if self._shadow_copy_is_transparent():
+                        self.compare[j] = value
+                else:
+                    # Measured: the data is discarded, the shadow is copied
+                    # into the active register and CMP_STATUS[j] is cleared.
+                    self.compare[j] = self.shadow[j]
+                    self.cmp_status &= ~(1 << j)
+            elif half == 0:
                 self.compare[j] = (self.compare[j] & ~_MASK32) | value
             else:
                 self.compare[j] = (self.compare[j] & _MASK32) | (value << 32)
@@ -513,6 +764,10 @@ class IepTimer:
             "cmp_cfg": self.cmp_cfg,
             "cmp_status": self.cmp_status,
             "compare": list(self.compare),
+            "shadow": list(self.shadow),
+            "pending_cmp0_reset": self._pending_cmp0_reset,
+            "sa_mx": self.sa_mx,
+            "clock_ticks": self._clock_ticks,
             "cap_cfg": self.cap_cfg,
             "cap_status": self.cap_status,
             "capture": list(self.capture),
@@ -537,9 +792,13 @@ class IepTimer:
         self._global_cfg = snapshot["global_cfg"] & _MASK32
         self.global_status = snapshot.get("global_status", 0) & _MASK32
         self.count = snapshot["count"] & _MASK64
-        self.cmp_cfg = snapshot["cmp_cfg"] & _MASK32
+        self._cmp_cfg = snapshot["cmp_cfg"] & _MASK32
         self.cmp_status = snapshot["cmp_status"] & 0xFFFF
         self.compare = list(snapshot["compare"])
+        self.shadow = list(snapshot.get("shadow", [0] * NUM_COMPARE))
+        self._pending_cmp0_reset = snapshot.get("pending_cmp0_reset", False)
+        self.sa_mx = snapshot.get("sa_mx", 0) & SA_MX_WRITABLE
+        self._clock_ticks = snapshot.get("clock_ticks", 0)
         self.cap_cfg = snapshot.get("cap_cfg", 0) & _MASK32
         self.cap_status = snapshot.get("cap_status", 0) & _MASK32
         self.capture = list(snapshot.get("capture", [0] * NUM_CAPTURE))

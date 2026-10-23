@@ -122,6 +122,34 @@ class IepClockRegisterRegion(MemoryRegion):
         self._iep.write_iepclk(int.from_bytes(value, "little"))
 
 
+class IepSaMxRegisterRegion(MemoryRegion):
+    """ICSSG_SA_MX_REG at ICSS CFG + 0x40 (SPRUIM2J Table 14-10186).
+
+    Bit 16 PWM_EFC_EN makes the IEP clear CMP_STATUS on the next IEP clock. The
+    word is owned by the IEP model so that it follows IEP hardware reset and
+    step-back snapshots. ICSSG only: the register does not exist on the ICSSM
+    targets, so it is not mapped there.
+    """
+
+    BASE_ADDR = 0x00026040
+
+    def __init__(self, iep: IepTimer):
+        super().__init__("ICSS_SA_MX", self.BASE_ADDR, 4, 2, 1, 0)
+        self._iep = iep
+
+    def read(self, addr: int, length: int) -> bytes:
+        self._check_bounds(addr, length)
+        local = addr - self.base_addr
+        return self._iep.sa_mx.to_bytes(4, "little")[local : local + length]
+
+    def write(self, addr: int, data: bytes) -> None:
+        self._check_bounds(addr, length=len(data))
+        local = addr - self.base_addr
+        value = bytearray(self._iep.sa_mx.to_bytes(4, "little"))
+        value[local : local + len(data)] = data
+        self._iep.write_sa_mx(int.from_bytes(value, "little"))
+
+
 class Simulator:
     """Orchestrates ICSSG cores sharing memory, XFR, and one IEP timer."""
 
@@ -258,6 +286,8 @@ class Simulator:
         )
         self.memory.add_region(IepRegisterRegion(self.iep))
         self.memory.add_region(IepClockRegisterRegion(self.iep))
+        if target.lower() in ("am243x", "am64x"):
+            self.memory.add_region(IepSaMxRegisterRegion(self.iep))
         self._paced_pending: dict[tuple[str, frozenset[str]], dict[str, int | Fraction]] = {}
         for name, core in self.cores.items():
             core.iep = self.iep
