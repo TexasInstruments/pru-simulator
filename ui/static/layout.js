@@ -167,8 +167,7 @@ function renderNode(node) {
         titleEl.dataset.dragBound = '1';
         titleEl.style.cursor = 'grab';
         titleEl.addEventListener('mousedown', (e) => {
-          if (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT' ||
-              e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
+          if (e.target.closest('button, input, select, textarea, a, [role="button"], [contenteditable]')) return;
           e.preventDefault();
           startDrag(node.panelId, e);
         });

@@ -1,4 +1,5 @@
 """Two browser connections observe one simulator without polling or re-running it."""
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -166,3 +167,184 @@ def test_new_tab_sees_running_status_and_owner_disconnect_stops_it(dashboard):
                 late.send_json({"action": "get_state"})
                 assert state(late)["execution"] == {"type": "execution", "running": True, "owner": False, "mode": "sim"}
         assert until(view, lambda msg: msg["type"] == "execution")["running"] is False
+
+
+@pytest.mark.parametrize("cores", [
+    ["pru0", "pru1"], ["pru0", "pru1", "rtu0"],
+    ["pru0", "pru1", "rtu0", "rtu1"],
+])
+def test_manual_multicore_steps_each_have_one_shared_undo(dashboard, cores):
+    # Unequal rates make a follower execute more than one instruction per click.
+    assert dashboard.put("/config/clock_speed", json={"mhz": 200, "group": 0}).status_code == 200
+    assert dashboard.put("/config/clock_speed", json={"mhz": 300, "group": 1}).status_code == 200
+    for index, core in enumerate(cores):
+        assert srv.sim.load(core, "add r0, r0, 1\nsbbo &r0, r2, 0, 4\nqba 0") == []
+        srv.sim.cores[core].registers.write_full(2, 0x10000 + index * 4)
+    with dashboard.websocket_connect("/ws") as ws:
+        # This older follower-only event must not be undone by the same keypress.
+        ws.send_json({"action": "step", "core": "pru1"})
+        state(ws, "pru1")
+        checkpoints = []
+        for run_id in range(3):
+            checkpoints.append(srv._snapshot("pru0"))
+            ws.send_json({"action": "step_multicore", "core": cores[0],
+                          "partners": cores[1:], "run_id": run_id})
+            for core in cores:
+                result = state(ws, core)
+            assert result["run_id"] == run_id
+        assert srv.sim.cores["pru0"].counters.instruction_count == 3
+        for checkpoint in reversed(checkpoints):
+            ws.send_json({"action": "step_back", "core": cores[0]})
+            for core in srv.sim.cores:
+                state(ws, core)
+            assert srv._snapshot("pru0") == checkpoint
+        assert srv.sim.cores["pru1"].counters.instruction_count == 1
+
+
+def test_manual_multicore_step_captures_once_for_a_recording_observer(dashboard):
+    for core in ("pru0", "pru1"):
+        assert srv.sim.load(core, "xor r30, r30, 1\nqba 0") == []
+    with dashboard.websocket_connect("/ws") as control, dashboard.websocket_connect("/ws") as view:
+        view.send_json({"action": "subscribe_capture", "enabled": True})
+        assert receive(view)["type"] == "capture_subscription"
+        for run_id in range(3):
+            control.send_json({"action": "step_multicore", "core": "pru0",
+                               "partners": ["pru1"], "run_id": run_id})
+            # A single manual step must not be lost to the normal stride of 100.
+            capture = receive(view)
+            assert capture["type"] == "capture"
+            assert capture["partners"] == ["pru1"]
+            assert len(capture["samples"]) == 1
+            assert capture["samples"][0][0] == run_id + 1
+            assert capture["samples"][0][1] == capture["samples"][0][6]
+            for core in srv.sim.cores:
+                live = state(view, core)
+                assert live["captured"] is (core in {"pru0", "pru1"})
+            state(control)
+            assert state(control, "pru1")["run_id"] == run_id
+
+
+def test_manual_multicore_step_respects_the_shared_run_owner_and_stop(dashboard):
+    for core in ("pru0", "pru1"):
+        assert srv.sim.load(core, "nop\nqba 0") == []
+    with dashboard.websocket_connect("/ws") as control, dashboard.websocket_connect("/ws") as view:
+        control.send_json({"action": "start_execution", "mode": "sim"})
+        assert receive(control)["owner"] is True
+        until(view, lambda msg: msg["type"] == "execution")
+        view.send_json({"action": "step_multicore", "partners": ["pru1"], "run_id": 1})
+        assert receive(view)["type"] == "error"
+        assert state(view)["run_id"] == 1
+        assert srv.sim.cores["pru0"].counters.instruction_count == 0
+        control.send_json({"action": "step_multicore", "partners": ["pru1"],
+                           "managed": True, "run_id": 2})
+        assert state(control)["instruction_count"] == 1
+        assert state(control, "pru1")["run_id"] == 2
+        for core in srv.sim.cores:
+            state(view, core)
+        view.send_json({"action": "stop_execution"})
+        assert until(control, lambda msg: msg["type"] == "execution")["running"] is False
+        control.send_json({"action": "step_multicore", "partners": ["pru1"],
+                           "managed": True, "run_id": 3})
+        assert receive(control)["type"] == "error"
+        stopped = state(control)
+        assert (stopped["instruction_count"], stopped["run_id"]) == (1, 3)
+
+
+def test_manual_step_captures_a_pending_followers_progress_even_without_a_new_lead_step(dashboard):
+    for core in ("pru0", "pru1"):
+        assert srv.sim.load(core, "xor r30, r30, 1\nqba 0") == []
+    lead = srv.sim.cores["pru0"]
+    lead.counters.cycles = lead.counters.instruction_count = 5000
+    with dashboard.websocket_connect("/ws") as control, dashboard.websocket_connect("/ws") as view:
+        view.send_json({"action": "subscribe_capture", "enabled": True})
+        assert receive(view)["type"] == "capture_subscription"
+        for run_id in (1, 2):
+            control.send_json({"action": "step_multicore", "partners": ["pru1"], "run_id": run_id})
+            capture = receive(view)
+            assert capture["type"] == "capture"
+            assert len(capture["samples"]) == 1
+            assert capture["samples"][0][0] == 5001
+            for core in srv.sim.cores:
+                live = state(view, core)
+                assert live["captured"] is (core in {"pru0", "pru1"})
+            state(control)
+            assert state(control, "pru1")["run_id"] == run_id
+        assert srv.sim.cores["pru1"].counters.instruction_count == 2000
+
+
+def test_explicit_state_refresh_is_marked_as_a_view_without_advancing_the_simulator(dashboard):
+    assert srv.sim.load("pru0", "nop\nhalt") == []
+    with dashboard.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "get_state"})
+        refreshed = state(ws)
+        assert refreshed["view_only"] is True
+        assert refreshed["instruction_count"] == 0
+        ws.send_json({"action": "step"})
+        stepped = state(ws)
+        assert not stepped.get("view_only", False)
+        assert stepped["instruction_count"] == 1
+
+
+@pytest.mark.parametrize("mutation", ["reset", "load"])
+@pytest.mark.parametrize("incomplete", [False, True])
+def test_slow_controller_cannot_publish_old_capture_after_another_tabs_mutation(
+        dashboard, monkeypatch, mutation, incomplete):
+    from ui.live_sessions import DashboardConnection
+    assert srv.sim.load("pru0", "xor r30, r30, 1\nqba 0") == []
+    connections = []
+    original_init = DashboardConnection.__init__
+    events = {}
+    if incomplete:
+        assert srv.sim.load("pru1", "xor r30, r30, 1\nqba 0") == []
+        # A late follower cannot catch up within one bounded pacing call.
+        lead = srv.sim.cores["pru0"]
+        lead.counters.cycles = lead.counters.instruction_count = 5000
+
+    def delayed_connection(self, websocket):
+        original_init(self, websocket)
+        connections.append(self)
+        if len(connections) != 1:
+            return
+        original_send = websocket.send_json
+
+        async def delayed_send(message, *args, **kwargs):
+            if message.get("type") == ("error" if incomplete else "capture"):
+                events["entered"].set()
+                await events["release"].wait()
+            await original_send(message, *args, **kwargs)
+        websocket.send_json = delayed_send
+
+    monkeypatch.setattr(DashboardConnection, "__init__", delayed_connection)
+    with dashboard.websocket_connect("/ws") as control, dashboard.websocket_connect("/ws") as view:
+        async def prepare():
+            events.update(entered=asyncio.Event(), release=asyncio.Event())
+        control.portal.call(prepare)
+        view.send_json({"action": "subscribe_capture", "enabled": True})
+        assert receive(view)["type"] == "capture_subscription"
+        control.send_json({"action": "run_multicore" if incomplete else "run",
+                           "partners": ["pru1"], "max_steps": 100, "stride": 1})
+
+        async def wait_entered():
+            with anyio.fail_after(1):
+                await events["entered"].wait()
+        control.portal.call(wait_entered)
+        try:
+            view.send_json({"action": mutation, "source": "ldi r0, 42\nhalt"})
+            messages = []
+            while True:
+                message = receive(view)
+                messages.append(message)
+                if message["type"] == "state" and message["core"] == "pru0":
+                    break
+            if mutation == "reset":
+                assert messages[-1]["pc"] == 0
+            else:
+                assert messages[-1]["instructions"][0]["text"] == "ldi r0, 42"
+            expected_count = 0 if mutation == "reset" else 5001 if incomplete else 100
+            assert messages[-1]["instruction_count"] == expected_count
+            assert [msg["type"] for msg in messages] == ["capture", "state"]
+        finally:
+            control.portal.call(events["release"].set)
+        # Once the controlling socket catches up it must publish only fresh state.
+        assert state(control)["instruction_count"] == expected_count
+        assert receive(view)["type"] == "state"

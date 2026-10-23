@@ -173,14 +173,14 @@ vm.runInContext(app.slice(app.indexOf('btnStep.addEventListener('),
   app.indexOf('btnRun.addEventListener(')), execution);
 vm.runInContext(app.slice(app.indexOf('// Keyboard shortcuts (Space'),
   app.indexOf('// ---- UART decoder controls')), execution);
-for (const trigger of [() => stepButton.listeners.click(),
-  () => keys.keydown({ key: 'ArrowRight', target: { tagName: 'BODY' }, preventDefault() {} }),
-  () => { execution.startSim(); intervals.at(-1)(); },
-  () => { execution.startRun(); intervals.at(-1)(); }]) {
+for (const [action, trigger] of [['step_multicore', () => stepButton.listeners.click()],
+  ['step_multicore', () => keys.keydown({ key: 'ArrowRight', target: { tagName: 'BODY' }, preventDefault() {} })],
+  ['step_multicore', () => { execution.startSim(); intervals.at(-1)(); }],
+  ['run_multicore', () => { execution.startRun(); intervals.at(-1)(); }]]) {
   execution.runPending = null;
   execution.executionStartPending = null;
   trigger();
-  assert.equal(messages.at(-1).action, 'run_multicore');
+  assert.equal(messages.at(-1).action, action);
   assert.equal(messages.at(-1).core, 'pru1', 'the first used core leads, even without PRU0');
   assert.deepEqual(messages.at(-1).partners, ['rtu0', 'rtu1'], 'hidden used cores still execute');
 }

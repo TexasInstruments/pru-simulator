@@ -456,7 +456,7 @@ function receiveExecution(state) {
 
 // ---- UI update ------------------------------------------------------------
 
-function updateUI(state) {
+function updateUI(state, fromCache = false) {
   // Counters / header
   cntCycles.textContent   = state.cycles;
   cntStalls.textContent   = state.stall_cycles;
@@ -500,10 +500,10 @@ function updateUI(state) {
   updateDevicePanel(state.io, state.core || currentCore);
 
   // Signal graph sample
-  graphSample(state);
+  if (!fromCache) graphSample(state);
   drawGraph();
 
-  memAutoOnStateChange();
+  if (!fromCache) memAutoOnStateChange();
 }
 
 function updateRegisters(regs, carry) {
@@ -1519,6 +1519,7 @@ function graphSample(state) {
   const perifChannels = (state.io.perif && state.io.perif.channels) || [];
   const sample = {
     step: state.instruction_count,
+    core: state.core || currentCore,
     // IO mux mode at capture time: in perif mode the GPO/GPI pins are owned by
     // the Peripheral Interface, so R30/R31 must not be plotted as pin state.
     mode: state.io.mode || "gpio",
@@ -1635,6 +1636,20 @@ document.addEventListener("pru-theme-changed", () => {
   if (typeof fillWaveCanvas !== "undefined" && fillWaveCanvas) drawWavePreview();
 });
 
+function graphCoreNames(samples) {
+  const names = new Set();
+  for (const sample of samples) {
+    names.add(sample.core || "");
+    for (const peer of sample.peers || []) names.add(peer.name);
+  }
+  return [...names];
+}
+
+function graphCoreSample(sample, name) {
+  return (sample.core || "") === name ? sample
+    : (sample.peers || []).find(peer => peer.name === name);
+}
+
 function drawDigitalGraph() {
   const canvas = document.getElementById("signal-graph-canvas");
   if (!canvas) return;
@@ -1667,26 +1682,25 @@ function drawDigitalGraph() {
                     samples[samples.length - 1].mode === "perif";
   const activeDig = [];
   if (samples.length >= 2) {
+    const names = graphCoreNames(samples);
     if (!perifMode) {
       // A multi-core capture plots every core's pins, prefixed by core name so
       // PRU0 GPI 16 and PRU1 GPO 16 (two ends of one wire) read apart.
-      const last = samples[samples.length - 1];
-      const cores = [{ tag: "", of: s => s }];
-      if (last.peers && last.peers.length) {
-        cores[0].tag = `${last.core.toUpperCase()} `;
-        last.peers.forEach((p, k) => cores.push({
-          tag: `${p.name.toUpperCase()} `, of: s => (s.peers && s.peers[k]) || {} }));
-      }
+      const cores = names.map(name => ({
+        tag: names.length > 1 ? `${name.toUpperCase()} ` : "",
+        samples: samples.map(s => graphCoreSample(s, name)),
+      }));
       for (const kind of ["gpo", "gpi"]) {
         for (const c of cores) {
           for (let i = 0; i < 20; i++) {
-            const data = samples.map(s => (c.of(s)[kind] || [])[i] || 0);
+            const data = c.samples.map(s => s ? (s[kind] || [])[i] || 0 : null);
             // Multi-core: a GPI that is sample-for-sample its own core's GPO
             // is just the readback of a pin it drives; the GPO lane shows it.
             // Any disagreement (contention, outside driver) keeps the lane.
             const own = cores.length > 1 && kind === "gpi" &&
-              samples.every((s, j) => data[j] === ((c.of(s).gpo || [])[i] || 0));
-            if (!own && data.some(v => v !== data[0])) {
+              c.samples.every((s, j) => !s || data[j] === ((s.gpo || [])[i] || 0));
+            const observed = data.filter(v => v !== null);
+            if (!own && observed.some(v => v !== observed[0])) {
               activeDig.push({ label: `${c.tag}${kind.toUpperCase()} ${i}`,
                 color: (kind === "gpo" ? GRAPH_GPO_COLORS : GRAPH_GPI_COLORS)[i], data });
             }
@@ -1694,21 +1708,29 @@ function drawDigitalGraph() {
         }
       }
     }
-    for (let i = 0; i < 3; i++) {
-      // Data lane first, then out_en and the bit clock, so the group reads
-      // together: out_en says when the pad is driven, the clock says where the
-      // bits start (the perif serializer has no framing of its own).
-      const out = samples.map(s => (s.perif && s.perif[i]) || 0);
-      const oe  = samples.map(s => (s.perifOe && s.perifOe[i]) || 0);
-      const clk = samples.map(s => (s.perifClk && s.perifClk[i]) || 0);
-      const moved = a => a.some(v => v !== a[0]);
-      // A channel that moved at all shows its full group, so a steady out_en
-      // stays visible next to the data it qualifies.
-      const chActive = moved(out) || moved(oe) || moved(clk);
-      if (!chActive) continue;
-      activeDig.push({ label: `perif${i}_out`,    color: GRAPH_PERIF_COLORS[i],     data: out });
-      activeDig.push({ label: `perif${i}_out_en`, color: GRAPH_PERIF_OE_COLORS[i],  data: oe  });
-      activeDig.push({ label: `perif${i}_clk`,    color: GRAPH_PERIF_CLK_COLORS[i], data: clk });
+    const leads = names.filter(name => samples.some(s => (s.core || "") === name));
+    for (const name of leads) {
+      const tag = leads.length > 1 ? `${name.toUpperCase()} ` : "";
+      const leadSamples = samples.map(s => (s.core || "") === name ? s : null);
+      for (let i = 0; i < 3; i++) {
+        // Data lane first, then out_en and the bit clock, so the group reads
+        // together: out_en says when the pad is driven, the clock says where the
+        // bits start (the perif serializer has no framing of its own).
+        const out = leadSamples.map(s => s ? (s.perif?.[i] || 0) : null);
+        const oe  = leadSamples.map(s => s ? (s.perifOe?.[i] || 0) : null);
+        const clk = leadSamples.map(s => s ? (s.perifClk?.[i] || 0) : null);
+        const moved = a => {
+          const observed = a.filter(v => v !== null);
+          return observed.some(v => v !== observed[0]);
+        };
+        // A channel that moved at all shows its full group, so a steady out_en
+        // stays visible next to the data it qualifies.
+        const chActive = moved(out) || moved(oe) || moved(clk);
+        if (!chActive) continue;
+        activeDig.push({ label: `${tag}perif${i}_out`,    color: GRAPH_PERIF_COLORS[i],     data: out });
+        activeDig.push({ label: `${tag}perif${i}_out_en`, color: GRAPH_PERIF_OE_COLORS[i],  data: oe  });
+        activeDig.push({ label: `${tag}perif${i}_clk`,    color: GRAPH_PERIF_CLK_COLORS[i], data: clk });
+      }
     }
   }
 
@@ -1731,15 +1753,16 @@ function drawDigitalGraph() {
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ch.data.forEach((v, i) => {
+        if (v === null) return;
         const x = (i / (N - 1)) * W;
         const y = v ? yHigh : yLow;
-        if (i === 0) { ctx.moveTo(x, y); return; }
+        if (i === 0 || ch.data[i - 1] === null) { ctx.moveTo(x, y); return; }
         if (v !== ch.data[i - 1]) {
           const xm = ((i - 0.5) / (N - 1)) * W;
           ctx.lineTo(xm, ch.data[i - 1] ? yHigh : yLow);
           ctx.lineTo(xm, y);
         }
-        if (v !== ch.data[i - 1] || i === N - 1) ctx.lineTo(x, y);   // flat runs add no vertex
+        if (v !== ch.data[i - 1] || i === N - 1 || ch.data[i + 1] === null) ctx.lineTo(x, y);   // flat runs add no vertex
       });
       ctx.stroke();
       ctx.fillStyle = ch.color;
@@ -1975,22 +1998,25 @@ function exportGraphCSV() {
   const samples = graphGetSamples();
   if (samples.length === 0) return;
 
-  const gpoHeaders = Array.from({ length: 20 }, (_, i) => `gpo${i}`);
-  const gpiHeaders = Array.from({ length: 20 }, (_, i) => `gpi${i}`);
-  const perifHeaders = Array.from({ length: 3 }, (_, i) => `perif${i}_out`);
-  const perifOeHeaders = Array.from({ length: 3 }, (_, i) => `perif${i}_out_en`);
-  const perifClkHeaders = Array.from({ length: 3 }, (_, i) => `perif${i}_clk`);
-  const header = ["step", "mode", ...gpoHeaders, ...gpiHeaders,
-                  ...perifHeaders, ...perifOeHeaders, ...perifClkHeaders].join(",");
+  const cores = graphCoreNames(samples);
+  const pinHeaders = cores.flatMap(core => ["gpo", "gpi"].flatMap(kind =>
+    Array.from({ length: 20 }, (_, i) => `${cores.length > 1 ? core + "_" : ""}${kind}${i}`)));
+  const leads = cores.filter(core => samples.some(s => (s.core || "") === core));
+  const perifHeaders = leads.flatMap(core => ["out", "out_en", "clk"].flatMap(kind =>
+    Array.from({ length: 3 }, (_, i) => `${leads.length > 1 ? core + "_" : ""}perif${i}_${kind}`)));
+  const header = ["step", "mode", ...pinHeaders,
+                  ...perifHeaders].join(",");
 
   const rows = samples.map(s => {
-    const gpo = Array.from({ length: 20 }, (_, i) => s.gpo[i] ?? 0);
-    const gpi = Array.from({ length: 20 }, (_, i) => s.gpi[i] ?? 0);
-    const perif = Array.from({ length: 3 }, (_, i) => (s.perif && s.perif[i]) ?? 0);
-    const perifOe = Array.from({ length: 3 }, (_, i) => (s.perifOe && s.perifOe[i]) ?? 0);
-    const perifClk = Array.from({ length: 3 }, (_, i) => (s.perifClk && s.perifClk[i]) ?? 0);
-    return [s.step, s.mode ?? "gpio", ...gpo, ...gpi,
-            ...perif, ...perifOe, ...perifClk].join(",");
+    const pins = cores.flatMap(core => {
+      const sample = graphCoreSample(s, core);
+      return ["gpo", "gpi"].flatMap(kind =>
+        Array.from({ length: 20 }, (_, i) => sample ? sample[kind]?.[i] ?? 0 : ""));
+    });
+    const perif = leads.flatMap(core => ["perif", "perifOe", "perifClk"].flatMap(kind =>
+      Array.from({ length: 3 }, (_, i) => (s.core || "") === core ? s[kind]?.[i] ?? 0 : "")));
+    return [s.step, s.mode ?? "gpio", ...pins,
+            ...perif].join(",");
   });
 
   // Append memory channel snapshots as separate blocks after the signal rows
@@ -4022,7 +4048,7 @@ function applyCoreSelection(next) {
   persistCoreSelection();
   if (panesChanged) renderCorePanes();
   syncDeviceCoreSelect();
-  for (const state of Object.values(coreStates)) paintCoreState(state);
+  for (const state of Object.values(coreStates)) paintCoreState(state, true);
   updateCoresControl();
   for (const core of new Set([...next.used, devicePanelCore])) sendAction({action:'get_state',core});
 }
@@ -4090,9 +4116,9 @@ function renderCorePanes() {
   document.getElementById('carry-row').hidden = coreSelection.shown.length > 1;
 }
 
-function paintCoreState(state) {
+function paintCoreState(state, fromCache = false) {
   const core = state.core;
-  if (core === currentCore) updateUI(state);
+  if (core === currentCore) updateUI(state, fromCache);
   else {
     if (coreSelection.shown.includes(core)) {
       mcBreakpoints[core] = new Set(state.breakpoints || []);
@@ -4113,7 +4139,7 @@ function updateCoreState(state) {
   if (!availableCores.includes(state.core)) return;
   coreStates[state.core] = state;
   if (coreSelection.used.includes(state.core) && (state.halted || state.at_breakpoint)) { stopRun(); stopSim(); }
-  paintCoreState(state);
+  paintCoreState(state, !!state.view_only);
   updateCoresControl();
 }
 
@@ -4154,7 +4180,7 @@ function requestSelectedStep() {
   const cores = executionCores();
   if (cores.length > 1) {
     const run_id = ++runSequence; runPending = run_id;
-    sendAction({action:'run_multicore',core:cores[0],partners:cores.slice(1),max_steps:1,run_id,managed:simRunning});
+    sendAction({action:'step_multicore',core:cores[0],partners:cores.slice(1),run_id,managed:simRunning});
   } else sendAction({action:'step',core:cores[0],count:1,managed:simRunning});
 }
 
@@ -4194,7 +4220,7 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     stopRun(); stopSim();
     if (multiCoreMode) {
-      for (const core of [...executionCores()].reverse()) sendAction({ action: "step_back", core });
+      sendAction({ action: "step_back", core: executionCores()[0] });
     } else {
       sendAction({ action: "step_back", core: currentCore });
     }

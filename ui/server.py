@@ -518,10 +518,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     "errors": [f"core must be one of {list(sim.cores)}, got {core!r}"],
                     "available_cores": list(sim.cores)})
                 await _send_state(websocket, next(iter(sim.cores)),
-                                  run_id=msg.get("run_id") if action in ("run", "run_multicore") else None)
+                                  run_id=msg.get("run_id") if action in ("run", "run_multicore", "step_multicore") else None)
                 continue
 
-            if action in {"step", "run", "run_multicore"}:
+            if action in {"step", "run", "run_multicore", "step_multicore"}:
                 if ((_execution_owner is not None and _execution_owner is not websocket)
                         or (msg.get("managed") and _execution_owner is not websocket)):
                     await websocket.send_json({"type": "error", "errors": ["Execution stopped or controlled by another tab"]})
@@ -613,7 +613,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 sim.set_input(core, msg["pin"], bool(msg["value"]))
                 await _send_state(websocket, core)
             elif action == "get_state":
-                await _send_state(websocket, core)
+                await _send_state(websocket, core, view_only=True)
             elif action == "set_gpio_drive_mask":
                 try:
                     # Full-mask clients replace all directions; dashboard pin
@@ -780,6 +780,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 pru = sim.cores[core]
                 at_breakpoint = False
                 samples = []
+                error = None
                 try:
                     steps = 0
                     while steps < max_steps and not pru.halted and pru.pc < len(pru.instructions):
@@ -791,13 +792,16 @@ async def websocket_endpoint(websocket: WebSocket):
                             at_breakpoint = True
                             break
                 except ValueError as ve:
-                    await websocket.send_json({"type": "error", "errors": [str(ve)]})
+                    error = {"type": "error", "errors": [str(ve)]}
                 if samples:
                     await _send_capture(websocket, core, samples)
+                if error:
+                    await websocket.send_json(error)
                 await _send_state(websocket, core, at_breakpoint=at_breakpoint,
                                   captured=capture, run_id=msg.get("run_id"))
-            elif action == "run_multicore":
-                max_steps = int(msg.get("max_steps", 1000))
+            elif action in {"run_multicore", "step_multicore"}:
+                manual_step = action == "step_multicore"
+                max_steps = 1 if manual_step else int(msg.get("max_steps", 1000))
                 capture = bool(msg.get("capture", False)) or any(c.capture for c in _connections)
                 stride = _capture_stride(msg)
                 # "partners" runs three or four cores together; "partner" is the
@@ -816,18 +820,27 @@ async def websocket_endpoint(websocket: WebSocket):
                 lead_bp = False
                 partner_bp = [False] * len(partners)
                 samples = []
+                error = None
+                manual_counts = {name: sim.cores[name].counters.instruction_count
+                                 for name in [core, *partners]} if manual_step and capture else {}
                 try:
+                    if manual_step:
+                        # One click advances the whole selected set atomically.
+                        _record_step(core)
                     steps = 0
                     while steps < max_steps:
                         pacing = sim.step_paced_many(core, partners, 1)
                         steps += pacing["lead_steps"]
-                        if capture and pacing["lead_steps"] and _capture_due(lead_pru, steps, stride):
+                        progressed = pacing["lead_steps"] or any(
+                            sim.cores[name].counters.instruction_count != before
+                            for name, before in manual_counts.items())
+                        if capture and progressed and (manual_step or _capture_due(lead_pru, steps, stride)):
                             samples.append(_capture_sample(lead_pru, partner_prus))
                         if not pacing["complete"]:
-                            await websocket.send_json({
+                            error = {
                                 "type": "error", "reason": pacing["reason"],
                                 "errors": ["Follower catch-up is incomplete; run again to continue"],
-                            })
+                            }
                             break
                         if lead_pru.pc in lead_pru.breakpoints:
                             lead_bp = True
@@ -838,14 +851,16 @@ async def websocket_endpoint(websocket: WebSocket):
                         if lead_pru.halted or lead_pru.pc >= len(lead_pru.instructions):
                             break
                 except ValueError as ve:
-                    await websocket.send_json({"type": "error", "errors": [str(ve)]})
+                    error = {"type": "error", "errors": [str(ve)]}
                 if samples:
                     await _send_capture(websocket, core, samples, partners)
+                if error:
+                    await websocket.send_json(error)
                 await _send_state(websocket, core, at_breakpoint=lead_bp,
-                                  captured=capture)
+                                  captured=bool(samples))
                 for name, at_bp in zip(partners, partner_bp):
                     await _send_state(websocket, name, at_breakpoint=at_bp,
-                                      captured=capture,
+                                      captured=bool(samples),
                                       run_id=msg.get("run_id") if name == partners[-1] else None)
             elif action == "set_sd_modulator":
                 ch = int(msg.get("channel", 0))
@@ -994,11 +1009,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({"type": "error", "tag": "ws",
                                            "errors": [f"unknown action {action!r}"]})
             if action not in {"get_state", "read_memory", "device_discover", "scenario_list", "subscribe_capture"}:
-                captured_cores = {core, *partners} if action == "run_multicore" and capture else (
+                captured_cores = {core, *partners} if action in {"run_multicore", "step_multicore"} and samples else (
                     {core} if action == "run" and capture else set())
                 breakpoint_cores = set()
-                if action in {"step", "run", "run_multicore"}:
-                    stepped = [core, *partners] if action == "run_multicore" else [core]
+                if action in {"step", "run", "run_multicore", "step_multicore"}:
+                    stepped = [core, *partners] if action in {"run_multicore", "step_multicore"} else [core]
                     breakpoint_cores = {name for name in stepped
                                         if sim.cores[name].pc in sim.cores[name].breakpoints}
                     if _execution_owner is websocket and (breakpoint_cores or any(
@@ -1165,17 +1180,21 @@ async def _send_capture(ws, core, samples, partners=None):
     }
     if partners:
         msg["partners"] = partners   # names for the trailing [r30, gpi] pairs
-    await ws.send_json(msg)
+    # Queue the shared event before yielding to a slow requester. Otherwise a
+    # second tab can reset/load and observe this older capture after its new state.
     for connection in _connections - {ws}:
         if connection.capture:
             connection.publish(msg)
+    await ws.send_json(msg)
 
 
-async def _send_state(ws, core, at_breakpoint=False, captured=False, run_id=None):
+async def _send_state(ws, core, at_breakpoint=False, captured=False, run_id=None, view_only=False):
     state = _state(core, at_breakpoint, captured)
     state["execution"] = _execution_state(ws)
     if run_id is not None:
         state["run_id"] = run_id
+    if view_only:
+        state["view_only"] = True
     await ws.send_json(state)
 
 

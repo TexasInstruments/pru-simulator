@@ -111,6 +111,10 @@ def apply_scenario(sim, name: str, device_api) -> Scenario:
         sim.remove_gpio_wire(**wire)
     sim.hard_reset()
     for core in sim.cores:
+        # Examples own their GPIO setup; a normal reset keeps the UI's mux
+        # and external UART stimulus, both incompatible with these SSI pins.
+        sim.gpcfg_write(core, 0)
+        sim.cores[core].io_port.uart_generator = None
         sim.set_gpio_drive_mask(core, _PIN_MASK)
         for group in range(5):
             sim.set_loopback(core, group, False)

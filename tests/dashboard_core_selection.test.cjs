@@ -57,7 +57,7 @@ test('each visible register pane shows its own CRC state', () => {
     mcBreakpoints: {}, updateMCRegisters() {}, updateMCSource() {},
     document: { querySelectorAll: () => [{ dataset: { core: 'rtu1' }, querySelector: () => field }] },
   });
-  vm.runInContext(app.match(/function paintCoreState\(state\) \{[\s\S]*?\n\}/)[0], ui);
+  vm.runInContext(app.match(/function paintCoreState\([^)]*\) \{[\s\S]*?\n\}/)[0], ui);
   ui.paintCoreState({ core: 'rtu1', carry: false, registers: [], instructions: [],
     crc: { mode: 'CRC32', value: '1234ABCD' } });
   assert.match(field.textContent, /Carry 0.*CRC32 1234ABCD/);
@@ -123,7 +123,7 @@ test('loopback clicks target the core displayed by the pins panel', () => {
   assert.equal(actions.length, 2);
 });
 
-test('multicore keyboard undo runs in reverse step order', () => {
+test('multicore keyboard undo restores one shared snapshot', () => {
   const actions = []; let onKey;
   const context = vm.createContext({
     document: { addEventListener(type, listener) { onKey = listener; } },
@@ -135,6 +135,6 @@ test('multicore keyboard undo runs in reverse step order', () => {
   const end = app.indexOf('\n});', start) + 4;
   vm.runInContext(app.slice(start, end), context);
   onKey({ key: 'ArrowLeft', target: { tagName: 'BODY' }, preventDefault() {} });
-  assert.deepEqual(actions.map(action => action.core), ['rtu1', 'pru0']);
+  assert.deepEqual(actions.map(action => action.core), ['pru0']);
   assert(actions.every(action => action.action === 'step_back'));
 });

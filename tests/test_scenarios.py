@@ -90,6 +90,27 @@ def test_scenarios_can_be_applied_one_after_another_on_the_same_simulator():
 
 
 @pytest.mark.parametrize("name", [SINGLE, MULTI])
+@pytest.mark.parametrize("previous_io", ["peripheral", "uart"])
+def test_ssi_scenarios_replace_incompatible_io_configuration(name, previous_io):
+    sim, api = _new()
+    if previous_io == "peripheral":
+        for core in ("pru0", "pru1"):
+            sim.gpcfg_write(core, 1)
+    else:
+        sim.uart_inject("pru0", pin=16, payload=[0], frames=100)
+
+    scenario = apply_scenario(sim, name, api)
+    step = ((lambda count: sim.step_paced_many("pru0", ["pru1"], count))
+            if scenario.multicore else (lambda count: sim.step("pru0", count)))
+    frames = _frames(sim, 20_000, step)
+
+    assert len(frames) >= 2
+    assert set(frames.values()) == {2748}
+    assert _mailbox(sim)["status"] == 0
+    assert sim.device_bus.faults() == []
+
+
+@pytest.mark.parametrize("name", [SINGLE, MULTI])
 def test_ssi_scenarios_idle_the_clock_past_the_monoflop_between_frames(name):
     sim, api = _new()
     scenario = apply_scenario(sim, name, api)

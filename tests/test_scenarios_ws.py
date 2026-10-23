@@ -1,4 +1,7 @@
 """Scenario picker actions over a real dashboard WebSocket session."""
+import json
+
+import anyio
 import pytest
 from fastapi.testclient import TestClient
 
@@ -24,10 +27,20 @@ def fresh_sim(monkeypatch):
     return fresh
 
 
+def _receive(ws):
+    async def receive():
+        with anyio.fail_after(10):
+            return await ws._send_rx.receive()
+
+    message = ws.portal.call(receive)
+    ws._raise_on_close(message)
+    return json.loads(message["text"])
+
+
 def _load(ws, name, states):
     ws.send_json({"action": "scenario_load", "name": name})
-    loaded = ws.receive_json()
-    return [loaded, *[ws.receive_json() for _ in range(
+    loaded = _receive(ws)
+    return [loaded, *[_receive(ws) for _ in range(
         states if loaded['type'] == 'scenario_loaded' else 1)]]
 
 
@@ -92,6 +105,29 @@ def test_multicore_scenario_refreshes_both_cores_and_runs_together(fresh_sim):
             ws.receive_json(), ws.receive_json()
     assert _mailbox(fresh_sim)["frame_count"] >= 3
     assert _mailbox(fresh_sim)["raw_frame_lo"] == 0xABC
+
+
+@pytest.mark.parametrize("name, states", [(SINGLE, 1), (MULTI, 2)])
+def test_dashboard_editor_reload_of_ssi_firmware_still_produces_frames(fresh_sim, name, states):
+    with client.websocket_connect("/ws") as ws:
+        loaded, *_ = _load(ws, name, states)
+        for core, filename in loaded["firmware"].items():
+            source = client.get(f"/source/{filename}")
+            assert source.status_code == 200
+            ws.send_json({"action": "load", "core": core, "filename": filename,
+                          "source": source.text})
+            state = _receive(ws)
+            assert state["type"] == "state", state
+
+        ws.send_json({"action": "run_multicore" if states == 2 else "run",
+                      "core": "pru0", "partners": ["pru1"], "max_steps": 20_000})
+        replies = [_receive(ws) for _ in range(states)]
+
+    assert all(state["fault"] is None for state in replies)
+    mailbox = _mailbox(fresh_sim)
+    assert mailbox["status"] == 0
+    assert mailbox["frame_count"] >= 2
+    assert mailbox["raw_frame_lo"] == 2748
 
 
 def _run_capture(ws, message):

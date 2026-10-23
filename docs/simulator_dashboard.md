@@ -68,7 +68,9 @@ the first shown core. Telemetry, the Assembly Editor target, the shared
 breakpoint row, I/O Pins, SPAD and constant-table inspection follow focus.
 Double-clicking a source line toggles a breakpoint for that pane's own core;
 Space toggles the focused core's current-PC breakpoint. Arrow Right steps the
-used set and Arrow Left requests step-back for that set. A breakpoint on any
+used set. Each multi-core Step or SIM tick saves one shared undo point and
+records one signal sample when any selected core advances. Arrow Left restores
+that shared point in one operation. A breakpoint on any
 used core stops Run, including a used core whose panes are hidden. I/O & Devices
 also retains an explicit device target drawn from available cores.
 
