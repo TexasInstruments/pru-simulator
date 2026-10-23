@@ -14,10 +14,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from core.preprocessor import Preprocessor
+from core.preprocessor import Preprocessor, SourceLine
 from core.operands import parse_operand, Immediate, Label, Register, MVIOperand
 
-# Expected operand counts per opcode.  Opcodes not listed are not validated.
+# Supported opcodes and their expected operand counts.
 # A tuple means any of those counts is acceptable (e.g. SET/CLR have 1- and 3-operand forms).
 _EXPECTED_OPS: dict[str, int | tuple[int, ...]] = {
     # Memory
@@ -180,6 +180,12 @@ def _parse_mvi_operand(token: str) -> MVIOperand:
 # ---------------------------------------------------------------------------
 # Matches an optional leading label (word chars + colon) followed by optional
 # remainder of the line.
+# Position of the length operand that may be spelled bN (byte N of R0).
+_COUNT_OPERAND_INDEX = {
+    "LBBO": 3, "SBBO": 3, "LBCO": 3, "SBCO": 3,
+    "XIN": 2, "XOUT": 2, "XCHG": 2, "ZERO": 1, "FILL": 1,
+}
+
 _LABEL_RE = re.compile(r"^([A-Za-z_]\w*)\s*:(.*)", re.DOTALL)
 
 
@@ -211,18 +217,21 @@ class Parser:
         # Reset state for re-use
         self.labels = {}
         self.instructions = []
+        include_defaults = self.preprocessor.include_paths
+        self.preprocessor = Preprocessor()
+        self.preprocessor.include_paths = include_defaults
 
         # Preprocessor returns clean lines (comments/blanks stripped, macros
         # and defines expanded).  We also preserve the original source text so
         # we can store it on each Instruction.
         preprocessed = self.preprocessor.process_text(text, include_paths)
+        preprocessed = self._remove_metadata(preprocessed)
 
-        # Expand pseudo-ops (LDI32 → two LDI instructions)
+        # Expand pseudo-ops before label addresses are assigned.
         preprocessed = self._expand_pseudo_ops(preprocessed)
 
-        # Build a mapping from preprocessed line index → original source line
-        # number.  The preprocessor doesn't expose this directly, so we
-        # construct a best-effort mapping by scanning the raw source.
+        # SourceLine carries locations through preprocessing; retain raw text
+        # as a fallback for callers supplying plain strings to internal passes.
         source_lines = text.splitlines()
 
         # Pass 1 – collect labels
@@ -237,6 +246,54 @@ class Parser:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _remove_metadata(lines: list[str]) -> list[str]:
+        """Discard verified code-free directives before assigning addresses.
+
+        The source loader models one contiguous code section, not a linker.
+        Reject section layouts that cannot be represented by that model.
+        """
+        result = []
+        section = None
+        has_code = False
+        for line in lines:
+            source_line = getattr(line, "source_line", 0)
+            match = _LABEL_RE.match(line)
+            label, body = (match.group(1), match.group(2).strip()) if match else (None, line)
+            ti_label = re.fullmatch(r"(\w+)\s+(\.asmfunc)", body, re.I)
+            if ti_label:
+                label, body = ti_label.groups()
+            parts = body.split(None, 1)
+            directive = parts[0].lower() if parts else ""
+            args = parts[1].strip() if len(parts) > 1 else ""
+            if directive in {".text", ".sect"}:
+                if directive == ".text" and not args:
+                    name = ".text"
+                elif directive == ".sect" and re.fullmatch(r'"\.text(?::[^"\s]+)?"', args):
+                    name = args[1:-1]
+                else:
+                    raise SyntaxError(f"line {source_line}: unsupported code section directive: {body}")
+                if has_code and name != (section or ".text"):
+                    raise SyntaxError(f"line {source_line}: multiple code sections are unsupported by the assembly loader")
+                section = name
+            elif directive in {".retain", ".retainrefs", ".global", ".def", ".ref",
+                              ".asmfunc", ".endasmfunc"}:
+                if directive in {".global", ".def", ".ref"}:
+                    valid = re.fullmatch(r"[A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*", args)
+                elif directive in {".retain", ".retainrefs"}:
+                    valid = not args or re.fullmatch(r'"[^"\n]+"', args)
+                else:
+                    valid = not args
+                if not valid:
+                    raise SyntaxError(f"line {source_line}: unsupported directive syntax: {body}")
+            else:
+                result.append(line)
+                has_code |= bool(body)
+                continue
+            if label:
+                result.append(SourceLine(f"{label}:", source_line))
+        return result
+
     def _expand_pseudo_ops(self, lines: list[str]) -> list[str]:
         """Expand pseudo-ops like LDI32 into real instructions."""
         result = []
@@ -245,7 +302,31 @@ class Parser:
             re.IGNORECASE
         )
         for line in lines:
+            source_line = getattr(line, "source_line", 0)
+            pseudo = re.fullmatch(r"(?:(\w+):\s*)?(call|ret)\b\s*(.*)", line, re.I)
+            if pseudo:
+                label, opcode, args = pseudo.groups()
+                if opcode.lower() in self.preprocessor.macros:
+                    # A user macro of this name takes precedence over the
+                    # shorthand; it just was not invoked in a position the
+                    # preprocessor expands (for example after a label).
+                    raise SyntaxError(
+                        f"line {source_line}: {opcode.upper()} is defined as a macro; "
+                        f"put the invocation on its own line instead of after a label")
+                if opcode.lower() == "call" and args and "," not in args:
+                    expanded = f"jal r3.w2, {args}"
+                elif opcode.lower() == "call":
+                    raise SyntaxError(f"line {source_line}: CALL takes exactly one label operand")
+                elif opcode.lower() == "ret" and not args:
+                    expanded = "jmp r3.w2"
+                else:
+                    raise SyntaxError(f"line {source_line}: RET takes no operands")
+                result.append(SourceLine(f"{label}: {expanded}" if label else expanded, source_line))
+                continue
             m = ldi32_re.match(line.strip())
+            if not m and re.match(r"(?:\w+:\s*)?ldi32\b", line.strip(), re.I):
+                raise SyntaxError(
+                    f"line {source_line}: ldi32 needs a register and a decimal or 0x literal")
             if m:
                 label = m.group(2)
                 reg = m.group(3).lower()
@@ -258,8 +339,8 @@ class Parser:
                 line2 = f"ldi {reg}.w2, {hi}"
                 if label:
                     line1 = f"{label}: {line1}"
-                result.append(line1)
-                result.append(line2)
+                result.append(SourceLine(line1, source_line))
+                result.append(SourceLine(line2, source_line))
             else:
                 result.append(line)
         return result
@@ -291,6 +372,7 @@ class Parser:
         address = 0
 
         for line in lines:
+            source_line = getattr(line, "source_line", 0)
             line = line.strip()
             if not line:
                 continue
@@ -309,7 +391,7 @@ class Parser:
             # Find the best matching source line for the instruction text.
             # We scan the original source for the instruction text to give a
             # meaningful source_line value.
-            src_lineno = self._find_source_line(instr_text, source_lines)
+            src_lineno = source_line or self._find_source_line(instr_text, source_lines)
 
             # Parse opcode + operands
             instr = self._parse_instruction(address, instr_text, src_lineno, instr_text)
@@ -326,6 +408,8 @@ class Parser:
         """Parse a single instruction line into an Instruction object."""
         parts = text.split(None, 1)  # split into opcode and the rest
         opcode = parts[0].upper()
+        if opcode not in _EXPECTED_OPS:
+            raise SyntaxError(f"line {source_line}: unknown mnemonic or unsupported directive '{parts[0]}'")
         operands: list = []
 
         if len(parts) > 1:
@@ -336,14 +420,25 @@ class Parser:
                 for tok in tokens:
                     tok = tok.strip()
                     if tok:
-                        operands.append(_parse_mvi_operand(tok))
+                        try:
+                            operands.append(_parse_mvi_operand(tok))
+                        except (ValueError, SyntaxError) as exc:
+                            raise SyntaxError(f"line {source_line}: {exc}") from exc
             else:
                 tokens = self._split_operands(raw_operands)
-                for tok in tokens:
+                for index, tok in enumerate(tokens):
                     tok = tok.strip()
                     if not tok:
                         continue
-                    parsed = parse_operand(tok)
+                    if (index == _COUNT_OPERAND_INDEX.get(opcode)
+                            and re.fullmatch(r"b[0-3]", tok)):
+                        # SPRUIJ2 register-count form: bn names the byte in R0.
+                        operands.append(Register(0, int(tok[1]) * 8, 8))
+                        continue
+                    try:
+                        parsed = parse_operand(tok)
+                    except ValueError as exc:
+                        raise SyntaxError(f"line {source_line}: {exc}") from exc
                     if isinstance(parsed, str):
                         # Unresolved token – look up in label table
                         resolved = self.labels.get(parsed, -1)
@@ -371,6 +466,13 @@ class Parser:
                 raise SyntaxError(f"line {source_line}: {opcode} bit position must be 0-31 or a register")
 
         self._validate_operand_ranges(opcode, operands, source_line)
+        for index, operand in enumerate(operands):
+            if isinstance(operand, Label) and operand.resolved_addr < 0:
+                # Constant-table names are encoded indices, not source symbols.
+                if (opcode in {"LBCO", "SBCO"} and index == 1
+                        and re.fullmatch(r"c(?:[0-9]|[12][0-9]|3[01])", operand.name, re.I)):
+                    continue
+                raise SyntaxError(f"line {source_line}: undefined operand symbol '{operand.name}'")
         self._validate_branch_reach(opcode, operands, address, source_line)
 
         return Instruction(
@@ -427,7 +529,8 @@ class Parser:
             # exactly where letting one through crashes the simulator: the
             # operand arrives at core/branch.py as resolved_addr = -1 and
             # `reg_val >> -1` raises a bare ValueError that escapes the run.
-            # So reject it only there, and leave every other slot alone.
+            # Keep this specific diagnostic; undefined symbols in other slots
+            # are rejected separately after range validation.
             if isinstance(op, Label) and opcode in _BIT_POSITION_OPCODES:
                 raise SyntaxError(
                     f"line {source_line}: {opcode} operand {idx + 1} is the "
