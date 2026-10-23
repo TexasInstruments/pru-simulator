@@ -122,6 +122,59 @@ class IepClockRegisterRegion(MemoryRegion):
         self._iep.write_iepclk(int.from_bytes(value, "little"))
 
 
+class PruControlRegion(MemoryRegion):
+    """CTRL window with a CYCLE register tracking the addressed simulator core.
+
+    CYCLE is at 0x0c (TI PRU Software Support Package, pru_ctrl.h). Per
+    SPRUIM2J (ICSSG_PRU_CYCLE) it is writable and does not wrap: a write
+    rebases the count (so clear-then-read measures a delta) and a count past
+    FFFFFFFFh reads back saturated. The CONTROL ENABLE/COUNTER_ENABLE gating,
+    the STALL register clearing and the other CTRL side effects are not
+    modelled: the counter follows the simulator core's cycles whenever read.
+    The rebase offset lives in a hidden tail of the storage buffer so that
+    snapshot/restore of the region carries it.
+    """
+
+    _CYCLE = 0x0C
+    _OFFSET_BYTES = 8
+
+    def __init__(self, core: PRUCore, backing: MemoryRegion, read_latency: int):
+        super().__init__(backing.name, backing.base_addr, backing.size,
+                         read_latency, backing.write_latency, backing.jitter,
+                         backing.misaligned_write_penalty, backing.per_word_latency)
+        self._core = core
+        # Keep ordinary CTRL storage in the standard snapshot/restore buffer.
+        self._data = backing._data
+        self._data.extend(bytes(self._OFFSET_BYTES))
+
+    def _offset(self) -> int:
+        return int.from_bytes(self._data[self.size:self.size + self._OFFSET_BYTES],
+                              "little", signed=True)
+
+    def _cycle_value(self) -> int:
+        return min(max(self._core.counters.cycles - self._offset(), 0), 0xFFFFFFFF)
+
+    def read(self, addr: int, length: int) -> bytes:
+        data = bytearray(super().read(addr, length))
+        cycle_addr = self.base_addr + self._CYCLE
+        start, end = max(addr, cycle_addr), min(addr + length, cycle_addr + 4)
+        if start < end:
+            cycle = self._cycle_value().to_bytes(4, "little")
+            data[start - addr:end - addr] = cycle[start - cycle_addr:end - cycle_addr]
+        return bytes(data)
+
+    def write(self, addr: int, data: bytes) -> None:
+        super().write(addr, data)
+        cycle_addr = self.base_addr + self._CYCLE
+        start, end = max(addr, cycle_addr), min(addr + len(data), cycle_addr + 4)
+        if start < end:
+            word = bytearray(self._cycle_value().to_bytes(4, "little"))
+            word[start - cycle_addr:end - cycle_addr] = data[start - addr:end - addr]
+            offset = self._core.counters.cycles - int.from_bytes(word, "little")
+            self._data[self.size:self.size + self._OFFSET_BYTES] = offset.to_bytes(
+                self._OFFSET_BYTES, "little", signed=True)
+
+
 class Simulator:
     """Orchestrates ICSSG cores sharing memory, XFR, and one IEP timer."""
 
@@ -183,6 +236,24 @@ class Simulator:
             }
         for name, entries in core_constants.items():
             self.cores[name].constant_table.load_from_dict(entries)
+
+        # PRU0/1 CTRL banks (SPRUIM2J Table 6-65). The root config's legacy
+        # ICSS_CFG region at 0x22000 is actually PRU0 CTRL; wrap its storage
+        # rather than adding an overlapping region that the bus would shadow.
+        for name, base in (("pru0", 0x22000), ("pru1", 0x24000)):
+            backing = next((r for r in self.memory.regions if r.base_addr == base), None)
+            declared = backing is not None
+            if backing is None:
+                backing = MemoryRegion(f"{name.upper()}_CTRL", base, 0x30, 2, 1)
+            else:
+                self.memory.regions.remove(backing)
+            # Only AM243x PRU1 CYCLE was measured (#70). Treat each CTRL
+            # window uniformly. Precedence: a window the config itself
+            # declares keeps its own read_latency; otherwise the device key
+            # pru_ctrl_read_latency; otherwise the legacy 2 stalls.
+            latency = backing.read_latency if declared else int(
+                dev.get("pru_ctrl_read_latency", backing.read_latency))
+            self.memory.add_region(PruControlRegion(self.cores[name], backing, latency))
 
         # One resolver owns generic external devices and cross-core GPIO nets.
         # It is inert until a device or wire is attached.
