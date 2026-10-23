@@ -316,8 +316,23 @@ class Simulator:
                     misaligned_write_penalty=int(
                         cfg[section].get("misaligned_write_penalty", "0")),
                     per_word_latency=int(cfg[section].get("per_word_latency", "1")),
+                    line_bytes=int(cfg[section].get("line_bytes", "0"), 0),
+                    line_cross_fit=int(cfg[section].get("line_cross_fit", "0")),
+                    line_readers=self._parse_line_readers(
+                        section, cfg[section].get("line_readers", "")),
                 ))
         return bus
+
+    @staticmethod
+    def _parse_line_readers(section: str, text: str) -> tuple[str, ...]:
+        names = tuple(text.lower().split())
+        known = {"pru0", "rtu0", "pru1", "rtu1"}
+        unknown = [n for n in names if n not in known]
+        if unknown:
+            raise ValueError(
+                f"[{section}] line_readers has unknown core name(s) {', '.join(unknown)}; "
+                f"expected any of {', '.join(sorted(known))}")
+        return names
 
     def _load_constants(self, config_path: str) -> ConstantTable:
         """Load the C0-C31 table for the config's [device] target.
