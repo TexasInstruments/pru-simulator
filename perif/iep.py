@@ -198,6 +198,7 @@ class IepTimer:
         self._global_cfg = 0
         self._cmp_cfg = 0
         self._compare_listeners: list = []
+        self._reset_listeners: list = []
         self._clock_ticks = 0
         self._pending_cmp0_reset = False
         self._counter_reset = False
@@ -235,6 +236,17 @@ class IepTimer:
             timeline.base_cycles = 0
             timeline.last_cycles = 0
             timeline.base_time_units = 0
+        for listener in list(self._reset_listeners):
+            listener()
+
+    def add_reset_listener(self, listener) -> None:
+        """Call *listener*() at the end of every `hardware_reset()`."""
+        self._reset_listeners.append(listener)
+
+    @property
+    def clock_ticks(self) -> int:
+        """IEP clocks processed with the counter enabled since hardware reset."""
+        return self._clock_ticks
 
     @property
     def clock_mhz(self) -> Fraction:

@@ -21,7 +21,11 @@ ICSSM is not a V3 instruction-set restriction.
 | AM263x | V4 | ICSSM | false | false | false | Inferred from the AM261x table (SPRUJB6B Table 7-35) plus the hardware-owner statement in [#32](https://github.com/TexasInstruments/pru-simulator/issues/32) that AM261x/AM263x ICSSM are equivalent; no AM263x TRM was reviewed |
 
 The PWM flag means the **ICSSG PWM module**, not SoC ePWM or firmware-generated
-PWM. No PWM peripheral is implemented by this change.
+PWM. With the flag false the PWM CFG words (`0x130..0x16C`) are unmapped and a bus access
+raises. On LP-AM261 ICSSM0 silicon those words read as zero without a fault (reads
+only, measured through the PRU and JTAG; writes not measured), so the fault is a
+deliberate simulator choice that flags use of an ICSSG-only peripheral, not a
+silicon behaviour. See `docs/icssg_pwm.md`.
 
 ## Broadside IDs
 

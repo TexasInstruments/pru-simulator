@@ -386,13 +386,15 @@ class PRUSimulatorMCP:
         return {"ok": True}
 
     def pru_vcd_export(self, path: str, core: str = "pru0", max_steps: int = 10000,
-                       pins: str = "0-19", include_gpi: bool = False) -> dict:
+                       pins: str = "0-19", include_gpi: bool = False,
+                       include_pwm: bool = False) -> dict:
         """Run a loaded core and export selected GPIO pins as deterministic VCD."""
         _require_int("max_steps", max_steps)
         _require_bool("include_gpi", include_gpi)
+        _require_bool("include_pwm", include_pwm)
         return export_pin_waveform(
             self.sim, core, path, max_steps=max_steps, pins=pins,
-            include_gpi=include_gpi,
+            include_gpi=include_gpi, include_pwm=include_pwm,
         )
 
     def pru_i2c_attach(self, core: str = "pru0", enabled: bool = True, address: int = 0x23) -> dict:
