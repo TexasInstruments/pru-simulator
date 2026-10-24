@@ -55,3 +55,15 @@ def test_per_core_entries(sim_config, target, core):
     table = Simulator(sim_config(target=target)).cores[core].constant_table
     for n, expected in PER_CORE[core].items():
         assert table.resolve(n) == expected, f"c{n}"
+
+
+# C25-C27: the TRM gives the forms 2n00h / 2En00h / 32n00h; with the CTBIR
+# fields at 0 an LP-AM261 read through each entry equals the window at
+# 0x2000 (other core's DRAM), 0x2E000 and 0x32000, on PRU0 and PRU1.
+@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.parametrize("core", ["pru0", "pru1"])
+def test_ctbir_entries_c25_c26_c27(sim_config, target, core):
+    table = Simulator(sim_config(target=target)).cores[core].constant_table
+    assert [table.resolve(n) for n in (25, 26, 27)] == [0x2000, 0x2E000, 0x32000]
+    # C24 stays absent (own DRAM at local 0 reads the same as 0).
+    assert table.resolve(24) == 0
