@@ -10,6 +10,10 @@ identified by a read (c12-c15, c17-c20, c23).
 C10 and C22 are per-core; PRU0 and PRU1 cannot be told apart by reads (the
 candidate windows hold identical data at reset), so only the TRM values are
 pinned there.
+
+C29-C31 are the as-found values 0xD0000000 / 0xE0000000 / 0xF0000000. C28 as
+found reads 0 (CTPPR0 = 0) and its power-on value is unresolved: the cfg keeps
+0x10000 as a simulator default, which silicon has not confirmed.
 """
 import pytest
 from simulator import Simulator
@@ -24,9 +28,11 @@ FIXED = {
     19: 0xA0000000, 20: 0xB0000000, 21: 0x00032400, 23: 0xC0000000,
     26: 0x0002E000, 27: 0x00032000,
 }
-# Programmable entries as found / unchanged by this table: pinned so a later
-# edit of the fixed block cannot move them unnoticed.
-PROGRAMMABLE = {24: 0, 25: 0x2000, 28: 0x10000, 29: 0, 30: 0, 31: 0}
+# Programmable entries: pinned so a later edit of the fixed block cannot move
+# them unnoticed. C28 is NOT silicon-confirmed (as found 0, CTPPR0 = 0; power-on
+# unresolved): 0x10000 is the simulator default. C29-C31 are as found.
+PROGRAMMABLE = {24: 0, 25: 0x2000, 28: 0x10000,
+                29: 0xD0000000, 30: 0xE0000000, 31: 0xF0000000}
 CORES = ["pru0", "rtu0", "pru1", "rtu1"]
 
 

@@ -164,10 +164,12 @@ require the corresponding memory region/model in the chosen configuration.
 The dashboard constant-table panel shows the common sidecar reference, not
 the executing core's corrected table.
 
-AM263x C10 is reserved in the TRM but currently retains the inherited AM243x
-sidecar value. Its silicon behaviour and simulator handling are tracked in
-[#79](https://github.com/TexasInstruments/pru-simulator/issues/79); firmware
-must not rely on that inherited mapping.
+AM263x reads the AM261x (ICSS-M) constant table. C10 and C12-C14 are reserved in
+the TRM; on an LP-AM261 the table holds non-zero pointers there but the window
+behind them reads zero. The simulator leaves these entries absent (0), so a
+load through them reads the core's own DRAM instead of zeros. Firmware must not
+rely on C10 or C12-C14 on these targets. Tracked in
+[#79](https://github.com/TexasInstruments/pru-simulator/issues/79).
 
 Dashboard step-back uses one ordered history across all cores. Undo restores
 all cores, shared memory, the IEP and devices to the same saved point, and
