@@ -8,6 +8,7 @@ import configparser
 import copy
 import math
 import os
+import logging
 import re
 from fractions import Fraction
 
@@ -15,7 +16,8 @@ from core.pru_core import PRUCore
 from mem.memory_bus import MemoryBus
 from mem.regions import MemoryRegion
 from perif.iep import IepTimer, IEP_SIZE, IEP_DEFAULT_CLOCK_MHZ
-from mem.constant_table import ConstantTable
+from mem.constant_table import (
+    ConstantTable, CTRL_REG_COUNT, CTRL_REG_OFFSET, PROGRAMMABLE_FIRST)
 from xfr.xfr_bus import XFRBus
 from pru_io.device_model import DeviceBus, DeviceModel
 from pru_io.io_port import IOPort
@@ -29,6 +31,9 @@ from perif.loopback import Loopback
 
 _GPCFG_INDEX = {"pru0": 0, "pru1": 1}   # rtu0 has no GPCFG GP-mux (TRM)
 _MAX_CATCHUP_STEPS = 1000
+
+
+logger = logging.getLogger(__name__)
 
 
 class SDRegisterRegion(MemoryRegion):
@@ -122,6 +127,55 @@ class IepClockRegisterRegion(MemoryRegion):
         self._iep.write_iepclk(int.from_bytes(value, "little"))
 
 
+class ConstantTableRegisterRegion(MemoryRegion):
+    """CTBIR0, CTBIR1, CTPPR0, CTPPR1 of one core's CTRL block (+0x20..+0x2F).
+
+    A write from firmware (SBBO/SBCO) or the host updates that core's
+    constant table at once; a read returns the stored value.
+    """
+
+    def __init__(self, name: str, ctrl_base: int, table: ConstantTable):
+        super().__init__(name, ctrl_base + CTRL_REG_OFFSET, 4 * CTRL_REG_COUNT, 2, 1, 0)
+        self._table = table
+
+    def read(self, addr: int, length: int) -> bytes:
+        self._check_bounds(addr, length)
+        image = b"".join(v.to_bytes(4, "little") for v in self._table.ctrl)
+        local = addr - self.base_addr
+        return image[local : local + length]
+
+    def write(self, addr: int, data: bytes) -> None:
+        self._check_bounds(addr, length=len(data))
+        image = bytearray(b"".join(v.to_bytes(4, "little") for v in self._table.ctrl))
+        local = addr - self.base_addr
+        image[local : local + len(data)] = data
+        for reg in range(CTRL_REG_COUNT):
+            self._table.write_ctrl(
+                reg, int.from_bytes(image[4 * reg : 4 * reg + 4], "little"))
+
+
+class ReadAsZeroRegion(MemoryRegion):
+    """Reserved window that a constant-table pointer reaches: reads give zeros.
+
+    Read on silicon (LP-AM261): the pointer is in the table and a load through
+    it returns zeros without faulting. Writes were NOT measured; they are
+    ignored here and logged once.
+    """
+
+    def __init__(self, name: str, base_addr: int, size: int):
+        super().__init__(name, base_addr, size, 2, 1, 0)
+        self._warned = False
+
+    def write(self, addr: int, data: bytes) -> None:
+        self._check_bounds(addr, length=len(data))
+        if not self._warned:
+            self._warned = True
+            logger.warning(
+                "write to reserved window %s at 0x%08X ignored: reads return "
+                "zeros on silicon, the effect of a write was not measured",
+                self.name, addr)
+
+
 class Simulator:
     """Orchestrates ICSSG cores sharing memory, XFR, and one IEP timer."""
 
@@ -173,16 +227,41 @@ class Simulator:
                 "rtu1": {10: 0x2A300, 11: 0x23800, 22: 0x9000},
             }
         else:
-            # TI OpenPRU AM263x_PRU0/1.cmd (AM261x_PRU0/1.cmd is identical):
-            # C10 is reserved on these targets.
+            # C10 is RESERVED in SPRUJB6 Table 7-40, but silicon holds a
+            # pointer (ICTE direct read on an LP-AM261, both PRUs). The
+            # window behind it, and behind C12-C14, reads zero: see the
+            # ReadAsZeroRegion mapping below.
             # The legacy simulated RTU0 has no AM263x hardware equivalent;
             # leave its common table unchanged rather than inventing a map.
             core_constants = {
-                "pru0": {11: 0x22000, 22: 0x8000},
-                "pru1": {11: 0x24000, 22: 0x9000},
+                "pru0": {10: 0x2A000, 11: 0x22000, 22: 0x8000},
+                "pru1": {10: 0x2A200, 11: 0x24000, 22: 0x9000},
             }
         for name, entries in core_constants.items():
             self.cores[name].constant_table.load_from_dict(entries)
+
+        if target.lower() in ("am261x", "am263x"):
+            # Reserved ICSS-M ranges the C10/C12-C14 pointers reach, between
+            # the neighbouring blocks of the AM261x TRM SPRUJB6 local memory
+            # map (Table 7-38): C14 0x24800 up to PROTECT at 0x24C00, C12
+            # 0x27000 up to UART0 at 0x28000, C10 and C13 (0x2A000-0x2C000)
+            # up to IEP0 at 0x2E000.
+            for rname, rbase, rsize in (("RSVD_24800", 0x24800, 0x400),
+                                        ("RSVD_27000", 0x27000, 0x1000),
+                                        ("RSVD_2A000", 0x2A000, 0x4000)):
+                self.memory.add_region(ReadAsZeroRegion(rname, rbase, rsize))
+
+        # CTBIR0/1 and CTPPR0/1 sit at +0x20 of each core's CTRL block and
+        # drive C24-C31 of that core. TX_PRU cores are not simulated.
+        if target.lower() in ("am243x", "am64x"):
+            ctrl_bases = {"pru0": 0x22000, "rtu0": 0x23000,
+                          "pru1": 0x24000, "rtu1": 0x23800}
+        else:
+            ctrl_bases = {"pru0": 0x22000, "pru1": 0x24000}
+        self._ctrl_bases = ctrl_bases
+        for name, base in ctrl_bases.items():
+            self.memory.add_region(ConstantTableRegisterRegion(
+                f"{name.upper()}_CTRL_CT", base, self.cores[name].constant_table))
 
         # One resolver owns generic external devices and cross-core GPIO nets.
         # It is inert until a device or wire is attached.
@@ -347,7 +426,14 @@ class Simulator:
             for key, val in cfg["constants"].items():
                 m = re.match(r'^c(\d+)$', key)
                 if m:
-                    table.set(int(m.group(1)), int(val, 0))
+                    n = int(m.group(1))
+                    if n >= PROGRAMMABLE_FIRST:
+                        # C24-C31 follow CTBIR0/1 and CTPPR0/1, not the config.
+                        logger.warning("%s: c%d ignored; C24-C31 follow the "
+                                       "CTBIR/CTPPR registers",
+                                       constants_path, n)
+                        continue
+                    table.set(n, int(val, 0))
         return table
 
     def _get_device_config(self, config_path: str) -> dict:
@@ -667,6 +753,24 @@ class Simulator:
                 for core in self.cores.values()
                 for record in core.unsupported_xfr.values()]
 
+    def ctrl_write(self, core: str, reg: int, value: int) -> None:
+        """Host write of CTBIR0/1 or CTPPR0/1 (*reg* 0-3) of *core*.
+
+        Goes through the memory bus to the core's CTRL block, the same path a
+        PRU store takes, so C24-C31 of that core update at once.
+        """
+        self._get_core(core)
+        base = self._ctrl_bases.get(core)
+        if base is None:
+            raise KeyError(f"Core '{core}' has no CTRL block with CTBIR/CTPPR")
+        self.memory.write(base + CTRL_REG_OFFSET + 4 * reg,
+                          (value & 0xFFFFFFFF).to_bytes(4, "little"))
+
+    def constant_table_view(self, core: str) -> list[dict]:
+        """List C0-C31 as *core* sees them: [{"c": n, "addr": value}, ...]."""
+        table = self._get_core(core).constant_table
+        return [{"c": n, "addr": table.resolve(n)} for n in range(32)]
+
     def hard_reset(self) -> None:
         """Full hardware reset: reset all cores, clear all SPAD banks, and reset XFR config.
 
@@ -678,6 +782,7 @@ class Simulator:
         self.iep.hardware_reset()
         for core in self.cores.values():
             core.reset()
+            core.constant_table.reset_ctrl()
         self.xfr.reset()
 
     def uart_inject(

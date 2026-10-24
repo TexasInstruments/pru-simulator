@@ -390,6 +390,7 @@ function connect() {
     try {
       const msg = JSON.parse(event.data);
       if (msg.type === "state") {
+        maybeRefreshCtable();
         if (multiCoreMode) {
           updateMCUI(msg);
         } else if (!msg.core || msg.core === currentCore) {
@@ -3007,12 +3008,33 @@ const CTABLE = [
   { c: 31, name: "Reserved",      addr: 0x00000000 },
 ];
 
+// Live values for the current core, from the simulator: C10/C11/C22 are
+// per-core and C24-C31 follow CTBIR0/1 and CTPPR0/1, so a static table would
+// be wrong. Falls back to the static values when the request fails.
+let ctableLive = null;
+let ctableFetchedAt = 0;
+
 function ctableAddrForCore(entry, core) {
+  if (ctableLive && ctableLive[entry.c] !== undefined) return ctableLive[entry.c];
   if (entry.addr !== undefined) return entry.addr;
   return entry[core] ?? entry.pru0 ?? 0;
 }
 
-function buildCtable() {
+async function refreshCtableLive() {
+  ctableFetchedAt = Date.now();
+  try {
+    const res = await fetch(`/constant_table/${encodeURIComponent(currentCore)}`);
+    if (!res.ok) throw new Error(res.statusText);
+    const rows = await res.json();
+    ctableLive = {};
+    for (const row of rows) ctableLive[row.c] = row.addr;
+  } catch (e) {
+    ctableLive = null;
+  }
+  if (document.getElementById("ctable-tbody").hasChildNodes()) renderCtable();
+}
+
+function renderCtable() {
   const tbody = document.getElementById("ctable-tbody");
   tbody.innerHTML = "";
   for (const entry of CTABLE) {
@@ -3033,18 +3055,20 @@ function buildCtable() {
   }
 }
 
+function buildCtable() {
+  renderCtable();
+  refreshCtableLive();
+}
+
 function updateCtableForCore() {
-  document.querySelectorAll("#ctable-tbody tr.ct-dep").forEach((tr, i) => {
-    const depEntries = CTABLE.filter(e => e.addr === undefined);
-    const entry = depEntries[i];
-    if (!entry) return;
-    const addr = ctableAddrForCore(entry, currentCore);
-    const addrHex = "0x" + addr.toString(16).padStart(8, "0").toUpperCase();
-    const cell = tr.querySelector(".ct-addr");
-    cell.textContent = addrHex;
-    cell.title = `Jump memory view to ${addrHex}`;
-    cell.onclick = () => { memAddrInput.value = addrHex; refreshMemory(); };
-  });
+  if (document.getElementById("ctable-tbody").hasChildNodes()) refreshCtableLive();
+}
+
+// Firmware can write CTBIR/CTPPR at any time, so refresh while the table is open.
+function maybeRefreshCtable() {
+  if (ctableSection.classList.contains("open") && Date.now() - ctableFetchedAt > 500) {
+    refreshCtableLive();
+  }
 }
 
 const btnCtableToggle = document.getElementById("ctable-toggle");

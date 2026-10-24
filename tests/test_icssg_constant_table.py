@@ -11,9 +11,10 @@ C10 and C22 are per-core; PRU0 and PRU1 cannot be told apart by reads (the
 candidate windows hold identical data at reset), so only the TRM values are
 pinned there.
 
-C29-C31 are the as-found values 0xD0000000 / 0xE0000000 / 0xF0000000. C28 as
-found reads 0 (CTPPR0 = 0) and its power-on value is unresolved: the cfg keeps
-0x10000 as a simulator default, which silicon has not confirmed.
+C24-C31 follow CTBIR0/1 and CTPPR0/1 (see test_constant_table_registers.py).
+With the registers at 0 they read the formula bases below; in particular C28 is
+0 until firmware programs CTPPR0. The registers' power-on value was not measured
+(as found 0 on this board).
 """
 import pytest
 from simulator import Simulator
@@ -26,12 +27,9 @@ FIXED = {
     12: 0x00027000, 13: 0x0002C000, 14: 0x00024800,
     15: 0x60000000, 16: 0x70000000, 17: 0x80000000, 18: 0x90000000,
     19: 0xA0000000, 20: 0xB0000000, 21: 0x00032400, 23: 0xC0000000,
-    26: 0x0002E000, 27: 0x00032000,
 }
-# Programmable entries: pinned so a later edit of the fixed block cannot move
-# them unnoticed. C28 is NOT silicon-confirmed (as found 0, CTPPR0 = 0; power-on
-# unresolved): 0x10000 is the simulator default. C29-C31 are as found.
-PROGRAMMABLE = {24: 0, 25: 0x2000, 28: 0x10000,
+# Programmable entries with CTBIR0/1 = CTPPR0/1 = 0.
+PROGRAMMABLE = {24: 0, 25: 0x2000, 26: 0x2E000, 27: 0x32000, 28: 0,
                 29: 0xD0000000, 30: 0xE0000000, 31: 0xF0000000}
 CORES = ["pru0", "rtu0", "pru1", "rtu1"]
 
@@ -45,7 +43,7 @@ def test_fixed_entries_are_icssg_local_addresses(sim_config, target, core):
 
 
 @pytest.mark.parametrize("core", CORES)
-def test_programmable_entries_unchanged(sim_config, core):
+def test_programmable_entries_at_register_reset(sim_config, core):
     table = Simulator(sim_config(target="AM243x")).cores[core].constant_table
     for n, expected in PROGRAMMABLE.items():
         assert table.resolve(n) == expected, f"c{n}"

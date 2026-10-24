@@ -22,9 +22,9 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ])
 def test_constant_table_loaded_for_config_path(cfg):
     sim = Simulator(os.path.join(_REPO_ROOT, cfg))
-    # c0 (INTC) and c28 (Shared RAM) are nonzero in constants_am243x.cfg
+    # c0 (INTC) is listed in constants_am243x.cfg; c28 follows CTPPR0, 0 at reset
     assert sim.constant_table.resolve(0) == 0x00020000
-    assert sim.constant_table.resolve(28) == 0x00010000
+    assert sim.constant_table.resolve(28) == 0
 
 
 def test_am261x_preset_loads_its_own_constant_table():

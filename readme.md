@@ -161,14 +161,28 @@ RTU0 has no hardware counterpart and keeps the common table; this change does
 not add hardware support for that core. Correct address selection does not
 implement the task manager, control or RAT register behavior. Accesses still
 require the corresponding memory region/model in the chosen configuration.
-The dashboard constant-table panel shows the common sidecar reference, not
-the executing core's corrected table.
+C24-C31 follow the executing core's CTBIR0/1 and CTPPR0/1 registers (CTRL block
++0x20, +0x24, +0x28, +0x2C; PRU0 0x22000, PRU1 0x24000, and on AM243x/AM64x RTU0
+0x23000 and RTU1 0x23800). A write from the PRU (SBBO, or SBCO through C11) or from
+the host (`Simulator.ctrl_write`, or a memory write to the CTRL address) updates
+that core's table at once, as measured on LP-AM243 and LP-AM261: C24 = CTBIR0[7:0]
+<< 8, C25 = 0x2000 | CTBIR0[23:16] << 8, C26 = 0x2E000 | CTBIR1[7:0] << 8,
+C27 = 0x32000 | CTBIR1[23:16] << 8, C28 = CTPPR0[15:0] << 8, C29 = 0xD0000000 |
+CTPPR0[31:16] << 8, C30 = 0xE0000000 | CTPPR1[15:0] << 8, C31 = 0xF0000000 |
+CTPPR1[31:16] << 8. The registers are 0 out of reset, so **C28 is 0 until firmware
+programs CTPPR0** (`blk_ptr = 0x100` gives 0x10000, Shared RAM); firmware that
+uses C28 without doing so would also fail on silicon. The registers' power-on
+value was not measured, and neither were register bits outside the fields above
+(read-back returns what was written). The dashboard constant-table panel reads the
+executing core's live table.
 
 AM263x reads the AM261x (ICSS-M) constant table. C10 and C12-C14 are reserved in
-the TRM; on an LP-AM261 the table holds non-zero pointers there but the window
-behind them reads zero. The simulator leaves these entries absent (0), so a
-load through them reads the core's own DRAM instead of zeros. Firmware must not
-rely on C10 or C12-C14 on these targets. Tracked in
+the TRM; on an LP-AM261 the table holds non-zero pointers there (C10 0x2A000 on
+PRU0 / 0x2A200 on PRU1, C12 0x27000, C13 0x2C000, C14 0x24800) and the window
+behind each reads zero. The simulator shows those pointers and maps the reserved
+ranges (0x24800-0x24BFF, 0x27000-0x27FFF, 0x2A000-0x2DFFF) as read-as-zero
+windows, so a load through them returns zeros. Writes through them were not
+measured on silicon: they are ignored and logged once. Tracked in
 [#79](https://github.com/TexasInstruments/pru-simulator/issues/79).
 
 Dashboard step-back uses one ordered history across all cores. Undo restores
