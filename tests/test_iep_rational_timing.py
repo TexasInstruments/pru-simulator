@@ -58,8 +58,10 @@ def test_cmp0_resets_counter_through_the_shared_simulator_timer(tmp_path):
     sim.step("pru0", 300)
 
     # memory.cfg runs PRU0 at 250 MHz and the external IEP at 200 MHz:
-    # 300 core cycles produce 240 IEP ticks; CMP0 reset at tick 200.
-    assert sim.iep.count == 40
+    # 300 core cycles produce 240 IEP ticks. CMP0 = 50 hits on tick 50 and the
+    # counter resets on tick 51 (period N+1, measured on silicon): resets at
+    # ticks 51, 102, 153, 204, then 36 more ticks.
+    assert sim.iep.count == 36
     assert _read32(sim, IEP_BASE + CMP_STATUS) & 1
 
 
@@ -625,7 +627,8 @@ def test_default_clocks_stalled_firmware_and_cmp0():
     sim.iep.compare[0] = 50
     sim.iep.cmp_cfg = 3
     sim.step("pru0", 250)
-    assert sim.iep.count == 0
+    # 200 IEP ticks with period 51: resets at ticks 51, 102, 153, then 47 more.
+    assert sim.iep.count == 47
     assert sim.iep.cmp_status == 1
 
 

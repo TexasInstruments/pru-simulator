@@ -73,16 +73,15 @@ each statement, and what is deliberately left open.
   of 77 in the measurement). Partial-word writes to REG0 do the same.
 * Leaving shadow mode keeps the active values and makes REG1 the upper half of
   the 64-bit compare again (REG1 then reads 0 in the model; not measured).
-  64-bit mode behaviour is unchanged by this note except as listed under
-  "Observed on silicon, not modelled here".
+  64-bit mode behaviour is as listed under "64-bit mode and reset values".
 
 ### Reset timing
 
-In shadow mode the compare hit and the reset are on different IEP clocks. For
+In both modes the compare hit and the reset are on different IEP clocks. For
 `DEFAULT_INC = 1` and `CMP0 = N`: the counter equals N on clock N and sets
 `CMP_STATUS[0]`; clock N+1 resets the counter to 0 and loads the shadow copies;
 that reset clock is not itself compared (a compare of 0 does not fire in the
-model). The period is therefore N+1 clocks. Measured on LP-AM243 ICSSG0 and
+model); in 64-bit mode the reset clock loads nothing. The period is therefore N+1 clocks. Measured on LP-AM243 ICSSG0 and
 LP-AM261 ICSSM0 (register level, N = 5, 13, 100, three repetitions each): the
 largest counter value sampled is N and N+1 distinct values 0..N are seen, so
 the period is N+1. This matches the CMP0+1 half-period in #73 and the TRM
@@ -114,30 +113,48 @@ simultaneous CMP0 and CMPn events set both status bits together.
   not. `tick` counts IEP clocks processed with the counter enabled since the
   last hardware reset.
 
+## 64-bit mode and reset values (silicon)
+
+Measured on LP-AM243 (ICSSG0 IEP0) and LP-AM261 (ICSS-M0 IEP0), register level,
+PRU firmware reading and writing the IEP registers; both boards agree.
+
+* **64-bit mode CMP0 reset period is N+1**, the same as shadow mode. With
+  `SHADOW_EN = 0`, CMP0 = N and reset on CMP0, the largest sampled counter value
+  is N and N+1 distinct values 0..N are seen (N = 5, 13, 100 on LP-AM243; 13 and
+  100 on LP-AM261; three repetitions each). The counter resets on the clock after
+  the CMP0 hit in both modes.
+* **Compare is greater-or-equal, not equality** in 64-bit mode. With the counter
+  stopped at COUNT = 50, enabling CMP1 = 49 or 50 sets `CMP_STATUS` bit 1 and
+  CMP1 = 51 does not. With the counter running, writing CMP1_REG0 = 10 when COUNT
+  is about 819 sets the bit at once; after a write-1-to-clear it does not set
+  again. The model sets `CMP_STATUS[j]` when `CMP_EN[j]` is set with COUNT >=
+  CMPj (counter running or stopped) and when CMPj_REG0 is written below a
+  *running* count. A counter that reaches a compare by counting still hits it by
+  equality, as before. A write to REG0 with the counter stopped and COUNT above
+  the new value leaves the bit clear (measured: 7 to 5, see below).
+* **A write to `CMPj_REG0` in 64-bit mode clears `CMP_STATUS` bit j** (measured:
+  COUNT = 50 stopped, CMP0..2 = 10, 20, 30 enabled gives status 0x7; writing
+  CMP1_REG0 = 25 gives 0x5 and CMP1_REG0 reads 0x19).
+* **`IEP_COUNT_REG0` written with `0xFFFFFFFF` reads back `0xFFFFFFFF`**; it is
+  not a clear. The model already stored the value.
+* **`GLOBAL_CFG` reset value is `0x551` on AM261x** (`CNT_ENABLE` set) and `0x550`
+  on AM243x. The model uses `0x551` for `target = AM261x` and `0x550` otherwise
+  (AM263x was not measured and keeps `0x550`).
+
+Shadow-mode behaviour is as in the sections above. The `>=` compare and the
+REG0-write status clear above apply to 64-bit mode; their shadow-mode forms for
+the enable case were not measured, so shadow mode keeps equality there.
+
 ## Observed on silicon, not modelled here
 
-These were measured on LP-AM243 ICSSG0 and LP-AM261 ICSSM0 at register level
-and differ from the model. They are left for separate changes.
-
-* **64-bit mode period is also N+1.** With `SHADOW_EN = 0`, CMP0 = N and reset
-  on CMP0, the largest sampled counter value is N and N+1 distinct values are
-  seen, the same as in shadow mode. The model's 64-bit mode still resets on the
-  hit clock (period N) and its tests are unchanged.
-* **Compare is greater-or-equal, not equality.** With the counter stopped at
-  COUNT = 50, enabling CMP1 = 49 or 50 sets `CMP_STATUS` bit 1 and CMP1 = 51
-  does not. With the counter running, writing CMP1 = 10 when COUNT is about 819
-  sets the bit at once, and after a write-1-to-clear the level does not fire
-  again. Only these cases were measured (not rollover, not the CMP0 reset
-  interaction). The model fires on equality only. One visible consequence: after
-  a running counter loads a CMP0 of 0 (see "Entering shadow mode"), silicon
-  holds `COUNT` at 0, whereas the model lets it count upwards, because a
+* **Compare during a rollover and together with the CMP0 reset.** How a `>=`
+  compare behaves when the counter wraps, or when a compare is at or below COUNT
+  while CMP0 resets the counter, was not measured. The model hits those cases
+  by equality as before, and the `>=` hit at `CMP_EN` / REG0 write does not
+  reset the counter even for CMP0.
+* After a running counter loads a CMP0 of 0 (see "Entering shadow mode"),
+  silicon holds `COUNT` at 0, whereas the model lets it count upwards, because a
   compare of 0 never matches an incrementing count under equality.
-* **A write to `CMPj_REG0` in 64-bit mode clears `CMP_STATUS` bit j** (for
-  example 7 to 5). The model does not.
-* **`IEP_COUNT_REG0` written with `0xFFFFFFFF` reads back `0xFFFFFFFF`**;
-  the probe's counter clear therefore uses 0.
-* **`GLOBAL_CFG` reset value on AM261x is `0x551`** (CNT_ENABLE set), on AM243x
-  `0x550`. The model uses `0x550` on both.
 
 ## Limitations and open questions
 
@@ -188,7 +205,9 @@ used a single period and only CMP0/CMP1 with no PWM state machine attached.
 `tests/test_iep_shadow_compare.py` has hand-computed clock numbers, a naive
 per-clock reference that does not call the model (random programs with bulk and
 single-step advance, with and without the stopped-counter copy), a
-legacy-vs-event-engine equivalence check for 64-bit mode, and firmware
+legacy-vs-event-engine equivalence check for 64-bit mode,
+`tests/test_iep_silicon_semantics.py` (64-bit period, `>=` compare, REG0 status
+clear and reset values as measured register words),, and firmware
 `SBCO`/`LBCO` tests through `Simulator`. The tests for REG1 on entry, the
 stopped-counter copy and the REG0 write quote the measured register words
 (board and log line) in their docstrings; the remaining tests are hand

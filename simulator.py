@@ -14,7 +14,8 @@ from fractions import Fraction
 from core.pru_core import PRUCore
 from mem.memory_bus import MemoryBus
 from mem.regions import MemoryRegion
-from perif.iep import IepTimer, IEP_SIZE, IEP_DEFAULT_CLOCK_MHZ
+from perif.iep import (IepTimer, IEP_SIZE, IEP_DEFAULT_CLOCK_MHZ, GLOBAL_CFG_RESET,
+                       GLOBAL_CFG_RESET_AM261X)
 from mem.constant_table import ConstantTable
 from xfr.xfr_bus import XFRBus
 from pru_io.device_model import DeviceBus, DeviceModel
@@ -283,6 +284,8 @@ class Simulator:
             clock_mhz=iep_clock,
             ocp_clock_mhz=pru_clock,
             core_clocks_mhz=core_clock_rates,
+            global_cfg_reset=(GLOBAL_CFG_RESET_AM261X if target.lower() == "am261x"
+                              else GLOBAL_CFG_RESET),
         )
         self.memory.add_region(IepRegisterRegion(self.iep))
         self.memory.add_region(IepClockRegisterRegion(self.iep))

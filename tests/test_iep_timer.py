@@ -149,7 +149,7 @@ def test_cmp0_rst_cnt_en_controls_auto_reset(iep):
     w32(iep, CMP_CFG, 0x3)               # RST_CNT_EN | CMP_EN[0]
     for _ in range(8):
         iep.tick()
-    assert r32(iep, COUNT_REG0) == 3      # 1..5 -> 0, then 1,2,3
+    assert r32(iep, COUNT_REG0) == 2      # 1..5, reset on the 6th clock, then 1,2
 
 
 def test_cmp_status_is_write_one_to_clear(iep):
