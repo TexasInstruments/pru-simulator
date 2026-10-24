@@ -19,7 +19,6 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 @pytest.mark.parametrize("cfg", [
     "memory.cfg",
     os.path.join("config", "memory_am243x.cfg"),
-    os.path.join("config", "memory_am263x.cfg"),
 ])
 def test_constant_table_loaded_for_config_path(cfg):
     sim = Simulator(os.path.join(_REPO_ROOT, cfg))
@@ -34,6 +33,15 @@ def test_am261x_preset_loads_its_own_constant_table():
     sim = Simulator(os.path.join(_REPO_ROOT, "config", "memory_am261x.cfg"))
     assert sim.constant_table.resolve(0) == 0x00020000
     assert sim.constant_table.resolve(1) == 0x0002F000
+
+
+def test_am263x_preset_loads_the_am261x_constant_table():
+    # AM263x has the same ICSS-M as AM261x, so it reads constants_am261x.cfg
+    # rather than the ICSSG table. C28 stays 0 until the program sets CTPPR0.
+    sim = Simulator(os.path.join(_REPO_ROOT, "config", "memory_am263x.cfg"))
+    assert sim.constant_table.resolve(0) == 0x00020000
+    assert sim.constant_table.resolve(1) == 0x0002F000
+    assert sim.constant_table.resolve(28) == 0
 
 
 def test_config_without_constants_file_still_loads(tmp_path):
