@@ -238,8 +238,8 @@
     #iep-clock-custom-form[hidden] { display: none; }
     #iep-clock-custom { width: 90px; }
     #iep-clock-error, #gpio-drive-error { color: var(--halted); font-size: 12px; }
-    #gpio-drive-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(76px, 1fr)); gap: 4px; }
-    #gpio-drive-controls button { font: inherit; padding: 5px 3px; }
+    #gpio-drive-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; }
+    #gpio-drive-controls button { font: inherit; padding: 6px 4px; white-space: nowrap; }
     #gpio-drive-controls button[aria-pressed="true"] { color: var(--green); }
     #iep-clock-select,
     #sim-interval {
@@ -714,6 +714,7 @@
 
     /* ---- IO panel --------------------------------------------------------------------- */
     .io-section { margin-bottom: 10px; }
+    .io-settings { margin-top: 18px; }
     .io-section-title {
       color: var(--text);
       font-size: 11px;
@@ -728,9 +729,9 @@
     .lb-strip {
       display: flex;
       align-items: center;
-      gap: 6px;
-      margin: 6px 0;
-      padding: 6px 8px;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 8px 10px;
       background: var(--panel-inset);
       border: 1px solid var(--border);
       border-radius: 6px;
@@ -1005,6 +1006,8 @@
     /* ---- Source editor panel -------------------------------------------------------------- */
     #editor-panel { display: flex; flex-direction: column; min-height: 60px; }
     #editor-panel .panel-title { gap: 6px; }
+    .editor-core-label { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+    #assembly-core-target { min-width: 74px; font: inherit; text-transform: none; cursor: pointer; }
     #asm-source {
       flex: 1;
       background: var(--panel-inset);
@@ -1716,7 +1719,9 @@
       <div class="panel" id="editor-panel">
         <div class="panel-title" data-panel-id="editor">
           <span>Assembly Editor</span>
-          <span id="assembly-core-target" class="core-chip" title="Select the target in Telemetry">→ PRU0</span>
+          <label class="editor-core-label" for="assembly-core-target">Load into
+            <select id="assembly-core-target" class="core-chip" title="Choose the core and its editor files"><option value="pru0">PRU0</option></select>
+          </label>
           <input type="file" id="file-input" accept=".asm,.inc,.s,.out" style="display:none" />
           <button id="btn-file" class="btn-load btn-17"><span class="text-container"><span class="text">Open</span></span></button>
           <button id="btn-open-project" class="btn-load btn-17"><span class="text-container"><span class="text">Project</span></span></button>
@@ -1831,21 +1836,26 @@ Example:
           <div class="io-section">
             <div class="io-section-title">GPO (R30) — Output</div>
             <div class="pin-grid" id="gpo-grid"></div>
-            <div class="io-section-title">GPIO output enable — Drive / Release</div>
-            <div id="gpio-drive-controls" role="group" aria-label="GPIO output enable"></div>
-            <div id="gpio-drive-error" role="alert" hidden></div>
-          </div>
-          <div class="lb-strip" id="loopback-strip">
-            <span class="lb-label">&#x21A9; Loopback</span>
-            <button class="lb-btn" data-group="0">3:0</button>
-            <button class="lb-btn" data-group="1">7:4</button>
-            <button class="lb-btn" data-group="2">11:8</button>
-            <button class="lb-btn" data-group="3">15:12</button>
-            <button class="lb-btn" data-group="4">19:16</button>
           </div>
           <div class="io-section">
             <div class="io-section-title">GPI (R31) — Input (click to toggle)</div>
             <div class="pin-grid" id="gpi-grid"></div>
+          </div>
+          <div class="io-section io-settings">
+            <div class="io-section-title">Loopback — GPO to GPI</div>
+            <div class="lb-strip" id="loopback-strip">
+              <span class="lb-label">&#x21A9; Loopback</span>
+              <button class="lb-btn" data-group="0">3:0</button>
+              <button class="lb-btn" data-group="1">7:4</button>
+              <button class="lb-btn" data-group="2">11:8</button>
+              <button class="lb-btn" data-group="3">15:12</button>
+              <button class="lb-btn" data-group="4">19:16</button>
+            </div>
+          </div>
+          <div class="io-section io-settings">
+            <div class="io-section-title">GPIO output enable — Drive / Release</div>
+            <div id="gpio-drive-controls" role="group" aria-label="GPIO output enable"></div>
+            <div id="gpio-drive-error" role="alert" hidden></div>
           </div>
 
         </div>
@@ -2061,7 +2071,7 @@ Example:
         <div class="help-heading">IO Panel</div>
         <table class="help-table">
           <tr><td><b>GPO pins</b></td><td>Live R30 bit indicators — updated every step</td></tr>
-          <tr><td><b>Loopback strip</b></td><td>Five toggle buttons between GPO and GPI rows; each wires a 4-bit group (3:0, 7:4, …) of GPO directly to GPI combinatorially</td></tr>
+          <tr><td><b>Loopback strip</b></td><td>Five toggle buttons below the GPO and GPI rows; each wires a 4-bit group (3:0, 7:4, …) of GPO directly to GPI combinatorially</td></tr>
           <tr><td><b>GPI pins</b></td><td>R31 bit indicators — click any pin to drive it high/low when SD is disabled</td></tr>
           <tr><td><b>UART Record / Stop recording</b></td><td>Start or stop the shared Signal Graph capture. Run firmware while recording, then Decode GPO0.</td></tr>
           <tr><td><b>▶ Decode</b></td><td>UART decode of recorded GPO0 transitions (8N1, auto-detect baud); shows hex + ASCII bytes</td></tr>
@@ -2126,11 +2136,37 @@ Example:
             <strong id="ssi-runtime-title">SSI encoder</strong>
           </div>
           <p class="runtime-device-status" id="ssi-empty-state" role="status">No SSI encoder attached to this core.</p>
-          <p class="runtime-device-help">Examples replace the current programs, devices and wiring. Core and IEP clock rates are kept. Each example sends a 12-bit binary position, initially 2748 (0xABC), without an error field.</p>
-          <div class="runtime-device-actions">
-            <button class="runtime-device-button btn-17" type="button" data-scenario="SSI encoder (single core)" disabled><span class="text-container"><span class="text">Load reader + model</span></span></button>
-            <button class="runtime-device-button btn-17" type="button" data-scenario="SSI multi-core (emulator + reader)" disabled><span class="text-container"><span class="text">Load encoder + reader</span></span></button>
+          <p class="runtime-device-help">Choose the frame settings, then set up both the reader and encoder. The setup uses clock pin 0 and data pin 16. It replaces the current programs, devices and wiring, and keeps the core and IEP clock rates. Then press Run.</p>
+          <div class="runtime-device-fields" id="ssi-attach-fields">
+            <label class="runtime-device-field" for="ssi-preset">Preset
+              <select id="ssi-preset">
+                <option value="">Custom</option>
+              </select>
+            </label>
+            <label class="runtime-device-field" for="ssi-position">Position (decimal)
+              <input id="ssi-position" type="number" value="2748" min="0" max="9007199254740991" step="1" required>
+            </label>
+            <label class="runtime-device-field" for="ssi-resolution">Frame length (bits, including error bits)
+              <input id="ssi-resolution" type="number" value="12" min="1" max="64" step="1" required>
+            </label>
+            <label class="runtime-device-field" for="ssi-error-bits">Error bits
+              <input id="ssi-error-bits" type="number" value="0" min="0" max="63" step="1" required>
+            </label>
+            <label class="runtime-device-field" for="ssi-error-value">Error value
+              <input id="ssi-error-value" type="number" value="0" min="0" step="1" required>
+            </label>
+            <label class="runtime-device-field" for="ssi-encoding">Encoding
+              <select id="ssi-encoding">
+                <option value="binary">Binary</option>
+                <option value="gray">Gray code</option>
+              </select>
+            </label>
           </div>
+          <div class="runtime-device-actions">
+            <button class="runtime-device-button btn-17" type="button" data-scenario="SSI encoder (single core)" disabled><span class="text-container"><span class="text">Set up reader + encoder model</span></span></button>
+            <button class="runtime-device-button btn-17" type="button" data-scenario="SSI multi-core (emulator + reader)" disabled><span class="text-container"><span class="text">Set up reader + encoder PRU</span></span></button>
+          </div>
+          <p class="runtime-device-help">Encoder model: PRU0 reads a software device. Encoder PRU: PRU0 reads encoder code on PRU1. Both use the settings above and set the reader timing automatically.</p>
           <div id="ssi-demo-result" hidden>
             <p class="runtime-device-row-detail" id="ssi-demo-wiring"></p>
             <p class="runtime-device-status" id="ssi-demo-status" role="status"></p>
@@ -2151,43 +2187,24 @@ Example:
               <button class="runtime-device-button btn-17" id="ssi-demo-waveforms" type="button"><span class="text-container"><span class="text">Show waveforms</span></span></button>
             </div>
           </div>
-          <div class="runtime-device-fields" id="ssi-attach-fields">
-            <label class="runtime-device-field" for="ssi-device-name">Device name
-              <input id="ssi-device-name" type="text" value="ssi_encoder" maxlength="48" autocomplete="off" required>
-            </label>
-            <label class="runtime-device-field" for="ssi-clock-pin">Clock GPO pin
-              <input id="ssi-clock-pin" type="number" value="0" min="0" max="19" step="1" required>
-            </label>
-            <label class="runtime-device-field" for="ssi-data-pin">Data GPI pin
-              <input id="ssi-data-pin" type="number" value="8" min="0" max="19" step="1" required>
-            </label>
-            <label class="runtime-device-field" for="ssi-preset">Preset
-              <select id="ssi-preset">
-                <option value="">Custom</option>
-              </select>
-            </label>
-            <label class="runtime-device-field" for="ssi-position">Position
-              <input id="ssi-position" type="number" value="0" min="0" max="9007199254740991" step="1" required>
-            </label>
-            <label class="runtime-device-field" for="ssi-resolution">Resolution (bits)
-              <input id="ssi-resolution" type="number" value="12" min="1" max="64" step="1" required>
-            </label>
-            <label class="runtime-device-field" for="ssi-error-bits">Error bits
-              <input id="ssi-error-bits" type="number" value="0" min="0" max="63" step="1" required>
-            </label>
-            <label class="runtime-device-field" for="ssi-error-value">Error value
-              <input id="ssi-error-value" type="number" value="0" min="0" step="1" required>
-            </label>
-            <label class="runtime-device-field" for="ssi-encoding">Encoding
-              <select id="ssi-encoding">
-                <option value="binary">Binary</option>
-                <option value="gray">Gray code</option>
-              </select>
-            </label>
-          </div>
-          <div class="runtime-device-actions">
-            <button class="runtime-device-button primary btn-17 btn-run" id="ssi-attach-button" type="button"><span class="text-container"><span class="text">Attach encoder</span></span></button>
-          </div>
+          <details>
+            <summary>Advanced: attach a device to your own reader program</summary>
+            <p class="runtime-device-help">This adds only an encoder model to the selected core. It uses the frame settings above and the pins below. It does not load or change your reader program. Your program must use the same frame length and timing.</p>
+            <div class="runtime-device-fields">
+              <label class="runtime-device-field" for="ssi-device-name">Device name
+                <input id="ssi-device-name" type="text" value="ssi_encoder" maxlength="48" autocomplete="off" required>
+              </label>
+              <label class="runtime-device-field" for="ssi-clock-pin">Clock GPO pin
+                <input id="ssi-clock-pin" type="number" value="0" min="0" max="19" step="1" required>
+              </label>
+              <label class="runtime-device-field" for="ssi-data-pin">Data GPI pin
+                <input id="ssi-data-pin" type="number" value="8" min="0" max="19" step="1" required>
+              </label>
+            </div>
+            <div class="runtime-device-actions">
+              <button class="runtime-device-button btn-17" id="ssi-attach-button" type="button"><span class="text-container"><span class="text">Attach device only</span></span></button>
+            </div>
+          </details>
         </section>
         <section class="runtime-device" aria-labelledby="tca-runtime-title">
           <div class="runtime-device-heading">

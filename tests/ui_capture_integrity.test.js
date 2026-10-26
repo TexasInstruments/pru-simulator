@@ -119,7 +119,7 @@ function inspector() {
     GRAPH_MEM_BPS: { uint8: 1 }, cntCycles: {}, cntStalls: {}, cntInstrs: {}, cntIpc: {}, cntPc: {}, btnXfrShift: {},
     document: { querySelectorAll: () => [], getElementById: () => null }, window: {},
     stopRun: noop, stopSim: noop, persistCoreSelection: noop, renderCorePanes: noop,
-    syncDeviceCoreSelect: noop, updateCoresControl: noop, sendAction: command => requests.push(command),
+    selectEditorCore: noop, syncDeviceCoreSelect: noop, updateCoresControl: noop, sendAction: command => requests.push(command),
     updateRegisters: noop, updateSpad: noop, updateSource: noop, updatePins: noop, updateSDPanel: noop,
     updatePerifPanel: noop, updateI2CPanel: noop, updateDevicePanel: noop, drawGraph: noop,
     memAutoOnStateChange: () => { memoryRefreshes++; },

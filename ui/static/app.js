@@ -22,6 +22,7 @@ let _lastSourceKey = '';
 let captureStride = null;   // Signal Graph sample interval requested by the loaded example
 let sharedExecution = {running:false, owner:false, mode:null};
 let executionStartPending = null;
+let executionReady = false;
 
 // ---- Core selection: execution membership is separate from inspection -------
 let availableCores = [...PruCores.ORDER];
@@ -42,9 +43,10 @@ let clockChanging = false;
 let coresDeck = null;
 
 // ---- Editor tab state ------------------------------------------------------
-let tabs = [];              // [{path: string, content: string, dirty: boolean}]
-let activeTab = -1;         // index into tabs[], -1 = no open tabs
-let activeProjectManifest = null;  // {project: string, files: string[]} or null
+const editorWorkspaces = Object.fromEntries(PruCores.ORDER.map(core => [core,
+  {tabs: [], activeTab: -1, project: null, draft: ''}]));
+let editorCore = currentCore;
+let editor = editorWorkspaces[editorCore];
 
 // ---- Signal graph state ----------------------------------------------------
 
@@ -121,10 +123,9 @@ const btnConfigCancel = document.getElementById("btn-config-cancel");
 
 // ---- Editor dirty tracking -----------------------------------------------
 asmSource.addEventListener('input', () => {
-  if (activeTab >= 0 && tabs[activeTab] && !tabs[activeTab].dirty) {
-    tabs[activeTab].dirty = true;
-    renderTabs();
-  }
+  saveEditorDraft();
+  const tab = editor.tabs[editor.activeTab];
+  if (tab && !tab.dirty) { tab.dirty = true; renderTabs(); }
 });
 
 // ---- SPAD display --------------------------------------------------------
@@ -149,83 +150,115 @@ function initSpadState() {
 
 // ---- Tab management --------------------------------------------------------
 
+function saveEditorDraft() {
+  const tab = editor.tabs[editor.activeTab];
+  if (tab) tab.content = asmSource.value;
+  else editor.draft = asmSource.value;
+}
+
+function selectEditorCore(core) {
+  if (!availableCores.includes(core)) return;
+  saveEditorDraft();
+  editorCore = core;
+  editor = editorWorkspaces[core];
+  asmSource.value = editor.tabs[editor.activeTab]?.content ?? editor.draft;
+  renderTabs();
+  syncEditorCoreSelect();
+}
+
+function syncEditorCoreSelect() {
+  const select = document.getElementById('assembly-core-target');
+  if (!availableCores.includes(editorCore)) selectEditorCore(availableCores[0]);
+  const key = availableCores.join(',');
+  if (select.dataset.cores !== key) {
+    select.replaceChildren();
+    for (const core of availableCores) {
+      const option = document.createElement('option');
+      option.value = core; option.textContent = core.toUpperCase();
+      select.appendChild(option);
+    }
+    select.dataset.cores = key;
+  }
+  select.value = editorCore;
+  select.style.setProperty('--core-color', `var(--core-${editorCore})`);
+}
+
+document.getElementById('assembly-core-target').addEventListener('change', event => {
+  selectEditorCore(event.target.value);
+});
+
 function renderTabs() {
   const bar = document.getElementById('editor-tab-bar');
   if (!bar) return;
   bar.innerHTML = '';
-  tabs.forEach((tab, i) => {
+  editor.tabs.forEach((tab, i) => {
     const name = tab.path.split('/').pop();
     const el = document.createElement('div');
-    el.className = 'editor-tab' + (i === activeTab ? ' active' : '');
-
+    el.className = 'editor-tab' + (i === editor.activeTab ? ' active' : '');
     const label = document.createElement('span');
     label.className = 'tab-label';
-    label.textContent = (i === activeTab ? '▶ ' : '') + name + (tab.dirty ? '*' : '');
-
+    label.textContent = (i === editor.activeTab ? '▶ ' : '') + name + (tab.dirty ? '*' : '');
     const close = document.createElement('span');
-    close.className = 'tab-close';
-    close.textContent = '×';
+    close.className = 'tab-close'; close.textContent = '×';
+    close.title = `Close ${name} in the ${editorCore.toUpperCase()} editor`;
     close.addEventListener('click', e => { e.stopPropagation(); closeTab(i); });
-
-    el.appendChild(label);
-    el.appendChild(close);
+    el.appendChild(label); el.appendChild(close);
     el.addEventListener('click', () => switchTab(i));
     bar.appendChild(el);
   });
 }
 
 function switchTab(i) {
-  if (i === activeTab) return;
-  if (activeTab >= 0 && tabs[activeTab]) {
-    tabs[activeTab].content = asmSource.value;
-  }
-  activeTab = i;
-  asmSource.value = tabs[i] ? tabs[i].content : '';
+  if (i === editor.activeTab) return;
+  saveEditorDraft();
+  editor.activeTab = i;
+  asmSource.value = editor.tabs[i]?.content ?? editor.draft;
   renderTabs();
 }
 
 function closeTab(i) {
-  if (tabs[i] && tabs[i].dirty) {
-    if (!confirm(`Close ${tabs[i].path.split('/').pop()} without saving?`)) return;
+  const tab = editor.tabs[i];
+  if (!tab) return;
+  if (tab.dirty && !confirm(`Close ${tab.path.split('/').pop()} in ${editorCore.toUpperCase()} without saving?`)) return;
+  saveEditorDraft();
+  if (editor.project) {
+    const project = editor.project.project;
+    if (!editor.tabs.some((t, index) => index !== i && t.path.startsWith(project + '/'))) editor.project = null;
   }
-  // If this was the only tab in a project, clear manifest
-  if (activeProjectManifest) {
-    const proj = activeProjectManifest.project;
-    const remaining = tabs.filter((t, idx) => idx !== i && t.path.startsWith(proj + '/'));
-    if (remaining.length === 0) activeProjectManifest = null;
-  }
-  tabs.splice(i, 1);
-  if (i < activeTab) activeTab--;
-  if (activeTab >= tabs.length) activeTab = tabs.length - 1;
-  asmSource.value = activeTab >= 0 && tabs[activeTab] ? tabs[activeTab].content : '';
+  editor.tabs.splice(i, 1);
+  if (i < editor.activeTab) editor.activeTab--;
+  if (editor.activeTab >= editor.tabs.length) editor.activeTab = editor.tabs.length - 1;
+  asmSource.value = editor.tabs[editor.activeTab]?.content ?? editor.draft;
   renderTabs();
 }
 
-function openFileAsTab(path, content) {
-  const existing = tabs.findIndex(t => t.path === path);
-  if (existing >= 0) {
-    switchTab(existing);
-    return;
+function openFileAsTab(path, content, core = editorCore) {
+  const workspace = editorWorkspaces[core];
+  if (!workspace) return;
+  if (workspace === editor) saveEditorDraft();
+  const existing = workspace.tabs.findIndex(tab => tab.path === path);
+  if (existing >= 0) workspace.activeTab = existing;
+  else {
+    workspace.tabs.push({path, content, dirty: false});
+    workspace.activeTab = workspace.tabs.length - 1;
   }
-  if (activeTab >= 0 && tabs[activeTab]) {
-    tabs[activeTab].content = asmSource.value;
+  if (workspace === editor) {
+    asmSource.value = workspace.tabs[workspace.activeTab].content;
+    renderTabs();
   }
-  tabs.push({ path, content, dirty: false });
-  activeTab = tabs.length - 1;
-  asmSource.value = content;
-  renderTabs();
 }
 
 async function initEditorTabs() {
+  const core = editorCore;
+  const workspace = editor;
+  let text = '';
   try {
     const res = await fetch('/source/program.asm');
-    const text = res.ok ? await res.text() : '';
-    openFileAsTab('program.asm', text);
-  } catch (_) {
-    tabs.push({ path: 'program.asm', content: '', dirty: false });
-    activeTab = 0;
-    renderTabs();
-  }
+    if (res.ok) text = await res.text();
+  } catch (_) {}
+  // A delayed initial fetch must not replace a file or draft the user opened.
+  if (workspace.tabs.length || workspace.draft || (workspace === editor && asmSource.value)) return;
+  openFileAsTab('program.asm', text, core);
 }
 
 // ---- Build static UI elements --------------------------------------------
@@ -324,6 +357,8 @@ async function loadCoreChoices() {
 }
 
 function connect() {
+  wsStatus.textContent = "Connecting...";
+  wsStatus.className = "";
   const url = `ws://${location.host}/ws`;
   ws = new WebSocket(url);
 
@@ -353,10 +388,13 @@ function connect() {
     wsStatus.className = "error";
     runPending = null;
     executionStartPending = null;
+    executionReady = false;
     sharedExecution = {running:false,owner:false,mode:null};
-    stopRun();
-    // Attempt reconnect after 2 s
-    setTimeout(connect, 2000);
+    stopRun(false); stopSim(false);
+    updateCoresControl();
+    // Check HTTP availability before another handshake. Failed WebSocket
+    // attempts can add a browser-level delay shared by other tabs.
+    setTimeout(reconnectWhenReady, 2000);
   };
 
   ws.onerror = () => {
@@ -368,9 +406,9 @@ function connect() {
     try {
       const msg = JSON.parse(event.data);
       if (msg.type === "state") {
+        if (msg.available_cores) showAvailableCores(msg.available_cores);
         if (msg.execution) receiveExecution(msg.execution);
         if (msg.run_id === runPending) runPending = null;
-        if (msg.available_cores) showAvailableCores(msg.available_cores);
         if (msg.iep) showIepClock(msg.iep);
         updateSsiDemo(msg.io?.ssi_demo || null);
         window.updateWorkspaceEvents?.(msg, multiCoreMode ? executionCores() : [currentCore]);
@@ -438,6 +476,20 @@ function connect() {
   };
 }
 
+async function reconnectWhenReady() {
+  if (ws && ws.readyState !== WebSocket.CLOSED) return;
+  let available = false;
+  try {
+    const response = await fetch('/cores', {cache:'no-store'});
+    available = response.ok;
+  } catch (_) { /* The server may still be stopped. */ }
+  if (ws && ws.readyState !== WebSocket.CLOSED) return;
+  if (available) { connect(); return; }
+  wsStatus.textContent = "Waiting for server";
+  wsStatus.className = "error";
+  setTimeout(reconnectWhenReady, 2000);
+}
+
 function sendAction(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(obj));
@@ -445,6 +497,11 @@ function sendAction(obj) {
 }
 
 function receiveExecution(state) {
+  executionReady = true;
+  if (Array.isArray(state.cores) && JSON.stringify(state.cores) !== JSON.stringify(coreSelection.used)) {
+    applyCoreSelection({...coreSelection, used:state.cores}, true);
+  }
+  if (Object.hasOwn(state, 'scenario')) captureStride = state.scenario?.ui?.capture_stride || null;
   sharedExecution = state;
   if (executionStartPending !== null) {
     if (state.request_id !== executionStartPending) { updateCoresControl(); return; }
@@ -2089,55 +2146,35 @@ btnHardReset.addEventListener("click", () => {
 });
 
 btnLoad.addEventListener("click", async () => {
-  stopRun(); stopSim();
-  clearErrors();
-
-  // Sync active textarea content into tab buffer
-  if (activeTab >= 0 && tabs[activeTab]) {
-    tabs[activeTab].content = asmSource.value;
+  const core = editorCore;
+  const workspace = editor;
+  stopRun(); stopSim(); clearErrors();
+  saveEditorDraft();
+  const active = workspace.tabs[workspace.activeTab];
+  let source = active?.content ?? workspace.draft;
+  let filename = active?.path;
+  const projectName = filename?.includes('/') ? filename.split('/')[0] : null;
+  if (projectName && workspace.project?.project === projectName) {
+    source = workspace.project.files.map(name =>
+      workspace.tabs.find(tab => tab.path === `${projectName}/${name}`)?.content ?? '').join('\n');
+    filename = `${projectName}/${workspace.project.files[0]}`;
   }
-
-  // Auto-save all dirty tabs
-  for (let i = 0; i < tabs.length; i++) {
-    const tab = tabs[i];
-    if (tab.dirty) {
-      try {
-        await fetch(`/source/${tab.path}`, { method: "PUT", body: tab.content });
-        tab.dirty = false;
-      } catch (e) { console.error(`Auto-save failed for ${tab.path}:`, e); }
-    }
+  // Keep this load bound to its original target and text while saves wait.
+  for (const tab of workspace.tabs.filter(tab => tab.dirty)) {
+    const content = tab.content;
+    try {
+      const res = await fetch(`/source/${tab.path}`, {method: "PUT", body: content});
+      if (res.ok && tab.content === content) tab.dirty = false;
+    } catch (e) { console.error(`Auto-save failed for ${tab.path}:`, e); }
   }
   renderTabs();
-
-  // Determine source text and filename for include path resolution
-  let source = asmSource.value;
-  let filename;
-  if (activeTab >= 0 && tabs[activeTab]) {
-    const activeTabPath = tabs[activeTab].path;
-    const projName = activeTabPath.includes('/') ? activeTabPath.split('/')[0] : null;
-
-    if (projName && activeProjectManifest &&
-        activeProjectManifest.project === projName &&
-        Array.isArray(activeProjectManifest.files)) {
-      // Concatenate tabs in manifest order
-      const parts = activeProjectManifest.files.map(fname => {
-        const path = `${projName}/${fname}`;
-        const t = tabs.find(tab => tab.path === path);
-        return t ? t.content : '';
-      });
-      source = parts.join('\n');
-      filename = `${projName}/${activeProjectManifest.files[0]}`;
-    } else {
-      source = asmSource.value;
-      filename = activeTabPath;
-    }
+  if (!availableCores.includes(core)) return;
+  if (core === currentCore) {
+    prevRegisters = mcFreshRegs(); sourceList.innerHTML = ""; _lastSourceKey = '';
   }
-
-  prevRegisters = mcFreshRegs();
-  sourceList.innerHTML = "";
-  _lastSourceKey = '';
-  delete coreStates[currentCore];
-  sendAction({ action: "load", core: currentCore, source, filename });
+  mcLastSourceKey[core] = '';
+  delete coreStates[core];
+  sendAction({action: "load", core, source, filename});
 });
 
 // ---- Signal graph controls -------------------------------------------------
@@ -2334,10 +2371,11 @@ btnFile.addEventListener("click", async () => {
     item.addEventListener("mouseout",  () => item.style.background = "");
     item.addEventListener("click", async () => {
       menu.remove();
-      activeProjectManifest = null;
+      const core = editorCore;
+      editor.project = null;
       try {
         const text = await fetch(`/source/${path}`).then(r => r.text());
-        openFileAsTab(path, text);
+        openFileAsTab(path, text, core);
       } catch (e) { console.error(e); }
     });
     menu.appendChild(item);
@@ -2352,53 +2390,51 @@ btnFile.addEventListener("click", async () => {
 });
 
 btnSaveAsm.addEventListener("click", async () => {
-  if (activeTab < 0 || !tabs[activeTab]) return;
-  tabs[activeTab].content = asmSource.value;
-  const path = tabs[activeTab].path;
+  saveEditorDraft();
+  const workspace = editor;
+  const tab = workspace.tabs[workspace.activeTab];
+  if (!tab) return;
+  const content = tab.content;
   try {
-    const res = await fetch(`/source/${path}`, { method: "PUT", body: asmSource.value });
+    const res = await fetch(`/source/${tab.path}`, {method: "PUT", body: content});
     if (res.ok) {
-      tabs[activeTab].dirty = false;
+      if (tab.content === content) tab.dirty = false;
       renderTabs();
       flashStatus("SAVED", "reloaded");
     } else {
-      const d = await res.json();
-      console.error("Save failed:", d.error);
+      const d = await res.json(); console.error("Save failed:", d.error);
     }
   } catch (e) { console.error(e); }
 });
 
-fileInput.addEventListener("change", (e) => {
+fileInput.addEventListener("change", e => {
   const file = e.target.files[0];
   if (!file) return;
-
-  // Binary .out ELF files — load directly into simulator
+  const core = editorCore;
+  const reader = new FileReader();
   if (file.name.toLowerCase().endsWith('.out')) {
-    const elfName = file.name;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = ev => {
+      if (!availableCores.includes(core)) return;
       const bytes = new Uint8Array(ev.target.result);
       const b64 = btoa(String.fromCharCode(...bytes));
-      sendAction({ action: "load_elf", core: currentCore, data: b64 });
+      sendAction({action: "load_elf", core, data: b64});
     };
     reader.readAsArrayBuffer(file);
-    fileInput.value = "";
-    return;
+  } else {
+    reader.onload = ev => {
+      editorWorkspaces[core].project = null;
+      openFileAsTab(file.name, ev.target.result, core);
+    };
+    reader.readAsText(file);
   }
-
-  // Text assembly files — open in editor tab
-  const reader = new FileReader();
-  reader.onload = (ev) => {
-    activeProjectManifest = null;
-    openFileAsTab(file.name, ev.target.result);
-  };
-  reader.readAsText(file);
   fileInput.value = "";
 });
 
 // ---- Open Project ----------------------------------------------------------
 
 async function openProject(projName, projFiles) {
+  const core = editorCore;
+  const workspace = editor;
   let manifest = null;
   try {
     const res = await fetch(`/source/${projName}/project.json`);
@@ -2420,17 +2456,19 @@ async function openProject(projName, projFiles) {
     const path = `${projName}/${fname}`;
     try {
       const text = await fetch(`/source/${path}`).then(r => r.text());
-      openFileAsTab(path, text);
+      openFileAsTab(path, text, core);
     } catch (e) { console.error(`Failed to open ${path}:`, e); }
   }
 
-  const firstAsm = tabs.findIndex(
+  const firstAsm = workspace.tabs.findIndex(
     t => t.path.startsWith(projName + '/') &&
          (t.path.endsWith('.asm') || t.path.endsWith('.s'))
   );
-  if (firstAsm >= 0) switchTab(firstAsm);
-
-  activeProjectManifest = manifest ? { project: projName, files: manifest.files } : null;
+  if (firstAsm >= 0) {
+    workspace.activeTab = firstAsm;
+    if (workspace === editor) { asmSource.value = workspace.tabs[firstAsm].content; renderTabs(); }
+  }
+  workspace.project = manifest ? {project: projName, files: manifest.files} : null;
 }
 
 btnOpenProject.addEventListener("click", async () => {
@@ -2769,43 +2807,31 @@ document.getElementById('ssi-preset')?.addEventListener('change', event => {
   document.getElementById('ssi-encoding').value = preset.encoding;
 });
 
-document.getElementById('ssi-attach-button')?.addEventListener('click', () => {
-  const nameInput = document.getElementById('ssi-device-name');
-  if (!nameInput.checkValidity()) {
-    nameInput.reportValidity();
-    return;
-  }
-  const clockPin = deviceNumberValue('ssi-clock-pin');
-  const dataPin = deviceNumberValue('ssi-data-pin');
+function readSsiFrameConfig() {
   const positionInput = document.getElementById('ssi-position');
   const errorBitsInput = document.getElementById('ssi-error-bits');
   const errorValueInput = document.getElementById('ssi-error-value');
+  for (const input of [positionInput, errorBitsInput, errorValueInput]) input.setCustomValidity('');
   const resolution = deviceNumberValue('ssi-resolution');
   const errorBits = deviceNumberValue('ssi-error-bits');
-  for (const input of [positionInput, errorBitsInput, errorValueInput]) input.setCustomValidity('');
-  if (clockPin === null || dataPin === null || resolution === null || errorBits === null ||
-      !positionInput.checkValidity() || !errorValueInput.checkValidity()) {
-    (positionInput.checkValidity() ? errorValueInput : positionInput).reportValidity();
-    return;
-  }
+  if (resolution === null || errorBits === null) return null;
   const positionBits = resolution - errorBits;
   if (positionBits < 1) {
     errorBitsInput.setCustomValidity('Error bits must leave at least one position bit.');
     errorBitsInput.reportValidity();
-    return;
+    return null;
   }
   for (const [input, bits, label] of [[positionInput, positionBits, 'Position'],
                                       [errorValueInput, errorBits, 'Error value']]) {
-    if (input.valueAsNumber > ssiFieldMax(bits)) {
-      input.setCustomValidity(`${label} must be at most ${ssiFieldMax(bits)}.`);
+    if (!input.checkValidity()) { input.reportValidity(); return null; }
+    if (!Number.isSafeInteger(input.valueAsNumber) || input.valueAsNumber > ssiFieldMax(bits)) {
+      input.setCustomValidity(`${label} must be a whole number from 0 to ${ssiFieldMax(bits)}.`);
       input.reportValidity();
-      return;
+      return null;
     }
   }
-  const config = {
-    name: nameInput.value.trim(),
-    clock_pin: clockPin,
-    data_pin: dataPin,
+  return {
+    preset: document.getElementById('ssi-preset').value || null,
     position: positionInput.valueAsNumber,
     resolution,
     position_bits: positionBits,
@@ -2813,13 +2839,21 @@ document.getElementById('ssi-attach-button')?.addEventListener('click', () => {
     error_value: errorValueInput.valueAsNumber,
     encoding: document.getElementById('ssi-encoding').value,
   };
-  const preset = document.getElementById('ssi-preset').value;
-  if (preset) config.preset = preset;
+}
+
+document.getElementById('ssi-attach-button')?.addEventListener('click', () => {
+  const nameInput = document.getElementById('ssi-device-name');
+  if (!nameInput.checkValidity()) { nameInput.reportValidity(); return; }
+  const clockPin = deviceNumberValue('ssi-clock-pin');
+  const dataPin = deviceNumberValue('ssi-data-pin');
+  if (clockPin === null || dataPin === null) return;
+  const config = readSsiFrameConfig();
+  if (!config) return;
   sendDeviceAction({
     action: 'device_attach',
     core: devicePanelCore,
     profile: 'ssi_encoder',
-    config,
+    config: { ...config, name: nameInput.value.trim(), clock_pin: clockPin, data_pin: dataPin },
   });
 });
 
@@ -3744,9 +3778,8 @@ const deviceCoreSelectWrap = document.getElementById('device-core-select-wrap');
 function showAvailableCores(cores) {
   cores = PruCores.ORDER.filter(core => cores.includes(core));
   if (JSON.stringify(availableCores) === JSON.stringify(cores)) return;
-  stopRun(); stopSim();
   availableCores = PruCores.ORDER.filter(core => cores.includes(core));
-  applyCoreSelection(PruCores.normalize(coreSelection, availableCores));
+  applyCoreSelection(PruCores.normalize(coreSelection, availableCores), true);
 }
 
 function syncDeviceCoreSelect() {
@@ -3779,10 +3812,10 @@ function updateSsiDemo(demo) {
   if (!demo) return;
   button.dataset.core = demo.reader_core;
   document.getElementById('ssi-demo-wiring').textContent = demo.encoder_core
-    ? `${demo.reader_core.toUpperCase()} reader → ${demo.encoder_core.toUpperCase()} encoder firmware: clock pin 0, data pin 16.`
-    : `${demo.reader_core.toUpperCase()} reader → encoder model: clock GPO0, data GPI16.`;
+    ? `${demo.reader_core.toUpperCase()} reader → ${demo.encoder_core.toUpperCase()} encoder firmware: ${demo.frame_bits}-bit frame, clock pin 0, data pin 16.`
+    : `${demo.reader_core.toUpperCase()} reader → encoder model: ${demo.frame_bits}-bit frame, clock GPO0, data GPI16.`;
   const value = document.getElementById('ssi-demo-position');
-  syncSsiSetter(value, demo.requested_position, demo.position_max);
+  syncSsiSetter(value, demo.requested_position, Math.min(demo.position_max, Number.MAX_SAFE_INTEGER));
   document.getElementById('ssi-demo-requested').textContent = String(demo.requested_position);
   document.getElementById('ssi-received-position').textContent = demo.position == null
     ? '—' : `${demo.position} (${demo.raw_frame})`;
@@ -3808,7 +3841,7 @@ document.getElementById('ssi-demo-position')?.addEventListener('input', event =>
 document.getElementById('ssi-demo-set-position')?.addEventListener('click', event => {
   const input = document.getElementById('ssi-demo-position');
   const position = input.valueAsNumber;
-  input.setCustomValidity(Number.isInteger(position) && position >= 0 && position <= Number(input.max)
+  input.setCustomValidity(Number.isSafeInteger(position) && position >= 0 && position <= Number(input.max)
     ? '' : `Enter a whole position from 0 to ${input.max}.`);
   if (!input.reportValidity()) return;
   input.dataset.pending = String(position);
@@ -3829,18 +3862,19 @@ function populateScenarios(scenarios) {
 
 for (const button of scenarioButtons) {
   button.addEventListener("click", () => {
+    const config = readSsiFrameConfig();
+    if (!config) return;
     stopRun(); stopSim();
     clearDeviceError();
-    sendAction({ action: "scenario_load", name: button.dataset.scenario });
+    sendAction({ action: "scenario_load", name: button.dataset.scenario, config });
   });
 }
 
 // The server has already reset and set up the simulator; bring every view in line.
 async function applyScenario(scenario) {
-  stopRun(); stopSim();
   const generation = ++scenarioGeneration;
   applyCoreSelection(PruCores.normalize({used:scenario.cores, shown:scenario.cores,
-    focus:scenario.lead, pinned:coreSelection.pinned}, availableCores));
+    focus:scenario.lead, pinned:coreSelection.pinned}, availableCores), true);
   devicePanelCore = scenario.lead;
   syncDeviceCoreSelect();
   for (const core of scenario.cores) sendAction({ action: "get_state", core });
@@ -3862,7 +3896,8 @@ async function applyScenario(scenario) {
   }
   document.querySelector(`[data-workspace-view="${ui.view || "simulator"}"]`)?.click();
   if (ui.view === 'io') document.querySelector('[data-io-tab="devices"]')?.click();
-  // Editor tabs: the lead's firmware last so it is the one on screen.
+  selectEditorCore(scenario.lead);
+  // Keep each core's firmware in its own editor workspace.
   for (const core of [...scenario.cores].reverse()) {
     const path = scenario.firmware[core];
     try {
@@ -3870,7 +3905,7 @@ async function applyScenario(scenario) {
       if (res.ok) {
         const source = await res.text();
         if (generation !== scenarioGeneration) return;
-        openFileAsTab(path, source);
+        openFileAsTab(path, source, core);
       }
     } catch (_) { /* the disassembly panels still show the loaded program */ }
   }
@@ -4013,32 +4048,38 @@ function persistCoreSelection() {
 function initCoresControl() {
   coresDeck = createCoresDeck(document.getElementById('cores-control'), {
     action: action => {
+      if (!executionReady && ['use','use-all'].includes(action.type)) return;
       const next = PruCores.transition(coreSelection, action, availableCores);
       if (action.type === 'use' && JSON.stringify(next.used) === JSON.stringify(coreSelection.used)) {
         coresDeck.shake(action.core);
       }
       applyCoreSelection(next);
+      if (action.type === 'solo' && next.used.includes(action.core)) selectEditorCore(action.core);
     },
     clock: changeGroupClock,
   });
   renderCorePanes(); syncDeviceCoreSelect(); updateCoresControl();
   document.addEventListener('pru-cores-reset', () => {
-    stopRun(); stopSim();
-    applyCoreSelection(PruCores.transition(coreSelection, {type:'reset'}, availableCores));
+    const first = coreSelection.used[0];
+    applyCoreSelection({...coreSelection, shown:[first], focus:first, pinned:false});
   });
 }
 
-function applyCoreSelection(next) {
+function applyCoreSelection(next, fromSession = false) {
   next = PruCores.normalize(next, availableCores);
   const usedChanged = JSON.stringify(next.used) !== JSON.stringify(coreSelection.used);
   const panesChanged = next.focus !== currentCore || JSON.stringify(next.shown) !== JSON.stringify(coreSelection.shown);
-  if (usedChanged) { stopRun(); stopSim(); }
+  if (usedChanged && !fromSession) {
+    stopRun(); stopSim();
+    sendAction({action:'set_execution_cores', cores:next.used});
+  }
   const focusChanged = next.focus !== currentCore;
   coreSelection = next;
   currentCore = next.focus;
   multiCoreMode = next.used.length > 1;
   if (focusChanged) {
     // Inspection must not detach a running device or change execution membership.
+    selectEditorCore(currentCore);
     prevRegisters = mcFreshRegs(); _lastSourceKey = '';
     sourceList.replaceChildren(); initSpadState();
     syncGpioLoopback({});
@@ -4138,7 +4179,6 @@ function paintCoreState(state, fromCache = false) {
 function updateCoreState(state) {
   if (!availableCores.includes(state.core)) return;
   coreStates[state.core] = state;
-  if (coreSelection.used.includes(state.core) && (state.halted || state.at_breakpoint)) { stopRun(); stopSim(); }
   paintCoreState(state, !!state.view_only);
   updateCoresControl();
 }
@@ -4146,13 +4186,12 @@ function updateCoreState(state) {
 function updateCoresControl() {
   if (!coresDeck) return;
   coresDeck.update({selection:coreSelection, available:availableCores, states:coreStates,
-    clocks:clockState, running:running || simRunning || sharedExecution.running, busy:clockChanging || runPending !== null});
+    clocks:clockState, running:running || simRunning || sharedExecution.running, busy:!executionReady || clockChanging || runPending !== null});
   const label = currentCore.toUpperCase();
-  for (const id of ['assembly-core-target','bp-focus-core']) {
-    const el = document.getElementById(id);
-    el.textContent = id === 'assembly-core-target' ? `→ ${label}` : label;
-    el.style.setProperty('--core-color', `var(--core-${currentCore})`);
-  }
+  syncEditorCoreSelect();
+  const focusLabel = document.getElementById('bp-focus-core');
+  focusLabel.textContent = label;
+  focusLabel.style.setProperty('--core-color', `var(--core-${currentCore})`);
   const tele = document.getElementById('telemetry-cores');
   const key = coreSelection.used.join(',');
   if (tele.dataset.cores !== key) {
@@ -4161,7 +4200,10 @@ function updateCoresControl() {
       const button = document.createElement('button'); button.type = 'button'; button.dataset.core = core;
       button.textContent = core.toUpperCase(); button.style.setProperty('--core-color', `var(--core-${core})`);
       button.title = `Inspect ${core.toUpperCase()} and target it in the Assembly Editor`;
-      button.addEventListener('click', () => applyCoreSelection(PruCores.transition(coreSelection,{type:'focus',core},availableCores)));
+      button.addEventListener('click', () => {
+        applyCoreSelection(PruCores.transition(coreSelection,{type:'focus',core},availableCores));
+        selectEditorCore(core);
+      });
       tele.appendChild(button);
     }
   }
@@ -4173,10 +4215,15 @@ function updateCoresControl() {
   setButtonLabel(btnRun, active ? 'Stop' : 'Run');
   btnRun.classList.toggle('btn-reset', active);
   btnRun.classList.toggle('btn-run', !active);
+  const activeSim = simRunning || (sharedExecution.running && sharedExecution.mode === 'sim');
+  setButtonLabel(btnSim, activeSim ? 'Stop SIM' : 'SIM');
+  btnSim.classList.toggle('btn-reset', activeSim);
+  btnSim.classList.toggle('btn-sim', !activeSim);
 }
 
 function requestSelectedStep() {
   if (clockChanging || runPending !== null || !ws || ws.readyState !== WebSocket.OPEN || executionStartPending !== null) return;
+  if (sharedExecution.running && !sharedExecution.owner && !simRunning) sendAction({action:'stop_execution'});
   const cores = executionCores();
   if (cores.length > 1) {
     const run_id = ++runSequence; runPending = run_id;

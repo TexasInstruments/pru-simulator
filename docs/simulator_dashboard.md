@@ -64,8 +64,8 @@ panes and deck rather than replacing their controls on every tick.
 
 Telemetry buttons list used cores and choose the **focus core**. Choosing a
 hidden used core also shows it. If focus is hidden or un-used, focus moves to
-the first shown core. Telemetry, the Assembly Editor target, the shared
-breakpoint row, I/O Pins, SPAD and constant-table inspection follow focus.
+the first shown core. The shared breakpoint row, I/O Pins, SPAD and constant-table inspection follow
+focus. Selecting a core for inspection also selects its Assembly Editor files.
 Double-clicking a source line toggles a breakpoint for that pane's own core;
 Space toggles the focused core's current-PC breakpoint. Arrow Right steps the
 used set. Each multi-core Step or SIM tick saves one shared undo point and
@@ -78,10 +78,11 @@ Step-back cannot restore XFRDMA queues, XFR2VBUS transfers and external VBUS
 memory, or task-ring queues and pending work. Reset and rerun programs that
 use those accelerators instead of using undo to validate their results.
 
-Fresh browser state uses and shows only PRU0. Used, shown, focus and pin state
-are saved as browser preferences beside the panel layout. Saved selections are
-pruned to the target's available cores, and invalid or empty selections recover
-to a nonempty used/shown set. Explicit legacy multicore selections can migrate
+A new backend starts with PRU0 selected for execution. Each connected view
+uses the backend execution-core list. Browser preferences retain shown cores,
+focus and pin state beside the panel layout. Saved selections are pruned to
+the shared execution cores and the target's available cores; invalid or empty
+selections recover to a nonempty used/shown set. Explicit legacy multicore selections can migrate
 to used/shown; an old multicore tile tree alone does not enable cores. The
 first-use CORES hint hides while the deck is open and is dismissed permanently
 by **Got it** or a deck interaction. Reset Layout preserves that dismissal.
@@ -137,6 +138,25 @@ as documented in the AM64x/AM243x TRM. Core and external IEP rates remain
 independently configurable. The configured-rate reset follows these backend
 defaults; it does not force the IEP to match the core.
 
+### Assembly Editor: files and load target
+
+Use **Load into** in the Assembly Editor to choose PRU0, PRU1 or an available
+RTU. Each core has its own open files, unsaved text, active file and project.
+Changing this selector does not enable the core for execution or move the
+Source/Registers inspector. Use **CORES → Use** when that core must run.
+Selecting a core through Telemetry or clicking its name in CORES also opens
+that core's editor. The Load into value always names the target for
+**Load & Assemble** and imported ELF files.
+
+Closing a file with **×** closes it only in the selected core's editor. Other
+cores keep their files and unsaved text, even when the file names are equal.
+Closing an editor file does not unload firmware from any core. Save and load
+operations stay bound to the core and text selected when clicked, even if you
+switch cores while a save or file read is pending. Saved source files on the
+server still share their paths; saving a file changes that disk file, while
+other open editor copies and loaded firmware stay unchanged. Editor drafts
+are local to each browser tab and are not retained after a page reload.
+
 ## I/O & Devices
 
 "I/O & Devices" is only a container: it has no content of its own and opens on
@@ -187,13 +207,20 @@ replace the session's programs, devices and GPIO wires; they keep core clock
 rates and the selected external IEP rate. They reset hardware registers and
 the step-back history. Loading prepares the example; **Run** starts it.
 
-1. Choose **Load reader + model**, then **Run**. PRU0 runs the ordinary SSI
+Choose the frame length, position, encoding and optional error field first.
+For a 20-bit test, select **Custom**, set **Frame length** to **20**,
+**Position** to **703710** (0xABCDE), **Error bits** and **Error value** to **0**,
+and **Encoding** to **Binary**. Then use either setup button below. Both
+configure the reader, encoder and frame timing together; no memory edits are
+needed. Changing a form value takes effect when you press a setup button again.
+
+1. Choose **Set up reader + encoder model**, then **Run**. PRU0 runs the ordinary SSI
    reader against the attached encoder model, using clock GPO0 and data GPI16.
-   **Received position** should become **2748 (0xABC)** and **Received frames**
+   **Received position** should match the chosen position and **Received frames**
    should increase. Enter **1234** in **Next position (decimal)** and press
    **Set next position**. Requested position changes immediately; received
    position changes only when the reader publishes a later frame.
-2. Choose **Load encoder + reader**, then **Run**. The dashboard selects only
+2. Choose **Set up reader + encoder PRU**, then **Run**. The dashboard selects only
    PRU0 and PRU1 as used and shown. PRU0 runs the reader; PRU1 runs encoder
    firmware. The setup wires PRU0 GPO0 to PRU1 GPI0 (clock), and PRU1 GPO16 to
    PRU0 GPI16 (data). The same received values and position setter work here.
@@ -204,13 +231,21 @@ the step-back history. Loading prepares the example; **Run** starts it.
    **I/O & Devices → Devices** for the decoded readouts. **Stop** stops sending
    execution chunks; the frame count should then stay still.
 
-Both examples use the RM08 12-bit binary layout, with positions **0–4095**.
-They carry no error bits, so **Encoder error field** reads **Not present**.
-Firmware errors are reported separately by the status text. A partly written
+The initial form uses a custom 12-bit binary frame at position **2748 (0xABC)**,
+without an error field. A preset fills its frame length, error bit count and
+encoding, and supplies its clock limit and timeout. The frame length includes
+both position bits and error bits. With no error bits, **Encoder error field**
+reads **Not present**. Firmware errors are reported separately by the status text. A partly written
 mailbox displays **Publishing a frame**, with received values hidden until
 publication completes. To start over, load the example again. After changing
 IEP rate, reload the encoder firmware example to recalculate its timeout; a
 hardware reset disables that timer and the status asks for the same reload.
+
+**Advanced: attach a device to your own reader program** keeps the device-only
+workflow. **Attach device only** uses the frame settings above and the advanced
+name and pin fields for the selected core. It does not load or change a reader
+program. Use this only when your program already has matching frame length,
+pins and timing. The two complete setup buttons always use pins 0 and 16.
 
 For a common demonstration rate, choose **250 MHz** in the IEP selector before
 loading. This is our software convention, chosen to match a selected
@@ -349,7 +384,15 @@ Start the dashboard once. Open the **same full URL, including the port**, in
 each browser tab or window. You can show Simulator in both, or Simulator in
 one and I/O & Devices in the other. Page selection, core inspection, layout,
 recording and unsaved editor drafts stay local to each view. Loaded firmware,
-registers, inputs, memory, devices, clocks and execution status are shared.
+registers, inputs, memory, devices, clocks, execution cores and execution status
+are shared. Loading the encoder-and-reader example selects both execution cores
+in every view. It does not open extra source or register panels in other views.
+Reset Layout changes only the local view; it keeps the shared execution cores.
+Core selection stays disabled until the tab connects and receives the shared
+execution state, so a local click cannot be lost while the tab is connecting.
+After a disconnect, the page checks server availability over HTTP before
+opening another WebSocket. While the server is stopped it shows Waiting for
+server; it does not keep starting failed WebSocket handshakes.
 
 One Run or SIM timer advances the backend at a time. All views receive its
 updates. Use Stop in either view to stop that run. Closing its controlling
@@ -362,14 +405,18 @@ To check SSI on two screens:
 
 1. In the first tab, select I/O & Devices and load either SSI example.
 2. In the second tab, select Simulator. The loaded code must appear there.
+   For the encoder-and-reader example, both PRU0 and PRU1 must be selected
+   for execution in the CORES deck.
 3. Enable Signal Graph REC in the second tab. You can turn recording off in
    the first tab; the second tab still receives the firmware's signal samples.
-4. Press Run in the first tab. Check that the second tab's PC, registers and
-   traces advance while the first tab shows received SSI frames and position.
+4. Press Run in either tab. Check that the other tab's PC, registers and
+   traces advance while I/O & Devices shows received SSI frames and position.
 5. Change the SSI position. Both tabs must show the new received position
    after the next frame. Press Stop in either tab; both status badges must stop.
 6. Open a third tab at the same URL. It must show the current code and counter
-   values without resetting or executing another copy of the firmware.
+   values and execution cores without resetting or executing another copy of
+   the firmware. Start SIM in one tab; both SIM buttons must show Stop SIM.
+   Stop from the other tab. Then start Run there and stop from the first tab.
 
 Signal buffers begin when that view starts recording; earlier samples and
 unsaved editor text are not copied between browser tabs. A view too slow to
@@ -381,6 +428,11 @@ signal samples.
 - [#53](https://github.com/TexasInstruments/pru-simulator/issues/53): load the
   same assembly twice. Both replies must keep Source / Disassembly visible.
   Switching between cores with identical firmware must also keep the listing.
+- [#62](https://github.com/TexasInstruments/pru-simulator/issues/62): open the same
+  assembly file in the PRU0 and PRU1 editor workspaces. Edit each copy, then
+  close the PRU0 copy. PRU1 must keep its file and text. Load different programs
+  into each core and repeat; closing a file must leave both loaded programs
+  unchanged. Use Load into to test PRU/RTU targets independently of inspection.
 - [#55](https://github.com/TexasInstruments/pru-simulator/issues/55): in
   I/O & Devices → Devices → UART, use Record. Signal Graph REC must show the
   same recording state. Stop recording and Decode the captured GPO0 trace.

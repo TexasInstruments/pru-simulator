@@ -156,3 +156,77 @@ def test_multicore_demo_with_unequal_core_clocks(sim_config, reader_mhz, encoder
     frames = _frames(sim, 40_000, lambda n: sim.step_paced_many('pru0', ['pru1'], n))
     assert len(frames) >= 3 and set(frames.values()) == {0xABC}
     assert sim.device_bus.faults() == []
+
+
+@pytest.mark.parametrize("name", [SINGLE, MULTI])
+@pytest.mark.parametrize("config, raw, position, error", [
+    ({"preset": None, "resolution": 20, "position_bits": 20,
+      "position": 0xABCDE}, 0xABCDE, 0xABCDE, 0),
+    ({"preset": None, "resolution": 20, "position_bits": 18,
+      "error_bits": 2, "error_value": 2, "encoding": "gray",
+      "position": 0x12345}, 0x6CB9E, 0x12345, 2),
+    ({"preset": None, "resolution": 64, "position_bits": 64,
+      "position": (1 << 53) - 1}, (1 << 53) - 1, (1 << 53) - 1, 0),
+])
+def test_configured_ssi_scenarios_receive_the_requested_frame(name, config, raw, position, error):
+    from pru_io.scenarios import ssi_demo_state
+
+    sim, api = _new()
+    scenario = apply_scenario(sim, name, api, config=config)
+    step = ((lambda count: sim.step_paced_many("pru0", ["pru1"], count))
+            if scenario.multicore else (lambda count: sim.step("pru0", count)))
+    step(40_000)
+
+    mailbox = _mailbox(sim)
+    demo = ssi_demo_state(sim)
+    assert mailbox["frame_count"] >= 2
+    assert mailbox["raw_frame_lo"] | mailbox["raw_frame_hi"] << 32 == raw
+    assert demo["frame_bits"] == config["resolution"]
+    assert demo["requested_position"] == demo["position"] == position
+    assert demo["error"] == error
+    assert demo["raw_frame"] == f"0x{raw:03X}"
+    assert demo["reader_status"] == 0
+    assert sim.device_bus.faults() == []
+
+
+@pytest.mark.parametrize("name", [SINGLE, MULTI])
+@pytest.mark.parametrize("config", [
+    [], {"preset": "missing"}, {"resolution": 65}, {"resolution": True},
+    {"position": -1}, {"position_bits": 11, "position": 4095},
+    {"error_bits": 1, "error_value": 2}, {"encoding": "invalid"},
+    {"clock_pin": 1}, {"data_pin": 8}, {"core_clock_hz": 1},
+    {"position_offset": 1}, {"f_max_hz": 1}, {"unknown": 1},
+])
+def test_invalid_ssi_scenario_config_preserves_the_loaded_setup(name, config):
+    sim, api = _new()
+    apply_scenario(sim, name, api)
+    runtime = sim._scenario_runtime
+    devices = list(sim.device_bus.devices)
+    wires = sim.list_gpio_wires()
+    sim.memory.write(abi.MAILBOX_ADDRESS, bytes([42]) * abi.MAILBOX_SIZE)
+
+    with pytest.raises(ValueError):
+        apply_scenario(sim, name, api, config=config)
+
+    assert sim._scenario_runtime is runtime
+    assert sim.device_bus.devices == devices and sim.list_gpio_wires() == wires
+    assert sim.memory_read(abi.MAILBOX_ADDRESS, abi.MAILBOX_SIZE) == bytes([42]) * abi.MAILBOX_SIZE
+
+
+@pytest.mark.parametrize("name", [SINGLE, MULTI])
+def test_slower_ssi_presets_use_a_safe_reader_clock(sim_config, name):
+    sim, api = _new(sim_config(pru_clock_mhz=333, pru1_clock_mhz=333))
+    scenario = apply_scenario(sim, name, api, config={
+        "preset": "AHS_AHM36_SINGLETURN", "position": 0x1234,
+        "error_value": 1,
+    })
+    step = ((lambda count: sim.step_paced_many("pru0", ["pru1"], count))
+            if scenario.multicore else (lambda count: sim.step("pru0", count)))
+    step(40_000)
+
+    assert _mailbox(sim)["frame_count"] >= 2
+    assert _mailbox(sim)["raw_frame_lo"] == 0x2469
+    assert sim.device_bus.faults() == []
+    config = abi.unpack_config(sim.memory_read(abi.CONFIG_ADDRESS, abi.CONFIG_SIZE))
+    # 42 loops per half-period put the complete period above 333 MHz / 2 MHz.
+    assert config["clock_delay_loops"] >= 42

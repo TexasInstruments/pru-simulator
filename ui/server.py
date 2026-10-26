@@ -61,12 +61,22 @@ _config_lock = asyncio.Lock()
 _connections: set[DashboardConnection] = set()
 _execution_owner = None
 _execution_mode = None
+_execution_cores = ["pru0"]
+
+
+def _selected_execution_cores():
+    global _execution_cores
+    available = [name for name in ("pru0", "pru1", "rtu0", "rtu1") if name in sim.cores]
+    _execution_cores = [name for name in available if name in _execution_cores] or available[:1]
+    return list(_execution_cores)
 
 
 def _execution_state(connection=None):
+    scenario = getattr(sim, "_scenario", None)
     return {"type": "execution", "running": _execution_owner is not None,
             "owner": _execution_owner is not None and _execution_owner is connection,
-            "mode": _execution_mode}
+            "mode": _execution_mode, "cores": _selected_execution_cores(),
+            "scenario": scenario.describe() if scenario else None}
 
 
 def _stop_execution():
@@ -485,7 +495,7 @@ async def put_clock_speed(request: Request):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    global _execution_owner, _execution_mode
+    global _execution_owner, _execution_mode, _execution_cores
     await websocket.accept()
     websocket = DashboardConnection(websocket)
     _connections.add(websocket)
@@ -495,6 +505,22 @@ async def websocket_endpoint(websocket: WebSocket):
             msg = json.loads(data)
             action = msg.get("action")
             core = msg.get("core", "pru0")
+
+            if action == "set_execution_cores":
+                cores = msg.get("cores")
+                if (not isinstance(cores, list) or not cores
+                        or not all(isinstance(name, str) and name in sim.cores for name in cores)
+                        or len(set(cores)) != len(cores)):
+                    await websocket.send_json({"type": "error", "errors": [
+                        f"cores must be a nonempty list of unique cores of {list(sim.cores)}"]})
+                    continue
+                previous = _selected_execution_cores()
+                _execution_cores = cores
+                if _selected_execution_cores() != previous:
+                    _stop_execution()
+                else:
+                    await websocket.send_json(_execution_state(websocket))
+                continue
 
             if action == "start_execution":
                 if msg.get("mode") not in {"run", "sim"}:
@@ -512,6 +538,14 @@ async def websocket_endpoint(websocket: WebSocket):
             if action == "stop_execution":
                 _stop_execution()
                 continue
+
+            if msg.get("managed") and action in {"step", "run", "run_multicore", "step_multicore"}:
+                selected = _selected_execution_cores()
+                core = selected[0]
+                action = ("step" if action in {"step", "step_multicore"} else "run")
+                if len(selected) > 1:
+                    action += "_multicore"
+                msg["partners"] = selected[1:]
 
             if not isinstance(core, str) or core not in sim.cores:
                 await websocket.send_json({"type": "error", "tag": "core",
@@ -580,7 +614,8 @@ async def websocket_endpoint(websocket: WebSocket):
                         at_breakpoint = True
                 except ValueError as ve:
                     await websocket.send_json({"type": "error", "errors": [str(ve)]})
-                await _send_state(websocket, core, at_breakpoint=at_breakpoint)
+                await _send_state(websocket, core, at_breakpoint=at_breakpoint,
+                                  run_id=msg.get("run_id"))
                 # Auto-refresh both memory panels if client has set addresses
                 for tag, addr_attr, len_attr in [
                     ("mem1", "_mem_addr",  "_mem_len"),
@@ -949,7 +984,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 })
             elif action == "scenario_load":
                 try:
-                    scenario = apply_scenario(sim, msg.get("name"), _device_api_for_current_sim())
+                    scenario = apply_scenario(sim, msg.get("name"),
+                                              _device_api_for_current_sim(),
+                                              config=msg.get("config"))
+                    _execution_cores = list(scenario.cores)
                     _clear_history()
                     await websocket.send_json({"type": "scenario_loaded", **scenario.describe()})
                 except (KeyError, TypeError, ValueError) as exc:

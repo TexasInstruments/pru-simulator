@@ -6,7 +6,7 @@ import vm from 'node:vm';
 const app = readFileSync(new URL('../ui/static/app.js', import.meta.url), 'utf8');
 const html = readFileSync(new URL('../ui/static/index.html', import.meta.url), 'utf8');
 class Element {
-  constructor() { this.children = []; this.listeners = {}; this.style = {}; this.dataset = {};
+  constructor() { this.children = []; this.listeners = {}; this.style = { setProperty() {} }; this.dataset = {};
     this.textContent = ''; this.value = ''; this.classes = new Set(); this.attributes = {}; }
   get classList() { return { contains: name => this.classes.has(name), add: name => this.classes.add(name), remove: name => this.classes.delete(name),
     toggle: (name, on) => { if (on) this.classes.add(name); else this.classes.delete(name); } }; }
@@ -30,7 +30,7 @@ function dashboard() {
   const sent = [];
   const context = vm.createContext({ document: { getElementById: get,
     createElement: () => new Element(), querySelectorAll: () => [] }, window: {}, console,
-    currentCore: 'pru0', multiCoreMode: false, activeTab: -1, tabs: [], activeProjectManifest: null,
+    currentCore: 'pru0', multiCoreMode: false, mcLastSourceKey: {},
     asmSource: get('asm-source'), sourceList: get('source-list'), btnLoad: get('btn-load'),
     coreSelect: get('core-select'), devicePanelCore: 'pru0', _lastSourceKey: '',
     availableCores:['pru0','pru1'], coreSelection:{used:['pru0'],shown:['pru0'],focus:'pru0',pinned:false}, coreStates:{},
@@ -49,6 +49,9 @@ function dashboard() {
     while (depth) { if (app[end] === '{') depth++; if (app[end] === '}') depth--; end++; }
     run(app.slice(start, end));
   };
+  run(readFileSync(new URL('../ui/static/cores.js', import.meta.url), 'utf8'));
+  section('// ---- Editor tab state', '// ---- Signal graph state');
+  for (const name of ['saveEditorDraft', 'selectEditorCore', 'syncEditorCoreSelect']) loadFunction(name);
   return { get, sent, context, run, section, loadFunction };
 }
 

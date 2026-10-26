@@ -32,7 +32,7 @@ const context = vm.createContext({ document: { getElementById: get,
   deviceCoreSelectWrap: get('device-core-select-wrap'), sourceList: new Element(),
   stopRun: () => {}, stopSim: () => {}, mcFreshRegs: () => new Array(32).fill('0x00000000'),
   initSpadState: () => {}, updateCtableForCore: () => {}, renderCorePanes: () => {},
-  paintCoreState: () => {}, updateCoresControl: () => {},
+  paintCoreState: () => {}, updateCoresControl: () => {}, selectEditorCore: () => {},
 });
 vm.runInContext(readFileSync(new URL('../ui/static/cores.js', import.meta.url), 'utf8'), context);
 const app = readFileSync(new URL('../ui/static/app.js', import.meta.url), 'utf8');

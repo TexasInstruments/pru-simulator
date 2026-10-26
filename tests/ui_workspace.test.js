@@ -72,7 +72,7 @@ const context = vm.createContext({ document,
 const run = source => vm.runInContext(source, context);
 const html = readFileSync(new URL('../ui/static/index.html', import.meta.url), 'utf8');
 assert.match(html, /id="cores-control"/, 'the shared core deck has a host');
-assert.match(html, /id="assembly-core-target"/, 'Assembly shows the Telemetry focus target');
+assert.match(html, /id="assembly-core-target"/, 'Assembly has a core target selector');
 run(readFileSync(new URL('../ui/static/chrome.js', import.meta.url), 'utf8'));
 run(readFileSync(new URL('../ui/static/layout.js', import.meta.url), 'utf8'));
 context.PanelElement = Element;

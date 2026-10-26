@@ -267,10 +267,11 @@ v0.4.0 — hover over **PRU SIM** in the dashboard header to confirm.
 
 **v0.4.0**
 
-- **Linked browser tabs** — open the same dashboard URL on multiple screens. Code, registers, signals, devices, memory and execution status come from one simulator. Each view keeps its own selected page, core and layout. Run/Stop is shared; opening another tab does not start another run.
+- **Linked browser tabs** — open the same dashboard URL on multiple screens. Code, registers, signals, devices, memory and execution status come from one simulator. The execution-core list and Run/Stop are shared. Each view keeps its own page, inspected core and layout; resetting a layout does not change the execution cores. Opening another tab does not start another run.
 - **Redesigned dashboard** — Simulator and I/O & Devices workspaces, persistent layouts, compact controls, consistent button motion, and dark/high-contrast themes.
 - **CORES deck** — select which cores execute and which are shown. The default uses one shared source/register view; selected cores can be expanded into separate panes. Clock controls show the affected cores without claiming a hardware clock-domain layout.
-- **Device demos and diagnostics** — run SSI model/reader and encoder-emulator demos, inspect TCA9538, UART, sigma-delta and Peripheral Interface state, and review device events and faults. Motor control follows in a separate release.
+- **Per-core assembly editing** — choose the load target in the editor, keep separate files and drafts for each core, and close files without affecting another core's editor or loaded program.
+- **Device demos and diagnostics** — set up SSI model/reader and encoder-emulator demos with matching frame settings and timing, inspect TCA9538, UART, sigma-delta and Peripheral Interface state, and review device events and faults. Motor control follows in a separate release.
 - **UI fixes** — repeated assembly loads (#53), UART recording controls (#55), UART injection-form reset (#56) and minimized-panel restoration (#61). See [dashboard instructions](docs/simulator_dashboard.md).
 
 **v0.3.0**

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Callable
 
 from pru_io import ssi_config_abi as ssi_abi
+from pru_io.device_profiles import create_device
 from pru_io.ssi_runtime import SSIEmulatorRuntime, SSIRuntime, load_reader
 
 _SOURCE = Path(__file__).resolve().parents[1] / "source"
@@ -21,6 +22,8 @@ _EMULATOR_FIRMWARE = "ssi_generic_emulator.asm"
 _PRESET = "RM08_12BIT_4MHZ"
 _POSITION = 0xABC
 _CLOCK_DELAY_LOOPS = 20    # 4 MHz encoder limit holds from 200 to 333 MHz cores
+_SSI_CONFIG_FIELDS = {"preset", "resolution", "position", "position_bits",
+                      "error_bits", "error_value", "encoding"}
 _PIN_MASK = (1 << 20) - 1
 _CLOCK_PIN = 0
 _DATA_PIN = 16
@@ -48,25 +51,23 @@ class Scenario:
                 "ui": dict(self.ui)}
 
 
-def _ssi_single_core(sim, device_api) -> SSIRuntime:
-    reader = SSIRuntime(sim, core="pru0", position=_POSITION, preset=_PRESET)
+def _ssi_single_core(sim, device_api, encoder_options, clock_delay_loops) -> SSIRuntime:
+    reader = SSIRuntime(sim, core="pru0", **encoder_options)
     try:
-        reader.load(clock_delay_loops=_CLOCK_DELAY_LOOPS)
+        reader.load(clock_delay_loops=clock_delay_loops)
     except Exception:
         reader.close()
         raise
     return reader
 
 
-def _ssi_multicore(sim, device_api) -> SSIEmulatorRuntime:
-    emulator = SSIEmulatorRuntime(sim, core="pru1", position=_POSITION,
-                                  preset=_PRESET,
-                                  core_clock_hz=sim.iep.core_clock_hz("pru0"))
+def _ssi_multicore(sim, device_api, encoder_options, clock_delay_loops) -> SSIEmulatorRuntime:
+    emulator = SSIEmulatorRuntime(sim, core="pru1", **encoder_options)
     try:
         emulator.load()
         # Idle past the monoflop time, as SSIRuntime.load does for the single core.
         idle_delay_loops = ceil(emulator.layout.monoflop_cycles / 2) + 8
-        load_reader(sim, "pru0", emulator.layout.resolution, _CLOCK_DELAY_LOOPS,
+        load_reader(sim, "pru0", emulator.layout.resolution, clock_delay_loops,
                     idle_delay_loops)
         sim.add_gpio_wire("pru0", _CLOCK_PIN, "pru1", _CLOCK_PIN)
         sim.add_gpio_wire("pru1", _DATA_PIN, "pru0", _DATA_PIN)
@@ -80,7 +81,7 @@ def _ssi_multicore(sim, device_api) -> SSIEmulatorRuntime:
 SCENARIOS = {scenario.name: scenario for scenario in (
     Scenario(
         "SSI encoder (single core)",
-        "SSI reader on PRU0 reading a simulated 12-bit encoder at position 0xABC.",
+        "SSI reader on PRU0 reading a configurable simulated encoder.",
         ("pru0",), "pru0", False, {"pru0": _READER_FIRMWARE}, _SSI_UI,
         _ssi_single_core),
     Scenario(
@@ -93,13 +94,34 @@ SCENARIOS = {scenario.name: scenario for scenario in (
 )}
 
 
-def apply_scenario(sim, name: str, device_api) -> Scenario:
-    """Reset the simulator and set up scenario ``name``; raises ValueError if unknown."""
+def apply_scenario(sim, name: str, device_api, config: dict | None = None) -> Scenario:
+    """Validate SSI settings, then reset and set up the complete scenario.
+
+    Omitting ``config`` retains the standard 12-bit, 0xABC example. An
+    explicit config uses device-profile defaults, with ``preset=None`` for
+    a custom frame. Pins and core timing belong to the scenario.
+    """
     scenario = SCENARIOS.get(name) if isinstance(name, str) else None
     if scenario is None:
         raise ValueError(f"unknown scenario {name!r}; available: {list(SCENARIOS)}")
     if any(core not in sim.cores for core in scenario.cores):
         raise ValueError(f"scenario requires cores {list(scenario.cores)}")
+    if config is None:
+        config = {"preset": _PRESET, "position": _POSITION}
+    if not isinstance(config, dict):
+        raise ValueError("SSI scenario config must be an object")
+    if any(not isinstance(key, str) for key in config):
+        raise ValueError("SSI scenario config keys must be strings")
+    unsupported = set(config) - _SSI_CONFIG_FIELDS
+    if unsupported:
+        raise ValueError(f"unsupported SSI scenario config fields: {sorted(unsupported)}")
+    encoder_options = {**config, "clock_pin": _CLOCK_PIN, "data_pin": _DATA_PIN,
+                       "core_clock_hz": sim.iep.core_clock_hz(scenario.lead)}
+    layout = create_device("ssi_encoder", encoder_options)
+    # Each half-period runs a two-instruction delay loop, plus firmware
+    # overhead; ignoring that overhead conservatively bounds the clock rate.
+    clock_delay_loops = max(_CLOCK_DELAY_LOOPS,
+                            ceil(layout.core_clock_hz / (4 * layout.f_max_hz)))
     previous = getattr(sim, "_scenario_runtime", None)
     if previous is not None:
         previous.close()
@@ -121,7 +143,8 @@ def apply_scenario(sim, name: str, device_api) -> Scenario:
     sim.memory.write(ssi_abi.CONFIG_ADDRESS, bytes(
         ssi_abi.EMULATOR_ADDRESS + ssi_abi.EMULATOR_SIZE - ssi_abi.CONFIG_ADDRESS))
     # Hardware reset clears IEP registers, keeping the selected external rate.
-    sim._scenario_runtime = scenario.setup(sim, device_api)
+    sim._scenario_runtime = scenario.setup(sim, device_api, encoder_options,
+                                           clock_delay_loops)
     sim._scenario = scenario
     return scenario
 

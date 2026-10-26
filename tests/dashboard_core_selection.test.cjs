@@ -11,7 +11,7 @@ function dashboard(cores) {
     fetch: async () => ({ ok: true, json: async () => cores }),
     availableCores: ['pru0', 'pru1', 'rtu0', 'rtu1'],
     coreSelection: { used: ['rtu1'], shown: ['rtu1'], focus: 'rtu1', pinned: false },
-    currentCore: 'rtu1', stopRun() {}, stopSim() {},
+    currentCore: 'rtu1', stopRun() {}, stopSim() {}, selectEditorCore() {},
   });
   vm.runInContext(selection, context);
   // Rendering is covered by ui_controls; keep the real selection normalization here.

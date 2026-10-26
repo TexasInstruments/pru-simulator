@@ -33,7 +33,7 @@ function dashboard({autoSessions = true} = {}) {
     setButtonLabel: (element, text) => { element.textContent = text; },
     stopSim() {}, setTimeout() {}, showIepClock() {}, showAvailableCores() {},
     updateMCUI() {}, updateSsiDemo() {},
-    updateUI(state) { if (state.halted || state.at_breakpoint) context.stopRun(); },
+    updateUI() {},
     setInterval: fn => { const id = ++nextTimer; timers.set(id, fn); return id; },
     clearInterval: id => timers.delete(id),
   });
@@ -175,7 +175,8 @@ test('Run does not send to a closed socket or duplicate a running timer', () => 
   d.context.startRun();
   d.tick(50);
   assert.equal(d.messages.length, 1);
-  d.state({ run_id: d.messages[0].run_id, halted: true });
+  d.state({ run_id: d.messages[0].run_id, halted: true,
+    execution: {running:false,owner:false,mode:null} });
   d.tick(50);
   assert.equal(d.messages.length, 1, 'HALT must stop every timer');
 });

@@ -23,6 +23,9 @@ def dashboard(tmp_path, monkeypatch):
     monkeypatch.setattr(srv, "config_path", str(cfg))
     monkeypatch.setattr(srv, "sim", fresh)
     monkeypatch.setattr(srv, "_iep_clock_override", None)
+    monkeypatch.setattr(srv, "_execution_cores", ["pru0"])
+    monkeypatch.setattr(srv, "_execution_owner", None)
+    monkeypatch.setattr(srv, "_execution_mode", None)
     srv._clear_history()
     with TestClient(srv.app) as client:
         yield client
@@ -121,7 +124,8 @@ def test_run_status_and_stop_are_shared_and_second_tab_cannot_double_run(dashboa
     assert srv.sim.load("pru0", "add r0, r0, 1\nqba 0") == []
     with dashboard.websocket_connect("/ws") as control, dashboard.websocket_connect("/ws") as view:
         control.send_json({"action": "start_execution", "mode": "run"})
-        assert receive(control) == {"type": "execution", "running": True, "owner": True, "mode": "run"}
+        assert receive(control) == {"type": "execution", "running": True, "owner": True, "mode": "run",
+                                    "cores": ["pru0"], "scenario": None}
         shared = until(view, lambda msg: msg["type"] == "execution")
         assert shared["running"] and not shared["owner"]
         view.send_json({"action": "run", "max_steps": 10, "run_id": 1})
@@ -165,7 +169,8 @@ def test_new_tab_sees_running_status_and_owner_disconnect_stops_it(dashboard):
             until(view, lambda msg: msg["type"] == "execution")
             with dashboard.websocket_connect("/ws") as late:
                 late.send_json({"action": "get_state"})
-                assert state(late)["execution"] == {"type": "execution", "running": True, "owner": False, "mode": "sim"}
+                assert state(late)["execution"] == {"type": "execution", "running": True, "owner": False, "mode": "sim",
+                                                    "cores": ["pru0"], "scenario": None}
         assert until(view, lambda msg: msg["type"] == "execution")["running"] is False
 
 
@@ -228,6 +233,9 @@ def test_manual_multicore_step_respects_the_shared_run_owner_and_stop(dashboard)
     for core in ("pru0", "pru1"):
         assert srv.sim.load(core, "nop\nqba 0") == []
     with dashboard.websocket_connect("/ws") as control, dashboard.websocket_connect("/ws") as view:
+        control.send_json({"action": "set_execution_cores", "cores": ["pru0", "pru1"]})
+        assert receive(control)["cores"] == ["pru0", "pru1"]
+        until(view, lambda msg: msg["type"] == "execution")
         control.send_json({"action": "start_execution", "mode": "sim"})
         assert receive(control)["owner"] is True
         until(view, lambda msg: msg["type"] == "execution")
@@ -348,3 +356,108 @@ def test_slow_controller_cannot_publish_old_capture_after_another_tabs_mutation(
         # Once the controlling socket catches up it must publish only fresh state.
         assert state(control)["instruction_count"] == expected_count
         assert receive(view)["type"] == "state"
+
+
+MULTI_SSI = "SSI multi-core (emulator + reader)"
+
+
+def test_scenario_selection_is_shared_with_observers_and_late_joiners(dashboard):
+    with dashboard.websocket_connect("/ws") as control, dashboard.websocket_connect("/ws") as view:
+        control.send_json({"action": "scenario_load", "name": MULTI_SSI})
+        loaded = until(control, lambda msg: msg["type"] == "scenario_loaded")
+        current = state(control)
+        observed = receive(view)
+        assert observed["type"] == "state", "scenario UI navigation belongs to its requester"
+        for message in (current, observed):
+            assert message["execution"]["cores"] == ["pru0", "pru1"]
+            assert message["execution"]["scenario"] == {key: value for key, value in loaded.items() if key != "type"}
+        counts = {name: pru.counters.instruction_count for name, pru in srv.sim.cores.items()}
+        with dashboard.websocket_connect("/ws") as late:
+            late.send_json({"action": "get_state", "core": "rtu0"})
+            joined = state(late, "rtu0")
+            assert joined["execution"]["cores"] == ["pru0", "pru1"]
+            assert joined["execution"]["scenario"]["name"] == MULTI_SSI
+            assert {name: pru.counters.instruction_count for name, pru in srv.sim.cores.items()} == counts
+
+
+def test_other_tab_runs_loaded_ssi_selection_despite_stale_single_core_request(dashboard):
+    with dashboard.websocket_connect("/ws") as loader, dashboard.websocket_connect("/ws") as runner:
+        loader.send_json({"action": "scenario_load", "name": MULTI_SSI})
+        until(loader, lambda msg: msg["type"] == "scenario_loaded")
+        state(loader)
+        state(loader, "pru1")
+        for name in srv.sim.cores:
+            state(runner, name)
+        runner.send_json({"action": "start_execution", "mode": "run"})
+        started = receive(runner)
+        assert started["running"] and started["owner"]
+        runner.send_json({"action": "run", "managed": True, "core": "pru0",
+                          "partners": [], "max_steps": 20_000, "run_id": 91})
+        completed = until(runner, lambda msg: msg.get("run_id") == 91)
+        assert completed["core"] == "pru1"
+        assert completed["instruction_count"] > 0
+        loader.send_json({"action": "get_state"})
+        observed = until(loader, lambda msg: msg["type"] == "state" and msg["core"] == "pru0"
+                         and msg["io"]["ssi_demo"]["position"] == 2748)
+        assert observed["io"]["ssi_demo"]["frame_count"] >= 2
+        loader.send_json({"action": "stop_execution"})
+        assert until(runner, lambda msg: msg["type"] == "execution" and not msg["running"])["cores"] == ["pru0", "pru1"]
+
+
+def test_execution_selection_is_canonical_shared_and_stops_an_active_run(dashboard):
+    with dashboard.websocket_connect("/ws") as control, dashboard.websocket_connect("/ws") as view:
+        control.send_json({"action": "start_execution", "mode": "sim"})
+        assert receive(control)["running"]
+        until(view, lambda msg: msg["type"] == "execution")
+        view.send_json({"action": "set_execution_cores", "cores": ["rtu1", "pru1", "pru0"]})
+        changed = until(view, lambda msg: msg["type"] == "execution")
+        assert changed["cores"] == ["pru0", "pru1", "rtu1"]
+        assert changed["running"] is False
+        assert changed["scenario"] is None
+        assert until(control, lambda msg: msg["type"] == "execution")["cores"] == changed["cores"]
+
+
+@pytest.mark.parametrize("cores", [None, [], "pru0", ["pru0", "pru0"], ["missing"], [1], [True], {}])
+def test_invalid_execution_selection_preserves_the_running_session(dashboard, cores):
+    with dashboard.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "start_execution", "mode": "run"})
+        assert receive(ws)["running"]
+        ws.send_json({"action": "set_execution_cores", "cores": cores})
+        assert receive(ws)["type"] == "error"
+        ws.send_json({"action": "get_state"})
+        execution = state(ws)["execution"]
+        assert execution["running"] and execution["owner"]
+        assert execution["cores"] == ["pru0"]
+
+
+@pytest.mark.parametrize("selected,expected", [(["pru1", "rtu1"], ["pru1"]), (["rtu1"], ["pru0"])])
+def test_target_replacement_prunes_execution_selection_and_keeps_it_nonempty(dashboard, selected, expected):
+    with dashboard.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "set_execution_cores", "cores": selected})
+        assert receive(ws)["type"] == "execution"
+        text = open(srv.config_path).read().replace("target = AM243x", "target = AM261x")
+        assert dashboard.put("/config", content=text).status_code == 200
+        changed = until(ws, lambda msg: msg["type"] == "execution")
+        assert changed["cores"] == expected
+        assert changed["scenario"] is None
+        ws.send_json({"action": "get_state"})
+        assert state(ws)["execution"]["cores"] == expected
+
+
+@pytest.mark.parametrize("action,selected", [("step", ["pru0", "pru1"]), ("step_multicore", ["pru1"]), ("run_multicore", ["pru1"])])
+def test_managed_chunks_execute_shared_cores_instead_of_request_core_and_partners(dashboard, action, selected):
+    for name in ("pru0", "pru1"):
+        assert srv.sim.load(name, "add r0, r0, 1\nqba 0") == []
+    with dashboard.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "set_execution_cores", "cores": selected})
+        assert receive(ws)["type"] == "execution"
+        ws.send_json({"action": "start_execution", "mode": "sim"})
+        assert receive(ws)["owner"]
+        ws.send_json({"action": action, "managed": True, "core": "rtu1", "partners": ["rtu0"],
+                      "max_steps": 1, "run_id": 41})
+        completed = until(ws, lambda msg: msg.get("run_id") == 41)
+        assert completed["core"] == "pru1"
+        assert srv.sim.cores["pru1"].counters.instruction_count == 1
+        assert srv.sim.cores["pru0"].counters.instruction_count == (1 if "pru0" in selected else 0)
+        assert srv.sim.cores["rtu0"].counters.instruction_count == 0
+        assert srv.sim.cores["rtu1"].counters.instruction_count == 0

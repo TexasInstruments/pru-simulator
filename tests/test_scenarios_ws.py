@@ -205,3 +205,35 @@ def test_demo_hides_torn_mailbox_and_disappears_when_other_firmware_loads(fresh_
         assert demo['position'] is None and demo['frame_count'] is None
         ws.send_json({'action': 'load', 'source': 'HALT'})
         assert 'ssi_demo' not in ws.receive_json()['io']
+
+
+@pytest.mark.parametrize("name, states", [(SINGLE, 1), (MULTI, 2)])
+def test_scenario_load_configures_the_complete_twenty_bit_setup(fresh_sim, name, states):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "scenario_load", "name": name, "config": {
+            "preset": None, "resolution": 20, "position_bits": 20,
+            "position": 0xABCDE, "error_bits": 0, "error_value": 0,
+            "encoding": "binary",
+        }})
+        assert _receive(ws)["type"] == "scenario_loaded"
+        initial = [_receive(ws) for _ in range(states)]
+        assert initial[0]["io"]["ssi_demo"]["frame_bits"] == 20
+        ws.send_json({"action": "run_multicore" if states == 2 else "run",
+                      "core": "pru0", "partners": ["pru1"], "max_steps": 40_000})
+        replies = [_receive(ws) for _ in range(states)]
+        demo = replies[0]["io"]["ssi_demo"]
+        assert demo["position"] == 0xABCDE and demo["frame_count"] >= 2
+        assert all(reply["fault"] is None for reply in replies)
+
+
+def test_invalid_scenario_config_keeps_the_existing_dashboard_setup(fresh_sim):
+    with client.websocket_connect("/ws") as ws:
+        _load(ws, SINGLE, 1)
+        runtime = fresh_sim._scenario_runtime
+        ws.send_json({"action": "scenario_load", "name": MULTI,
+                      "config": {"resolution": 65}})
+        assert _receive(ws)["tag"] == "scenario"
+        state = _receive(ws)
+        assert fresh_sim._scenario_runtime is runtime
+        assert state["io"]["ssi_demo"]["name"] == SINGLE
+        assert state["io"]["ssi_demo"]["frame_bits"] == 12
