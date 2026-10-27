@@ -402,8 +402,9 @@ class Simulator:
         """Load the C0-C31 table for the config's [device] target.
 
         Uses constants_<target>.cfg (e.g. constants_am261x.cfg) and falls back
-        to constants_am243x.cfg when the target has no file of its own.  AM263x
-        has no file of its own and reads constants_am261x.cfg.  A
+        to constants_am243x.cfg when the target has no file of its own.  AM243x,
+        AM261x and AM263x each have a named file (AM263x's carries the AM261x
+        values: same ICSS-M).  A
         root-level config (memory.cfg) finds the file in its config/
         subdirectory; a preset inside config/ finds it alongside.
         """
@@ -411,9 +412,6 @@ class Simulator:
         cfg_dir = os.path.dirname(os.path.abspath(config_path))
         target = self._get_device_config(config_path).get("target", "").strip().lower()
         names = [f"constants_{target}.cfg"] if re.fullmatch(r"[a-z0-9_]+", target) else []
-        if target == "am263x":
-            # Same ICSS-M as AM261x: one table serves both.
-            names.append("constants_am261x.cfg")
         names.append("constants_am243x.cfg")
         candidates = [os.path.join(d, n) for n in names
                       for d in (os.path.join(cfg_dir, "config"), cfg_dir)]

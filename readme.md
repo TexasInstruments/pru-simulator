@@ -176,7 +176,8 @@ value was not measured, and neither were register bits outside the fields above
 (read-back returns what was written). The dashboard constant-table panel reads the
 executing core's live table.
 
-AM263x reads the AM261x (ICSS-M) constant table. C10 and C12-C14 are reserved in
+AM263x has its own `config/constants_am263x.cfg`, with the same values as
+`constants_am261x.cfg` (same ICSS-M; measured on LP-AM261). C10 and C12-C14 are reserved in
 the TRM; on an LP-AM261 the table holds non-zero pointers there (C10 0x2A000 on
 PRU0 / 0x2A200 on PRU1, C12 0x27000, C13 0x2C000, C14 0x24800) and the window
 behind each reads zero. The simulator shows those pointers and maps the reserved
