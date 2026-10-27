@@ -470,6 +470,8 @@ def clock(monkeypatch):
     monkeypatch.setattr(srv, "_last_observer_publish", float("-inf"))
     monkeypatch.setattr(srv, "_observer_publish_skipped", False)
     monkeypatch.setattr(srv, "_skipped_captured_cores", set())
+    monkeypatch.setattr(srv, "_trailing_publish", None)
+    monkeypatch.setattr(srv, "OBSERVER_STATE_INTERVAL_S", 0.05)  # the real timer runs on the real loop clock
     return now
 
 
@@ -572,3 +574,53 @@ def test_step_is_never_throttled(dashboard, clock):
             control.send_json({"action": "step"})
             state(control)
             assert state(view)["pc"] == expected
+
+
+def test_trailing_publish_reaches_observer_when_owner_stops_without_stop(dashboard, clock):
+    with dashboard.websocket_connect("/ws") as control, dashboard.websocket_connect("/ws") as view:
+        start_loop(control, view)
+        run_chunk(control, 1)
+        assert state(view)["instruction_count"] == 10
+        run_chunk(control, 2)  # throttled; the tab then goes silent
+        assert state(view)["instruction_count"] == 20
+
+
+def test_several_throttled_chunks_in_one_window_give_one_trailing_state(dashboard, clock):
+    with dashboard.websocket_connect("/ws") as control, dashboard.websocket_connect("/ws") as view:
+        start_loop(control, view)
+        for run_id in range(1, 5):
+            run_chunk(control, run_id)
+        assert state(view)["instruction_count"] == 10
+        assert state(view)["instruction_count"] == 40
+        control.send_json({"action": "stop_execution"})
+        assert observed_until_stopped(view) == []  # nothing else was queued
+
+
+def test_real_publish_before_the_timer_cancels_the_trailing_publish(dashboard, clock):
+    with dashboard.websocket_connect("/ws") as control, dashboard.websocket_connect("/ws") as view:
+        start_loop(control, view)
+        run_chunk(control, 1)
+        run_chunk(control, 2)
+        assert state(view)["instruction_count"] == 10
+        control.send_json({"action": "stop_execution"})  # flushes at once, before the timer
+        assert state(view)["instruction_count"] == 20
+        assert srv._trailing_publish is None
+        control.send_json({"action": "step"})  # ordering marker after the timer would have fired
+        state(control)
+        marker = state(view)
+        assert marker["instruction_count"] == 21
+
+
+def test_trailing_publish_skips_the_owner_and_keeps_the_captured_flag(dashboard, clock):
+    with dashboard.websocket_connect("/ws") as control, dashboard.websocket_connect("/ws") as view:
+        start_loop(control, view)
+        for run_id in (1, 2):
+            control.send_json({"action": "run", "managed": True, "max_steps": 10,
+                               "run_id": run_id, "capture": True})
+            assert state(control)["run_id"] == run_id
+        assert state(view)["captured"] is True
+        trailing = state(view)
+        assert trailing["instruction_count"] == 20 and trailing["captured"] is True
+        # The owner got only chunk replies: the next state it sees is the reply to chunk 3.
+        reply = run_chunk(control, 3)
+        assert reply["run_id"] == 3 and reply["instruction_count"] == 30

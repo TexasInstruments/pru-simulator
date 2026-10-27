@@ -41,6 +41,7 @@ _monotonic = time.monotonic
 _last_observer_publish = float('-inf')
 _observer_publish_skipped = False
 _skipped_captured_cores = set()  # their samples already went out as capture messages
+_trailing_publish = None  # timer that publishes a withheld state if the owner goes quiet
 
 # Use project root for config resolution
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1255,7 +1256,7 @@ def _publish_updates(origin=None, captured_cores=(), breakpoint_cores=(), thrott
     back to back and each would queue a full state per core per observer.
     Capture samples travel separately (_send_capture) and are never throttled.
     """
-    global _last_observer_publish, _observer_publish_skipped
+    global _last_observer_publish, _observer_publish_skipped, _trailing_publish
     observers = _connections - {origin}
     if not observers:
         return
@@ -1263,7 +1264,13 @@ def _publish_updates(origin=None, captured_cores=(), breakpoint_cores=(), thrott
     if throttle and not breakpoint_cores and now - _last_observer_publish < OBSERVER_STATE_INTERVAL_S:
         _observer_publish_skipped = True
         _skipped_captured_cores.update(captured_cores)
+        if _trailing_publish is None:  # one timer per window, even if the owner then stops sending chunks
+            delay = max(0.0, _last_observer_publish + OBSERVER_STATE_INTERVAL_S - now)
+            _trailing_publish = asyncio.get_running_loop().call_later(delay, _publish_trailing)
         return
+    if _trailing_publish is not None:
+        _trailing_publish.cancel()
+        _trailing_publish = None
     _last_observer_publish = now
     _observer_publish_skipped = False
     _skipped_captured_cores.clear()
@@ -1283,11 +1290,20 @@ def _publish_updates(origin=None, captured_cores=(), breakpoint_cores=(), thrott
                     pass  # a new configuration may remove this tab's memory range
 
 
-def _flush_skipped_publish():
+def _flush_skipped_publish(origin=None):
     """After a run ends, give observers the state a throttled chunk withheld."""
     if _observer_publish_skipped:
         # Keep the captured flag so recording tabs do not append a duplicate sample.
-        _publish_updates(captured_cores=set(_skipped_captured_cores))
+        _publish_updates(origin, captured_cores=set(_skipped_captured_cores))
+
+
+def _publish_trailing():
+    """Timer: the owner stopped sending chunks, so observers get the newest state anyway."""
+    global _trailing_publish
+    _trailing_publish = None
+    # The owner already has this state from its last chunk reply; a second copy
+    # would add a duplicate Signal Graph sample there.
+    _flush_skipped_publish(_execution_owner)
 
 
 def _state(core, at_breakpoint=False, captured=False):
