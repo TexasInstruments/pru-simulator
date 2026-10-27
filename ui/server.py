@@ -11,6 +11,7 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 
 # Ensure project root is on path so simulator can be imported
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -34,6 +35,12 @@ from xfr.xfr_bus import SPAD_BANK0, SPAD_BANK1, SPAD_BANK2, IPC_SPAD
 app = FastAPI(title="PRU Simulator Dashboard")
 
 MAX_BREAKPOINTS = 64
+# While a shared run is active, observers get state/memory at most this often.
+OBSERVER_STATE_INTERVAL_S = 0.1
+_monotonic = time.monotonic
+_last_observer_publish = float('-inf')
+_observer_publish_skipped = False
+_skipped_captured_cores = set()  # their samples already went out as capture messages
 
 # Use project root for config resolution
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -495,7 +502,7 @@ async def put_clock_speed(request: Request):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    global _execution_owner, _execution_mode, _execution_cores
+    global _execution_owner, _execution_mode, _execution_cores, _last_observer_publish
     await websocket.accept()
     websocket = DashboardConnection(websocket)
     _connections.add(websocket)
@@ -518,6 +525,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 _execution_cores = cores
                 if _selected_execution_cores() != previous:
                     _stop_execution()
+                    _flush_skipped_publish()
                 else:
                     await websocket.send_json(_execution_state(websocket))
                 continue
@@ -528,6 +536,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     continue
                 if _execution_owner in (None, websocket):
                     _execution_owner, _execution_mode = websocket, msg["mode"]
+                    _last_observer_publish = float('-inf')  # a new run's first chunk always publishes
                 reply = _execution_state(websocket)
                 if "request_id" in msg:
                     reply["request_id"] = msg["request_id"]
@@ -537,6 +546,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 continue
             if action == "stop_execution":
                 _stop_execution()
+                _flush_skipped_publish()
                 continue
 
             if msg.get("managed") and action in {"step", "run", "run_multicore", "step_multicore"}:
@@ -1058,7 +1068,8 @@ async def websocket_endpoint(websocket: WebSocket):
                             sim.cores[name].halted or sim.cores[name].pc >= len(sim.cores[name].instructions)
                             for name in stepped)):
                         _stop_execution()
-                _publish_updates(websocket, captured_cores, breakpoint_cores)
+                _publish_updates(websocket, captured_cores, breakpoint_cores,
+                                 throttle=action in {"run", "run_multicore"} and _execution_owner is websocket)
     except WebSocketDisconnect:
         return
     except Exception as e:
@@ -1068,6 +1079,7 @@ async def websocket_endpoint(websocket: WebSocket):
         _connections.discard(websocket)
         if _execution_owner is websocket:
             _stop_execution()
+            _flush_skipped_publish()
         await websocket.close()
 
 
@@ -1236,11 +1248,25 @@ async def _send_state(ws, core, at_breakpoint=False, captured=False, run_id=None
     await ws.send_json(state)
 
 
-def _publish_updates(origin=None, captured_cores=(), breakpoint_cores=()):
-    """Publish shared data; request acknowledgements and view choices stay local."""
+def _publish_updates(origin=None, captured_cores=(), breakpoint_cores=(), throttle=False):
+    """Publish shared data; request acknowledgements and view choices stay local.
+
+    throttle is set only for a run chunk that left execution active: those arrive
+    back to back and each would queue a full state per core per observer.
+    Capture samples travel separately (_send_capture) and are never throttled.
+    """
+    global _last_observer_publish, _observer_publish_skipped
     observers = _connections - {origin}
     if not observers:
         return
+    now = _monotonic()
+    if throttle and not breakpoint_cores and now - _last_observer_publish < OBSERVER_STATE_INTERVAL_S:
+        _observer_publish_skipped = True
+        _skipped_captured_cores.update(captured_cores)
+        return
+    _last_observer_publish = now
+    _observer_publish_skipped = False
+    _skipped_captured_cores.clear()
     states = [_state(core, at_breakpoint=core in breakpoint_cores, captured=core in captured_cores)
               for core in sim.cores]
     for connection in observers:
@@ -1255,6 +1281,13 @@ def _publish_updates(origin=None, captured_cores=(), breakpoint_cores=()):
                                         "length": length, "data": list(sim.memory_read(addr, length))})
                 except ValueError:
                     pass  # a new configuration may remove this tab's memory range
+
+
+def _flush_skipped_publish():
+    """After a run ends, give observers the state a throttled chunk withheld."""
+    if _observer_publish_skipped:
+        # Keep the captured flag so recording tabs do not append a duplicate sample.
+        _publish_updates(captured_cores=set(_skipped_captured_cores))
 
 
 def _state(core, at_breakpoint=False, captured=False):

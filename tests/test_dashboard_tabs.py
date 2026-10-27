@@ -461,3 +461,114 @@ def test_managed_chunks_execute_shared_cores_instead_of_request_core_and_partner
         assert srv.sim.cores["pru0"].counters.instruction_count == (1 if "pru0" in selected else 0)
         assert srv.sim.cores["rtu0"].counters.instruction_count == 0
         assert srv.sim.cores["rtu1"].counters.instruction_count == 0
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(srv, "_monotonic", lambda: now[0])
+    monkeypatch.setattr(srv, "_last_observer_publish", float("-inf"))
+    monkeypatch.setattr(srv, "_observer_publish_skipped", False)
+    monkeypatch.setattr(srv, "_skipped_captured_cores", set())
+    return now
+
+
+def start_loop(control, view):
+    assert srv.sim.load("pru0", "add r0, r0, 1\nqba 0") == []
+    control.send_json({"action": "start_execution", "mode": "run"})
+    assert receive(control)["running"] is True
+    until(view, lambda msg: msg["type"] == "execution")
+
+
+def run_chunk(control, run_id):
+    control.send_json({"action": "run", "managed": True, "max_steps": 10, "run_id": run_id})
+    return state(control)
+
+
+def observed_until_stopped(view):
+    """State messages the observer queued up to the execution-stopped message."""
+    states = []
+    while True:
+        message = receive(view)
+        if message["type"] == "execution" and not message["running"]:
+            return states
+        if message["type"] == "state" and message["core"] == "pru0":
+            states.append(message)
+
+
+def test_back_to_back_run_chunks_within_interval_are_throttled_for_observers(dashboard, clock):
+    with dashboard.websocket_connect("/ws") as control, dashboard.websocket_connect("/ws") as view:
+        start_loop(control, view)
+        for run_id in range(1, 6):
+            run_chunk(control, run_id)
+            clock[0] += 0.01
+        assert srv.sim.cores["pru0"].counters.instruction_count == 50
+        control.send_json({"action": "stop_execution"})
+        states = observed_until_stopped(view)
+        assert [s["instruction_count"] for s in states] == [10]
+
+
+def test_run_chunk_after_interval_is_published(dashboard, clock):
+    with dashboard.websocket_connect("/ws") as control, dashboard.websocket_connect("/ws") as view:
+        start_loop(control, view)
+        run_chunk(control, 1)
+        clock[0] += 0.01
+        run_chunk(control, 2)
+        clock[0] += srv.OBSERVER_STATE_INTERVAL_S
+        run_chunk(control, 3)
+        control.send_json({"action": "stop_execution"})
+        states = observed_until_stopped(view)
+        assert [s["instruction_count"] for s in states] == [10, 30]
+
+
+def test_stop_gives_observers_the_final_state_even_if_last_chunk_was_throttled(dashboard, clock):
+    with dashboard.websocket_connect("/ws") as control, dashboard.websocket_connect("/ws") as view:
+        start_loop(control, view)
+        run_chunk(control, 1)
+        run_chunk(control, 2)
+        view.send_json({"action": "stop_execution"})
+        assert until(view, lambda msg: msg["type"] == "execution")["running"] is False
+        assert state(view)["instruction_count"] == 20
+
+
+def test_stop_flush_keeps_the_captured_flag_of_a_throttled_capture_chunk(dashboard, clock):
+    with dashboard.websocket_connect("/ws") as control, dashboard.websocket_connect("/ws") as view:
+        start_loop(control, view)
+        for run_id in (1, 2):
+            control.send_json({"action": "run", "managed": True, "max_steps": 10,
+                               "run_id": run_id, "capture": True})
+            state(control)
+        assert state(view)["captured"] is True
+        view.send_json({"action": "stop_execution"})
+        until(view, lambda msg: msg["type"] == "execution" and not msg["running"])
+        flushed = state(view)
+        assert flushed["instruction_count"] == 20 and flushed["captured"] is True
+
+
+def test_breakpoint_and_halt_are_published_immediately_inside_the_interval(dashboard, clock):
+    with dashboard.websocket_connect("/ws") as control, dashboard.websocket_connect("/ws") as view:
+        assert srv.sim.load("pru0", "nop\nnop\nnop\nhalt") == []
+        srv.sim.cores["pru0"].breakpoints.add(2)
+        control.send_json({"action": "start_execution", "mode": "run"})
+        receive(control)
+        until(view, lambda msg: msg["type"] == "execution")
+        srv._last_observer_publish = clock[0]  # a publish just happened
+        control.send_json({"action": "run", "managed": True, "max_steps": 1000, "run_id": 1})
+        hit = state(view)
+        assert hit["pc"] == 2 and hit["at_breakpoint"] is True
+        srv.sim.cores["pru0"].breakpoints.clear()
+        control.send_json({"action": "start_execution", "mode": "run"})
+        until(view, lambda msg: msg["type"] == "execution" and msg["running"])
+        srv._last_observer_publish = clock[0]
+        control.send_json({"action": "run", "managed": True, "max_steps": 1000, "run_id": 2})
+        halted = until(view, lambda msg: msg["type"] == "state" and msg["core"] == "pru0" and msg["halted"])
+        assert halted["pc"] == srv.sim.cores["pru0"].pc
+
+
+def test_step_is_never_throttled(dashboard, clock):
+    assert srv.sim.load("pru0", "nop\nnop\nnop\nhalt") == []
+    with dashboard.websocket_connect("/ws") as control, dashboard.websocket_connect("/ws") as view:
+        for expected in (1, 2, 3):
+            control.send_json({"action": "step"})
+            state(control)
+            assert state(view)["pc"] == expected
