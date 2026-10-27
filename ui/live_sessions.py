@@ -55,7 +55,7 @@ class DashboardConnection:
                 if done is not None and not done.done():
                     done.set_result(None)
                 done = None
-        except (TimeoutError, WebSocketDisconnect, RuntimeError):
+        except (asyncio.TimeoutError, TimeoutError, WebSocketDisconnect, RuntimeError):
             with suppress(WebSocketDisconnect, RuntimeError):
                 await self.websocket.close(code=1013)
         finally:
