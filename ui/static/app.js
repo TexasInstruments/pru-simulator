@@ -415,6 +415,7 @@ function connect() {
         window.updateWorkspaceEvents?.(msg, multiCoreMode ? executionCores() : [currentCore]);
         if (msg.clocks) { clockState = msg.clocks; }
         updateCoreState(msg);
+        window.PruFbPanel?.onState();
       } else if (msg.type === "execution") {
         receiveExecution(msg);
       } else if (msg.type === "capture") {
@@ -422,6 +423,7 @@ function connect() {
         drawGraph();
       } else if (msg.type === "memory") {
         if (msg.tag === "mem2") renderMemory2(msg);
+        else if (msg.tag === "fb-hdr" || msg.tag === "fb-px") window.PruFbPanel?.onMemory(msg);
         else if (msg.tag && msg.tag.startsWith("graph-")) { graphHandleMemory(msg); drawGraph(); }
         else renderMemory(msg);
       } else if (msg.type === "uart_inject_ok") {
@@ -451,6 +453,7 @@ function connect() {
           stopRun(); stopSim();
         }
         if (msg.tag && msg.tag.startsWith("graph-")) graphMarkChannelError(msg.tag);
+        else if (msg.tag === "fb-hdr" || msg.tag === "fb-px") window.PruFbPanel?.onError(msg);
         else if (msg.tag === "gpio") {
           const error = document.getElementById('gpio-drive-error');
           error.textContent = msg.errors.join('; ');

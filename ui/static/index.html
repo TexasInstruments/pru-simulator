@@ -1601,6 +1601,35 @@
       }
       button:active:not(:disabled) { transform: none; }
     }
+
+    /* ---- Framebuffer panel ------------------------------------------------------------- */
+    #framebuffer-panel .panel-body { display: flex; flex-direction: column; gap: 6px; overflow: hidden; }
+    .fb-row { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px; flex-shrink: 0; }
+    .fb-row label { font-size: 11px; color: var(--text-dim); }
+    .fb-row input[type="text"], .fb-row input[type="number"] {
+      padding: 2px 6px; border-radius: 4px; font-family: var(--font-mono); width: 70px;
+    }
+    .fb-row input[type="text"]#fb-base { width: 90px; }
+    .fb-row input[type="checkbox"] { width: auto; vertical-align: middle; }
+    .fb-row input[type="color"] { width: 28px; height: 22px; padding: 0; border: 1px solid var(--border-strong); background: none; }
+    .fb-row select { font-size: 11px; padding: 2px 4px; }
+    .fb-row button { min-height: 24px; padding: 3px 8px; font-size: 12px; }
+    #fb-manual[hidden] { display: none; }
+    #fb-status { font-size: 11px; font-family: var(--font-mono); color: var(--text-dim); flex-shrink: 0; }
+    #fb-status.fb-error { color: var(--halted); }
+    #fb-canvas-wrap {
+      flex: 1; min-height: 40px; display: flex; align-items: center; justify-content: center;
+      background: var(--panel-inset); border: 1px solid var(--border); border-radius: 4px; overflow: hidden;
+    }
+    #fb-canvas, #fb-big-canvas { image-rendering: pixelated; display: block; }
+    #fb-big {
+      position: fixed; inset: 0; z-index: 2000; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 10px; padding: 16px;
+      background: rgba(0, 0, 0, 0.92);
+    }
+    #fb-big[hidden] { display: none; }
+    #fb-big-bar { display: flex; align-items: center; gap: 14px; color: var(--text); font-family: var(--font-mono); font-size: 14px; }
+    #fb-big-stage { flex: 1; width: 100%; min-height: 0; display: flex; align-items: center; justify-content: center; }
   </style>
   <link rel="stylesheet" href="/static/cores.css">
 </head>
@@ -1917,12 +1946,45 @@ Example:
         </div>
       </div>
 
+
+      <!-- Framebuffer panel (draws emulated memory as a picture) -->
+      <div class="panel" id="framebuffer-panel">
+        <div class="panel-title" data-panel-id="framebuffer">Framebuffer</div>
+        <div class="panel-body">
+          <div class="fb-row">
+            <label title="Read the 32-byte FBUF header at the base address and follow it. Turn off to draw with the manual settings."><input type="checkbox" id="fb-auto" checked /> Auto (header)</label>
+            <label title="Global bus address (same as the Memory panels). PRU1 sees DRAM1 at its local 0x0, which is global 0x2000. Shared RAM is 0x10000 and up.">Base: <input type="text" id="fb-base" value="0x00011000" spellcheck="false" /></label>
+            <label title="Draw a grid between pixels when each pixel is at least 4 screen pixels wide"><input type="checkbox" id="fb-grid" /> Grid</label>
+            <button id="fb-bigview" type="button" title="Show the picture full screen (Esc to close)">Big view</button>
+          </div>
+          <div class="fb-row" id="fb-manual" hidden>
+            <select id="fb-preset" title="Manual preset"></select>
+            <label>W <input type="number" id="fb-width" min="1" max="512" value="32" /></label>
+            <label>H <input type="number" id="fb-height" min="1" max="512" value="32" /></label>
+            <select id="fb-format" title="Pixel format">
+              <option value="1">MONO1</option><option value="8">INDEX8</option><option value="16">RGB565</option>
+            </select>
+            <label title="Bytes per row. Empty or 0 = default (row rounded up to 4 bytes)">Stride <input type="text" id="fb-stride" value="" placeholder="auto" /></label>
+            <label title="MONO1 foreground (1 bits)">FG <input type="color" id="fb-fg" /></label>
+            <label title="MONO1 background (0 bits)">BG <input type="color" id="fb-bg" /></label>
+          </div>
+          <div id="fb-status" role="status">Framebuffer idle</div>
+          <div id="fb-canvas-wrap"><canvas id="fb-canvas" width="1" height="1"></canvas></div>
+        </div>
+      </div>
+
     </div><!-- /#panel-pool -->
 
     <!-- Tile root: layout engine renders here -->
     <div id="tile-root"></div>
 
   </div><!-- /#main -->
+
+  <!-- Framebuffer big view (projector) -->
+  <div id="fb-big" role="dialog" aria-modal="true" aria-label="Framebuffer big view" hidden>
+    <div id="fb-big-bar"><span id="fb-big-status"></span><button id="fb-big-close" type="button">Close</button></div>
+    <div id="fb-big-stage"><canvas id="fb-big-canvas" width="1" height="1"></canvas></div>
+  </div>
 
   <!-- Config modal -->
   <div id="config-modal" role="dialog" aria-modal="true" aria-labelledby="config-modal-title">
@@ -2349,8 +2411,10 @@ Example:
   <script src="/static/chrome.js"></script>
   <script src="/static/layout.js"></script>
   <script src="/static/cores.js"></script>
+  <script src="/static/framebuffer.js"></script>
   <script src="/static/cores-deck.js"></script>
   <script src="/static/app.js?v=20261015-cores"></script>
+  <script src="/static/framebuffer-panel.js"></script>
   <script src="/static/workspace.js"></script>
 </body>
 </html>

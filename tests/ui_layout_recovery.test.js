@@ -105,7 +105,7 @@ test('abandoned multicore layouts do not replace the shared layout', () => {
     'pru-panel-visibility-mc': JSON.stringify(['source']) });
   assert.equal(d.run('JSON.stringify(currentTree) === JSON.stringify(SC_DEFAULT_TREE)'), true);
   assert.equal(d.get('tile-root').contains(d.get('source-panel')), true);
-  assert.equal(d.run('getLeafIds(currentTree).length'), 8);
+  assert.equal(d.run('getLeafIds(currentTree).length'), 9);
 });
 
 // #61: the panel itself survives rebuilding its tile, including its collapsed class.
@@ -126,8 +126,26 @@ test('Reset Layout expands minimized and hidden panels and resets core selection
     assert.equal(panel.classList.contains('panel-collapsed'), false);
     assert.equal(button.textContent, '−');
     assert.notEqual(panel.closest('.tile-child').style.flex, '0 0 26px');
-    assert.equal(d.run('hiddenPanelIds.size'), 0);
+    assert.deepEqual(Array.from(d.run('hiddenPanelIds')), ['framebuffer'],
+      'Reset Layout hides only the opt-in Framebuffer panel');
     // The first click after Reset must minimize, rather than expand a stale state.
     d.run("togglePanelCollapse(PANEL_REGISTRY.memory1)");
     assert.equal(panel.classList.contains('panel-collapsed'), true);
+});
+
+test('a layout saved before the Framebuffer panel keeps its arrangement, panel starts hidden', () => {
+  const legacy = dashboard(null).run("defaultTree('sc')");
+  legacy.children[2].children.pop();           // drop framebuffer, as an old save would
+  legacy.children[2].sizes.pop();
+  legacy.children.reverse();
+  legacy.sizes.reverse();
+  const d = dashboard(legacy, { 'pru-panel-visibility-sc': JSON.stringify(['memory2']) });
+  const tree = JSON.parse(d.run('JSON.stringify(currentTree)'));
+  assert.equal(tree.children.length, 4, 'only a trailing leaf is added');
+  assert.equal(JSON.stringify(tree.children.slice(0, 3)), JSON.stringify(legacy.children), 'the user layout is untouched');
+  assert.equal(JSON.parse(d.storage.get('pru-layout-sc')).children.length, 4);
+  assert.deepEqual(Array.from(d.run('hiddenPanelIds')).sort(), ['framebuffer', 'memory2']);
+  assert.equal(d.get('tile-root').contains(d.get('framebuffer-panel')), false);
+  d.run("setPanelsVisibility(['framebuffer'], true)");
+  assert.equal(d.get('tile-root').contains(d.get('framebuffer-panel')), true);
 });

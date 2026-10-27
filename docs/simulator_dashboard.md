@@ -87,6 +87,36 @@ to used/shown; an old multicore tile tree alone does not enable cores. The
 first-use CORES hint hides while the deck is open and is dismissed permanently
 by **Got it** or a deck interaction. Reset Layout preserves that dismissal.
 
+### Framebuffer panel
+
+The **Framebuffer** panel draws a region of emulated memory as a picture, so
+firmware can "paint" a small screen in RAM and you can watch it. It is an
+ordinary memory read: nothing special happens on the bus. The panel is hidden
+by default; turn it on with the **Framebuffer** button in the panel toggle bar
+(Reset Layout hides it again).
+
+- **Auto (header)** is on by default. The panel reads a 32-byte `FBUF` header
+  at the base address (default `0x11000`, Shared RAM) and takes the size,
+  format, stride and colors from it. It only re-reads the pixels when the
+  header's frame counter changes, so a finished frame is drawn once.
+  The status line shows e.g. `FBUF 32x32 RGB565 - frame 12`.
+- **Manual**: with Auto off, or when no header is found at the base address
+  (the status line says `No FBUF header at 0x11000 - manual 32x32 MONO1`), the
+  manual controls appear: preset (Tiny, Mono, Wide, Indexed, Color, Large),
+  width, height, format (MONO1, INDEX8, RGB565), stride and the two MONO1
+  colors. Pixels start at the base address and are re-read about every 100 ms.
+- **Base** is a global bus address, the same as in the Memory panels. PRU1 sees
+  DRAM1 at its local `0x0`, which is global `0x2000`.
+- **Grid** draws pixel borders when each pixel is at least 4 screen pixels wide.
+  The picture is scaled by whole numbers only, so pixels stay crisp.
+- **Big view** opens the picture full screen (for a projector) with the same
+  live updates. Close it with Esc, the Close button, or a click outside the
+  picture.
+
+Memory is only read while the panel (or big view) is visible. Settings are kept
+per browser tab in `localStorage`. The byte-level format is in
+[framebuffer.md](framebuffer.md).
+
 ### Core frequencies
 
 One frequency applies to PRU0 + RTU0 (`pru_clock_mhz`). The other applies

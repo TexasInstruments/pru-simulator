@@ -242,7 +242,8 @@ run("setPanelsVisibility(['source'], false)");
 buttons[1].listeners.click();
 buttons[0].listeners.click();
 assert.equal(run("getPanelVisibility('source')"), false, 'visibility survives workspace navigation');
-assert.deepEqual(JSON.parse(storage.get('pru-panel-visibility-sc')), ['source']);
+assert.deepEqual(JSON.parse(storage.get('pru-panel-visibility-sc')).sort(), ['framebuffer', 'source'],
+  'the Framebuffer viewer starts hidden');
 
 context.window.updateWorkspaceEvents({ core: 'pru0', io: { device_bus: {
   devices: [{ name: '<encoder>', core: 'pru1' }],
@@ -265,11 +266,11 @@ assert.match(elements.get('device-event-log').textContent, /No device events/);
 // Default Simulator layout: the I/O Pins tile is tall enough for R30 and R31.
 assert.equal(run("SC_DEFAULT_TREE.children[1].sizes.join(',')"), '30,45,25');
 
-// All cores share one source/register pair and the same eight tiling panels.
+// All cores share one source/register pair and the same nine tiling panels.
 const leaves = Array.from(run("getLeafIds(defaultTree('sc'))"));
-assert.equal(new Set(leaves).size, 8, 'no tiling panel is duplicated');
+assert.equal(new Set(leaves).size, 9, 'no tiling panel is duplicated');
 assert.deepEqual(leaves.slice().sort(),
-  ['source', 'registers', 'editor', 'io', 'signal-graph', 'mem-graph', 'memory1', 'memory2'].sort());
+  ['source', 'registers', 'editor', 'io', 'signal-graph', 'mem-graph', 'memory1', 'memory2', 'framebuffer'].sort());
 
 // Resize correctly persists the pair when a hidden sibling sits between them.
 run(`hiddenPanelIds = new Set(['hidden']);

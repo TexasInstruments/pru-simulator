@@ -714,13 +714,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     websocket._mem_len = length
                 try:
                     data = sim.memory_read(addr, length)
-                    await websocket.send_json({
-                        "type": "memory",
-                        "tag": tag,
-                        "addr": addr,
-                        "length": length,
-                        "data": list(data),
-                    })
+                    reply = {"type": "memory", "tag": tag, "addr": addr, "length": length}
+                    if msg.get("encoding") == "base64":
+                        reply["data_b64"] = base64.b64encode(bytes(data)).decode("ascii")
+                    else:
+                        reply["data"] = list(data)
+                    await websocket.send_json(reply)
                 except ValueError as ve:
                     await websocket.send_json({"type": "error", "errors": [str(ve)], "tag": tag})
             elif action == "write_memory":

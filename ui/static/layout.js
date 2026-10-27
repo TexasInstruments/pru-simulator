@@ -25,11 +25,12 @@ const SC_DEFAULT_TREE = {
       ]
     },
     {
-      type: 'split', dir: 'v', sizes: [40, 30, 30],
+      type: 'split', dir: 'v', sizes: [40, 30, 30, 30],
       children: [
         { type: 'leaf', panelId: 'mem-graph' },
         { type: 'leaf', panelId: 'memory1' },
         { type: 'leaf', panelId: 'memory2' },
+        { type: 'leaf', panelId: 'framebuffer' },
       ]
     }
   ]
@@ -42,6 +43,9 @@ let panelPool   = null;
 let hiddenPanelIds = new Set();
 const modePanelIds = { sc: [] };
 const PANEL_VISIBILITY_KEY = "pru-panel-visibility-";
+// Panels in the default tree that start hidden (and are hidden again by Reset
+// Layout). The Framebuffer viewer is opt-in so existing screens do not change.
+const DEFAULT_HIDDEN_PANELS = ['framebuffer'];
 
 // ---- localStorage helpers --------------------------------------------------
 
@@ -55,14 +59,36 @@ function loadLayout(mode) {
   try {
     const raw = localStorage.getItem(`pru-layout-${mode}`);
     if (!raw) return null;
-    const tree = JSON.parse(raw);
+    let tree = JSON.parse(raw);
     if (validLayout(mode, tree)) return tree;
+    // A layout saved before a panel existed: add the new leaf instead of
+    // throwing the user's arrangement away.
+    const grown = withNewPanels(mode, tree);
+    if (grown && validLayout(mode, grown)) { saveLayout(mode, grown); return grown; }
     const fallback = defaultTree(mode);
     saveLayout(mode, fallback);
     return fallback;
   } catch (e) {
     return null;
   }
+}
+
+// Panels added after the first layout version. A saved tree without them gets
+// each appended as a trailing leaf of the outer split; the panels start hidden
+// (DEFAULT_HIDDEN_PANELS), so nothing visible moves.
+const ADDED_PANELS = ['framebuffer'];
+function withNewPanels(mode, tree) {
+  let have;
+  try { have = new Set(getLeafIds(tree)); } catch (e) { return null; }
+  const missing = ADDED_PANELS.filter(id => !have.has(id));
+  if (!missing.length || !tree || tree.type !== 'split' || !Array.isArray(tree.children) ||
+      !Array.isArray(tree.sizes)) return null;
+  const grown = JSON.parse(JSON.stringify(tree));
+  for (const id of missing) {
+    grown.children.push({ type: 'leaf', panelId: id });
+    grown.sizes.push(25);
+  }
+  return grown;
 }
 
 function validLayout(mode, tree) {
@@ -507,6 +533,7 @@ function initLayout(mode) {
     io:             document.getElementById('io-panel'),
     'signal-graph': document.getElementById('signal-graph-panel'),
     'mem-graph':    document.getElementById('mem-graph-panel'),
+    framebuffer:    document.getElementById('framebuffer-panel'),
   };
   Object.assign(PANEL_REGISTRY, SC_PANELS);
   modePanelIds.sc = getLeafIds(defaultTree('sc'));
@@ -524,6 +551,18 @@ function initLayout(mode) {
 
   currentTree = loadLayout(currentMode) || defaultTree(currentMode);
   hiddenPanelIds = loadHiddenPanels(currentMode);
+  // Panels introduced later start hidden once, for users whose saved
+  // visibility predates them.
+  try {
+    for (const id of DEFAULT_HIDDEN_PANELS) {
+      const flag = `pru-panel-introduced-${id}`;
+      if (!localStorage.getItem(flag)) {
+        hiddenPanelIds.add(id);
+        localStorage.setItem(flag, '1');
+        saveHiddenPanels(currentMode);
+      }
+    }
+  } catch (e) { /* storage unavailable — defaults only */ }
   sanitizeHiddenPanels(currentMode);
   render(currentTree);
   notifyLayoutChanged();
@@ -540,7 +579,7 @@ function resetLayout() {
   }
   localStorage.removeItem(`pru-layout-${currentMode}`);
   currentTree = defaultTree(currentMode);
-  hiddenPanelIds.clear();
+  hiddenPanelIds = new Set(DEFAULT_HIDDEN_PANELS);
   saveHiddenPanels(currentMode);
   render(currentTree);
   notifyLayoutChanged();

@@ -734,3 +734,40 @@ def test_state_reports_each_cores_actual_gpio_loopback_mask(fresh_sim):
     assert sink.payload["io"]["gpio_loopback_mask"] == 0xF
     asyncio.run(srv._send_state(sink, "pru1"))
     assert sink.payload["io"]["gpio_loopback_mask"] == 0
+
+
+# ---- read_memory encoding ------------------------------------------------
+
+def test_read_memory_base64_encoding(fresh_sim):
+    import base64
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "reset", "core": "pru0"})
+        ws.receive_json()
+        ws.send_json({"action": "write_memory", "addr": 0x11000, "data": [0x46, 0x42, 0x55, 0x46]})
+        assert ws.receive_json()["type"] == "memory_written"
+        ws.send_json({"action": "read_memory", "addr": 0x11000, "length": 8,
+                      "tag": "fb-hdr", "encoding": "base64"})
+        reply = ws.receive_json()
+        assert reply["type"] == "memory" and reply["tag"] == "fb-hdr"
+        assert "data" not in reply
+        assert base64.b64decode(reply["data_b64"]) == bytes([0x46, 0x42, 0x55, 0x46, 0, 0, 0, 0])
+
+
+def test_read_memory_default_encoding_is_int_list(fresh_sim):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "reset", "core": "pru0"})
+        ws.receive_json()
+        ws.send_json({"action": "read_memory", "addr": 0x11000, "length": 4, "tag": "mem2"})
+        reply = ws.receive_json()
+        assert reply["data"] == [0, 0, 0, 0]
+        assert "data_b64" not in reply
+
+
+def test_read_memory_base64_unmapped_reports_error(fresh_sim):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "reset", "core": "pru0"})
+        ws.receive_json()
+        ws.send_json({"action": "read_memory", "addr": 0xFFFFFF00, "length": 8,
+                      "tag": "fb-px", "encoding": "base64"})
+        reply = ws.receive_json()
+        assert reply["type"] == "error" and reply["tag"] == "fb-px"

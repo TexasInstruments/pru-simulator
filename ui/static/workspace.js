@@ -120,7 +120,8 @@
     source: ['\u25a4', 'Source / Disassembly'], registers: ['\u25a6', 'Registers'],
     io: ['\u2194', 'I/O Pins'], 'signal-graph': ['\u223f', 'Signal Graph'],
     'mem-graph': ['\u2336', 'Memory Graph'], memory1: ['M1', 'Memory 1'],
-    memory2: ['M2', 'Memory 2'], editor: ['\u270e', 'Assembly Editor'],
+    memory2: ['M2', 'Memory 2'], framebuffer: ['\u25a3', 'Framebuffer'],
+    editor: ['\u270e', 'Assembly Editor'],
   };
   function panelToggleInfo(id) {
     return PANEL_TOGGLES[id];
