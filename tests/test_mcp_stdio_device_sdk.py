@@ -144,6 +144,8 @@ async def _exercise_valid_firmware(tmp_path):
                            config={"data_pin": 16, "position": 0xABC})
                 await configure(ssi.CONFIG_ADDRESS, ssi.pack_config(
                     frame_bits=12, clock_delay_loops=20, idle_delay_loops=2571))
+                # The reader reaches Shared RAM through C28: program PRU1 CTPPR0 (0x24028), as the host does.
+                await configure(0x24028, (0x100).to_bytes(4, "little"))
                 assert (await call("pru_load", core="pru1", include_paths=["source"],
                     source=(ROOT / "source/ssi_generic_reader/ssi_generic_reader.asm").read_text()))["success"]
                 assert not (await call("pru_step", core="pru1", count=14000))["halted"]

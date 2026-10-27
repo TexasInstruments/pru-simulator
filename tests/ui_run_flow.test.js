@@ -32,7 +32,7 @@ function dashboard({autoSessions = true} = {}) {
     signalGraph: { recording: false }, mcShown: () => ['pru0', 'rtu0', 'pru1'],
     setButtonLabel: (element, text) => { element.textContent = text; },
     stopSim() {}, setTimeout() {}, showIepClock() {}, showAvailableCores() {},
-    updateMCUI() {}, updateSsiDemo() {},
+    updateMCUI() {}, updateSsiDemo() {}, maybeRefreshCtable() {},
     updateUI() {},
     setInterval: fn => { const id = ++nextTimer; timers.set(id, fn); return id; },
     clearInterval: id => timers.delete(id),

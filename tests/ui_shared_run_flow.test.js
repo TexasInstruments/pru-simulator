@@ -42,7 +42,7 @@ function dashboard() {
     multiCoreMode:false, signalGraph:{recording:false},
     executionCores:() => context.coreSelection.used,
     setButtonLabel:(button,text) => { button.textContent = text; },
-    paintCoreState() {}, showAvailableCores() {}, showIepClock() {}, updateSsiDemo() {}, syncEditorCoreSelect() {},
+    paintCoreState() {}, showAvailableCores() {}, showIepClock() {}, updateSsiDemo() {}, maybeRefreshCtable() {}, syncEditorCoreSelect() {},
     setTimeout() {},
     setInterval:fn => { timers.set(++timerId,fn); return timerId; },
     clearInterval:id => timers.delete(id),

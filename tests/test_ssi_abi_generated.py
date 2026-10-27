@@ -2,6 +2,7 @@ import pytest
 
 from tools.gen_ssi_abi import ROOT, generate_files, load_schema
 from pru_io import ssi_config_abi as abi
+from mem.constant_table import CTPPR0
 from simulator import Simulator
 
 
@@ -13,6 +14,7 @@ def test_generated_ssi_abi_files_match_versioned_schema():
 def test_reader_loaded_from_its_own_directory_uses_the_current_abi():
     reader = ROOT / "source" / "ssi_generic_reader" / "ssi_generic_reader.asm"
     sim = Simulator(str(ROOT / "memory.cfg"))
+    sim.ctrl_write("pru0", CTPPR0, 0x100)  # C28 -> Shared RAM, as the host runtime does
     assert sim.load("pru0", reader.read_text(), include_paths=[str(reader.parent)]) == []
     sim.memory.write(abi.CONFIG_ADDRESS, abi.pack_config(12, 1, 1))
     sim.step("pru0", 100)

@@ -6,6 +6,7 @@ import struct
 
 import pytest
 
+from mem.constant_table import CTPPR0
 from pru_io import ssi_config_abi as abi
 from pru_io.ssi_runtime import SSIEmulatorRuntime, SSIRuntime
 from simulator import Simulator
@@ -129,7 +130,8 @@ def test_documented_300mhz_run_uses_copied_config_and_constants_sidecar(tmp_path
 
     sim = Simulator(str(config))
     assert sim.iep.core_clock_hz("pru1") == Fraction(300_000_000)
-    assert sim.constant_table.resolve(28) == 0x00010000
+    # C28 is 0 until CTPPR0 is programmed; the sidecar no longer lists it.
+    assert sim.constant_table.resolve(28) == 0
 
     with SSIRuntime(sim, position=0xABC, resolution=12,
                     f_max_hz=4_000_000, monoflop_us=20.5) as runtime:
@@ -211,6 +213,7 @@ def test_reader_halts_with_status_one_on_invalid_config(config):
     sim = Simulator("memory.cfg")
     runtime = SSIRuntime(sim)
     sim.memory.write(abi.CONFIG_ADDRESS, config)
+    sim.ctrl_write("pru1", CTPPR0, 0x100)  # reader reaches Shared RAM via C28
     firmware = Path("source/ssi_generic_reader/ssi_generic_reader.asm")
     assert sim.load("pru1", firmware.read_text(encoding="utf-8"),
                     include_paths=["source"]) == []

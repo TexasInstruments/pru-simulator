@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import base64
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from simulator import Simulator
@@ -197,6 +197,7 @@ def _snapshot_core(c) -> dict:
             if callable(getattr(accelerator, "snapshot", None))
         },
         "unsupported_xfr": copy.deepcopy(c.unsupported_xfr),
+        "ct_ctrl": c.constant_table.snapshot(),
     }
 
 
@@ -242,6 +243,8 @@ def _restore_core(c, snap: dict) -> None:
         if accelerator is not None:
             accelerator.restore(accelerator_snap)
     c.unsupported_xfr = copy.deepcopy(snap.get("unsupported_xfr", {}))
+    if "ct_ctrl" in snap:
+        c.constant_table.restore(snap["ct_ctrl"])
 
 
 def _restore(core: str, snap: dict) -> None:
@@ -276,6 +279,14 @@ async def index():
 @app.get("/regions")
 async def get_regions():
     return [{"name": r.name, "base": r.base_addr, "size": r.size} for r in sim.memory.regions]
+
+
+@app.get("/constant_table/{core}")
+async def get_constant_table(core: str):
+    """C0-C31 as *core* sees them right now (C24-C31 follow CTBIR/CTPPR)."""
+    if core not in sim.cores:
+        raise HTTPException(status_code=404, detail=f"Unknown core {core!r}")
+    return sim.constant_table_view(core)
 
 
 @app.get("/cores")

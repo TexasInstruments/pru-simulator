@@ -93,12 +93,12 @@ class TestSimulatorBasic:
         config_path = tmp_path / "memory.cfg"
         config_path.write_text("[device]\n", encoding="utf-8")
         (tmp_path / "constants_am243x.cfg").write_text(
-            "[constants]\nc24 = 0x1234\n", encoding="utf-8"
+            "[constants]\nc5 = 0x1234\n", encoding="utf-8"
         )
 
         sim = Simulator(config_path=str(config_path))
 
-        assert sim.constant_table.resolve(24) == 0x1234
+        assert sim.constant_table.resolve(5) == 0x1234
 
     def test_hard_reset_resets_iep(self):
         sim = Simulator(config_path="nonexistent.cfg")

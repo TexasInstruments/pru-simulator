@@ -15,10 +15,17 @@ class MemoryBus:
         self.regions.sort(key=lambda r: r.base_addr)
 
     def _find_region(self, addr: int) -> MemoryRegion:
-        """Return the region that contains *addr*, or raise ValueError."""
+        """Return the region that contains *addr*, or raise ValueError.
+
+        Where regions overlap (a register block laid over a generic RAM
+        region), the smallest one wins.
+        """
+        found = None
         for region in self.regions:
-            if region.contains(addr):
-                return region
+            if region.contains(addr) and (found is None or region.size < found.size):
+                found = region
+        if found is not None:
+            return found
         raise ValueError(f"No memory region mapped at address 0x{addr:08X}")
 
     def read(self, addr: int, length: int) -> tuple[bytes, int]:
