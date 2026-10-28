@@ -13,6 +13,7 @@ import re
 from fractions import Fraction
 
 from core.pru_core import PRUCore
+from mem.icssm_absent import icssg_only_regions, MODES as _ICSSG_ONLY_MODES, READ_ZERO
 from mem.memory_bus import MemoryBus
 from mem.regions import MemoryRegion
 from perif.iep import IepTimer, IEP_SIZE, IEP_DEFAULT_CLOCK_MHZ
@@ -216,6 +217,16 @@ class Simulator:
         # AM261x and AM263x both carry a two-core ICSS-M.
         if target.lower() in ("am261x", "am263x"):
             del self.cores["rtu1"]
+        # The ICSSG-only blocks are absent on ICSS-M; silicon reads them as 0
+        # (see mem/icssm_absent.py).  ``strict`` makes an access raise instead.
+        icssg_only = dev.get("icssg_only_blocks", READ_ZERO).split("#", 1)[0].strip().lower()
+        if icssg_only not in _ICSSG_ONLY_MODES:
+            raise ValueError(
+                f"Unknown icssg_only_blocks {icssg_only!r}; "
+                f"expected one of {', '.join(_ICSSG_ONLY_MODES)}")
+        if target.lower() in ("am261x", "am263x"):
+            for region in icssg_only_regions(target, icssg_only):
+                self.memory.add_region(region)
 
         # SPRUIM2J Table 6-65: these fixed entries depend on the executing
         # core. A shared sidecar cannot provide all four sets of addresses.
