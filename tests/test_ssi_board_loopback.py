@@ -3,6 +3,7 @@ from math import ceil
 
 import pytest
 
+from mem.constant_table import CTPPR0
 from pru_io import ssi_config_abi as abi
 from pru_io.ssi_runtime import SSIEmulatorRuntime
 from simulator import Simulator
@@ -34,6 +35,8 @@ def run_board_loopback(preset, position, error, clock_delay_loops=20, config=Non
         idle_delay_loops=ceil(emulator.layout.monoflop_us
                               * sim.iep.core_clock_hz("pru1") / 2_000_000) + 8,
     ))
+    # The reader reaches Shared RAM through C28, 0 until CTPPR0 is programmed.
+    sim.ctrl_write("pru1", CTPPR0, 0x100)
     assert sim.load("pru1", reader, include_paths=[str(source_dir)]) == []
 
     mailboxes = []

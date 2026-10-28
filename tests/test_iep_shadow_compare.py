@@ -46,6 +46,9 @@ CMP0_REG0 = 0x78
 CMP0_REG1 = 0x7C
 CMP1_REG0 = 0x80
 CMP1_REG1 = 0x84
+# SPRUIM2J compare map: RXIPG0/1 occupy 0xB8/0xBC between CMP7 and CMP8.
+COMPARE_REG0 = (0x78, 0x80, 0x88, 0x90, 0x98, 0xA0, 0xA8, 0xB0,
+                0xC0, 0xC8, 0xD0, 0xD8, 0xE0, 0xE8, 0xF0, 0xF8)
 
 RST = 0x1                      # CMP_CFG[0] CMP0_RST_CNT_EN
 EN0 = 0x2                      # CMP_CFG[1] CMP_EN for CMP0
@@ -684,12 +687,12 @@ def _build(case, listener):
     else:
         events = None
     for j in range(16):
-        w32(iep, CMP0_REG0 + 8 * j, active[j])
+        w32(iep, COMPARE_REG0[j], active[j])
     w32(iep, COUNT0, count)
     w32(iep, CMP_CFG, (RST if rst else 0) | (en << 1) | (SHADOW if sh else 0))
     if sh:
         for j in range(16):
-            w32(iep, CMP0_REG1 + 8 * j, shadow_vals[j])
+            w32(iep, COMPARE_REG0[j] + 4, shadow_vals[j])
     if efc:
         iep.write_sa_mx(PWM_EFC)
     w32(iep, GLOBAL_CFG, (inc << 4) | 1)
@@ -719,7 +722,7 @@ def test_bulk_advance_matches_the_per_clock_oracle(seed, listener):
         assert r32(iep, COUNT0) == ref.count % (1 << 32)
         assert r32(iep, CMP_STATUS) == ref.status
         for j in range(16):
-            assert r32(iep, CMP0_REG0 + 8 * j) == ref.active[j] % (1 << 32)
+            assert r32(iep, COMPARE_REG0[j]) == ref.active[j] % (1 << 32)
     if listener:
         assert [(e.index, e.count, e.tick) for e in events] == ref.events
 
@@ -738,7 +741,7 @@ def test_event_engine_matches_the_legacy_engine_in_64_bit_mode(seed):
         if with_listener:
             listen(iep)
         for j in range(16):
-            w32(iep, CMP0_REG0 + 8 * j, values[j])
+            w32(iep, COMPARE_REG0[j], values[j])
         w32(iep, CMP_CFG, rst | (en << 1))
         w32(iep, GLOBAL_CFG, (inc << 4) | 1)
         return iep
