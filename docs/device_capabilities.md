@@ -59,6 +59,9 @@ banks remain available. They have no BSWAP, PSI DMA, IPC SPAD or XFR2TR; the
 simulator now exposes only PRU0 and PRU1 on those targets. ICSSG's existing
 accelerators and four simulated PRU/RTU cores remain available.
 
+The web UI follows this: on those targets the scratchpad state has no IPC
+bank and the IPC toggle is hidden.
+
 On LP-AM261 ICSSM0 PRU0, with R2–R9 preloaded, `XIN 161, &r2, 16` zeroed R2–R5
 and left R6–R9 intact ([silicon report in #32](https://github.com/TexasInstruments/pru-simulator/issues/32)).
 The simulator writes zero bytes only to the requested destination range.
