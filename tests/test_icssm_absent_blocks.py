@@ -190,7 +190,7 @@ def test_default_warns_once_per_block(target, caplog):
 def test_addresses_outside_the_windows_still_raise(target):
     # Only the listed windows are covered, not the rest of the hole.
     sim = Simulator(CFG[target])
-    for addr in (0x00008000, 0x0002A200):       # RAT (not modelled), TM_CFG_PRU1
+    for addr in (0x00008000, 0x00024C00):       # RAT, PROTECT (neither modelled)
         with pytest.raises(ValueError, match="No memory region mapped"):
             sim.memory.read(addr, 4)
 

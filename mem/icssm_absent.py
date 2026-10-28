@@ -13,6 +13,11 @@ dropped.  With ``[device] icssg_only_blocks = strict`` an access raises
 instead, naming the block, so firmware that reaches for hardware the device
 does not have can be caught in simulation.
 
+The same table covers the reserved ICSS-M ranges that the C10 and C12-C14
+constant-table pointers reach (AM261x TRM SPRUJB6 Table 7-38).  On silicon the
+pointers are in the table and a load through them returns zeros, so they are
+modelled the same way.
+
 A burst that starts in one of these windows and runs on into the window right
 after it (for example 8 bytes at 0x5FFC on AM261x, RTU_PRU0 IRAM into
 RTU_PRU1 IRAM) is treated as absent too: it reads zero and its write is
@@ -50,11 +55,19 @@ ICSSG_ONLY_BLOCKS = (
     ("TX_PRU0 Debug", 0x00025400, 0x400, False),
     ("TX_PRU1 Control", 0x00025800, 0x400, False),
     ("TX_PRU1 Debug", 0x00025C00, 0x400, False),
+    # C14 points here on ICSS-M; reserved up to PROTECT at 0x24C00 (SPRUJB6).
+    ("Reserved 0x24800", 0x00024800, 0x400, False),
+    # C12 points here.
     ("PA_STATS_QRAM", 0x00027000, 0x1000, False),
+    # C10 points at TM_CFG_PRU0 (PRU0) and TM_CFG_PRU1 (PRU1), C13 at
+    # PA_STATS_CRAM; the whole range up to IEP0 at 0x2E000 reads zero.
     ("TM_CFG_PRU0", 0x0002A000, 0x100, False),
     ("TM_CFG_RTU0", 0x0002A100, 0x100, False),
+    ("TM_CFG_PRU1", 0x0002A200, 0x100, False),
+    ("TM_CFG_RTU1", 0x0002A300, 0x100, False),
     ("TM_CFG_TX_PRU0", 0x0002A400, 0x100, False),
     ("TM_CFG_TX_PRU1", 0x0002A500, 0x100, False),
+    ("Reserved 0x2A600", 0x0002A600, 0x1A00, False),
     ("PA_STATS_CRAM", 0x0002C000, 0x2000, False),
     ("IEP1", 0x0002F000, 0x1000, False),
     # CFG 0x130..0x16C: ICSSG PWM trip / state registers (ICSSG_PWM0..3,
@@ -89,7 +102,8 @@ class IcssgOnlyBlockRegion(MemoryRegion):
             super()._check_bounds(addr, length)
 
     def _absent(self, kind: str, addr: int) -> None:
-        msg = (f"{kind} of ICSSG-only block {self.name} at 0x{addr:08X}: "
+        what = "" if self.name.startswith("Reserved") else "ICSSG-only block "
+        msg = (f"{kind} of {what}{self.name} at 0x{addr:08X}: "
                f"this block is absent on ICSS-M ({self.target})")
         if self.strict:
             raise ValueError(msg)
