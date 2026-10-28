@@ -122,6 +122,10 @@ justification, round-axis and ATM60/ATM90 formats are not presets (use
 
 ## Shared-memory ABI
 
+Both firmwares reach Shared RAM through `C28`, which is 0 until `CTPPR0` is programmed
+(`blk_ptr = 0x100`). `SSIRuntime` and `SSIEmulatorRuntime` write it from the host in `load()`;
+anything else that loads these images must do the same, as on silicon.
+
 `schema/ssi_config_abi.json` is the source for the generated
 `pru_io/ssi_config_abi.py` and `source/ssi_config_abi.inc` files. Regenerate and
 check them with:

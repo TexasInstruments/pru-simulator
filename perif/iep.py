@@ -18,9 +18,20 @@ Register map (offsets from the IEP base), per the TRM:
     0x74  IEP_CMP_STATUS_REG   [15:0] CMP_STATUS, write 1 to clear
     0x78  IEP_CMP0_REG0        compare 0, lower 32 bits
     0x7C  IEP_CMP0_REG1        compare 0, upper 32 bits
-    0x80  IEP_CMP1_REG0        ... CMPj_REG0 at 0x78 + 8*j
+    0x80  IEP_CMP1_REG0        ... CMPj_REG0 at 0x78 + 8*j for j = 0..7
+    0xB0  IEP_CMP7_REG0        compare 7, lower 32 bits (CMP7_REG1 at 0xB4)
+    0xB8  IEP_RXIPG0_REG       [31:16] RX_MIN_IPG0 R/W, reset 0xFFFF; [15:0] RX_IPG0 R
+    0xBC  IEP_RXIPG1_REG       [31:16] RX_MIN_IPG1 R/W, reset 0xFFFF; [15:0] RX_IPG1 R
+    0xC0  IEP_CMP8_REG0        compare 8, lower 32 bits; CMPj_REG0 at
+                               0xC0 + 8*(j - 8) for j = 8..15 (CMP15_REG1 at 0xFC)
+    0x100 IEP_COUNT_RESET_VAL_REG0  (not modelled; beyond IEP_SIZE)
 
-Offsets are from Table 14-10902, TRM pages 6902/6905. An earlier revision of this
+Offsets are from Table 14-10902, TRM pages 6902/6905; the register descriptions
+for CMP7_REG1 (B4h), RXIPG0 (B8h), CMP8_REG0 (C0h), CMP15_REG1 (FCh) and
+COUNT_RESET_VAL_REG0 (100h) are on pages 6953-6972. The compare block is NOT
+contiguous: IEP_RXIPG0/1 sit between CMP7 and CMP8, so CMP8..CMP15 start at 0xC0.
+RXIPG0/1 are stored only (RX_MIN_IPG is R/W, RX_IPG is read-only and the model
+has no RX port, so it reads zero); nothing updates them. An earlier revision of this
 file used 0x0C for the counter and 0x40/0x44/0x48 for the compare block - the
 AM335x-era PRU-ICSS layout, not ICSSG. 0x0C is SLOW_COMPEN and 0x40-0x6C are
 capture registers, so that firmware polls the wrong registers entirely.
@@ -89,8 +100,16 @@ CAP_CFG = 0x18
 CAP_STATUS = 0x1C
 CAPR0_REG0 = 0x20
 CMP0_REG0 = 0x78
+RXIPG0 = 0xB8
+RXIPG1 = 0xBC
+CMP8_REG0 = 0xC0
 
 NUM_COMPARE = 16
+# CMP0..CMP7 are contiguous from 0x78; RXIPG0/1 occupy 0xB8/0xBC; CMP8..CMP15
+# resume at 0xC0.
+_NUM_LOW_COMPARE = 8
+_RXIPG_RESET = 0xFFFF0000
+_RXIPG_MASK = 0xFFFF0000       # RX_MIN_IPG is R/W, RX_IPG is read-only
 # 0x20..0x6C is 0x50 bytes = ten 64-bit pairs.
 NUM_CAPTURE = 10
 IEP_SIZE = 0x100
@@ -100,6 +119,18 @@ IEP_DEFAULT_CLOCK_MHZ = 200
 
 _MASK32 = 0xFFFFFFFF
 _MASK64 = 0xFFFFFFFFFFFFFFFF
+
+
+def _compare_slot(offset: int) -> tuple[int, int] | None:
+    """Map a register offset to (compare index, 0=REG0 / 1=REG1), or None."""
+    if CMP0_REG0 <= offset < CMP0_REG0 + _NUM_LOW_COMPARE * 8:
+        j, half = divmod(offset - CMP0_REG0, 8)
+    elif CMP8_REG0 <= offset < CMP8_REG0 + (NUM_COMPARE - _NUM_LOW_COMPARE) * 8:
+        j, half = divmod(offset - CMP8_REG0, 8)
+        j += _NUM_LOW_COMPARE
+    else:
+        return None
+    return j, half // 4
 
 
 def _mhz_to_hz(clock_mhz: float | str) -> Fraction:
@@ -165,6 +196,7 @@ class IepTimer:
         self.cmp_cfg = 0
         self.cmp_status = 0                  # 16 bits, write-1-to-clear
         self.compare = [0] * NUM_COMPARE     # each 64-bit
+        self.rxipg = [_RXIPG_RESET, _RXIPG_RESET]   # IEP_RXIPG0/1_REG
         # SPRUIM2J Table 14-10925: CAP_ASYNC_EN=0x7f, captures disabled.
         self.cap_cfg = 0x1FC00
         self.cap_status = 0                  # valid bits, write-1-to-clear
@@ -443,8 +475,11 @@ class IepTimer:
             n, half = divmod(offset - CAPR0_REG0, 8)
             v = self.capture[n]
             return v & _MASK32 if half == 0 else (v >> 32) & _MASK32
-        if CMP0_REG0 <= offset < CMP0_REG0 + NUM_COMPARE * 8:
-            j, half = divmod(offset - CMP0_REG0, 8)
+        if offset in (RXIPG0, RXIPG1):
+            return self.rxipg[(offset - RXIPG0) >> 2]
+        slot = _compare_slot(offset)
+        if slot is not None:
+            j, half = slot
             v = self.compare[j]
             return v & _MASK32 if half == 0 else (v >> 32) & _MASK32
         return 0
@@ -473,8 +508,10 @@ class IepTimer:
             # Capture registers are read-only in hardware; a write is ignored
             # rather than silently corrupting a timestamp.
             pass
-        elif CMP0_REG0 <= offset < CMP0_REG0 + NUM_COMPARE * 8:
-            j, half = divmod(offset - CMP0_REG0, 8)
+        elif offset in (RXIPG0, RXIPG1):
+            self.rxipg[(offset - RXIPG0) >> 2] = value & _RXIPG_MASK
+        elif (slot := _compare_slot(offset)) is not None:
+            j, half = slot
             if half == 0:
                 self.compare[j] = (self.compare[j] & ~_MASK32) | value
             else:
@@ -516,6 +553,7 @@ class IepTimer:
             "cap_cfg": self.cap_cfg,
             "cap_status": self.cap_status,
             "capture": list(self.capture),
+            "rxipg": list(self.rxipg),
             "iepclk": self.iepclk,
             "external_clock_hz": self.external_clock_hz,
             "ocp_clock_hz": self.ocp_clock_hz,
@@ -543,6 +581,7 @@ class IepTimer:
         self.cap_cfg = snapshot.get("cap_cfg", 0) & _MASK32
         self.cap_status = snapshot.get("cap_status", 0) & _MASK32
         self.capture = list(snapshot.get("capture", [0] * NUM_CAPTURE))
+        self.rxipg = list(snapshot.get("rxipg", [_RXIPG_RESET, _RXIPG_RESET]))
         self.iepclk = snapshot.get("iepclk", self.iepclk) & _MASK32
         self.external_clock_hz = snapshot.get("external_clock_hz", self.external_clock_hz)
         self.ocp_clock_hz = snapshot.get("ocp_clock_hz", self.ocp_clock_hz)

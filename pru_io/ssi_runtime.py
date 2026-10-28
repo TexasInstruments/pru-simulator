@@ -5,6 +5,7 @@ from math import ceil
 from pathlib import Path
 from weakref import WeakSet
 
+from mem.constant_table import CTPPR0
 from pru_io import ssi_config_abi as abi
 from pru_io.ssi_encoder_model import SSIEncoderModel
 
@@ -12,6 +13,7 @@ from pru_io.ssi_encoder_model import SSIEncoderModel
 _SOURCE = Path(__file__).resolve().parents[1] / "source"
 _FIRMWARE = _SOURCE / "ssi_generic_reader" / "ssi_generic_reader.asm"
 _EMULATOR_FIRMWARE = _SOURCE / "ssi_generic_emulator.asm"
+_SHARED_RAM_BLK_PTR = 0x100  # CTPPR0[15:0]: C28 = 0x100 << 8 = Shared RAM
 _CLOCK_PIN = 0
 _DATA_PIN = 16
 _EMULATOR_SIMS = WeakSet()  # Simulators with a loaded emulator; it owns the one block
@@ -69,6 +71,9 @@ class SSIRuntime:
                 idle_delay_loops=idle_delay_loops,
             )
             self.sim.memory.write(abi.CONFIG_ADDRESS, config)
+            # The reader reaches Shared RAM through C28, which is 0 until
+            # CTPPR0 is programmed; the host sets blk_ptr = 0x100 (0x10000).
+            self.sim.ctrl_write(self.core, CTPPR0, _SHARED_RAM_BLK_PTR)
             firmware = _FIRMWARE.read_text(encoding="utf-8")
             errors = self.sim.load(
                 self.core, firmware, include_paths=[str(_FIRMWARE.parent.parent)])
@@ -209,6 +214,7 @@ class SSIEmulatorRuntime:
         try:
             self.monoflop_ticks = monoflop_ticks
             self.write_config()
+            self.sim.ctrl_write(self.core, CTPPR0, _SHARED_RAM_BLK_PTR)
             self.sim.lease_gpio_outputs(
                 self.core, (1 << _CLOCK_PIN) | (1 << _DATA_PIN), self,
                 drive_mask=1 << _DATA_PIN)
