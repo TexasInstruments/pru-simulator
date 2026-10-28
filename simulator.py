@@ -151,6 +151,10 @@ class PruControlRegion(MemoryRegion):
         return int.from_bytes(self._data[self.size:self.size + self._OFFSET_BYTES],
                               "little", signed=True)
 
+    def clear_cycle_offset(self) -> None:
+        """Drop the CYCLE rebase; called when the addressed core's counter resets."""
+        self._data[self.size:self.size + self._OFFSET_BYTES] = bytes(self._OFFSET_BYTES)
+
     def _cycle_value(self) -> int:
         return min(max(self._core.counters.cycles - self._offset(), 0), 0xFFFFFFFF)
 
@@ -180,6 +184,8 @@ class Simulator:
 
     def __init__(self, config_path: str = "memory.cfg"):
         self.xfr = XFRBus()
+        self._explicit_read_latency: set[str] = set()
+        self._ctrl_regions: dict[str, PruControlRegion] = {}
         self.memory = self._load_memory(config_path)
         self.constant_table = self._load_constants(config_path)
         # XFR2VBUS reaches SoC CBASS0/MSMC memory, a single external bus
@@ -251,9 +257,13 @@ class Simulator:
             # window uniformly. Precedence: a window the config itself
             # declares keeps its own read_latency; otherwise the device key
             # pru_ctrl_read_latency; otherwise the legacy 2 stalls.
-            latency = backing.read_latency if declared else int(
-                dev.get("pru_ctrl_read_latency", backing.read_latency))
-            self.memory.add_region(PruControlRegion(self.cores[name], backing, latency))
+            # A declared window that omits read_latency gets the loader's 0
+            # default, which is not an override; an explicit 0 still is.
+            explicit = declared and backing.name in self._explicit_read_latency
+            latency = backing.read_latency if explicit else int(
+                dev.get("pru_ctrl_read_latency", 2 if declared else backing.read_latency))
+            self._ctrl_regions[name] = PruControlRegion(self.cores[name], backing, latency)
+            self.memory.add_region(self._ctrl_regions[name])
 
         # One resolver owns generic external devices and cross-core GPIO nets.
         # It is inert until a device or wire is attached.
@@ -341,6 +351,8 @@ class Simulator:
             def reset_timeline(*, _name=name) -> None:
                 self._paced_pending.clear()
                 self.iep.rebase_core(_name)
+                if _name in self._ctrl_regions:
+                    self._ctrl_regions[_name].clear_cycle_offset()
 
             core.reset_observer = reset_timeline
             if name in self._perif:
@@ -377,6 +389,8 @@ class Simulator:
             if section == "device":
                 continue
             if "base" in cfg[section]:
+                if "read_latency" in cfg[section]:
+                    self._explicit_read_latency.add(section)
                 bus.add_region(MemoryRegion(
                     name=section,
                     base_addr=int(cfg[section]["base"], 16),

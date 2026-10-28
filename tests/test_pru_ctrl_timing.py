@@ -166,3 +166,44 @@ def test_cycle_rebase_restores_with_the_region(monkeypatch):
     server._restore("pru0", snapshot)
     sim.cores["pru0"].counters.cycles = 103
     assert int.from_bytes(sim.memory_read(0x2200C, 4), "little") == 3
+
+
+@pytest.mark.parametrize("hard", [False, True])
+def test_core_reset_clears_the_cycle_rebase(hard):
+    sim = Simulator(str(ROOT / "config" / "memory_am243x.cfg"))
+    sim.cores["pru0"].counters.cycles = 100
+    sim.memory.write(0x2200C, bytes(4))
+    assert int.from_bytes(sim.memory_read(0x2200C, 4), "little") == 0
+    sim.hard_reset() if hard else sim.reset("pru0")
+    sim.cores["pru0"].counters.cycles = 5
+    assert int.from_bytes(sim.memory_read(0x2200C, 4), "little") == 5
+
+
+def _declared_window_sim(tmp_path, latency_line):
+    text = (ROOT / "memory.cfg").read_text()
+    lines = text.splitlines()
+    start = lines.index("[ICSS_CFG]")
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("[")),
+               len(lines))
+    section = [line for line in lines[start:end] if not line.startswith("read_latency")]
+    if latency_line:
+        section.insert(1, latency_line)
+    text = chr(10).join(lines[:start] + section + lines[end:])
+    text = text.replace("core_version = V4", "core_version = V4" + chr(10) + "pru_ctrl_read_latency = 3")
+    cfg = tmp_path / "memory.cfg"
+    cfg.write_text(text)
+    return Simulator(str(cfg))
+
+
+def test_declared_ctrl_window_without_read_latency_uses_device_key(tmp_path):
+    sim = _declared_window_sim(tmp_path, None)
+    assert sim.load("pru0", "lbco &r2, c11, 12, 4\nhalt") == []
+    sim.step("pru0")
+    assert sim.cores["pru0"].counters.cycles == 4
+
+
+def test_declared_ctrl_window_with_zero_read_latency_is_an_override(tmp_path):
+    sim = _declared_window_sim(tmp_path, "read_latency = 0")
+    assert sim.load("pru0", "lbco &r2, c11, 12, 4\nhalt") == []
+    sim.step("pru0")
+    assert sim.cores["pru0"].counters.cycles == 1
