@@ -182,8 +182,12 @@ the TRM; on an LP-AM261 the table holds non-zero pointers there (C10 0x2A000 on
 PRU0 / 0x2A200 on PRU1, C12 0x27000, C13 0x2C000, C14 0x24800) and the window
 behind each reads zero. The simulator shows those pointers and maps the reserved
 ranges (0x24800-0x24BFF, 0x27000-0x27FFF, 0x2A000-0x2DFFF) as read-as-zero
-windows, so a load through them returns zeros. Writes through them were not
-measured on silicon: they are ignored and logged once. Tracked in
+windows, so a load through them returns zeros. These ranges share the ICSS-M
+absent-block model in `mem/icssm_absent.py` (see
+[docs/icssm_absent_blocks.md](docs/icssm_absent_blocks.md)), including the
+`icssg_only_blocks = strict` option. A 32-bit store at the start of
+PA_STATS_QRAM, TM_CFG_PRU0 and PA_STATS_CRAM was dropped on silicon; other
+writes were not measured. Writes are ignored and logged once. Tracked in
 [#79](https://github.com/TexasInstruments/pru-simulator/issues/79).
 
 Dashboard step-back uses one ordered history across all cores. Undo restores

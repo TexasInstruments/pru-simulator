@@ -43,7 +43,7 @@ get('core-select').addEventListener('change', () => {
   context.currentCore = get('core-select').value;
 });
 vm.runInContext(readFileSync(new URL('../ui/static/cores.js', import.meta.url), 'utf8'), context);
-const app = readFileSync(new URL('../ui/static/app.js', import.meta.url), 'utf8');
+const app = readFileSync(new URL('../ui/static/app.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const setterStart = app.indexOf('function syncSsiSetter(');
 const setterEnd = app.indexOf('\n}\n', setterStart) + 3;
 vm.runInContext(app.slice(setterStart, setterEnd), context);

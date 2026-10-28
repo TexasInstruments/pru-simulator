@@ -13,6 +13,7 @@ import re
 from fractions import Fraction
 
 from core.pru_core import PRUCore
+from mem.icssm_absent import icssg_only_regions, MODES as _ICSSG_ONLY_MODES, READ_ZERO
 from mem.memory_bus import MemoryBus
 from mem.regions import MemoryRegion
 from perif.iep import IepTimer, IEP_SIZE, IEP_DEFAULT_CLOCK_MHZ
@@ -154,28 +155,6 @@ class ConstantTableRegisterRegion(MemoryRegion):
                 reg, int.from_bytes(image[4 * reg : 4 * reg + 4], "little"))
 
 
-class ReadAsZeroRegion(MemoryRegion):
-    """Reserved window that a constant-table pointer reaches: reads give zeros.
-
-    Read on silicon (LP-AM261): the pointer is in the table and a load through
-    it returns zeros without faulting. Writes were NOT measured; they are
-    ignored here and logged once.
-    """
-
-    def __init__(self, name: str, base_addr: int, size: int):
-        super().__init__(name, base_addr, size, 2, 1, 0)
-        self._warned = False
-
-    def write(self, addr: int, data: bytes) -> None:
-        self._check_bounds(addr, length=len(data))
-        if not self._warned:
-            self._warned = True
-            logger.warning(
-                "write to reserved window %s at 0x%08X ignored: reads return "
-                "zeros on silicon, the effect of a write was not measured",
-                self.name, addr)
-
-
 class Simulator:
     """Orchestrates ICSSG cores sharing memory, XFR, and one IEP timer."""
 
@@ -216,6 +195,16 @@ class Simulator:
         # AM261x and AM263x both carry a two-core ICSS-M.
         if target.lower() in ("am261x", "am263x"):
             del self.cores["rtu1"]
+        # The ICSSG-only blocks are absent on ICSS-M; silicon reads them as 0
+        # (see mem/icssm_absent.py).  ``strict`` makes an access raise instead.
+        icssg_only = dev.get("icssg_only_blocks", READ_ZERO).split("#", 1)[0].strip().lower()
+        if icssg_only not in _ICSSG_ONLY_MODES:
+            raise ValueError(
+                f"Unknown icssg_only_blocks {icssg_only!r}; "
+                f"expected one of {', '.join(_ICSSG_ONLY_MODES)}")
+        if target.lower() in ("am261x", "am263x"):
+            for region in icssg_only_regions(target, icssg_only):
+                self.memory.add_region(region)
 
         # SPRUIM2J Table 6-65: these fixed entries depend on the executing
         # core. A shared sidecar cannot provide all four sets of addresses.
@@ -229,8 +218,8 @@ class Simulator:
         else:
             # C10 is RESERVED in SPRUJB6 Table 7-40, but silicon holds a
             # pointer (ICTE direct read on an LP-AM261, both PRUs). The
-            # window behind it, and behind C12-C14, reads zero: see the
-            # ReadAsZeroRegion mapping below.
+            # window behind it, and behind C12-C14, reads zero: see
+            # mem/icssm_absent.py.
             # The legacy simulated RTU0 has no AM263x hardware equivalent;
             # leave its common table unchanged rather than inventing a map.
             core_constants = {
@@ -239,17 +228,6 @@ class Simulator:
             }
         for name, entries in core_constants.items():
             self.cores[name].constant_table.load_from_dict(entries)
-
-        if target.lower() in ("am261x", "am263x"):
-            # Reserved ICSS-M ranges the C10/C12-C14 pointers reach, between
-            # the neighbouring blocks of the AM261x TRM SPRUJB6 local memory
-            # map (Table 7-38): C14 0x24800 up to PROTECT at 0x24C00, C12
-            # 0x27000 up to UART0 at 0x28000, C10 and C13 (0x2A000-0x2C000)
-            # up to IEP0 at 0x2E000.
-            for rname, rbase, rsize in (("RSVD_24800", 0x24800, 0x400),
-                                        ("RSVD_27000", 0x27000, 0x1000),
-                                        ("RSVD_2A000", 0x2A000, 0x4000)):
-                self.memory.add_region(ReadAsZeroRegion(rname, rbase, rsize))
 
         # CTBIR0/1 and CTPPR0/1 sit at +0x20 of each core's CTRL block and
         # drive C24-C31 of that core. TX_PRU cores are not simulated.
@@ -395,8 +373,23 @@ class Simulator:
                     misaligned_write_penalty=int(
                         cfg[section].get("misaligned_write_penalty", "0")),
                     per_word_latency=int(cfg[section].get("per_word_latency", "1")),
+                    line_bytes=int(cfg[section].get("line_bytes", "0"), 0),
+                    line_cross_fit=int(cfg[section].get("line_cross_fit", "0")),
+                    line_readers=self._parse_line_readers(
+                        section, cfg[section].get("line_readers", "")),
                 ))
         return bus
+
+    @staticmethod
+    def _parse_line_readers(section: str, text: str) -> tuple[str, ...]:
+        names = tuple(text.lower().split())
+        known = {"pru0", "rtu0", "pru1", "rtu1"}
+        unknown = [n for n in names if n not in known]
+        if unknown:
+            raise ValueError(
+                f"[{section}] line_readers has unknown core name(s) {', '.join(unknown)}; "
+                f"expected any of {', '.join(sorted(known))}")
+        return names
 
     def _load_constants(self, config_path: str) -> ConstantTable:
         """Load the C0-C31 table for the config's [device] target.

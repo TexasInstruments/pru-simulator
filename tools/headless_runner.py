@@ -293,9 +293,10 @@ def _next_instruction_cycle_bounds(sim: Simulator, core: str) -> tuple[int, int]
     length = pru._read_operand(length_operand)
     region = sim.memory._find_region(address)
     region._check_bounds(address, length)
-    words = region._word_count(address, length)
     if instruction.opcode in ("LBBO", "LBCO"):
-        minimum = 1 + region.read_latency + (words - 1) * region.per_word_latency
+        # Ask the region (with the requesting core), so the runner and the core
+        # cannot disagree about reads such as the MSRAM line-crossing cost.
+        minimum = 1 + region.deterministic_read_stalls(address, length, requester=pru.name)
         return minimum, minimum + region.jitter
     # Stores are deterministic: ask the region, so penalties such as the
     # misaligned multi-word store cost (#77) are never re-derived here.
