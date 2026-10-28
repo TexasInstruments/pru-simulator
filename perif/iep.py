@@ -373,6 +373,9 @@ class IepTimer:
         if timing_changed:
             self._tick_remainder = 0
             self._refresh_tick_rate()
+        # Stopping the counter at COUNT == 0 enters the transparent copy.
+        if self._shadow_copy_is_transparent():
+            self._load_shadow()
 
     @property
     def cmp_cfg(self) -> int:
@@ -700,6 +703,9 @@ class IepTimer:
             self.global_status = value
         elif offset == COUNT_REG0:
             self.count = (self.count & ~_MASK32) | value
+            # Writing 0 to a stopped counter enters the transparent copy.
+            if self._shadow_copy_is_transparent():
+                self._load_shadow()
         elif offset == COUNT_REG1:
             if not self.shadow_en:            # 32-bit counter: no upper word
                 self.count = (self.count & _MASK32) | (value << 32)

@@ -53,6 +53,9 @@ each statement, and what is deliberately left open.
   implements exactly this, for a counter that is stopped (`CNT_ENABLE = 0`).
   A running counter that happens to be at 0 is not a stopped counter and takes
   no copy.
+  Entering that state (COUNT written to 0 while stopped, or the counter
+  stopped at 0) copies at once in the model; this follows from the measured
+  continuous copy and was not measured separately.
 * Without a new shadow write, every later reset reloads the same shadow values.
 * A CMP0 write only decides the *next* reset period. The period that is already
   running ends at the previously loaded CMP0, so changing CMP0 cannot select a
