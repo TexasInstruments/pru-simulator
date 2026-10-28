@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -216,3 +218,28 @@ def test_cycle_budget_counts_the_misaligned_store_penalty(tmp_path):
     # The prediction is what the simulator then charges.
     result, payload = invoke("--assembly", source, "--max-cycles", 6)
     assert payload["state"]["cycles"] == 6
+
+
+@pytest.mark.parametrize("budget", [26, 30, 36])
+def test_cycle_budget_counts_the_msram_line_crossing_cost(tmp_path, budget):
+    """A PRU0 4-byte read of MSRAM at a 64 B line boundary costs 35 cycles
+    (#69), not 22.  Budgets between those must refuse it before it runs."""
+    source = tmp_path / "cross.asm"
+    source.write_text(
+        "ldi32 r1, 0x7000003f\nlbbo &r2, r1, 0, 4\nhalt\n", encoding="utf-8"
+    )
+    config = ROOT / "config" / "memory_am243x.cfg"
+
+    result, payload = invoke("--assembly", source, "--core", "pru0",
+                             "--config", config, "--max-cycles", budget)
+
+    assert result.returncode == 3
+    assert payload["reason"] == "cycle_budget_pre_instruction_refusal"
+    assert payload["state"]["cycles"] == 2
+    assert payload["budget_refusal"]["next_instruction_cycles"] == {
+        "maximum": 35, "minimum": 35,
+    }
+
+    result, payload = invoke("--assembly", source, "--core", "pru0",
+                             "--config", config, "--max-cycles", 38)
+    assert payload["state"]["cycles"] == 38
