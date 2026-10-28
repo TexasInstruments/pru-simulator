@@ -27,8 +27,27 @@ inferred from them, and the window sizes come from the AM243x / AM64x address
 map, not from the ICSS-M.
 
 Not covered, so still an error: CFG `0x40` and `0x170` (present on the ICSS-M,
-see "Writes"), TM_CFG_PRU1 and TM_CFG_RTU1 (`0x2A200`,
-`0x2A300`, not read), RAT, and anything else that is not listed.
+see "Writes"), RAT, and anything else that is not listed.
+
+## Reserved ranges behind the C10 and C12-C14 pointers
+
+On the ICSS-M the constant table holds pointers in the reserved entries C10
+(`0x2A000` on PRU0, `0x2A200` on PRU1), C12 (`0x27000`), C13 (`0x2C000`) and C14
+(`0x24800`), and an LBCO through each returns zeros on an LP-AM261. The
+reserved ranges they reach, sized from the AM261x TRM SPRUJB6 local memory map
+(Table 7-38), are covered by the same windows:
+
+| Range | Covered by |
+|---|---|
+| `0x24800` .. `0x24BFF` (up to PROTECT) | `Reserved 0x24800` |
+| `0x27000` .. `0x27FFF` (up to UART0) | PA_STATS_QRAM |
+| `0x2A000` .. `0x2DFFF` (up to IEP0) | TM_CFG_PRU0, TM_CFG_RTU0, TM_CFG_PRU1, TM_CFG_RTU1, TM_CFG_TX_PRU0, TM_CFG_TX_PRU1, `Reserved 0x2A600`, PA_STATS_CRAM |
+
+TM_CFG_PRU1 and TM_CFG_RTU1 are at `0x2A200` and `0x2A300`, as on the ICSSG. Of
+the words added here, only the pointer targets were read on silicon (C10 on
+PRU1 at `0x2A200`, C14 at `0x24800`); writes to them were not measured. The two
+`Reserved` windows are reserved on the ICSS-M, not ICSSG blocks, so their
+messages leave out "ICSSG-only block".
 
 ## What the simulator does
 

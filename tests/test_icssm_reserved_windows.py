@@ -5,13 +5,16 @@ constant table holds C10 0x2A000 (PRU0) / 0x2A200 (PRU1), C12 0x27000, C13
 0x2C000, C14 0x24800, and an LBCO through each returns zeros without a fault.
 The reserved ranges are sized from the AM261x TRM SPRUJB6 local memory map:
 C14 up to PROTECT at 0x24C00, C12 up to UART0 at 0x28000, C10/C13 up to IEP0 at
-0x2E000. Writes through these pointers were NOT measured: they are ignored and
-logged here.
+0x2E000. The ranges are modelled by mem/icssm_absent.py, together with the
+ICSSG-only blocks that share them. A 32-bit store was dropped on silicon at the
+start of PA_STATS_QRAM, TM_CFG_PRU0 and PA_STATS_CRAM; writes elsewhere in the
+ranges were not measured. They are ignored and logged here.
 """
 import logging
 
 import pytest
 
+from mem.icssm_absent import IcssgOnlyBlockRegion
 from simulator import Simulator
 
 TARGETS = ["AM261x", "AM263x"]
@@ -19,9 +22,9 @@ CORES = ["pru0", "pru1"]
 POINTERS = {"pru0": {10: 0x2A000, 12: 0x27000, 13: 0x2C000, 14: 0x24800},
             "pru1": {10: 0x2A200, 12: 0x27000, 13: 0x2C000, 14: 0x24800}}
 # (first byte, last byte + 1) of each reserved window.
-WINDOWS = {"RSVD_24800": (0x24800, 0x24C00),
-           "RSVD_27000": (0x27000, 0x28000),
-           "RSVD_2A000": (0x2A000, 0x2E000)}
+WINDOWS = {"C14": (0x24800, 0x24C00),
+           "C12": (0x27000, 0x28000),
+           "C10/C13": (0x2A000, 0x2E000)}
 
 
 def _run(sim, core, source):
@@ -61,8 +64,14 @@ def test_whole_reserved_windows_read_zero_to_the_last_word(sim_config, target):
     sim = Simulator(sim_config(target=target))
     for name, (lo, hi) in WINDOWS.items():
         assert sim.memory_read(lo, hi - lo) == b"\0" * (hi - lo), name
-        region = [r for r in sim.memory.regions if r.name == name]
-        assert len(region) == 1 and (region[0].base_addr, region[0].size) == (lo, hi - lo)
+        # Every word is in a read-zero window, and the windows stop at hi.
+        for addr in range(lo, hi, 4):
+            assert isinstance(sim.memory._find_region(addr), IcssgOnlyBlockRegion), hex(addr)
+        try:
+            after = sim.memory._find_region(hi)
+        except ValueError:
+            after = None
+        assert not isinstance(after, IcssgOnlyBlockRegion), name
 
 
 @pytest.mark.parametrize("target", TARGETS)
@@ -93,7 +102,7 @@ def test_sbco_through_a_reserved_pointer_is_ignored_and_logged(
         cpu = _run(sim, core, src)
     assert cpu.fault is None and cpu.halted        # no raise
     assert cpu.registers.read_full(3) == 0         # write had no effect
-    assert any("ignored" in r.getMessage() and "not measured" in r.getMessage()
+    assert any("ignored" in r.getMessage() and "absent on ICSS-M" in r.getMessage()
                for r in caplog.records)
 
 
