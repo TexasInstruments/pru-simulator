@@ -12,6 +12,13 @@ By default these windows behave that way: reads return 0 and writes are
 dropped.  With ``[device] icssg_only_blocks = strict`` an access raises
 instead, naming the block, so firmware that reaches for hardware the device
 does not have can be caught in simulation.
+
+A burst that starts in one of these windows and runs on into the window right
+after it (for example 8 bytes at 0x5FFC on AM261x, RTU_PRU0 IRAM into
+RTU_PRU1 IRAM) is treated as absent too: it reads zero and its write is
+dropped.  That is how the model behaves; it was not measured on silicon.  A
+burst that runs from an absent window into any other region still fails the
+bounds check.
 """
 
 import logging
@@ -60,12 +67,26 @@ class IcssgOnlyBlockRegion(MemoryRegion):
     """A window that reads as zero and drops writes (or raises in strict mode)."""
 
     def __init__(self, name: str, base_addr: int, size: int, target: str,
-                 strict: bool = False):
+                 strict: bool = False, windows=()):
         # Latencies are not measured; use the other ICSS-local registers'.
         super().__init__(name, base_addr, size, 2, 1, 0)
         self.target = target
         self.strict = strict
         self._warned = False
+        # (base, size) of every absent window, used to let a burst run on
+        # into the next one.
+        self._windows = tuple(windows)
+
+    def _check_bounds(self, addr: int, length: int) -> None:
+        end = addr + length
+        edge = self.base_addr + self.size
+        if addr >= self.base_addr and end > edge:
+            # Extend over absent windows that start exactly where the last ended.
+            starts = {base: base + size for base, size in self._windows}
+            while edge in starts and end > edge:
+                edge = starts[edge]
+        if addr < self.base_addr or end > edge:
+            super()._check_bounds(addr, length)
 
     def _absent(self, kind: str, addr: int) -> None:
         msg = (f"{kind} of ICSSG-only block {self.name} at 0x{addr:08X}: "
@@ -92,5 +113,7 @@ def icssg_only_regions(target: str, mode: str) -> list[IcssgOnlyBlockRegion]:
         raise ValueError(
             f"Unknown icssg_only_blocks {mode!r}; expected one of "
             f"{', '.join(MODES)}")
-    return [IcssgOnlyBlockRegion(name, base, size, target, strict=(mode == STRICT))
+    windows = [(base, size) for _, base, size, _ in ICSSG_ONLY_BLOCKS]
+    return [IcssgOnlyBlockRegion(name, base, size, target, strict=(mode == STRICT),
+                                 windows=windows)
             for name, base, size, _ in ICSSG_ONLY_BLOCKS]

@@ -277,3 +277,37 @@ def test_windows_do_not_cover_icssm_blocks(target):
     for w in _windows(sim):
         for addr in ICSSM_PRESENT:
             assert not w.contains(addr), (w.name, hex(addr))
+
+
+# ---------------------------------------------------------------------------
+# A burst running from one absent window into the adjacent one
+# ---------------------------------------------------------------------------
+
+def test_default_burst_across_adjacent_windows_reads_zero(target):
+    sim = Simulator(CFG[target])
+    c = _lbbo(sim, "pru0", 0x00005FFC, 8)           # RTU_PRU0 IRAM -> RTU_PRU1 IRAM
+    assert c.fault is None
+    assert _reg(c, 2) == 0 and _reg(c, 3) == 0
+
+
+def test_default_burst_across_adjacent_windows_write_dropped(target):
+    sim = Simulator(CFG[target])
+    c = _run(sim, "pru0", "ldi32 r1, 0x00005FFC\nldi32 r2, 1\nldi32 r3, 2\n"
+                          "sbbo &r2, r1, 0, 8\nlbbo &r4, r1, 0, 8\nhalt\n")
+    assert c.fault is None
+    assert _reg(c, 4) == 0 and _reg(c, 5) == 0
+
+
+def test_strict_burst_across_adjacent_windows_raises(target, tmp_path):
+    sim = _make(CFG[target], tmp_path, "strict")
+    c = _lbbo(sim, "pru0", 0x00005FFC, 8)
+    assert c.fault is not None
+    assert "RTU_PRU0 IRAM" in c.fault["error"]
+
+
+def test_burst_from_absent_window_into_present_region_still_raises(target):
+    sim = Simulator(CFG[target])
+    with pytest.raises(ValueError):
+        sim.memory.read(0x00023FFC, 8)              # RTU_PRU1 Debug -> present block
+    with pytest.raises(ValueError):
+        sim.memory.write(0x00023FFC, bytes(8))
