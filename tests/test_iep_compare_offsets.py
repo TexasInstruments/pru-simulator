@@ -96,3 +96,23 @@ def test_compare_event_sets_status_bit_at_real_address(iep, j, reg0):
     for _ in range(10):
         iep.tick()
     assert r32(iep, CMP_STATUS) == 1 << j
+
+
+def test_rxipg_survives_snapshot_restore(iep):
+    w32(iep, 0xB8, 0x12340000)
+    w32(iep, 0xBC, 0x56780000)
+    snap = iep.snapshot()
+    w32(iep, 0xB8, 0x11110000)
+    w32(iep, 0xBC, 0x22220000)
+    iep.restore(snap)
+    assert r32(iep, 0xB8) == 0x12340000
+    assert r32(iep, 0xBC) == 0x56780000
+
+
+def test_restore_old_snapshot_resets_rxipg(iep):
+    snap = iep.snapshot()
+    del snap["rxipg"]
+    w32(iep, 0xB8, 0x11110000)
+    iep.restore(snap)
+    assert r32(iep, 0xB8) == 0xFFFF0000
+    assert r32(iep, 0xBC) == 0xFFFF0000

@@ -553,6 +553,7 @@ class IepTimer:
             "cap_cfg": self.cap_cfg,
             "cap_status": self.cap_status,
             "capture": list(self.capture),
+            "rxipg": list(self.rxipg),
             "iepclk": self.iepclk,
             "external_clock_hz": self.external_clock_hz,
             "ocp_clock_hz": self.ocp_clock_hz,
@@ -580,6 +581,7 @@ class IepTimer:
         self.cap_cfg = snapshot.get("cap_cfg", 0) & _MASK32
         self.cap_status = snapshot.get("cap_status", 0) & _MASK32
         self.capture = list(snapshot.get("capture", [0] * NUM_CAPTURE))
+        self.rxipg = list(snapshot.get("rxipg", [_RXIPG_RESET, _RXIPG_RESET]))
         self.iepclk = snapshot.get("iepclk", self.iepclk) & _MASK32
         self.external_clock_hz = snapshot.get("external_clock_hz", self.external_clock_hz)
         self.ocp_clock_hz = snapshot.get("ocp_clock_hz", self.ocp_clock_hz)
