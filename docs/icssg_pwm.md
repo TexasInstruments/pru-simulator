@@ -151,14 +151,17 @@ what encoding 3 drives is an assumption (below).
   `IcssgPwm.snapshot()/restore()` are used by the UI snapshot and include held
   pads and pending debounce timers.
 * **Cost.** The IEP compare listener is registered on the first non-zero write
-  to a PWM register (or the first trip input), not at construction, because a
-  registered listener makes the IEP step clock by clock (about 8 us per compare
-  hit in the benchmark of the review; a 200 M clock second is on the order of
-  15 s). Programs that never touch the PWM keep the fast path. The consequence:
-  compare hits before the first PWM write are not seen by the module, so an
-  untouched all-zero module does not toggle its pads from compares. For
-  programs that configure the PWM before the IEP runs, behaviour is identical
-  to an eagerly registered listener (25 seeded differential tests).
+  to a PWM register, the first trip input, or the first time `IEP_CMP_CFG`
+  enables any of CMP1..CMP12 (also when restoring a snapshot), not at
+  construction, because a registered listener makes the IEP step clock by clock
+  (about 8 us per compare hit in the benchmark of the review; a 200 M clock
+  second is on the order of 15 s). Programs that never touch the PWM and never
+  enable CMP1..CMP12 keep the fast path. Firmware that leaves the reset-default
+  state words (Z, toggle) in place and only enables CMP1..CMP12 therefore still
+  sees its pads toggle. Compare hits before the listener is registered are not
+  seen by the module. For programs that configure the PWM before the IEP runs,
+  behaviour is identical to an eagerly registered listener (25 seeded
+  differential tests).
 
 ## Where the TRM is silent or ambiguous (assumptions)
 

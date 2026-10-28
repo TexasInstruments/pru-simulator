@@ -34,6 +34,7 @@ _POS_ERR = 1 << 20
 _VEC_SHIFT = 21
 _TRIP_S = 1 << 30
 _TRIP_S_CLEAR = 1 << 23   # write 1 (TRIP_VEC[2] position): clears TRIP_S, see write32
+_CMP_PAD_EN = 0x3FFC            # IEP_CMP_CFG bits 13:2 enable CMP1..CMP12
 _STATE_STORED = 0xFFF           # bits 11:0 of ICSSG_PWMm_k are stored
 
 _INIT, _ACTIVE, _TRIP = "initial", "active", "trip"
@@ -63,9 +64,11 @@ class IcssgPwm:
     they have no pads and no state.
 
     The IEP compare listener is registered on the first write of a non-zero
-    value to a PWM register (or the first trip input), because a registered
-    listener forces the IEP into per-clock event mode.  Compare events before
-    that point are not seen by the module.
+    value to a PWM register, the first trip input, or the first time
+    IEP_CMP_CFG enables any of CMP1..CMP12 (so reset-default state words still
+    toggle their pads), because a registered listener forces the IEP into
+    per-clock event mode.  Compare events before that point are not seen by
+    the module.
     """
 
     def __init__(self, iep, edge_log_depth=EDGE_LOG_DEPTH):
@@ -75,11 +78,16 @@ class IcssgPwm:
         self.ext = None
         self.reset()
         iep.add_reset_listener(self.reset)
+        iep.add_cmp_cfg_listener(self._cmp_cfg_changed)
 
     def _arm(self):
         if not self._armed:
             self._armed = True
             self.iep.add_compare_listener(self._compare)
+
+    def _cmp_cfg_changed(self):
+        if self.iep.cmp_cfg & _CMP_PAD_EN:
+            self._arm()
 
     @property
     def efficiency_mode(self):
@@ -267,6 +275,7 @@ class IcssgPwm:
                     | self.trip_vec[n] << _VEC_SHIFT
                     | (_TRIP_S if self.trip_s[n] else 0))
         if PWM_STATE <= off < PWM_STATE + 48 and off % 4 == 0:
+            self._sync(self.iep.clock_ticks)
             return self.state_cfg[(off - PWM_STATE) // 4]
         return 0
 
@@ -292,6 +301,7 @@ class IcssgPwm:
                     self._apply_state(n, tick)
             self._evaluate(n, tick)
         elif PWM_STATE <= off < PWM_STATE + 48 and off % 4 == 0:
+            self._sync(tick)
             index = (off - PWM_STATE) // 4
             self.state_cfg[index] = value & _STATE_STORED
             setno = index // 3

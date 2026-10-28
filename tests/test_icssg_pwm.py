@@ -841,17 +841,43 @@ def test_compare_listener_is_registered_on_first_pwm_use_only():
     assert len(sim.iep._compare_listeners) == 1
 
 
-def test_unconfigured_module_does_not_see_compare_events_before_first_use():
-    # Deliberate consequence of the lazy listener: with all-zero PWM registers a
-    # compare hit does not move the (Z, toggle) pads.  An eagerly registered
-    # listener would drive pad 0 high here.
+def test_default_state_words_toggle_pad_when_cmp1_is_enabled():
+    # Reset-default state words are (Z, toggle): firmware that leaves them alone
+    # and only enables CMP1 must still see the pad move.
     sim = make_sim()
+    assert sim.iep._compare_listeners == []
     sim.iep.write32(CMP1, 10)
     sim.iep.write32(CMP_CFG, 0x4)
+    assert len(sim.iep._compare_listeners) == 1
     sim.iep.write32(GLOBAL_CFG, 0x11)
     _tick(sim, 15)
-    assert sim.io("pru0")["pwm_pins"] == [None] * 24
-    assert sim.pwm.state[0] == "initial"
+    assert sim.io("pru0")["pwm_pins"][0] == 1
+    assert [e[1:] for e in sim.pwm.edges] == [(0, 1)] and 10 <= sim.pwm.edges[0][0] <= 11
+    assert sim.pwm.state[0] == "active"
+
+
+@pytest.mark.parametrize("cfg", [0x0, 0x1, 0x2, 0x3, 0x1 << 17, 0x1 << 14])
+def test_cmp_cfg_without_cmp1_to_cmp12_keeps_the_fast_path(cfg):
+    sim = make_sim()
+    sim.iep.write32(CMP_CFG, cfg)
+    assert sim.iep._compare_listeners == []
+
+
+@pytest.mark.parametrize("cfg", [0x4, 0x1 << 13, 0x3FFC])
+def test_any_of_cmp1_to_cmp12_arms_the_listener(cfg):
+    sim = make_sim()
+    sim.iep.write32(CMP_CFG, cfg)
+    assert len(sim.iep._compare_listeners) == 1
+
+
+def test_restoring_a_snapshot_with_cmp1_enabled_arms_the_listener():
+    src = make_sim()
+    src.iep.write32(CMP_CFG, 0x4)
+    snap = src.iep.snapshot()
+    sim = make_sim()
+    assert sim.iep._compare_listeners == []
+    sim.iep.restore(snap)
+    assert len(sim.iep._compare_listeners) == 1
 
 
 def _random_pwm_run(seed, eager):
@@ -1076,3 +1102,49 @@ def test_pwm_word_stores_bits_20_to_0_only():
     for n in range(4):
         prime(sim, [(CFG + PWM0_CFG + 4 * n, 0xFFFFFFFF)])
         assert reg(sim, PWM0_CFG + 4 * n) == 0x001FFFFF
+
+
+# --------------------------------------------------------------------------
+# review round: partial writes, state-word access ordering
+# --------------------------------------------------------------------------
+def _latched_source2_trip():
+    sim = make_sim()
+    prime(sim, [(CFG + PWM0_CFG, MASK(2))])
+    sim.set_pwm_trip_input(0, 2, True)
+    sim.set_pwm_trip_input(0, 2, False)           # TRIP_VEC freezes, TRIP_S stays
+    assert reg(sim, PWM0_CFG) == TRIP_S | VEC(2) | MASK(2)
+    return sim
+
+
+@pytest.mark.parametrize("lane,data", [
+    (0, b"\x00"), (0, b"\xff"), (1, b"\x00"), (1, b"\xff"),
+    (3, b"\x00"), (3, b"\xff"), (0, b"\x00\x00"), (0, b"\xff\xff"),
+])
+def test_partial_writes_that_skip_byte_2_do_not_clear_a_latched_trip(lane, data):
+    # Byte 2 holds both TRIP_RESET (bit 18) and the bit-23 clear command, so a
+    # write that skips it replays the current values of both; with TRIP_VEC
+    # latched, TRIP_RESET reads 0 and the clear is ignored.
+    sim = _latched_source2_trip()
+    sim.memory.write(CFG + PWM0_CFG + lane, data)
+    assert reg(sim, PWM0_CFG) & TRIP_S
+    assert reg(sim, PWM0_CFG) & VEC(2)
+
+
+def test_filtered_trip_deadline_is_applied_before_a_state_word_write():
+    sim = _debounce_sim(16)
+    sim.set_pwm_trip_input(0, 5, True)            # deadline 16 clocks later
+    _tick(sim, 30)                                # passed, nothing has synced yet
+    prime(sim, [(CFG + 0x140, state_word(init=(0, 0), trip=(2, 2)))])
+    ticks = [e[0] for e in sim.pwm.edges]
+    assert ticks == sorted(ticks)                 # trip edge first, then nothing in trip state
+    assert sim.pwm.state[0] == "trip"
+    assert sim.io("pru0")["pwm_pins"][0] == 1
+
+
+def test_state_word_read_applies_an_expired_trip_deadline():
+    sim = _debounce_sim(16)
+    sim.set_pwm_trip_input(0, 5, True)
+    _tick(sim, 30)
+    assert sim.pwm.state[0] == "initial"
+    reg(sim, 0x140)
+    assert sim.pwm.state[0] == "trip"

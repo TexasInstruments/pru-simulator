@@ -198,6 +198,7 @@ class IepTimer:
         self._global_cfg = 0
         self._cmp_cfg = 0
         self._compare_listeners: list = []
+        self._cmp_cfg_listeners: list = []
         self._reset_listeners: list = []
         self._clock_ticks = 0
         self._pending_cmp0_reset = False
@@ -382,6 +383,15 @@ class IepTimer:
         self._cmp_cfg = value
         if self.shadow_en != was_shadow:
             self._shadow_mode_changed()
+        self._notify_cmp_cfg()
+
+    def add_cmp_cfg_listener(self, listener) -> None:
+        """Call *listener*() after every IEP_CMP_CFG write or snapshot restore."""
+        self._cmp_cfg_listeners.append(listener)
+
+    def _notify_cmp_cfg(self) -> None:
+        for listener in list(self._cmp_cfg_listeners):
+            listener()
 
     @property
     def shadow_en(self) -> bool:
@@ -805,6 +815,7 @@ class IepTimer:
         self.global_status = snapshot.get("global_status", 0) & _MASK32
         self.count = snapshot["count"] & _MASK64
         self._cmp_cfg = snapshot["cmp_cfg"] & _MASK32
+        self._notify_cmp_cfg()
         self.cmp_status = snapshot["cmp_status"] & 0xFFFF
         self.compare = list(snapshot["compare"])
         self.shadow = list(snapshot.get("shadow", [0] * NUM_COMPARE))
