@@ -136,7 +136,7 @@ class Preprocessor:
                 if current_struct is None:
                     raise SyntaxError(f"line {i}: structure end without .struct")
                 if end and end.group(1):
-                    self.defines[end.group(1)] = str(struct_offset)
+                    self._define_structure_symbol(end.group(1), str(struct_offset), i)
                 current_struct = None
                 continue
             if current_struct is not None:
@@ -156,8 +156,8 @@ class Preprocessor:
                 key = f"{current_struct}.{field_name}"
                 if any(f[0] == field_name for f in self.struct_fields[current_struct]):
                     raise SyntaxError(f"line {i}: duplicate structure member {field_name}")
+                self._define_structure_symbol(key, str(struct_offset), i)
                 self.structs[key] = struct_offset
-                self.defines[key] = str(struct_offset)
                 self.struct_fields[current_struct].append((field_name, struct_offset, size))
                 struct_offset += size
                 continue
@@ -174,7 +174,7 @@ class Preprocessor:
                     if index > 31 or sub + size > 4 or (size == 4 and sub):
                         raise SyntaxError(f"line {i}: unsupported .sassign register layout for {alias}.{member}")
                     suffix = "" if size == 4 else f".{'b' if size == 1 else 'w'}{sub}"
-                    self.defines[f"{alias}.{member}"] = f"r{index}{suffix}"
+                    self._define_structure_symbol(f"{alias}.{member}", f"r{index}{suffix}", i)
                 continue
             if re.search(r"\.(?:struct|sassign|endstruct)\b", line, re.I):
                 raise SyntaxError(f"line {i}: unsupported structure syntax: {line}")
@@ -280,12 +280,20 @@ class Preprocessor:
     # Helpers
     # ------------------------------------------------------------------
 
+    def _define_structure_symbol(self, name: str, value: str, line_no: int) -> None:
+        """Define a structure-derived symbol, refusing to overwrite an existing one."""
+        if name in self.defines:
+            raise SyntaxError(f"line {line_no}: redefinition of symbol {name}")
+        self.defines[name] = value
+
     def _apply_defines(self, line: str) -> str:
         """Replace defined symbols in *line* using whole-word substitution."""
-        for name, value in self.defines.items():
-            # Use word-boundary replacement so we don't mangle sub-strings
+        # Dotted names (Struct.member) go first, and a plain name never matches
+        # right after a '.', so a symbol "count" cannot rewrite "Ctx.count".
+        ordered = sorted(self.defines.items(), key=lambda item: "." not in item[0])
+        for name, value in ordered:
             end = r"(?![\w.])" if "." in name else r"\b"
-            line = re.sub(r"\b" + re.escape(name) + end, value, line)
+            line = re.sub(r"(?<![\w.])" + re.escape(name) + end, value, line)
         return line
 
     def _eval_condition(self, expr: str) -> bool:

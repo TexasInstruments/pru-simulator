@@ -293,3 +293,56 @@ def test_source_line_survives_macro_expansion():
     assert [i.source_line for i in instructions] == [5, 6, 6, 7]
     errors = Simulator().load("pru0", text)
     assert errors and "line 7" in errors[0]
+
+
+@pytest.mark.parametrize("text", [
+    "N .set 5\nS .struct\nx .uint\nN .endstruct\nhalt",
+    "S .struct\nx .uint\nS .endstruct\nS .set 4\nhalt",
+    "S .struct\nx .uint\nN .endstruct\nN .set 4\nhalt",
+    "S .struct\nx .uint\n.endstruct\nA .struct\nx .uint\n.endstruct\nA .sassign r5, S\nhalt",
+])
+def test_structure_symbols_do_not_overwrite_existing_symbols(text):
+    errors = Simulator().load("pru0", text)
+    assert errors and "redefinition" in errors[0]
+
+
+def test_named_endstruct_defines_size_when_name_is_free():
+    text = "S .struct\nx .uint\ny .ushort\nSize .endstruct\nldi r1, Size\nhalt"
+    assert execute(text).registers.read_full(1) == 6
+
+
+@pytest.mark.parametrize("text", [
+    ".text\nold:\n.sect \".text:other\"\nnop\nhalt",
+    ".sect \".text:a\"\nold:\n.sect \".text:b\"\nhalt",
+])
+def test_label_only_line_counts_as_code_for_section_switch(text):
+    errors = Simulator().load("pru0", text)
+    assert errors and "multiple code sections" in errors[0]
+
+
+def test_label_then_same_section_is_accepted():
+    execute(".text\nold:\n.text\nldi r1, 3\nhalt")
+    execute(".sect \".text:a\"\nold:\n.sect \".text:a\"\nhalt")
+
+
+def test_defined_symbol_does_not_rewrite_dotted_member():
+    text = "count .set 3\nCtx .struct\ncount .uint\n.endstruct\nldi r1, Ctx.count\nhalt"
+    assert execute(text).registers.read_full(1) == 0
+    text = ("count .set 3\nS .struct\nx .uint\ncount .uint\n.endstruct\n"
+            "A .sassign r5, S\nldi A.count, 9\nhalt")
+    assert execute(text).registers.read_full(6) == 9
+
+
+def test_whole_register_alias_still_resolves_field():
+    core = execute("Alias .set r5\nldi Alias.w0, 8\nhalt")
+    assert core.registers.read_full(5) == 8
+
+
+@pytest.mark.parametrize("text", [
+    "jmp ret\nret:\nhalt",
+    "jmp ret\nret: ldi r1, 1\nhalt",
+    "jmp call\ncall:\nhalt",
+    "jmp call\ncall: ldi r1, 1\nhalt",
+])
+def test_call_and_ret_usable_as_labels(text):
+    assert Simulator().load("pru0", text) == []

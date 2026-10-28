@@ -175,17 +175,17 @@ def _parse_mvi_operand(token: str) -> MVIOperand:
                       indirect=indirect, predec=predec, postinc=postinc)
 
 
-# ---------------------------------------------------------------------------
-# Label-line regex
-# ---------------------------------------------------------------------------
-# Matches an optional leading label (word chars + colon) followed by optional
-# remainder of the line.
 # Position of the length operand that may be spelled bN (byte N of R0).
 _COUNT_OPERAND_INDEX = {
     "LBBO": 3, "SBBO": 3, "LBCO": 3, "SBCO": 3,
     "XIN": 2, "XOUT": 2, "XCHG": 2, "ZERO": 1, "FILL": 1,
 }
 
+# ---------------------------------------------------------------------------
+# Label-line regex
+# ---------------------------------------------------------------------------
+# Matches an optional leading label (word chars + colon) followed by optional
+# remainder of the line.
 _LABEL_RE = re.compile(r"^([A-Za-z_]\w*)\s*:(.*)", re.DOTALL)
 
 
@@ -288,10 +288,11 @@ class Parser:
                     raise SyntaxError(f"line {source_line}: unsupported directive syntax: {body}")
             else:
                 result.append(line)
-                has_code |= bool(body)
+                has_code |= bool(body) or bool(label)
                 continue
             if label:
                 result.append(SourceLine(f"{label}:", source_line))
+                has_code = True
         return result
 
     def _expand_pseudo_ops(self, lines: list[str]) -> list[str]:
@@ -303,9 +304,10 @@ class Parser:
         )
         for line in lines:
             source_line = getattr(line, "source_line", 0)
-            pseudo = re.fullmatch(r"(?:(\w+):\s*)?(call|ret)\b\s*(.*)", line, re.I)
+            pseudo = re.fullmatch(r"(?:(\w+):\s*)?(call|ret)(?:\s+(.*))?", line, re.I)
             if pseudo:
                 label, opcode, args = pseudo.groups()
+                args = args or ""
                 if opcode.lower() in self.preprocessor.macros:
                     # A user macro of this name takes precedence over the
                     # shorthand; it just was not invoked in a position the
