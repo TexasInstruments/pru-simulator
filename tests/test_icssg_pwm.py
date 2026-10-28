@@ -428,19 +428,26 @@ def test_pwm2_pwm3_have_no_pad_state_machine_but_their_trip_registers_work():
 
 
 @pytest.mark.parametrize("cfg", ["memory_am261x.cfg", "memory_am263x.cfg"])
-def test_icssm_pwm_registers_fault_by_design_although_silicon_reads_zero(cfg, tmp_path):
-    # Deliberate deviation: on AM261x ICSSM silicon CFG 0x130..0x16C and CFG+0x40
-    # read as zero without a fault (measured on LP-AM261 ICSSM0, reads only, PRU
-    # and JTAG; writes not measured).  The simulator raises instead, so firmware
-    # that uses an ICSSG-only peripheral on an ICSSM target is flagged.
+def test_icssm_pwm_registers_read_zero_by_default_and_fault_in_strict_mode(
+        cfg, tmp_path, sim_config):
+    # Main's absent-block model owns CFG 0x130..0x16C on ICSS-M: default
+    # reads are zero and writes are discarded. Strict mode flags the same
+    # accesses; it does not instantiate an ICSSG PWM peripheral.
     root = os.path.join(os.path.dirname(__file__), "..", "config")
     sim = Simulator(config_path=os.path.join(root, cfg))
     assert not hasattr(sim, "pwm")
     for off in (0x130, 0x13C, 0x140, 0x16C):
-        with pytest.raises(ValueError):
-            sim.memory.read(CFG + off, 4)
-        with pytest.raises(ValueError):
-            sim.memory.write(CFG + off, (1).to_bytes(4, "little"))
+        assert sim.memory_read(CFG + off, 4) == bytes(4)
+        sim.memory.write(CFG + off, (1).to_bytes(4, "little"))
+        assert sim.memory_read(CFG + off, 4) == bytes(4)
+    target = "AM261x" if "261x" in cfg else "AM263x"
+    strict = Simulator(sim_config(target=target, icssg_only_blocks="strict"))
+    assert not hasattr(strict, "pwm")
+    for off in (0x130, 0x13C, 0x140, 0x16C):
+        with pytest.raises(ValueError, match="ICSSG PWM registers.*absent on ICSS-M"):
+            strict.memory.read(CFG + off, 4)
+        with pytest.raises(ValueError, match="ICSSG PWM registers.*absent on ICSS-M"):
+            strict.memory.write(CFG + off, (1).to_bytes(4, "little"))
     assert sim.io("pru0")["pwm_pins"] == []
     with pytest.raises(ValueError):
         sim.set_pwm_trip_input(0, 5, True)

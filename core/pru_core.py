@@ -482,7 +482,7 @@ class PRUCore:
             length = self._read_operand(length_op)
             addr = self._map_data_addr(base + offset)
             try:
-                data, stalls = self.memory.read(addr, length)
+                data, stalls = self.memory.read(addr, length, requester=self.name)
                 start_reg = reg_op.index if isinstance(reg_op, Register) else 0
                 start_byte = (reg_op.offset // 8) if isinstance(reg_op, Register) else 0
                 self._write_registers_from_bytes(start_reg, data, start_byte)
@@ -501,7 +501,7 @@ class PRUCore:
             length = self._read_operand(length_op)
             addr = self._map_data_addr(base + offset)
             try:
-                data, stalls = self.memory.read(addr, length)
+                data, stalls = self.memory.read(addr, length, requester=self.name)
                 start_reg = reg_op.index if isinstance(reg_op, Register) else 0
                 start_byte = (reg_op.offset // 8) if isinstance(reg_op, Register) else 0
                 self._write_registers_from_bytes(start_reg, data, start_byte)

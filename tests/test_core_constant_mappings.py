@@ -34,6 +34,43 @@ def test_am263x_pru_control_and_rat_constants(sim_config, core, c11, c22):
     assert table.resolve(22) == c22
 
 
+ICSSM_TARGETS = ["AM261x", "AM263x"]
+
+
+@pytest.mark.parametrize("target", ICSSM_TARGETS)
+@pytest.mark.parametrize("core", ["pru0", "pru1"])
+def test_icssm_cores_do_not_inherit_the_icssg_c10(sim_config, target, core):
+    # AM263x shares the AM261x ICSS-M; neither has the ICSSG C10 (0x48318000).
+    sim = Simulator(sim_config(target=target))
+    assert sim.cores[core].constant_table.resolve(10) != 0x48318000
+    assert sim.cores[core].constant_table.resolve(10) == Simulator(
+        sim_config(target="AM261x")).cores[core].constant_table.resolve(10)
+
+
+@pytest.mark.parametrize("core", ["pru0", "pru1"])
+def test_am263x_constant_table_matches_am261x(sim_config, core):
+    am261 = Simulator(sim_config(target="AM261x")).cores[core].constant_table
+    am263 = Simulator(sim_config(target="AM263x")).cores[core].constant_table
+    assert am263.entries == am261.entries
+    # Spot checks against SPRUJB6B Table 7-40 (none of these is an ICSSG value).
+    assert [am263.resolve(n) for n in (1, 2, 5, 8, 16, 17)] == [
+        0x0002F000, 0x0002F100, 0x00026100, 0x0002E100, 0x70000000, 0x80000000]
+
+
+def test_am263x_config_preset_reads_the_am261x_table():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    sim = Simulator(str(root / "config" / "memory_am263x.cfg"))
+    assert sim.cores["pru0"].constant_table.resolve(1) == 0x0002F000
+
+
+def test_am263x_prefers_its_own_constants_file_when_present(sim_config):
+    from pathlib import Path
+    path = sim_config(target="AM263x")
+    (Path(path).parent / "config" / "constants_am263x.cfg").write_text("[constants]\nc3 = 0x12340000\n")
+    assert Simulator(path).cores["pru0"].constant_table.resolve(3) == 0x12340000
+
+
 @pytest.mark.parametrize("core,c10,c11,c22", ICSSG_CORES)
 def test_constant_loads_and_stores_use_the_core_bank(sim_config, core, c10, c11, c22):
     sim = Simulator(sim_config(target="AM243x"))

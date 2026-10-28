@@ -40,13 +40,12 @@ AM243x/AM64x (ICSSG) only. On AM261x/AM263x (ICSSM) there is no `Simulator.pwm`,
 `io()["pwm_pins"]` is empty, and `set_pwm_trip_input` and
 `export_pin_waveform(..., include_pwm=True)` raise `ValueError`.
 
-**Simulator and silicon differ here, by design.** On LP-AM261 ICSSM0 silicon
-the CFG words `0x130..0x16C` and `CFG+0x40` read as zero, with no bus error and
-no hang (measured through the PRU and through JTAG; writes were not measured).
-The simulator does not mimic that: a bus access to `0x130..0x16F` of an ICSSM
-target raises `ValueError`. The fault is deliberate and conservative: it flags
-firmware that uses an ICSSG-only peripheral, which would otherwise read zeros
-and carry on. Do not read the fault as a silicon behaviour.
+On LP-AM261 ICSSM0 silicon the CFG words `0x130..0x16C` and `CFG+0x40`
+read as zero without a bus error or hang (PRU and JTAG measurements; writes
+were not measured). Main's absent-block model now supplies zero reads and
+discarded writes by default; `[device] icssg_only_blocks = strict` raises
+`ValueError` instead. Neither mode instantiates an ICSSG PWM peripheral on
+ICSS-M. Dropped writes are a simulator policy, not a new silicon claim.
 
 ## Registers (CFG offset, firmware `SBCO`/`LBCO` through the memory bus)
 
@@ -229,13 +228,13 @@ the result; the rest remain assumptions.
   hardware source in the simulator; only the pin hook and software bits exist.
 * The debounce timer runs on IEP clocks, so it does not advance while the IEP
   counter is disabled.
-* Compare events for CMP8..CMP15 are delivered by index. Firmware access to the
-  CMP8..CMP15 registers still uses the pre-existing offsets noted in
-  `docs/iep_shadow_compare.md`; that bug is unchanged.
+* Compare events for CMP8..CMP15 are delivered by index. Firmware access now
+  follows main's #90 offset fix: CMP8..CMP15 start at 0xC0, after RXIPG0/1;
+  see `docs/iep_shadow_compare.md`.
 * Trip inputs can only be driven from Python (`set_pwm_trip_input`); the MCP
   server and the web UI have no control for them.
-* ICSSM targets fault on the PWM CFG words where silicon reads zero (see
-  Availability).
+* ICSS-M PWM CFG words read zero by default; strict mode faults (see
+  Availability). Writes on these absent targets were not measured.
 
 ## Not measured on silicon
 
@@ -261,6 +260,6 @@ TRIP_S/VEC writes, the state words, PWM1..PWM3); each trip behaviour in its own
 test; every source 0..8 against its own mask bit; CMP0 and TRIP_S; debounce
 boundaries, 8-bit width and rounding for sources 5..8; deadlines seen without
 PWM register access (io, edge log, VCD); simultaneous compares; CMP1..CMP14
-mapping; PWM2/3 registers; ICSSM faulting by design; reset with a held pad;
+mapping; PWM2/3 registers; ICSS-M read-zero and strict modes; reset with a held pad;
 snapshot replay; the R31 check on PRU0 and PRU1 with all live pads high; lazy
 listener differential tests; UI state push.

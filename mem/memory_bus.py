@@ -15,21 +15,32 @@ class MemoryBus:
         self.regions.sort(key=lambda r: r.base_addr)
 
     def _find_region(self, addr: int) -> MemoryRegion:
-        """Return the region that contains *addr*, or raise ValueError."""
+        """Return the region that contains *addr*, or raise ValueError.
+
+        Where regions overlap (a register block laid over a generic RAM
+        region), the smallest one wins.
+        """
+        found = None
         for region in self.regions:
-            if region.contains(addr):
-                return region
+            if region.contains(addr) and (found is None or region.size < found.size):
+                found = region
+        if found is not None:
+            return found
         raise ValueError(f"No memory region mapped at address 0x{addr:08X}")
 
-    def read(self, addr: int, length: int) -> tuple[bytes, int]:
+    def read(self, addr: int, length: int, *, requester: str | None = None) -> tuple[bytes, int]:
         """Read *length* bytes from *addr*.
+
+        *requester* is the lower/upper-case name of the issuing core; only LBBO/LBCO
+        pass it. Callers without one (XFR accelerators, host reads) get base timing
+        for regions whose cost model is limited to specific readers.
 
         Returns:
             (data, stall_cycles)
         """
         region = self._find_region(addr)
         data = region.read(addr, length)
-        stalls = region.calc_read_stalls(addr, length)
+        stalls = region.calc_read_stalls(addr, length, requester=requester)
         return data, stalls
 
     def write(self, addr: int, data: bytes) -> int:
