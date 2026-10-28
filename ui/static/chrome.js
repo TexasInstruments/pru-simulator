@@ -4,9 +4,8 @@
 // badge). The pure ones take plain values so tests/ui_chrome.test.js can run
 // them without a browser.
 (root => {
-  // Wipe buttons (.btn-17) wrap their label as .text-container > .text so the
-  // hover wipe can animate it; writing button.textContent would destroy the
-  // spans. A .btn-17 button created in script gets the spans on its first label.
+  // Text buttons (.btn-17) wrap their label as .text-container > .text;
+  // writing button.textContent would destroy the spans. A .btn-17 button created in script gets the spans on its first label.
   function setButtonLabel(button, label) {
     if (!button) return;
     let text = button.querySelector('.text');

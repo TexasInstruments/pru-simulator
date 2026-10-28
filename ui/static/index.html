@@ -4,19 +4,29 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>PRU Simulator Dashboard</title>
+  <script>
+    // Apply the saved theme (or the OS light/dark preference) before first paint;
+    // workspace.js owns the toggle afterwards.
+    (() => {
+      let saved = null;
+      try { saved = localStorage.getItem('pru-workspace-theme'); } catch (_) {}
+      const os = window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      document.documentElement.dataset.theme = ['dark', 'light', 'contrast'].includes(saved) ? saved : os;
+    })();
+  </script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     /* ---- Design tokens ------------------------------------------------------
-       Dark is the red-brand operator workbench; the High contrast theme
-       redefines every colour token below under :root[data-theme="contrast"]. */
+       Dark is the red-brand operator workbench. The Light and High contrast
+       themes redefine every colour token below under :root[data-theme="light"]
+       and :root[data-theme="contrast"]. */
     :root {
       color-scheme: dark;
       --control-radius: 5px;
       --brand-red: #b5202c;
       --brand-red-bright: #ff7c84;
       --on-brand: #ffffff;
-      --wipe: #ffffff;
       --bg: #20262d;
       --panel: #2c333b;
       --panel-raised: #333b43;
@@ -52,12 +62,51 @@
       --font-mono: "Cascadia Code", "SFMono-Regular", Consolas, "Courier New", monospace;
     }
 
+    :root[data-theme="light"] {
+      color-scheme: light;
+      --brand-red: #b5202c;
+      --brand-red-bright: #d23b47;
+      --on-brand: #ffffff;
+      --bg: #e9edf1;
+      --panel: #f6f7f9;
+      --panel-raised: #ffffff;
+      --panel-inset: #ffffff;
+      --border: #cdd4da;
+      --border-strong: #7a8590;
+      --text: #1b2127;
+      --text-dim: #4d5761;
+      --accent: #b5202c;
+      --accent2: #8e1822;
+      --highlight: #fbe4e6;
+      --changed: #000000;
+      --halted: #a31b26;
+      --green: #1b7243;
+      --gray: #8a949e;
+      --btn: #eceff3;
+      --btn-hover: #dde3e9;
+      --btn-active: #a92a35;
+      --scrim: rgba(27, 33, 39, 0.45);
+      --shadow: rgba(27, 33, 39, 0.12);
+      --hl-op: #0b57a4;
+      --hl-reg: #08705e;
+      --hl-num: #9a4410;
+      --hl-lbl: #6d5a00;
+      --hl-cmt: #3a7027;
+      /* The logic-analyser canvases stay dark (a scope screen): their trace
+         palettes in app.js are tuned for a dark background. */
+      --graph-bg: #1b2127;
+      --graph-grid: #35414b;
+      --graph-grid-strong: #4b5863;
+      --graph-label: #c0c7cd;
+      --graph-placeholder: #9da9b3;
+      --graph-wave: #ff7c84;
+    }
+
     :root[data-theme="contrast"] {
       color-scheme: dark;
       --brand-red: #c8102e;
       --brand-red-bright: #ffb3b8;
       --on-brand: #ffffff;
-      --wipe: #ffffff;
       --bg: #000000;
       --panel: #0b0b0b;
       --panel-raised: #1a1a1a;
@@ -1466,73 +1515,29 @@
       font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6;
     }
 
-    /* ---- Text buttons: skewed wipe on hover --------------------------------------
-       Neutral buttons: two skewed --wipe parallelograms sweep across the pill
-       and the label (blend-mode: difference) inverts where they pass, ending
-       as dark text on --wipe. Filled and danger buttons use the same motion with a dark wipe and
-       unblended labels to preserve their semantic text colours. The shared control
-       shape also applies in #controls; panel buttons keep their own size. Labels live in .text-container > .text; write
-       them with setButtonLabel(), never button.textContent. Hover only on
-       devices that can hover; reduced motion gets a border change only. */
-    /* overflow clips the skewed wipe shapes, so keep the button from shrinking below its label. */
-    .btn-17 { position: relative; isolation: isolate; overflow: hidden; flex-shrink: 0; }
+    /* ---- Text buttons: quiet hover ----------------------------------------------
+       .btn-17 buttons keep their label in .text-container > .text (write it with
+       setButtonLabel(), never button.textContent). Hover is a plain fill and border
+       change on devices that can hover; the filled RUN and danger RESET buttons keep
+       their own hover colours. */
+    .btn-17 { position: relative; flex-shrink: 0; }
     #controls .btn-17 {
       flex: 0 0 auto;
       border-radius: var(--control-radius);
       padding: 4px 11px;
       line-height: 1.5;
     }
-    .btn-17 .text-container { display: block; position: relative; overflow: hidden; }
-    .btn-17 .text { display: block; position: relative; }
-    .btn-17:not(.btn-run):not(.btn-reset) { color: var(--wipe); }
-    .btn-17:not(.btn-run):not(.btn-reset) .text-container { mix-blend-mode: difference; }
-    .btn-17::before,
-    .btn-17::after {
-      --skew: 0.2;
-      --progress: 0%;
-      content: "";
-      display: block;
-      position: absolute;
-      width: 100%;
-      height: 104%;
-      left: calc(-50% - 50% * var(--skew));
-      top: -104%;
-      background: var(--wipe);
-      transform: skew(calc(150deg * var(--skew))) translateY(var(--progress));
-      transition: transform 200ms cubic-bezier(0.23, 1, 0.32, 1);
-      pointer-events: none;
-    }
-    .btn-17::after { left: calc(50% + 50% * var(--skew)); top: 100%; z-index: -1; }
+    .btn-17 .text-container, .btn-17 .text { display: block; }
     @media (hover: hover) and (pointer: fine) {
-      .btn-17:hover:not(:disabled)::before { --progress: 100%; }
-      .btn-17:hover:not(:disabled)::after { --progress: -102%; }
-      .btn-17:hover:not(:disabled) .text { animation: btn-label-roll 0.3s forwards; }
+      .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled) {
+        background: var(--btn-hover); border-color: var(--brand-red-bright);
+      }
     }
-    @keyframes btn-label-roll {
-      0% { transform: translateY(0); }
-      50% { transform: translateY(80%); }
-      51% { transform: translateY(-80%); }
-      to { transform: translateY(0); }
-    }
-    /* Keep coloured labels readable while sharing the neutral buttons’ wipe motion. */
-    .btn-17.btn-run::before, .btn-17.btn-run::after,
-    .btn-17.btn-reset::before, .btn-17.btn-reset::after { background: var(--panel-inset); }
     .btn-17:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
     .btn-17:disabled { opacity: 0.4; cursor: default; }
     @media (prefers-reduced-motion: reduce) {
-      .btn-17, .btn-17::before, .btn-17::after, .btn-17 .text {
-        animation: none !important; transition: none !important;
-      }
-      .btn-17:hover:not(:disabled)::before,
-      .btn-17:hover:not(:disabled)::after { --progress: 0%; }
-      .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled) { color: var(--text); }
-      .btn-17:not(.btn-run):not(.btn-reset):hover:not(:disabled) .text-container { mix-blend-mode: normal; }
-    }
-    @media (forced-colors: active) {
-      /* The difference blend inverts the forced text backplate (black boxes). */
-      .btn-17:not(.btn-run):not(.btn-reset) .text-container { mix-blend-mode: normal; }
-      .btn-17::before,
-      .btn-17::after { display: none; }
+      button { transition: none; }
+      button:active:not(:disabled) { transform: none; }
     }
 
     /* ---- Responsive -------------------------------------------------------------------------------------------- */
@@ -1657,7 +1662,7 @@
         <span id="ws-status" role="status" aria-live="polite">Connecting...</span>
         <span class="status-theme-divider" aria-hidden="true"></span>
       <div class="toolbar-theme">
-        <button id="workspace-theme" type="button" value="dark" aria-label="Switch to high contrast" aria-pressed="false" title="Switch to high contrast">
+        <button id="workspace-theme" type="button" value="dark" aria-label="Theme: dark. Switch to light" title="Theme: dark. Switch to light">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path class="theme-icon-half" d="M12 4a8 8 0 0 1 0 16Z"/></svg>
         </button>
       </div></div>

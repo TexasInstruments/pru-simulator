@@ -1,4 +1,5 @@
 :root { --core-pru0:#ff6369; --core-pru1:#ffad5c; --core-rtu0:#45c9e0; --core-rtu1:#a990ff; }
+:root[data-theme="light"] { --core-pru0:#c42630; --core-pru1:#a3560a; --core-rtu0:#0b7287; --core-rtu1:#6243c9; }
 #cores-control { position:relative; z-index:80; }
 #cores-toggle { display:flex; align-items:center; gap:7px; min-height:30px; padding:4px 9px; border:1px solid var(--border-strong); border-radius:var(--control-radius); background:var(--panel-inset); color:var(--text); cursor:pointer; white-space:nowrap; }
 #cores-toggle > b { font-size:10px; letter-spacing:1px; color:var(--text-dim); }
@@ -126,7 +127,6 @@
   background:var(--panel-inset); color:var(--text); cursor:pointer;
 }
 #workspace-theme .theme-icon-half { fill:currentColor; stroke:none; }
-#workspace-theme[aria-pressed="true"] { border-color:var(--text); }
 .toolbar-rate-pill:focus-within,.toolbar-time-pill:focus-within { outline:2px solid var(--text); outline-offset:2px; }
 #controls #iep-clock-select:focus,#controls #sim-interval:focus { outline:none; }
 #workspace-theme:focus-visible { outline:2px solid var(--text); outline-offset:2px; }

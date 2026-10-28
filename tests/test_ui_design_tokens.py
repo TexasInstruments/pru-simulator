@@ -18,13 +18,13 @@ def _block(selector: str) -> dict:
 
 
 DARK = _block(":root")
+LIGHT = _block(':root[data-theme="light"]')
 CONTRAST = _block(':root[data-theme="contrast"]')
-THEMES = {"dark": DARK, "contrast": {**DARK, **CONTRAST}}
+THEMES = {"dark": DARK, "light": {**DARK, **LIGHT}, "contrast": {**DARK, **CONTRAST}}
 
 
-# Component-local geometry/animation variables (set by the glider script or by the
-# button wipe rule itself), not theme tokens.
-LOCAL_PROPERTIES = {"--glider-x", "--glider-w", "--skew", "--progress"}
+# Component-local geometry variables (set by the glider script), not theme tokens.
+LOCAL_PROPERTIES = {"--glider-x", "--glider-w"}
 
 
 def _used_tokens() -> set:
@@ -70,10 +70,16 @@ def test_every_token_the_ui_uses_is_defined():
     assert not used - set(DARK), f"undefined in the dark theme: {sorted(used - set(DARK))}"
 
 
-def test_high_contrast_redefines_every_colour_token():
-    colour_tokens = {name for name, value in DARK.items() if value.startswith("#")}
-    missing = colour_tokens - set(CONTRAST)
-    assert not missing, f"High contrast does not override: {sorted(missing)}"
+@pytest.mark.parametrize("name,block", [("light", LIGHT), ("contrast", CONTRAST)])
+def test_other_themes_redefine_every_colour_token(name, block):
+    colour_tokens = {token for token, value in DARK.items() if value.startswith(("#", "rgba("))}
+    missing = colour_tokens - set(block)
+    assert not missing, f"{name} does not override: {sorted(missing)}"
+
+
+def test_light_theme_is_light():
+    assert "color-scheme: light" in STYLE[STYLE.index(':root[data-theme="light"]'):]
+    assert _luminance(LIGHT["--bg"]) > 0.7 and _luminance(LIGHT["--text"]) < 0.05
 
 
 TEXT_PAIRS = [
@@ -87,7 +93,6 @@ TEXT_PAIRS = [
     ("--halted", "--panel"), ("--halted", "--panel-inset"), ("--halted", "--highlight"),
     ("--green", "--panel"), ("--green", "--panel-inset"), ("--green", "--panel-raised"),
     ("--on-brand", "--brand-red"), ("--on-brand", "--btn-active"),
-    # Filled/danger toolbar buttons swap colours on hover: red text on --on-brand.
     ("--brand-red", "--on-brand"),
     ("--changed", "--highlight"), ("--changed", "--panel-inset"),
     ("--graph-label", "--graph-bg"), ("--graph-placeholder", "--graph-bg"),
@@ -121,61 +126,16 @@ def test_control_borders_are_visible(theme, border, surface):
         assert ratio >= 3.0, f"{theme}: {border} on {surface} is {ratio:.2f}:1"
 
 
-def _difference(a: str, b: str) -> str:
-    """mix-blend-mode: difference of two opaque colours."""
-    return "#" + "".join(f"{abs(int(a[i:i + 2], 16) - int(b[i:i + 2], 16)):02x}" for i in (1, 3, 5))
+def test_text_buttons_hover_without_wipe_or_label_animation():
+    """The skewed wipe, difference-blended label and label roll were replaced by a
+    plain fill/border hover on hover-capable pointers."""
+    for gone in ("mix-blend-mode", "btn-label-roll", ".btn-17::before", ".btn-17::after", "--wipe"):
+        assert gone not in HTML, gone
+    hover = STYLE[STYLE.index("@media (hover: hover) and (pointer: fine) {\n      .btn-17"):]
+    hover = hover[:hover.index("\n    }")]
+    assert "background: var(--btn-hover)" in hover and "animation" not in hover
 
 
-@pytest.mark.parametrize("theme", sorted(THEMES))
-def test_wipe_label_is_readable_before_and_after_the_animation(theme):
-    """Neutral toolbar buttons blend their --wipe coloured label with `difference`
-    over the button fill, so the label colour changes while the wipe passes."""
-    tokens = THEMES[theme]
-    wipe, inset = tokens["--wipe"], tokens["--panel-inset"]
-    rest_label = _difference(wipe, inset)       # label over the dark button
-    end_label = _difference(wipe, wipe)         # label over the fully swept wipe
-    assert contrast(rest_label, inset) >= 4.5, f"{theme}: resting label {rest_label}"
-    assert contrast(end_label, wipe) >= 4.5, f"{theme}: label at the end of the wipe {end_label}"
-
-
-@pytest.mark.parametrize("theme", sorted(THEMES))
-def test_panel_wipe_label_is_readable_on_the_default_fill(theme):
-    """Panel buttons wipe too: their resting label is the difference blend over --btn.
-    (--btn-hover only shows for the 200 ms the wipe takes to cover it.)"""
-    tokens = THEMES[theme]
-    label = _difference(tokens["--wipe"], tokens["--btn"])
-    assert contrast(label, tokens["--btn"]) >= 4.5, f"{theme}: label {label} on --btn"
-
-
-def test_all_buttons_share_wipe_motion_with_readable_coloured_labels():
-    """Red buttons share the wipe, with neutral-only difference blending."""
-    assert ".btn-17::before," in STYLE
-    assert "mix-blend-mode: difference" in STYLE
-    blend = re.findall(r"([^{}]*)\{[^{}]*mix-blend-mode: difference", STYLE)
-    assert blend and all(":not(.btn-run):not(.btn-reset)" in selector for selector in blend)
-    assert re.search(r"\.btn-17\.btn-run::before,.*?\.btn-17\.btn-reset::after\s*\{\s*background: var\(--panel-inset\)", STYLE, re.S)
-
-
-def test_wipe_respects_reduced_motion_and_hover_capability():
-    assert "@media (hover: hover) and (pointer: fine)" in STYLE
-    reduced = STYLE[STYLE.index(".btn-17, .btn-17::before"):]
-    assert "animation: none !important" in reduced and "--progress: 0%" in reduced
-
-
-def test_wipe_buttons_do_not_set_their_own_label_colour():
-    """The neutral wipe label is --wipe blended with `difference`; an id rule or
-    inline colour (accent) would turn cyan at the end of the hover."""
-    page = (Path(__file__).parent.parent / "ui" / "static" / "index.html").read_text()
-    for match in re.finditer(r"<button\b([^>]*\bbtn-17\b[^>]*)>", page):
-        attrs = match.group(1)
-        if re.search(r'class="[^"]*\b(btn-run|btn-reset)\b', attrs):
-            continue
-        style = re.search(r'style="([^"]*)"', attrs)
-        assert not (style and re.search(r"(^|;)\s*color\s*:", style.group(1))), attrs
-        ident = re.search(r'\bid="([^"]+)"', attrs)
-        if ident:
-            # `#id {`, `#id:hover {` and grouped selectors (`#a, #id {`); state
-            # classes such as `#btn-multicore.mc-active` are toggles and exempt.
-            sel = r"#" + re.escape(ident.group(1)) + r"(?::hover)?(?![\w.:-])"
-            rules = re.findall(r"(?:^|[},;>])\s*(?:[^{}]*,\s*)?" + sel + r"\s*(?:,[^{}]*)?\{([^}]*)\}", page)
-            assert not any(re.search(r"(^|;)\s*color\s*:", rule) for rule in rules), ident.group(1)
+def test_reduced_motion_disables_button_transitions():
+    reduced = STYLE[STYLE.index("@media (prefers-reduced-motion: reduce) {\n      button"):]
+    assert "transition: none" in reduced.split("\n    }")[0]

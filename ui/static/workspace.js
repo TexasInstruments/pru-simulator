@@ -97,23 +97,33 @@
   currentTab = savedTab;
   showView(savedView);
 
+  // The theme button cycles Dark -> Light -> High contrast. Without a saved
+  // choice the theme follows the OS light/dark preference.
+  const THEMES = ['dark', 'light', 'contrast'];
+  const THEME_NAMES = { dark: 'dark', light: 'light', contrast: 'high contrast' };
   const theme = document.getElementById('workspace-theme');
-  try { theme.value = localStorage.getItem('pru-workspace-theme') === 'contrast' ? 'contrast' : 'dark'; } catch (_) {}
-  function applyTheme() {
+  let savedTheme = null;
+  try { savedTheme = localStorage.getItem('pru-workspace-theme'); } catch (_) {}
+  const prefersLight = typeof window.matchMedia === 'function'
+    && window.matchMedia('(prefers-color-scheme: light)').matches;
+  theme.value = THEMES.includes(savedTheme) ? savedTheme : (prefersLight ? 'light' : 'dark');
+  function applyTheme(save) {
     document.documentElement.dataset.theme = theme.value;
-    const action = theme.value === 'contrast' ? 'Switch to dark theme' : 'Switch to high contrast';
-    theme.setAttribute('aria-pressed', String(theme.value === 'contrast'));
+    const next = THEMES[(THEMES.indexOf(theme.value) + 1) % THEMES.length];
+    const action = `Theme: ${THEME_NAMES[theme.value]}. Switch to ${THEME_NAMES[next]}`;
     theme.setAttribute('aria-label', action);
     theme.title = action;
-    try { localStorage.setItem('pru-workspace-theme', theme.value); } catch (_) {}
+    if (save) {
+      try { localStorage.setItem('pru-workspace-theme', theme.value); } catch (_) {}
+    }
     // Canvases read their colours from the theme tokens, so they redraw on a change.
     document.dispatchEvent(new CustomEvent('pru-theme-changed', { detail: { theme: theme.value } }));
   }
   theme.addEventListener('click', () => {
-    theme.value = theme.value === 'contrast' ? 'dark' : 'contrast';
-    applyTheme();
+    theme.value = THEMES[(THEMES.indexOf(theme.value) + 1) % THEMES.length];
+    applyTheme(true);
   });
-  applyTheme();
+  applyTheme(false);
 
   // Icon and short label for each shared panel toggle.
   const PANEL_TOGGLES = {

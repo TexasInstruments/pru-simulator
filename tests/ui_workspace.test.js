@@ -218,17 +218,17 @@ assert.deepEqual(visiblePanes(), ['peripherals-view'], 'the saved sub-tab is res
 buttons[0].listeners.click();
 const themeEvents = [];
 listeners['pru-theme-changed'] = event => themeEvents.push(event.detail.theme);
-elements.get('workspace-theme').listeners.click();
-assert.equal(document.documentElement.dataset.theme, 'contrast');
-assert.equal(storage.get('pru-workspace-theme'), 'contrast');
-assert.deepEqual(themeEvents, ['contrast'], 'theme changes are announced so canvases can redraw');
-assert.equal(elements.get('workspace-theme').attributes['aria-pressed'], 'true');
-assert.match(elements.get('workspace-theme').attributes['aria-label'], /dark/i);
-elements.get('workspace-theme').listeners.click();
-assert.equal(document.documentElement.dataset.theme, 'dark');
-assert.equal(storage.get('pru-workspace-theme'), 'dark');
-assert.equal(elements.get('workspace-theme').attributes['aria-pressed'], 'false');
-assert.deepEqual(themeEvents, ['contrast', 'dark']);
+const themeButton = elements.get('workspace-theme');
+assert.equal(themeButton.value, 'dark', 'without a saved choice or OS preference the theme is dark');
+assert.equal(storage.get('pru-workspace-theme'), undefined, 'the default theme is not persisted');
+assert.match(themeButton.attributes['aria-label'], /dark.*light/i);
+for (const [expected, nextName] of [['light', /high contrast/i], ['contrast', /dark/i], ['dark', /light/i]]) {
+  themeButton.listeners.click();
+  assert.equal(document.documentElement.dataset.theme, expected);
+  assert.equal(storage.get('pru-workspace-theme'), expected);
+  assert.match(themeButton.attributes['aria-label'], nextName, `${expected} names the next theme`);
+}
+assert.deepEqual(themeEvents.slice(-3), ['light', 'contrast', 'dark'], 'theme changes are announced so canvases can redraw');
 
 const firstToggle = elements.get('panel-visibility-buttons').children[0];
 assert.equal(firstToggle.children[0].className, 'panel-toggle-icon', 'panel toggles carry an icon');
