@@ -224,6 +224,39 @@ def test_shadow_copy_is_transparent_while_stopped_at_count_zero():
     assert r32(entry, CMP0_REG0) == 0x32
 
 
+def test_writing_count_zero_while_stopped_copies_the_shadow():
+    iep = IepTimer()
+    w32(iep, CMP0_REG0, 7)
+    w32(iep, COUNT0, 5)
+    w32(iep, CMP_CFG, RST | EN0 | SHADOW)
+    w32(iep, CMP0_REG1, 100)
+    assert r32(iep, CMP0_REG0) == 7            # stopped at COUNT != 0: no copy
+    w32(iep, COUNT0, 0)
+    assert r32(iep, CMP0_REG0) == r32(iep, CMP0_REG1) == 100
+
+
+def test_stopping_the_counter_at_count_zero_copies_the_shadow():
+    iep = IepTimer()
+    w32(iep, CMP_CFG, RST | EN0 | SHADOW)
+    w32(iep, CMP0_REG1, 100)
+    w32(iep, COUNT0, 0)
+    w32(iep, GLOBAL_CFG, 0x11)                 # running at COUNT == 0: no copy
+    w32(iep, CMP0_REG1, 50)
+    assert r32(iep, CMP0_REG0) == 100
+    w32(iep, GLOBAL_CFG, 0x10)                 # CNT_ENABLE cleared at COUNT == 0
+    assert r32(iep, CMP0_REG0) == r32(iep, CMP0_REG1) == 50
+
+
+def test_stopping_the_counter_at_a_non_zero_count_does_not_copy():
+    iep = IepTimer()
+    w32(iep, CMP_CFG, RST | EN0 | SHADOW)
+    w32(iep, GLOBAL_CFG, 0x11)
+    run(iep, 3)
+    w32(iep, CMP0_REG1, 50)
+    w32(iep, GLOBAL_CFG, 0x10)
+    assert r32(iep, COUNT0) == 3 and r32(iep, CMP0_REG0) == 0
+
+
 def test_no_shadow_copy_while_stopped_with_a_non_zero_count():
     """Measured on LP-AM243 ICSSG0 (register-level probe):
     COUNT = 5 stopped, active 100, REG1 := 50 or active 7, REG1 := 100: REG0
