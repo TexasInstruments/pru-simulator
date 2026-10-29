@@ -505,17 +505,17 @@ def test_compare_events_survive_status_auto_clear_in_one_bulk_advance():
     w32(iep, GLOBAL_CFG, 0x11)
     iep.observe_core_cycles("pru0", 61)          # 61 clocks in a single call
     assert r32(iep, CMP_STATUS) == 0
-    # immediate (64-bit) reset: period 5 clocks: hits at 5, 10, ..., 60
-    assert [e.tick for e in events] == list(range(5, 61, 5))
+    # 64-bit reset on the clock after the hit: period 6 clocks, hits at 5, 11, ..., 59
+    assert [e.tick for e in events] == list(range(5, 61, 6))
 
 
 def test_efficiency_does_not_clear_a_hit_on_the_same_clock_as_the_clear():
     iep = IepTimer()
     iep.write_sa_mx(PWM_EFC)
     w32(iep, CMP0_REG0, 1)
-    w32(iep, CMP_CFG, RST | EN0)                 # hits every 1 clock in 64-bit
+    w32(iep, CMP_CFG, RST | EN0)                 # hits every 2nd clock (reset clock between)
     w32(iep, GLOBAL_CFG, 0x11)
-    run(iep, 4)
+    run(iep, 5)
     assert r32(iep, CMP_STATUS) == 1             # cleared, then set again
 
 
@@ -633,7 +633,10 @@ class RefIep:
         self.shadow = list(shadow_vals)
         self.efc = efc
         self.count = count
-        self.status = 0
+        # Compare is >= at CMP_EN (64-bit mode): enabled compares at or below COUNT.
+        self.status = 0 if shadow else sum(
+            1 << j for j in range(16)
+            if (en >> j) & 1 and count >= self.active[j])
         self.pending = False
         self.t = 0
         self.events = []
@@ -645,7 +648,8 @@ class RefIep:
         if self.pending:
             self.pending = False
             self.count = 0
-            self.active = list(self.shadow)
+            if self.sh:
+                self.active = list(self.shadow)
             return
         limit = (1 << 32) if self.sh else (1 << 64)
         total = self.count + self.inc
@@ -659,10 +663,7 @@ class RefIep:
                 self.events.append((j, self.count, self.t))
                 hit0 |= j == 0
         if hit0 and self.rst:
-            if self.sh:
-                self.pending = True
-            else:
-                self.count = 0
+            self.pending = True
 
 
 def _random_case(rng):

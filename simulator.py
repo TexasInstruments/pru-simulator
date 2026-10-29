@@ -16,7 +16,8 @@ from core.pru_core import PRUCore
 from mem.icssm_absent import icssg_only_regions, MODES as _ICSSG_ONLY_MODES, READ_ZERO
 from mem.memory_bus import MemoryBus
 from mem.regions import MemoryRegion
-from perif.iep import IepTimer, IEP_SIZE, IEP_DEFAULT_CLOCK_MHZ
+from perif.iep import (IepTimer, IEP_SIZE, IEP_DEFAULT_CLOCK_MHZ, GLOBAL_CFG_RESET,
+                       GLOBAL_CFG_RESET_AM261X)
 from mem.constant_table import (
     ConstantTable, CTRL_REG_COUNT, CTRL_REG_OFFSET, PROGRAMMABLE_FIRST)
 from xfr.xfr_bus import XFRBus
@@ -340,6 +341,8 @@ class Simulator:
             clock_mhz=iep_clock,
             ocp_clock_mhz=pru_clock,
             core_clocks_mhz=core_clock_rates,
+            global_cfg_reset=(GLOBAL_CFG_RESET_AM261X if target.lower() == "am261x"
+                              else GLOBAL_CFG_RESET),
         )
         self.memory.add_region(IepRegisterRegion(self.iep))
         self.memory.add_region(IepClockRegisterRegion(self.iep))

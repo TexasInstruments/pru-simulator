@@ -89,6 +89,13 @@ old upper word of the 64-bit compare) and is not seeded from the active value.
 A write to CMPj_REG0 discards its data, copies REG1 into REG0 and clears
 CMP_STATUS[j]. Measured on LP-AM243 / LP-AM261 (register level).
 
+64-bit mode, same measurements: a CMP0 reset takes N+1 clocks (the counter
+resets on the clock after the hit), the compare is >= when CMP_EN is set and
+when CMPj_REG0 is written below a running count, a CMPj_REG0 write clears
+CMP_STATUS[j], and IEP_GLOBAL_CFG_REG resets to 0x551 on AM261x (0x550 on AM243x).
+Not measured, so kept as before: rollover and the CMP0-reset interaction with
+the >= compare, shadow-mode enable, DEFAULT_INC > 1, IEPCLK = 1.
+
 ICSSG_SA_MX_REG[16] PWM_EFC_EN (ICSS CFG + 0x40, SPRUIM2J Table 14-10186)
 makes the model clear CMP_STATUS on the IEP clock after a hit set it (the
 CMP_STATUS description: "hardware will auto clear the bit on next clock
@@ -130,6 +137,11 @@ CMP_CFG_SHADOW_EN = 1 << 17
 # the R/W reserved bits. [31:17] and [15:12] are read-only reserved.
 SA_MX_PWM_EFC_EN = 1 << 16
 SA_MX_WRITABLE = 0x00010FFF
+
+# IEP_GLOBAL_CFG_REG reset value: CMP_INC = DEFAULT_INC = 5. Measured on LP-AM243
+# (ICSSG0 IEP0) 0x550 and on LP-AM261 (ICSS-M0 IEP0) 0x551, i.e. CNT_ENABLE set.
+GLOBAL_CFG_RESET = 0x550
+GLOBAL_CFG_RESET_AM261X = 0x551
 
 NUM_COMPARE = 16
 # CMP0..CMP7 are contiguous from 0x78; RXIPG0/1 occupy 0xB8/0xBC; CMP8..CMP15
@@ -197,7 +209,9 @@ class IepTimer:
 
     def __init__(self, clock_mhz: float | str | None = None,
                  ocp_clock_mhz: float | str = 200.0,
-                 core_clocks_mhz: dict[str, float | str] | None = None):
+                 core_clocks_mhz: dict[str, float | str] | None = None,
+                 global_cfg_reset: int = GLOBAL_CFG_RESET):
+        self._global_cfg_reset = global_cfg_reset & _MASK32
         core_clocks_mhz = core_clocks_mhz or {"pru0": ocp_clock_mhz}
         core_clocks_hz = {
             name: _mhz_to_hz(rate) for name, rate in core_clocks_mhz.items()
@@ -235,8 +249,9 @@ class IepTimer:
         self.reset()
 
     def reset(self) -> None:
-        # SPRUIM2J Table 14-10907: CMP_INC=5, DEFAULT_INC=5, disabled.
-        self._global_cfg = 0x550
+        # SPRUIM2J Table 14-10907: CMP_INC=5, DEFAULT_INC=5, disabled (0x550).
+        # LP-AM261 resets with CNT_ENABLE already set (0x551); see GLOBAL_CFG_RESET_AM261X.
+        self._global_cfg = self._global_cfg_reset
         self.global_status = 0
         self.count = 0                       # 64-bit
         self._cmp_cfg = 0
@@ -402,9 +417,16 @@ class IepTimer:
     def cmp_cfg(self, value: int) -> None:
         value &= _MASK32
         was_shadow = self.shadow_en
+        newly_enabled = value & ~self._cmp_cfg & 0x1FFFE
         self._cmp_cfg = value
         if self.shadow_en != was_shadow:
             self._shadow_mode_changed()
+        if newly_enabled and not self.shadow_en:
+            # Measured: the compare is >=. Enabling CMPj with COUNT >= CMPj sets
+            # CMP_STATUS[j] at once, also with the counter stopped.
+            for j in range(NUM_COMPARE):
+                if newly_enabled & (1 << (j + 1)) and self.count >= self.compare[j]:
+                    self.cmp_status |= 1 << j
 
     @property
     def shadow_en(self) -> bool:
@@ -437,7 +459,9 @@ class IepTimer:
         return self.shadow_en and not self.count_enabled and self.count == 0
 
     def _load_shadow(self) -> None:
-        """Copy every shadow compare into its active register."""
+        """Copy every shadow compare into its active register (shadow mode only)."""
+        if not self.shadow_en:
+            return
         for j in range(NUM_COMPARE):
             self.compare[j] = self.shadow[j] & _MASK32
 
@@ -457,7 +481,9 @@ class IepTimer:
     @property
     def _event_mode(self) -> bool:
         """True when behaviour needs event-by-event evaluation."""
-        return bool(self.shadow_en or self.pwm_efc_en or self._compare_listeners)
+        return bool(self.shadow_en or self.pwm_efc_en or self._compare_listeners
+                    or self._pending_cmp0_reset
+                    or (self.cmp0_rst_cnt_en and self.cmp_enabled(0)))
 
     def _refresh_tick_rate(self) -> None:
         if not self.count_enabled:
@@ -509,21 +535,8 @@ class IepTimer:
                     if distance is not None and distance <= length:
                         self.cmp_status |= 1 << j
 
-        reset_distance = (hit_distance(self.count, self.compare[0])
-                          if self.cmp0_rst_cnt_en and self.cmp_enabled(0) else None)
-        if reset_distance is None or reset_distance > ticks:
-            record_hits(self.count, ticks)
-            self.count = (self.count + ticks * increment) & _MASK64
-            return
-        record_hits(self.count, reset_distance)
-        ticks -= reset_distance
-        self.count = 0
-        reset_period = hit_distance(0, self.compare[0])
-        if reset_period is not None and ticks >= reset_period:
-            record_hits(0, reset_period)
-            ticks %= reset_period
-        record_hits(0, ticks)
-        self.count = (ticks * increment) & _MASK64
+        record_hits(self.count, ticks)
+        self.count = (self.count + ticks * increment) & _MASK64
 
     def _step_one(self) -> None:
         """Advance exactly one IEP clock in shadow/efficiency/listener mode.
@@ -540,9 +553,11 @@ class IepTimer:
             # compares so a hit on this clock is still visible afterwards.
             self.cmp_status = 0
         if self._pending_cmp0_reset:
-            # CMP0_RST_CNT_EN resets the counter on the clock after the hit.
-            # The reset clock loads the shadow copies and is not itself
-            # compared (a compare of 0 never fires; upstream #73).
+            # CMP0_RST_CNT_EN resets the counter on the clock after the hit, in
+            # 32-bit shadow and 64-bit mode alike (period N+1; measured on
+            # LP-AM243 and LP-AM261). The reset clock loads the shadow copies
+            # in shadow mode and is not itself compared (a compare of 0 never
+            # fires; upstream #73).
             self._pending_cmp0_reset = False
             self.count = 0
             self._load_shadow()
@@ -561,11 +576,7 @@ class IepTimer:
                 if j == 0:
                     hit0 = True
         if hit0 and self.cmp0_rst_cnt_en:
-            if shadow:
-                self._pending_cmp0_reset = True
-            else:
-                self.count = 0
-                self._counter_reset = True
+            self._pending_cmp0_reset = True
 
     def _clocks_to_next_event(self, increment: int, mask: int) -> int | None:
         """Clocks until the next one that changes more than the count."""
@@ -678,17 +689,9 @@ class IepTimer:
         self._clock_ticks += 1
         self.count = (self.count + self.default_inc) & _MASK64
 
-        hit0 = False
         for j in range(NUM_COMPARE):
             if self.cmp_enabled(j) and self.count == self.compare[j]:
                 self.cmp_status |= 1 << j
-                if j == 0:
-                    hit0 = True
-
-        # "IEP_CMP_CFG_REG[0] CMP0_RST_CNT_EN, if enabled, will reset the
-        # controller counter on the next ICSSG_IEP_CLK/ICSSG_ICLK cycle."
-        if hit0 and self.cmp0_rst_cnt_en:
-            self.count = 0
 
     # -- register access -------------------------------------------------
     def read32(self, offset: int) -> int:
@@ -771,6 +774,13 @@ class IepTimer:
                     self.cmp_status &= ~(1 << j)
             elif half == 0:
                 self.compare[j] = (self.compare[j] & ~_MASK32) | value
+                # Measured: a REG0 write clears CMP_STATUS[j]; with the counter
+                # running and COUNT >= the new compare, the (>=) compare sets it
+                # again. A stopped counter does not (nothing clocks the compare).
+                self.cmp_status &= ~(1 << j)
+                if (self.cmp_enabled(j) and self.count_enabled
+                        and self.count >= self.compare[j]):
+                    self.cmp_status |= 1 << j
             else:
                 self.compare[j] = (self.compare[j] & _MASK32) | (value << 32)
         # Unimplemented offsets are ignored rather than faulting.
