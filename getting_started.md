@@ -88,6 +88,8 @@ endloop:
 **Source:**
 ```asm
 start:
+    ldi   r0, 0x100              ; CTPPR0.blk_ptr = 0x100: C28 -> Shared RAM (0x10000)
+    sbco &r0, c11, 0x28, 4       ; C11 = this core's CTRL block, CTPPR0 at +0x28
     ldi   r2, 1
     loop endloop, 100
     sbco &r2, c28, r2.b0, 1      ; write r2 → ICSS_SHARED[r2.b0]
@@ -102,7 +104,7 @@ endloop1:
     halt
 ```
 
-> `c24` = DRAM0 base (`0x00000000`), `c28` = ICSS_SHARED base (`0x00010000`). See `config/constants_am243x.cfg` for the full PRU constant table.
+> `c24` = DRAM0 base (`0x00000000`). `c28` follows CTPPR0 and is `0` out of reset, as on silicon; the first two instructions program `blk_ptr = 0x100`, which makes it the ICSS_SHARED base (`0x00010000`). See `config/constants_am243x.cfg` for the full PRU constant table.
 
 **Steps:**
 
@@ -116,7 +118,7 @@ endloop1:
 **What to observe:**
 - R2 counts from 1 upward in the Registers panel during execution.
 - The write loop fills ICSS_SHARED; the copy loop copies the first 25 values to DRAM0.
-- Counters panel shows 280 instructions and 455 cycles at HALT. The extra cycles are the memory access latencies set in `memory.cfg`.
+- Counters panel shows 282 instructions and 458 cycles at HALT. The extra cycles are the memory access latencies set in `memory.cfg`.
 
 ---
 

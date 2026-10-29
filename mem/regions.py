@@ -16,6 +16,9 @@ class MemoryRegion:
         jitter: int = 0,
         misaligned_write_penalty: int = 0,
         per_word_latency: int = 1,
+        line_bytes: int = 0,
+        line_cross_fit: int = 0,
+        line_readers: tuple[str, ...] = (),
     ):
         self.name = name
         self.base_addr = base_addr
@@ -30,6 +33,21 @@ class MemoryRegion:
         # Cycles charged for each 32-bit word after the first of a burst read.
         # 1 is the original model; LP-AM261 MSRAM measures 10 on silicon.
         self.per_word_latency = per_word_latency
+        if line_bytes < 0 or line_bytes % 4:
+            raise ValueError("line_bytes must be zero or a positive multiple of 4")
+        if line_cross_fit < 0:
+            raise ValueError("line_cross_fit must be nonnegative")
+        self.line_bytes = line_bytes
+        # Constant of an empirical fit, not an additive extra: the stalls added
+        # to a line-crossing read are line_cross_fit - W1//2, where W1 is the
+        # number of 32-bit words read from the first line, clamped at zero. The
+        # value 13 reproduces LP-AM243 MSRAM for line_bytes = 64 and
+        # per_word_latency = 1 only.
+        self.line_cross_fit = line_cross_fit
+        # Empty means all readers; configured names (stored lower case, matched
+        # case-insensitively) limit the empirical model to measured cores.
+        # Requests without a core name then keep base timing.
+        self.line_readers = tuple(name.lower() for name in line_readers)
         self._data = bytearray(size)
 
     # ------------------------------------------------------------------
@@ -72,11 +90,27 @@ class MemoryRegion:
         local = addr - self.base_addr
         self._data[local : local + len(data)] = data
 
-    def calc_read_stalls(self, addr: int, length: int) -> int:
-        """Return the number of stall cycles for a read of *length* bytes at *addr*."""
+    def deterministic_read_stalls(self, addr: int, length: int, *, requester: str | None = None) -> int:
+        """Return the jitter-free stall cycles for a read of *length* bytes at *addr*."""
         self._check_bounds(addr, length)
         words = self._word_count(addr, length)
-        return self.read_latency + random.randint(0, self.jitter) + (words - 1) * self.per_word_latency
+        stalls = self.read_latency + (words - 1) * self.per_word_latency
+        if (self.line_bytes and self.line_cross_fit and 0 < length <= self.line_bytes
+                and (not self.line_readers
+                     or (requester is not None and requester.lower() in self.line_readers))):
+            boundary = (addr // self.line_bytes + 1) * self.line_bytes
+            if addr + length > boundary:
+                first_words = self._word_count(addr, boundary - addr)
+                # LP-AM243 PRU0, issue #69: with per_word_latency=1 this is
+                # read_latency + 14 + (W2-1) + (W1-1)//2. Only bursts up to
+                # one line in length were measured; do not extrapolate further.
+                stalls += max(0, self.line_cross_fit - first_words // 2)
+        return stalls
+
+    def calc_read_stalls(self, addr: int, length: int, *, requester: str | None = None) -> int:
+        """Return the number of stall cycles for a read of *length* bytes at *addr*."""
+        stalls = self.deterministic_read_stalls(addr, length, requester=requester)
+        return stalls + random.randint(0, self.jitter)
 
     def calc_write_stalls(self, addr: int, length: int) -> int:
         """Return the number of stall cycles for a write of *length* bytes at *addr*."""
