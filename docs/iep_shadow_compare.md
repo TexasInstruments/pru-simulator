@@ -185,11 +185,11 @@ the enable case were not measured, so shadow mode keeps equality there.
   while the IEP advances, so a listener must not rewrite IEP registers
   (`DEFAULT_INC`, `CNT_ENABLE`, `SHADOW_EN`) from the callback, and a snapshot
   restore re-emits events to the same listeners.
-* The register-offset formula `CMP0_REG0 + 8*j` used by the model does not leave
-  room for `IEP_RXIPG0/1_REG` at `0xB8`/`0xBC`; per the register map
-  CMP8..CMP15 are at `0xC0..0xFC`. This predates this change and is not
-  altered here, so shadow access to CMP8..CMP15 uses the same offsets as their
-  64-bit mode access. Only CMP0..CMP2 were touched in the measurements.
+* Register offsets now follow main's #90 fix: CMP0..CMP7 use `0x78..0xB4`,
+  RXIPG0/1 use `0xB8`/`0xBC`, and CMP8..CMP15 use `0xC0..0xFC` in both
+  shadow and 64-bit modes. The randomized oracle uses an explicit offset
+  table rather than the old contiguous formula. This is simulator-tested;
+  only CMP0..CMP2 were touched in the shadow-mode silicon measurements.
 * `IEP_COUNT_RESET_VAL_REG` (counter reset value), slow compensation, sync
   outputs and interrupt routing remain unmodelled.
 
