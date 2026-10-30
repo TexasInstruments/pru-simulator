@@ -134,6 +134,21 @@ const SPAD_BANKS = [
 let spadVisible = new Set();   // which bank keys are currently shown
 let prevSpad = {};             // key -> Array(count) of hex strings for change detection
 
+// Hide the toggle for a bank the target does not have (the state payload
+// omits it, e.g. IPC_SP on ICSS-M) and drop it from the shown set.
+function syncSpadBanks(spad) {
+  if (!spad) return;
+  for (const b of SPAD_BANKS) {
+    const present = b.key in spad;
+    document.querySelectorAll(`.spad-btn[data-bank="${b.key}"]`).forEach(btn => {
+      btn.style.display = present ? "" : "none";
+    });
+    if (present) continue;
+    if (spadVisible.delete(b.key)) buildRegTable();
+    if (mcSpadVisible.delete(b.key)) buildMCRegTable("pru0");
+  }
+}
+
 function initSpadState() {
   for (const b of SPAD_BANKS) {
     prevSpad[b.key] = new Array(b.count).fill("0x00000000");
@@ -485,6 +500,7 @@ function updateUI(state) {
 
   // Registers + SPAD
   updateRegisters(state.registers, state.carry);
+  syncSpadBanks(state.spad);
   updateSpad(state.spad);
 
   // Source listing
@@ -3471,6 +3487,7 @@ function updateMCUI(state) {
     updateSDPanel(state.io);
     updateI2CPanel(state.io);
     // Update SPAD columns in PRU0 MC reg panel
+    syncSpadBanks(state.spad);
     if (mcSpadVisible.size > 0) updateMCSpad(state.spad);
   } else if (core === "rtu0") {
     document.getElementById("cnt-rtu-cycles").textContent = state.cycles;
