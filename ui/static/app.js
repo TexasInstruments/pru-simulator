@@ -144,6 +144,21 @@ const SPAD_BANKS = [
 let spadVisible = new Set();   // which bank keys are currently shown
 let prevSpad = {};             // key -> Array(count) of hex strings for change detection
 
+// Hide the toggle for a bank the target does not have (the state payload
+// omits it, e.g. IPC_SP on ICSS-M) and drop it from the shown set.
+function syncSpadBanks(spad) {
+  if (!spad) return;
+  for (const b of SPAD_BANKS) {
+    const present = b.key in spad;
+    document.querySelectorAll(`.spad-btn[data-bank="${b.key}"]`).forEach(btn => {
+      btn.style.display = present ? "" : "none";
+    });
+    if (present) continue;
+    if (spadVisible.delete(b.key)) buildRegTable();
+    if (mcSpadVisible.delete(b.key)) buildMCRegTable("pru0");
+  }
+}
+
 function initSpadState() {
   for (const b of SPAD_BANKS) {
     prevSpad[b.key] = new Array(b.count).fill("0x00000000");
@@ -554,6 +569,7 @@ function updateUI(state, fromCache = false) {
 
   // Registers + SPAD
   updateRegisters(state.registers, state.carry);
+  syncSpadBanks(state.spad);
   updateSpad(state.spad);
 
   // Source listing
@@ -3987,6 +4003,108 @@ function editMCRegister(valEl, core, index) {
     if (e.key === "Escape") { committed = true; valEl.textContent = oldVal; }
   });
   input.addEventListener("blur", commit);
+}
+
+function updateMCUI(state) {
+  if (state.core !== "pru0" && state.core !== mcPartner) return;   // core not shown
+  // The second MC panel's DOM ids are the "rtu0" slot; the partner core
+  // (RTU0 or PRU1) renders into it.
+  const core = state.core === "pru0" ? "pru0" : "rtu0";
+
+  // PC badge in panel title
+  const pcBadge = document.getElementById(`mc-${core}-pc`);
+  if (pcBadge) pcBadge.textContent = `PC: ${state.pc}`;
+
+  // Carry
+  const carryEl = document.getElementById(`mc-${core}-carry`);
+  if (carryEl) carryEl.textContent = state.carry ? "1" : "0";
+
+  // MAC indicator
+  if (state.mac) {
+    const modeEl = document.getElementById(`mc-${core}-mac-mode`);
+    if (modeEl) modeEl.textContent = state.mac.mode ? "ACC" : "MPY";
+    const macCarryEl = document.getElementById(`mc-${core}-mac-carry`);
+    if (macCarryEl) macCarryEl.textContent = state.mac.acc_carry ? " CARRY" : "";
+  }
+
+  // CRC indicator
+  if (state.crc) {
+    const crcModeEl = document.getElementById(`mc-${core}-crc-mode`);
+    if (crcModeEl) crcModeEl.textContent = state.crc.mode;
+    const crcValueEl = document.getElementById(`mc-${core}-crc-value`);
+    if (crcValueEl) crcValueEl.textContent = state.crc.value;
+  }
+
+  // Registers
+  updateMCRegisters(core, state.registers);
+
+  // Source listing
+  updateMCSource(core, state.instructions, state.pc, state.labels || {});
+
+  // Breakpoints
+  if (state.breakpoints) mcBreakpoints[core] = new Set(state.breakpoints);
+
+  // Per-core halted/break state → update status badge
+  mcHaltedState[core] = !!state.halted;
+  mcBreakState[core]  = !!state.at_breakpoint;
+  updateMCStatus();
+
+  // Per-core counters and IO
+  if (core === "pru0") {
+    cntCycles.textContent = state.cycles;
+    cntStalls.textContent = state.stall_cycles;
+    cntInstrs.textContent = state.instruction_count;
+    cntIpc.textContent    = state.ipc.toFixed(3);
+    cntPc.textContent     = state.pc;
+    updatePins(state.io);
+    updateSDPanel(state.io);
+    updateI2CPanel(state.io);
+    // Update SPAD columns in PRU0 MC reg panel
+    syncSpadBanks(state.spad);
+    if (mcSpadVisible.size > 0) updateMCSpad(state.spad);
+  } else if (core === "rtu0") {
+    document.getElementById("cnt-rtu-cycles").textContent = state.cycles;
+    document.getElementById("cnt-rtu-stalls").textContent = state.stall_cycles;
+    document.getElementById("cnt-rtu-pc").textContent     = state.pc;
+  }
+
+  memAutoOnStateChange();
+}
+
+function updateMCSpad(spad) {
+  if (!spad) return;
+  for (const bank of SPAD_BANKS) {
+    if (!mcSpadVisible.has(bank.key)) continue;
+    const words = spad[bank.key];
+    if (!words) continue;
+    const prev = mcPrevSpad[bank.key] || new Array(bank.count).fill("0x00000000");
+    for (let j = 0; j < bank.count; j++) {
+      const regIdx = j + bank.regStart;
+      const cell = document.getElementById(`mc-spad-${bank.key}-${regIdx}`);
+      if (!cell) continue;
+      const newVal = words[j];
+      cell.textContent = newVal;
+      cell.classList.toggle("changed", newVal !== prev[j]);
+    }
+    mcPrevSpad[bank.key] = [...words];
+  }
+}
+
+function updateMCStatus() {
+  const anyBreak  = mcBreakState.pru0  || mcBreakState.rtu0;
+  const anyHalted = mcHaltedState.pru0 || mcHaltedState.rtu0;
+  if (anyBreak) {
+    statusBadge.textContent = "BREAK";
+    statusBadge.className   = "halted";
+    stopRun(); stopSim();
+  } else if (anyHalted) {
+    statusBadge.textContent = "HALTED";
+    statusBadge.className   = "halted";
+    stopRun(); stopSim();
+  } else {
+    statusBadge.textContent = "RUNNING";
+    statusBadge.className   = "";
+  }
 }
 
 function updateMCRegisters(core, regs) {

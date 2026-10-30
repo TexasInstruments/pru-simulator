@@ -6,8 +6,10 @@ simulator through an MCP server.
 
 ## Supported features
 
-The simulator currently models the PRU subsystems on the **AM243x** (PRU_ICSSG,
-V4 ISA) and **AM263x** (PRU-ICSS, V3 ISA).
+The simulator models **AM243x/AM64x** (PRU_ICSSG) and **AM261x/AM263x**
+(PRU-ICSSM), all with V4 ISA. Integrated accelerators differ by target; see
+[device capabilities](docs/device_capabilities.md) for the hardware profiles,
+unsupported-transfer diagnostics and silicon evidence.
 
 ### Simulator features
 

@@ -1120,7 +1120,9 @@ def _read_crc(core) -> dict:
 def _read_spad(sim_obj) -> dict:
     """Return scratchpad contents as hex words per bank.
 
-    Banks 0/1/2 hold R0–R29 (30 words); IPC holds R2–R9 (8 words).
+    Banks 0/1/2 hold R0–R29 (30 words); IPC holds R2–R9 (8 words).  A bank
+    whose device id is not a broadside id on the target (IPC on ICSS-M) is
+    left out, since firmware cannot reach it.
     """
     result = {}
     for device_id, key, count in [
@@ -1129,6 +1131,8 @@ def _read_spad(sim_obj) -> dict:
         (SPAD_BANK2, "bank2", 30),
         (IPC_SPAD,   "ipc",   8),
     ]:
+        if device_id not in sim_obj.capabilities.broadside_ids:
+            continue
         raw = sim_obj.xfr._pads[device_id].data
         result[key] = [
             f"0x{int.from_bytes(raw[i*4:i*4+4], 'little'):08X}"
