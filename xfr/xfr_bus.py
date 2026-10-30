@@ -59,8 +59,8 @@ class XFRBus:
 
         PRUCore also owns accelerator and shifted-SPAD dispatch. Keeping this
         query narrow lets the core recognise a transfer that reaches neither,
-        and report it, while still returning the zero/no-op result that an
-        unconnected broadside ID produces on hardware.
+        and report it, while still returning the zero/no-op simulator fallback
+        (unverified on hardware except for AM261x BSWAP_4_8 XIN).
         """
         return device_id in self._pads
 

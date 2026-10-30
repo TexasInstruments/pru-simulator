@@ -13,6 +13,7 @@ import re
 from fractions import Fraction
 
 from core.pru_core import PRUCore
+from core.device_capabilities import get_device_capabilities
 from mem.icssm_absent import icssg_only_regions, MODES as _ICSSG_ONLY_MODES, READ_ZERO
 from mem.memory_bus import MemoryBus
 from mem.regions import MemoryRegion
@@ -228,30 +229,17 @@ class Simulator:
         pru_clock = dev.get("pru_clock_mhz", "200")
         pru1_clock = dev.get("pru1_clock_mhz", pru_clock)
         iep_clock = dev.get("iep_clock_mhz", IEP_DEFAULT_CLOCK_MHZ)
-        io_pru0 = IOPort()
-        io_rtu0 = IOPort()
-        io_pru1 = IOPort()
-        io_rtu1 = IOPort()
-        self.cores: dict[str, PRUCore] = {
-            "pru0": PRUCore("PRU0", self.memory, self.xfr, io_pru0, copy.deepcopy(self.constant_table),
-                            vbus_memory=self.vbus_memory),
-            "rtu0": PRUCore("RTU0", self.memory, self.xfr, io_rtu0, copy.deepcopy(self.constant_table),
-                            vbus_memory=self.vbus_memory),
-            "pru1": PRUCore("PRU1", self.memory, self.xfr, io_pru1, copy.deepcopy(self.constant_table),
-                            dram_swap=True, vbus_memory=self.vbus_memory),
-            "rtu1": PRUCore("RTU1", self.memory, self.xfr, io_rtu1, copy.deepcopy(self.constant_table),
-                            dram_swap=True, vbus_memory=self.vbus_memory),
-        }
-
-        # configparser keeps inline comments, which the design spec uses on target
         target = dev.get("target", "AM243x").split("#", 1)[0].strip()
-        if target.lower() not in ("am243x", "am64x", "am261x", "am263x"):
-            raise ValueError(
-                f"Unknown device target {target!r}; "
-                "expected one of AM243x, AM64x, AM261x, AM263x")
-        # AM261x and AM263x both carry a two-core ICSS-M.
-        if target.lower() in ("am261x", "am263x"):
-            del self.cores["rtu1"]
+        self.capabilities = get_device_capabilities(target)
+        core_names = (["pru0", "rtu0", "pru1", "rtu1"] if self.capabilities.rtu
+                      else ["pru0", "pru1"])
+        self.cores: dict[str, PRUCore] = {
+            name: PRUCore(name.upper(), self.memory, self.xfr, IOPort(),
+                          copy.deepcopy(self.constant_table),
+                          dram_swap=name.endswith("1"),
+                          vbus_memory=self.vbus_memory, target=target)
+            for name in core_names
+        }
         # The ICSSG-only blocks are absent on ICSS-M; silicon reads them as 0
         # (see mem/icssm_absent.py).  ``strict`` makes an access raise instead.
         icssg_only = dev.get("icssg_only_blocks", READ_ZERO).split("#", 1)[0].strip().lower()
@@ -259,7 +247,7 @@ class Simulator:
             raise ValueError(
                 f"Unknown icssg_only_blocks {icssg_only!r}; "
                 f"expected one of {', '.join(_ICSSG_ONLY_MODES)}")
-        if target.lower() in ("am261x", "am263x"):
+        if not self.capabilities.rtu:
             for region in icssg_only_regions(target, icssg_only):
                 self.memory.add_region(region)
 
@@ -342,13 +330,16 @@ class Simulator:
         self.memory.add_region(SDRegisterRegion(pru0_sd.registers))
 
         # RTU0 shares the same register space (same physical hardware)
-        rtu0_sd = self.cores["rtu0"].io_port.sd_filter
-        rtu0_sd.registers = pru0_sd.registers
+        rtu0_sd = (self.cores["rtu0"].io_port.sd_filter
+                   if self.capabilities.rtu else None)
+        if rtu0_sd is not None:
+            rtu0_sd.registers = pru0_sd.registers
 
         # Wire callback to update both cores' channel state on register writes
         def _combined_config_change(ch, field, value):
             pru0_sd._on_config_change(ch, field, value)
-            rtu0_sd._on_config_change(ch, field, value)
+            if rtu0_sd is not None:
+                rtu0_sd._on_config_change(ch, field, value)
         pru0_sd.registers.on_config_change = _combined_config_change
 
         # ---- Peripheral Interface (3-channel SCU): PRU0 + PRU1 --------------
@@ -807,8 +798,9 @@ class Simulator:
     def set_strict_unsupported_xfr(self, enabled: bool) -> None:
         """Choose what happens when firmware drives an unmodelled XFR device ID.
 
-        The default (``False``) keeps the hardware-faithful result -- XIN reads
-        zeros, XOUT is ignored -- and records the event.  ``True`` makes such a
+        The default (``False``) keeps a simulator fallback -- XIN reads zeros,
+        XOUT is ignored -- and records the event.  That result is unverified on
+        hardware except for AM261x BSWAP_4_8 XIN.  ``True`` makes such a
         transfer raise :class:`~core.pru_core.UnsupportedXFRError` instead, for
         callers that would rather a run fail than continue on zero data.
         """
