@@ -42,7 +42,8 @@ def _vcd_identifiers(count: int) -> list[str]:
 
 
 def export_pin_waveform(sim, core: str, path: str, max_steps: int = 10000,
-                        pins: str = "0-19", include_gpi: bool = False) -> dict:
+                        pins: str = "0-19", include_gpi: bool = False,
+                        include_pwm: bool = False) -> dict:
     """Run a loaded PRU core and export selected GPIO pins as deterministic VCD.
 
     Values are sampled before execution and after every retired instruction.
@@ -66,6 +67,10 @@ def export_pin_waveform(sim, core: str, path: str, max_steps: int = 10000,
 
     kinds = ["gpo"] + (["gpi"] if include_gpi else [])
     signals = [(kind, pin) for kind in kinds for pin in selected_pins]
+    if include_pwm:
+        if not hasattr(sim, "pwm"):
+            raise ValueError("include_pwm needs an ICSSG target with a PWM module")
+        signals += [("pwm", pin) for pin in range(24)]
     identifiers = _vcd_identifiers(len(signals))
     signal_ids = dict(zip(signals, identifiers))
 
@@ -84,10 +89,9 @@ def export_pin_waveform(sim, core: str, path: str, max_steps: int = 10000,
 
     def snapshot() -> dict[tuple[str, int], int]:
         io_state = sim.io(core)
-        return {
-            (kind, pin): io_state[f"{kind}_pins"][pin]
-            for kind, pin in signals
-        }
+        return {(kind, pin): ("z" if io_state["pwm_pins"][pin] is None
+                               else io_state["pwm_pins"][pin]) if kind == "pwm"
+                else io_state[f"{kind}_pins"][pin] for kind, pin in signals}
 
     previous = snapshot()
     for signal in signals:
