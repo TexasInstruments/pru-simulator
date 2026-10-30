@@ -115,6 +115,8 @@
     theme.title = action;
     if (save) {
       try { localStorage.setItem('pru-workspace-theme', theme.value); } catch (_) {}
+      savedTheme = theme.value;
+      if (mq) mq.removeEventListener('change', onOsThemeChange);
     }
     // Canvases read their colours from the theme tokens, so they redraw on a change.
     document.dispatchEvent(new CustomEvent('pru-theme-changed', { detail: { theme: theme.value } }));
@@ -123,6 +125,14 @@
     theme.value = THEMES[(THEMES.indexOf(theme.value) + 1) % THEMES.length];
     applyTheme(true);
   });
+  const mq = typeof window.matchMedia === 'function'
+    ? window.matchMedia('(prefers-color-scheme: light)') : null;
+  function onOsThemeChange(e) {
+    if (savedTheme) return;
+    theme.value = e.matches ? 'light' : 'dark';
+    applyTheme(false);
+  }
+  if (mq) mq.addEventListener('change', onOsThemeChange);
   applyTheme(false);
 
   // Icon and short label for each shared panel toggle.
