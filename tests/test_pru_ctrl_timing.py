@@ -67,19 +67,67 @@ def test_cycle_read_deltas_match_silicon(preset, words, core, base):
     assert delta(["lbbo &r6, r1, 0, 4"]) == words[2]
 
 
-def test_root_template_ctrl_window_costs_six_on_am243x():
+@pytest.mark.parametrize("core", ["pru0", "pru1"])
+def test_root_template_ctrl_window_costs_six_on_am243x(core):
     sim = Simulator(str(ROOT / "memory.cfg"))
-    assert sim.load("pru0", "lbco &r2, c11, 12, 4\nhalt") == []
-    sim.step("pru0")
-    assert sim.cores["pru0"].counters.cycles == 6
+    assert sim.load(core, "lbco &r2, c11, 12, 4\nhalt") == []
+    sim.step(core)
+    assert sim.cores[core].fault is None
+    assert sim.cores[core].counters.cycles == 6
+
+
+# RTU_PRU and TX_PRU CTRL (SPRUIM2J Table 6-63): not measured, assumed to cost
+# the same as the PRU windows. Covered by the root template and the preset.
+_OTHER_CTRL = [("rtu0", 0x23000), ("rtu1", 0x23800),
+               ("tx_pru0", 0x25000), ("tx_pru1", 0x25800)]
+
+
+@pytest.mark.parametrize("cfg", ["memory.cfg", "config/memory_am243x.cfg"])
+@pytest.mark.parametrize("window,base", _OTHER_CTRL)
+def test_rtu_and_tx_pru_ctrl_windows_are_mapped(cfg, window, base):
+    sim = Simulator(str(ROOT / cfg))
+    assert sim.load("pru0", f"ldi32 r1, {base}\nlbbo &r2, r1, 0, 4\nhalt") == []
+    sim.step("pru0", 3)  # ldi32 is two instructions
+    assert sim.cores["pru0"].fault is None
+    assert sim.cores["pru0"].counters.cycles == 2 + 6
+    sim.memory.write(base + 4, bytes.fromhex("aabbccdd"))
+    assert sim.memory_read(base + 4, 4) == bytes.fromhex("aabbccdd")
+
+
+@pytest.mark.parametrize("cfg", ["memory.cfg", "config/memory_am243x.cfg"])
+@pytest.mark.parametrize("core,base", [("rtu0", 0x23000), ("rtu1", 0x23800)])
+def test_rtu_cycle_reads_observe_the_rtu(cfg, core, base):
+    sim = Simulator(str(ROOT / cfg))
+    sim.cores[core].counters.cycles = 33
+    assert int.from_bytes(sim.memory_read(base + 0x0C, 4), "little") == 33
+    assert sim.load(core, "lbco &r2, c11, 12, 4\nlbco &r3, c11, 12, 4\nhalt") == []
+    sim.step(core, 2)
+    assert sim.cores[core].fault is None
+    assert sim.registers(core)[3] - sim.registers(core)[2] == 6
+
+
+def test_rtu_ctrl_keeps_its_constant_table_registers():
+    sim = Simulator(str(ROOT / "memory.cfg"))
+    sim.ctrl_write("rtu0", 0, 0x12)
+    assert sim.memory_read(0x23020, 4) == (0x12).to_bytes(4, "little")
+
+
+@pytest.mark.parametrize("window,base", _OTHER_CTRL)
+def test_root_template_retargeted_to_icssm_keeps_absent_ctrl(tmp_path, window, base):
+    text = (ROOT / "memory.cfg").read_text().replace("target = AM243x", "target = AM261x")
+    cfg = tmp_path / "memory.cfg"
+    cfg.write_text(text)
+    sim = Simulator(str(cfg))
+    sim.memory.write(base + 4, bytes.fromhex("aabbccdd"))
+    assert sim.memory_read(base + 4, 4) == bytes(4)
 
 
 @pytest.mark.parametrize("target", ["AM243x", "AM261x"])
 def test_explicit_ctrl_region_latency_wins(tmp_path, target):
     text = (ROOT / "memory.cfg").read_text()
     text = text.replace("target = AM243x", f"target = {target}").replace(
-        "read_latency = 5", "read_latency = 9").replace(
-        "core_version = V4", "core_version = V4" + chr(10) + "pru_ctrl_read_latency = 3")
+        "pru_ctrl_read_latency = 5", "pru_ctrl_read_latency = 3").replace(
+        chr(10) + "read_latency = 5", chr(10) + "read_latency = 9")
     cfg = tmp_path / "memory.cfg"
     cfg.write_text(text)
     sim = Simulator(str(cfg))
@@ -189,7 +237,7 @@ def _declared_window_sim(tmp_path, latency_line):
     if latency_line:
         section.insert(1, latency_line)
     text = chr(10).join(lines[:start] + section + lines[end:])
-    text = text.replace("core_version = V4", "core_version = V4" + chr(10) + "pru_ctrl_read_latency = 3")
+    text = text.replace("pru_ctrl_read_latency = 5", "pru_ctrl_read_latency = 3")
     cfg = tmp_path / "memory.cfg"
     cfg.write_text(text)
     return Simulator(str(cfg))

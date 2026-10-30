@@ -14,7 +14,9 @@ from fractions import Fraction
 
 from core.pru_core import PRUCore
 from core.device_capabilities import get_device_capabilities
-from mem.icssm_absent import icssg_only_regions, MODES as _ICSSG_ONLY_MODES, READ_ZERO
+from mem.icssm_absent import (
+    ICSSG_ONLY_BLOCKS, IcssgOnlyBlockRegion, icssg_only_regions,
+    MODES as _ICSSG_ONLY_MODES, READ_ZERO)
 from mem.memory_bus import MemoryBus
 from mem.regions import MemoryRegion
 from perif.iep import IepTimer, IEP_SIZE, IEP_DEFAULT_CLOCK_MHZ
@@ -32,6 +34,9 @@ from perif.gpcfg import GpcfgRegisters, MUX_PERIF
 from perif.loopback import Loopback
 
 _GPCFG_INDEX = {"pru0": 0, "pru1": 1}   # rtu0 has no GPCFG GP-mux (TRM)
+# RTU_PRU0/1 and TX_PRU0/1 CTRL bases, absent on ICSS-M.
+_ICSSG_ONLY_CTRL_BASES = frozenset(
+    base for name, base, _, _ in ICSSG_ONLY_BLOCKS if name.endswith(" Control"))
 _MAX_CATCHUP_STEPS = 1000
 
 
@@ -274,17 +279,28 @@ class Simulator:
         for name, entries in core_constants.items():
             self.cores[name].constant_table.load_from_dict(entries)
 
-        # PRU0/1 CTRL banks (SPRUIM2J Table 6-65). The root config's legacy
-        # ICSS_CFG region at 0x22000 is actually PRU0 CTRL; wrap its storage
-        # rather than adding an overlapping region that the bus would shadow.
-        for name, base in (("pru0", 0x22000), ("pru1", 0x24000)):
+        # CTRL banks, one per core (SPRUIM2J Table 6-63). The root config's
+        # legacy ICSS_CFG region at 0x22000 is actually PRU0 CTRL; a declared
+        # window's storage is wrapped rather than shadowed by a second region.
+        if self.capabilities.rtu:
+            ctrl_windows = (("pru0", 0x22000), ("rtu0", 0x23000), ("rtu1", 0x23800),
+                            ("pru1", 0x24000), ("tx_pru0", 0x25000), ("tx_pru1", 0x25800))
+        else:
+            ctrl_windows = (("pru0", 0x22000), ("pru1", 0x24000))
+            # ICSS-M has no RTU_PRU or TX_PRU CTRL. A config written for the
+            # ICSSG may declare them; the absent-block model must still win.
+            for region in [r for r in self.memory.regions
+                           if r.base_addr in _ICSSG_ONLY_CTRL_BASES
+                           and not isinstance(r, IcssgOnlyBlockRegion)]:
+                self.memory.regions.remove(region)
+        for name, base in ctrl_windows:
             backing = next((r for r in self.memory.regions if r.base_addr == base), None)
             declared = backing is not None
             if backing is None:
                 backing = MemoryRegion(f"{name.upper()}_CTRL", base, 0x30, 2, 1)
             else:
                 self.memory.regions.remove(backing)
-            # Only AM243x PRU1 CYCLE was measured (#70). Treat each CTRL
+            # Only the PRU0/PRU1 CYCLE read was measured (#70). Treat each CTRL
             # window uniformly. Precedence: a window the config itself
             # declares keeps its own read_latency; otherwise the device key
             # pru_ctrl_read_latency; otherwise the legacy 2 stalls.
@@ -293,8 +309,13 @@ class Simulator:
             explicit = declared and backing.name in self._explicit_read_latency
             latency = backing.read_latency if explicit else int(
                 dev.get("pru_ctrl_read_latency", 2 if declared else backing.read_latency))
-            self._ctrl_regions[name] = PruControlRegion(self.cores[name], backing, latency)
-            self.memory.add_region(self._ctrl_regions[name])
+            if name in self.cores:
+                self._ctrl_regions[name] = PruControlRegion(self.cores[name], backing, latency)
+                self.memory.add_region(self._ctrl_regions[name])
+            else:
+                # TX_PRU cores are not simulated: plain storage, CYCLE does not count.
+                backing.read_latency = latency
+                self.memory.add_region(backing)
         # CTBIR0/1 and CTPPR0/1 sit at +0x20 of each core's CTRL block and
         # drive C24-C31 of that core. TX_PRU cores are not simulated.
         if target.lower() in ("am243x", "am64x"):
