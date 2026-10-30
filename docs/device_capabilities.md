@@ -21,11 +21,12 @@ ICSSM is not a V3 instruction-set restriction.
 | AM263x | V4 | ICSSM | false | false | false | Inferred from the AM261x table (SPRUJB6B Table 7-35) plus the hardware-owner statement in [#32](https://github.com/TexasInstruments/pru-simulator/issues/32) that AM261x/AM263x ICSSM are equivalent; no AM263x TRM was reviewed |
 
 The PWM flag means the **ICSSG PWM module**, not SoC ePWM or firmware-generated
-PWM. With the flag false the PWM CFG words (`0x130..0x16C`) are unmapped and a bus access
-raises. On LP-AM261 ICSSM0 silicon those words read as zero without a fault (reads
-only, measured through the PRU and JTAG; writes not measured), so the fault is a
-deliberate simulator choice that flags use of an ICSSG-only peripheral, not a
-silicon behaviour. See `docs/icssg_pwm.md`.
+PWM. With the flag false no PWM peripheral is instantiated. The PWM CFG words
+(`0x130..0x16C`) are then an absent ICSSG-only block: reads return zero and writes
+are dropped by default, and `[device] icssg_only_blocks = strict` raises instead.
+On LP-AM261 ICSSM0 silicon those words read as zero without a fault (reads only,
+measured through the PRU and JTAG; writes not measured). See `docs/icssg_pwm.md`
+and `docs/icssm_absent_blocks.md`.
 
 ## Broadside IDs
 
@@ -62,6 +63,9 @@ AM261x/AM263x instantiate only MAC, CRC and XFR2VBUS accelerators. Shared SPAD
 banks remain available. They have no BSWAP, PSI DMA, IPC SPAD or XFR2TR; the
 simulator now exposes only PRU0 and PRU1 on those targets. ICSSG's existing
 accelerators and four simulated PRU/RTU cores remain available.
+
+The web UI follows this: on those targets the scratchpad state has no IPC
+bank and the IPC toggle is hidden.
 
 On LP-AM261 ICSSM0 PRU0, with R2–R9 preloaded, `XIN 161, &r2, 16` zeroed R2–R5
 and left R6–R9 intact ([silicon report in #32](https://github.com/TexasInstruments/pru-simulator/issues/32)).

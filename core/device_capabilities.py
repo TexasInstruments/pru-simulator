@@ -14,7 +14,7 @@ class DeviceCapabilities:
     broadside_ids: frozenset[int]
     rtu: bool
     tx_pru: bool
-    icssg_pwm: bool  # ICSSG PWM module; metadata only, no PWM model reads it yet
+    icssg_pwm: bool  # ICSSG PWM module; gates Simulator.pwm
 
 
 # SPRUJB6B Table 7-35 (ICSSM). AM263x equivalence: TI hardware owners, #32.

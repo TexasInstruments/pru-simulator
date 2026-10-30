@@ -234,7 +234,7 @@ class Simulator:
             raise ValueError(
                 f"Unknown icssg_only_blocks {icssg_only!r}; "
                 f"expected one of {', '.join(_ICSSG_ONLY_MODES)}")
-        if target.lower() in ("am261x", "am263x"):
+        if not self.capabilities.rtu:
             for region in icssg_only_regions(target, icssg_only):
                 self.memory.add_region(region)
 
