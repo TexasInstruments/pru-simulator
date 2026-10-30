@@ -23,6 +23,8 @@ let captureStride = null;   // Signal Graph sample interval requested by the loa
 let sharedExecution = {running:false, owner:false, mode:null};
 let executionStartPending = null;
 let executionReady = false;
+let prevExecutionOwner = false;   // tracks last known owner state for transition detection
+let lastAppliedCores = null;       // tracks last cores value passed to applyCoreSelection
 
 // ---- Core selection: execution membership is separate from inspection -------
 let availableCores = [...PruCores.ORDER];
@@ -499,7 +501,11 @@ function sendAction(obj) {
 
 function receiveExecution(state) {
   executionReady = true;
-  if (Array.isArray(state.cores) && JSON.stringify(state.cores) !== JSON.stringify(coreSelection.used)) {
+  // Only apply core selection when cores actually changed AND no step/run loop is active,
+  // to prevent rebuilding the UI mid-step which kills the setInterval loop.
+  const newCoresKey = JSON.stringify(state.cores);
+  if (Array.isArray(state.cores) && newCoresKey !== lastAppliedCores && !simRunning && runPending === null) {
+    lastAppliedCores = newCoresKey;
     applyCoreSelection({...coreSelection, used:state.cores}, true);
   }
   if (Object.hasOwn(state, 'scenario')) captureStride = state.scenario?.ui?.capture_stride || null;
@@ -508,7 +514,10 @@ function receiveExecution(state) {
     if (state.request_id !== executionStartPending) { updateCoresControl(); return; }
     executionStartPending = null;
   }
-  if (!state.running || !state.owner) { stopRun(false); stopSim(false); }
+  // Only stop on a true owner->!owner transition; suppress spurious stops on every state push
+  // where this tab was never the owner, which would kill the setInterval SIM step loop.
+  if (prevExecutionOwner && (!state.running || !state.owner)) { stopRun(false); stopSim(false); }
+  prevExecutionOwner = !!(state.running && state.owner);
   updateCoresControl();
 }
 
