@@ -33,9 +33,10 @@ def _require_bool(name: str, value) -> None:
 class PRUSimulatorMCP:
     """Wraps the Simulator and exposes its methods as MCP-compatible tool functions."""
 
-    def __init__(self, config_path: str = "memory.cfg"):
+    def __init__(self, config_path: str = "memory.cfg",
+                 simulator: Simulator | None = None):
         self._config_path = config_path
-        self.sim = Simulator(config_path)
+        self.sim = simulator if simulator is not None else Simulator(config_path)
 
     def pru_gpio_drive_mask(self, core: str = "pru0", mask: int | None = None) -> dict:
         """Query or set the twenty GPIO output-enable bits without changing R30."""
@@ -464,13 +465,7 @@ class PRUSimulatorMCP:
         return {"faults": self.sim.device_bus.faults()}
 
     def _get_device(self, name: str):
-        matches = [device for device in self.sim.device_bus.devices
-                   if device.name == name]
-        if not matches:
-            raise KeyError(f"No attached device named {name!r}")
-        if len(matches) > 1:
-            raise ValueError(f"more than one attached device is named {name!r}")
-        return matches[0]
+        return self.sim.device_bus.get_device(name)
 
     def pru_reset(self, core: str = "pru0") -> dict:
         """Reset the specified core to its initial state."""

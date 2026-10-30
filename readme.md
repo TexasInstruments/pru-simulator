@@ -15,7 +15,7 @@ unsupported-transfer diagnostics and silicon evidence.
 
 These are simulator-side capabilities, not features of the PRU hardware itself.
 
-- **Interactive dashboard** — register panel, memory panel, IO pin control, disassembly view
+- **Interactive dashboard** — register panel, memory panel, IO pin control, disassembly view; Simulator, Devices and Events views with persistent panel visibility and dark/high-contrast themes. See [dashboard controls](docs/simulator_dashboard.md)
 - **ELF binary loading** — load compiled .out files directly (TI PRU CGT ELF32) with automatic disassembly
 - **Step-back** — reverse any instruction; full machine state including SD filter is restored
 - **Signal graph** — digital logic analyzer for GPO/GPI pin transitions
@@ -24,7 +24,7 @@ These are simulator-side capabilities, not features of the PRU hardware itself.
 - **Device bus** — attach external device models (`DeviceModel`) to any core's GPIO pins and wire pins between cores. A shared `DeviceBus` resolves open-drain nets as wired-AND and reports push-pull contention as a fault instead of last-writer-wins; devices expose `events()` and `faults()` for checking firmware
 - **SSI encoder model and reader** — independent binary/Gray encoder `DeviceModel` with up to 64-bit frames, error fields and 12 encoder presets, clock-rate and monoflop faults, generated shared-memory ABI, and PRU1 reader and PRU0 emulator examples. See [SSI device model and reader](docs/ssi_device_model.md)
 - **UART decoder** — bit-bang UART decode in the IO panel (8N1, auto-detect bit period)
-- **Multi-core simulation & debug view** — PRU_ICSSG supports simultaneous simulation & debugging of up to 3 PRU cores; PRU-ICSS supports simultaneous simulation & debugging of both PRU cores
+- **Multi-core simulation & debug view** — PRU_ICSSG supports simultaneous simulation & debugging of up to 4 PRU cores (PRU0, RTU0, PRU1, RTU1), shown as PRU0 plus a selected partner; PRU-ICSS supports simultaneous simulation & debugging of both PRU cores
 - **Tiling window manager** — drag, split, collapse/expand, and persist panel layouts
 - **MCP server** — AI assistant integration via Model Context Protocol
 
@@ -113,7 +113,7 @@ pru_simulator/
 ├── tools/              Headless runner, ABI code generators, perif drift report
 ├── ui/
 │   ├── server.py       FastAPI WebSocket server
-│   └── static/         Dashboard HTML/JS (index.html, app.js, layout.js)
+│   └── static/         Dashboard HTML/JS (index.html, app.js, layout.js, workspace.js)
 ├── xfr/                XFR scratchpad + MAC accelerator
 ├── memory.cfg          Default memory configuration (AM243x)
 ├── requirements.txt
@@ -195,6 +195,10 @@ writes were not measured. Writes are ignored and logged once. Tracked in
 Dashboard step-back uses one ordered history across all cores. Undo restores
 all cores, shared memory, the IEP and devices to the same saved point, and
 removes later history entries so peer state stays consistent.
+
+Step-back does not yet restore XFRDMA queues, XFR2VBUS transfers or external
+VBUS memory, or task-ring queues and pending work. Do not use undo to validate
+programs that use those accelerators; reset and rerun them instead.
 
 Paced stepping limits each follower to 1000 catch-up instructions per lead step.
 `step_paced` and `step_paced_many` return `complete`, actual `lead_steps`, and the selected `targets`
@@ -280,9 +284,18 @@ standalone experiments and may require optional packages (for example,
 
 ## Version
 
-v0.3.0 — hover over **PRU SIM** in the dashboard header to confirm.
+v0.4.0 — hover over **PRU SIM** in the dashboard header to confirm.
 
 ### Changelog
+
+**v0.4.0**
+
+- **Linked browser tabs** — open the same dashboard URL on multiple screens. Code, registers, signals, devices, memory and execution status come from one simulator. The execution-core list and Run/Stop are shared. Each view keeps its own page, inspected core and layout; resetting a layout does not change the execution cores. Opening another tab does not start another run.
+- **Redesigned dashboard** — Simulator and I/O & Devices workspaces, persistent layouts, compact controls, consistent button motion, and dark/high-contrast themes.
+- **CORES deck** — select which cores execute and which are shown. The default uses one shared source/register view; selected cores can be expanded into separate panes. Clock controls show the affected cores without claiming a hardware clock-domain layout.
+- **Per-core assembly editing** — choose the load target in the editor, keep separate files and drafts for each core, and close files without affecting another core's editor or loaded program.
+- **Device demos and diagnostics** — set up SSI model/reader and encoder-emulator demos with matching frame settings and timing, inspect TCA9538, UART, sigma-delta and Peripheral Interface state, and review device events and faults. Motor control follows in a separate release.
+- **UI fixes** — repeated assembly loads (#53), UART recording controls (#55), UART injection-form reset (#56) and minimized-panel restoration (#61). See [dashboard instructions](docs/simulator_dashboard.md).
 
 **v0.3.0**
 - **SSI encoder simulation** — binary or Gray frames up to 64 bits, optional error fields and twelve documented RM08/SICK presets, with faults for excessive clock rate, incomplete frames and extra pulses.

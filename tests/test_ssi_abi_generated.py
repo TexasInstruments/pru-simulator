@@ -2,11 +2,26 @@ import pytest
 
 from tools.gen_ssi_abi import ROOT, generate_files, load_schema
 from pru_io import ssi_config_abi as abi
+from mem.constant_table import CTPPR0
+from simulator import Simulator
 
 
 def test_generated_ssi_abi_files_match_versioned_schema():
     for relative_path, expected in generate_files(load_schema()).items():
         assert (ROOT / relative_path).read_text(encoding="utf-8") == expected
+
+
+def test_reader_loaded_from_its_own_directory_uses_the_current_abi():
+    reader = ROOT / "source" / "ssi_generic_reader" / "ssi_generic_reader.asm"
+    sim = Simulator(str(ROOT / "memory.cfg"))
+    sim.ctrl_write("pru0", CTPPR0, 0x100)  # C28 -> Shared RAM, as the host runtime does
+    assert sim.load("pru0", reader.read_text(), include_paths=[str(reader.parent)]) == []
+    sim.memory.write(abi.CONFIG_ADDRESS, abi.pack_config(12, 1, 1))
+    sim.step("pru0", 100)
+    assert sim.cores["pru0"].fault is None
+    assert not sim.cores["pru0"].halted
+    mailbox = abi.unpack_mailbox(sim.memory_read(abi.MAILBOX_ADDRESS, abi.MAILBOX_SIZE))
+    assert mailbox["status"] == 0
 
 
 def test_ssi_config_pack_round_trip_and_mailbox_decode():

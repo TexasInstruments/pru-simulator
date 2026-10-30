@@ -4,71 +4,89 @@ const { test } = require('node:test');
 const vm = require('node:vm');
 
 const app = readFileSync(`${__dirname}/../ui/static/app.js`, 'utf8');
+const selection = readFileSync(`${__dirname}/../ui/static/cores.js`, 'utf8');
 
 function dashboard(cores) {
-  function select(value) {
-    return {
-      value, options: [],
-      replaceChildren(...options) { this.options = options; this.value = options[0].value; },
-    };
-  }
   const context = vm.createContext({
     fetch: async () => ({ ok: true, json: async () => cores }),
-    Option: function(text, value) { this.text = text; this.value = value; },
-    coreSelect: select('pru0'), mcPartnerSelect: select('rtu0'), mcLoadCore: select('pru0'),
-    currentCore: 'pru0', mcPartner: 'rtu0', applyMCPartnerLabels() {},
-    prevRegisters: [], _lastSourceKey: '', sourceList: { innerHTML: '' },
-    initSpadState() {},
-    document: { querySelectorAll: () => [], getElementById: () => null },
+    availableCores: ['pru0', 'pru1', 'rtu0', 'rtu1'],
+    coreSelection: { used: ['rtu1'], shown: ['rtu1'], focus: 'rtu1', pinned: false },
+    currentCore: 'rtu1', stopRun() {}, stopSim() {}, selectEditorCore() {},
   });
-  // Run the production selector function with the DOM and HTTP boundaries supplied.
-  const fn = app.match(/async function loadCoreChoices\(\) \{[\s\S]*?\n\}/);
-  if (fn) vm.runInContext(fn[0], context);
+  vm.runInContext(selection, context);
+  // Rendering is covered by ui_controls; keep the real selection normalization here.
+  vm.runInContext(`function applyCoreSelection(next) {
+    coreSelection = next; currentCore = next.focus;
+  }`, context);
+  for (const name of ['loadCoreChoices', 'showAvailableCores']) {
+    const fn = app.match(new RegExp(`(?:async )?function ${name}\\(\\) \\{[\\s\\S]*?\\n\\}|function ${name}\\(cores\\) \\{[\\s\\S]*?\\n\\}`));
+    assert.ok(fn, `${name} is implemented`);
+    vm.runInContext(fn[0], context);
+  }
   return context;
 }
 
-test('RTU1 can be selected and kept as the current, partner and load target', async () => {
+test('refreshing target cores keeps a valid RTU1 deck selection', async () => {
   const ui = dashboard(['pru0', 'rtu0', 'pru1', 'rtu1']);
-  assert.equal(typeof ui.loadCoreChoices, 'function', 'Dashboard must refresh target core choices');
-  await ui.loadCoreChoices();
-  for (const select of [ui.coreSelect, ui.mcPartnerSelect, ui.mcLoadCore]) {
-    assert(select.options.some(option => option.value === 'rtu1'));
-    select.value = 'rtu1';
-  }
   await ui.loadCoreChoices();
   assert.equal(ui.currentCore, 'rtu1');
-  assert.equal(ui.mcPartner, 'rtu1');
-  assert.equal(ui.mcLoadCore.value, 'rtu1');
-  assert(!ui.mcPartnerSelect.options.some(option => option.value === 'pru0'));
+  assert.deepEqual(Array.from(ui.coreSelection.used), ['rtu1']);
+  assert.deepEqual(Array.from(ui.availableCores), ['pru0', 'pru1', 'rtu0', 'rtu1']);
 });
 
-test('a target without RTU1 removes it and replaces stale selections', async () => {
+test('a target without RTU1 prunes it from the deck and repairs focus', async () => {
   const ui = dashboard(['pru0', 'rtu0', 'pru1']);
-  assert.equal(typeof ui.loadCoreChoices, 'function', 'Dashboard must refresh target core choices');
-  for (const select of [ui.coreSelect, ui.mcPartnerSelect, ui.mcLoadCore]) select.value = 'rtu1';
   await ui.loadCoreChoices();
   assert.equal(ui.currentCore, 'pru0');
-  assert.equal(ui.mcPartner, 'rtu0');
-  assert.equal(ui.mcLoadCore.value, 'pru0');
-  for (const select of [ui.coreSelect, ui.mcPartnerSelect, ui.mcLoadCore]) {
-    assert(!select.options.some(option => option.value === 'rtu1'));
-  }
+  assert.deepEqual(Array.from(ui.coreSelection.used), ['pru0']);
+  assert.deepEqual(Array.from(ui.coreSelection.shown), ['pru0']);
+  assert(!ui.availableCores.includes('rtu1'));
+});
+
+test('failed target discovery preserves the current selection', async () => {
+  const ui = dashboard([]);
+  ui.fetch = async () => ({ ok: false, status: 503 });
+  await assert.rejects(ui.loadCoreChoices(), /503/);
+  assert.equal(ui.currentCore, 'rtu1');
+});
+
+test('each visible register pane shows its own CRC state', () => {
+  const field = { dataset: { paneReadout: 'carry' }, textContent: '' };
+  const ui = vm.createContext({
+    currentCore: 'pru0', devicePanelCore: 'pru0', coreSelection: { shown: ['pru0', 'rtu1'] },
+    mcBreakpoints: {}, updateMCRegisters() {}, updateMCSource() {},
+    document: { querySelectorAll: () => [{ dataset: { core: 'rtu1' }, querySelector: () => field }] },
+  });
+  vm.runInContext(app.match(/function paintCoreState\([^)]*\) \{[\s\S]*?\n\}/)[0], ui);
+  ui.paintCoreState({ core: 'rtu1', carry: false, registers: [], instructions: [],
+    crc: { mode: 'CRC32', value: '1234ABCD' } });
+  assert.match(field.textContent, /Carry 0.*CRC32 1234ABCD/);
 });
 
 
-test('target replacement clears loopback display and stale source caches without touching removed cores', async () => {
+test('target replacement clears stale inspectors without requesting a removed core', async () => {
   const ui = dashboard(['pru0', 'rtu0', 'pru1']);
-  ui.currentCore = 'rtu1'; ui.coreSelect.value = 'rtu1';
-  ui._lastSourceKey = 'old'; ui.sourceList.innerHTML = 'old source';
-  const button = { active: true, classList: { remove() { button.active = false; } } };
-  ui.document.querySelectorAll = () => [button];
-  ui.sendAction = () => assert.fail('target refresh must not send actions to removed cores');
+  const actions = [];
+  const button = { active: true, dataset: { group: '0' },
+    classList: { toggle(name, value) { button.active = value; } } };
+  Object.assign(ui, {
+    _lastSourceKey: 'old', sourceList: { textContent: 'old source', replaceChildren() { this.textContent = ''; } },
+    devicePanelCore: 'rtu1', coreStates: {},
+    document: { querySelectorAll: () => [button] },
+    mcFreshRegs: () => Array(32).fill('0x00000000'), initSpadState() {}, updateCtableForCore() {},
+    persistCoreSelection() {}, renderCorePanes() {}, syncDeviceCoreSelect() {},
+    paintCoreState() {}, updateCoresControl() {}, sendAction(action) { actions.push(action); },
+  });
+  for (const name of ['applyCoreSelection', 'syncGpioLoopback']) {
+    vm.runInContext(app.match(new RegExp(`function ${name}\\([^\\n]*\\) \\{[\\s\\S]*?\\n\\}`))[0], ui);
+  }
   await ui.loadCoreChoices();
   assert.equal(ui.currentCore, 'pru0');
   assert.equal(button.active, false);
-  assert.equal(ui.sourceList.innerHTML, '');
+  assert.equal(ui.sourceList.textContent, '');
   assert.equal(ui._lastSourceKey, '');
   assert.deepEqual(Array.from(ui.prevRegisters), Array(32).fill('0x00000000'));
+  assert.deepEqual(actions.map(action => action.core), ['pru0']);
 });
 
 test('GPIO loopback buttons follow the selected cores actual mask', () => {
@@ -95,17 +113,21 @@ test('loopback clicks target the core displayed by the pins panel', () => {
     contains() { return false; }, toggle() {},
   } };
   context.onLoopbackToggle(button);
-  assert.equal(actions[0].core, 'pru0');
+  assert.deepEqual(actions.map(action => [action.action, action.core]), [
+    ['set_loopback', 'pru1'], ['get_state', 'pru1'],
+  ]);
+  actions.length = 0;
   context.multiCoreMode = false;
   context.onLoopbackToggle(button);
-  assert.equal(actions[1].core, 'pru1');
+  assert(actions.every(action => action.core === 'pru1'));
+  assert.equal(actions.length, 2);
 });
 
-test('multicore keyboard undo runs in reverse step order', () => {
+test('multicore keyboard undo restores one shared snapshot', () => {
   const actions = []; let onKey;
   const context = vm.createContext({
     document: { addEventListener(type, listener) { onKey = listener; } },
-    multiCoreMode: true, mcPartner: 'rtu1', currentCore: 'pru0',
+    multiCoreMode: true, executionCores: () => ['pru0', 'rtu1'], currentCore: 'pru0',
     helpModal: { style: { display: 'none' } }, stopRun() {}, stopSim() {},
     sendAction(action) { actions.push(action); },
   });
@@ -113,6 +135,6 @@ test('multicore keyboard undo runs in reverse step order', () => {
   const end = app.indexOf('\n});', start) + 4;
   vm.runInContext(app.slice(start, end), context);
   onKey({ key: 'ArrowLeft', target: { tagName: 'BODY' }, preventDefault() {} });
-  assert.deepEqual(actions.map(action => action.core), ['rtu1', 'pru0']);
+  assert.deepEqual(actions.map(action => action.core), ['pru0']);
   assert(actions.every(action => action.action === 'step_back'));
 });

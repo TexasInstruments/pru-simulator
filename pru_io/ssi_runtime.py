@@ -19,6 +19,24 @@ _DATA_PIN = 16
 _EMULATOR_SIMS = WeakSet()  # Simulators with a loaded emulator; it owns the one block
 
 
+def load_reader(sim, core: str, frame_bits: int, clock_delay_loops: int,
+                idle_delay_loops: int) -> None:
+    """Pack the reader config into shared memory and load its assembly."""
+    sim.memory.write(abi.CONFIG_ADDRESS, abi.pack_config(
+        frame_bits=frame_bits,
+        clock_delay_loops=clock_delay_loops,
+        idle_delay_loops=idle_delay_loops,
+    ))
+    # The reader reaches Shared RAM through C28, which is 0 until CTPPR0 is
+    # programmed; the host sets blk_ptr = 0x100 (0x10000).
+    sim.ctrl_write(core, CTPPR0, _SHARED_RAM_BLK_PTR)
+    errors = sim.load(core, _FIRMWARE.read_text(encoding="utf-8"),
+                      include_paths=[str(_FIRMWARE.parent.parent)])
+    if errors:
+        raise ValueError("SSI reader assembly failed: " + "; ".join(errors))
+    sim.memory.write(abi.MAILBOX_ADDRESS, bytes(abi.MAILBOX_SIZE))
+
+
 class SSIRuntime:
     """Attach an SSI encoder, load the reader, and inspect its ABI mailbox.
 
@@ -65,20 +83,8 @@ class SSIRuntime:
         try:
             if idle_delay_loops is None:
                 idle_delay_loops = ceil(self.encoder.monoflop_cycles / 2) + 8
-            config = abi.pack_config(
-                frame_bits=self.encoder.resolution,
-                clock_delay_loops=clock_delay_loops,
-                idle_delay_loops=idle_delay_loops,
-            )
-            self.sim.memory.write(abi.CONFIG_ADDRESS, config)
-            # The reader reaches Shared RAM through C28, which is 0 until
-            # CTPPR0 is programmed; the host sets blk_ptr = 0x100 (0x10000).
-            self.sim.ctrl_write(self.core, CTPPR0, _SHARED_RAM_BLK_PTR)
-            firmware = _FIRMWARE.read_text(encoding="utf-8")
-            errors = self.sim.load(
-                self.core, firmware, include_paths=[str(_FIRMWARE.parent.parent)])
-            if errors:
-                raise ValueError("SSI reader assembly failed: " + "; ".join(errors))
+            load_reader(self.sim, self.core, self.encoder.resolution,
+                        clock_delay_loops, idle_delay_loops)
         except BaseException:
             if self._loaded:
                 self.sim.memory.write(abi.CONFIG_ADDRESS, previous_config)
