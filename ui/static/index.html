@@ -1200,6 +1200,9 @@
     #ctable-table .ct-addr:hover { background: var(--highlight); color: var(--text); }
     #ctable-table tr.ct-dep .ct-name,
     #ctable-table tr.ct-dep .ct-idx { color: var(--accent); }
+    .ct-legend { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--text-dim); padding:4px 8px; }
+    .ct-legend-chip { width:10px; height:10px; border-radius:2px; }
+    .ct-legend-dep { background:var(--accent); }
 
     /* ---- Memory fill modal ---------------------------------------------------------------------- */
     #fill-card { width: 460px; max-width: 95vw; }
@@ -1773,6 +1776,7 @@ Example:
         </div>
         <div id="ctable-divider" class="inner-divider-h" style="display:none;"></div>
         <div id="ctable-section">
+          <div class="ct-legend"><span class="ct-legend-chip ct-legend-dep"></span>per-core (C10, C11, C22)</div>
           <table id="ctable-table">
             <tbody id="ctable-tbody"></tbody>
           </table>
@@ -2074,6 +2078,7 @@ Example:
         <div class="help-heading">Registers Panel</div>
         <table class="help-table">
           <tr><td><b>C-Table</b></td><td>Show / hide the PRU constant table (C0–C31)</td></tr>
+          <tr><td><b>C-Table red rows</b></td><td>Per-core entries (C10, C11, C22) — address changes with focused core</td></tr>
           <tr><td><b>SPAD: B0 B1 B2</b></td><td>Toggle Scratch-Pad Bank 0/1/2 columns alongside registers (XFR device 10/11/12)</td></tr>
           <tr><td><b>SPAD: IPC</b></td><td>Toggle IPC_SP scratch-pad columns R2–R9 (XFR device 15)</td></tr>
           <tr><td><b>XFR: SHF</b></td><td>Toggle XFR_SHIFT_EN bit (ICSSG_SPP_REG[1])</td></tr>
