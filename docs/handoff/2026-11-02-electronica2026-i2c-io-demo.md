@@ -121,7 +121,10 @@ Entry points:
 1. **Review and merge:** open-pru PR #188 and pru-simulator PR #102.
 2. **Board revision:** record the LP-AM243 revision in `i2c_io/readme.md`
    (currently FIXME).
-3. **J-header positions:** check J4.8 / J4.9 against the board silkscreen.
+3. ~~**J-header positions:** check J4.8 / J4.9 against the board silkscreen.~~
+   Done: the headers are labelled with BoosterPack numbers, SCL/SDA are
+   BP.33/BP.32 on J4 (open-pru `4a8cad5c`, see
+   [2026-11-02-electronica2026-uart-rx-port.md](2026-11-02-electronica2026-uart-rx-port.md)).
 4. **Portability:** the `examples/readme.md` FIXMEs for am261x, am263px,
    am263x, am62x and am64x.
 5. **SysConfig:** open `example.syscfg` in the SysConfig GUI and save, to
