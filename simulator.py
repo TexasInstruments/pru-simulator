@@ -173,6 +173,7 @@ class Simulator:
         pru1_clock = dev.get("pru1_clock_mhz", pru_clock)
         iep_clock = dev.get("iep_clock_mhz", IEP_DEFAULT_CLOCK_MHZ)
         target = dev.get("target", "AM243x").split("#", 1)[0].strip()
+        self.target: str = target
         self.capabilities = get_device_capabilities(target)
         core_names = (["pru0", "rtu0", "pru1", "rtu1"] if self.capabilities.rtu
                       else ["pru0", "pru1"])

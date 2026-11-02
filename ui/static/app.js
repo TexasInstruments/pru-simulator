@@ -452,6 +452,10 @@ function connect() {
         }
       } else if (msg.type === "device_profiles") {
         populateSsiPresets(msg.profiles);
+        if (msg.processor) {
+          const badge = document.getElementById("processor-badge");
+          if (badge) { badge.textContent = msg.processor; badge.hidden = false; }
+        }
       } else if (msg.type === "scenarios") {
         populateScenarios(msg.scenarios);
       } else if (msg.type === "scenario_loaded") {

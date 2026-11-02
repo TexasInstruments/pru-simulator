@@ -649,3 +649,13 @@ def test_throttled_chunk_trailing_publish_reaches_observer_via_real_timer(dashbo
         control.portal.call(sleep_past_interval)
         trailing = state(view)
         assert trailing["instruction_count"] == 20
+
+
+def test_device_discover_includes_processor(dashboard):
+    """device_profiles broadcast includes the processor name from sim.target."""
+    with dashboard.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "device_discover", "core": "pru0"})
+        msg = until(ws, lambda m: m.get("type") == "device_profiles")
+        assert "processor" in msg
+        assert isinstance(msg["processor"], str)
+        assert msg["processor"]  # non-empty

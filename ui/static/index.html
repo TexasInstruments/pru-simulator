@@ -264,6 +264,16 @@
       cursor: help;
     }
 
+    .processor-badge {
+      margin-left: 6px;
+      padding: 1px 6px;
+      border-radius: 4px;
+      background: var(--token-badge-bg, rgba(255,255,255,0.1));
+      color: var(--token-badge-text, inherit);
+      font-size: 0.75em;
+      font-weight: 600;
+    }
+
     #controls select { min-height: 30px; }
     .toolbar-group button {
       min-height: 30px;
@@ -1615,7 +1625,7 @@
   <div id="controls">
     <div id="toolbar-main">
     <div class="toolbar-group toolbar-context" role="group" aria-label="Target selection">
-      <span class="logo" title="PRU Simulator v0.4.0">PRU SIM</span>
+      <span class="logo" title="PRU Simulator v0.4.0">PRU SIM</span><span class="processor-badge" id="processor-badge" hidden></span>
 
       <div id="cores-control"></div>
       <label class="toolbar-rate-pill">

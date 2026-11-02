@@ -998,6 +998,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({
                     "type": "device_profiles",
                     "profiles": discover_device_profiles(),
+                    "processor": sim.target,
                 })
             elif action == "scenario_list":
                 await websocket.send_json({
