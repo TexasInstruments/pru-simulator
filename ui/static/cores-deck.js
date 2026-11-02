@@ -13,7 +13,7 @@ function createCoresDeck(root, handlers) {
       <div class="core-card-toggles"><button type="button" data-use="${core}" aria-pressed="false">${chipIcon}Use</button><button type="button" data-show="${core}" aria-pressed="false">${eyeIcon}Show</button></div>
       <div class="core-card-clock"><b data-core-rate></b></div>
     </section>`).join('')}</div>
-    <div class="cores-clock-single"><div class="cores-clock-label"><b>PRU core frequency</b><small>Applies to all cores</small></div><div class="cores-clock-controls"><button type="button" data-core-clock data-direction="-1" aria-label="Lower core clock">‹</button><b data-core-rate>— MHz</b><button type="button" data-core-clock data-direction="1" aria-label="Higher core clock">›</button></div><input type="range" class="cores-clock-slider" min="0" max="0" step="1" value="0" aria-label="PRU core clock"></div>
+    <div class="cores-clock-single"><span class="cores-clock-head">PRU core frequency: <b data-core-rate>— MHz</b></span><div class="cores-clock-track"><input type="range" class="cores-clock-slider" min="0" max="0" step="1" value="0" aria-label="PRU core clock"><div class="cores-clock-ticks" aria-hidden="true"></div></div></div>
     <p class="cores-clock-notice">The PRU core frequency applies to all cores within the PRU subsystem. Changing it reloads the simulator and clears loaded programs. IEP is separate.</p>
     <div class="cores-deck-footer"><span>Use = include in RUN/STEP · Show = open Source &amp; Registers panes</span><button type="button" data-action="use-all">Use all</button><button type="button" data-action="show-all">Show all used</button><button type="button" data-action="pin" aria-label="Pin CORES deck" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 3 8 0-1 6 4 4v2H5v-2l4-4-1-6Zm4 12v7"/></svg></button></div>
     </div></div>`;
@@ -55,7 +55,6 @@ function createCoresDeck(root, handlers) {
     const target = event.target.closest('button'); if (!target) return;
     for (const type of ['use','show','solo']) if (target.dataset[type]) { handlers.action({type,core:target.dataset[type]}); return; }
     if (target.dataset.action) { handlers.action({type:target.dataset.action}); return; }
-    if (target.dataset.coreClock !== undefined) handlers.clock(Number(target.dataset.direction));
   });
   root.addEventListener('input',event => {
     const slider = event.target.closest('.cores-clock-slider'); if (!slider) return;
@@ -116,10 +115,6 @@ function createCoresDeck(root, handlers) {
       if (singleRow) {
         singleRow.querySelector('[data-core-rate]').textContent = clocks.mhz ? `${clocks.mhz} MHz` : '— MHz';
         const disabled = running || busy || selection.used.length === 0;
-        for (const button of singleRow.querySelectorAll('[data-direction]')) {
-          const direction = Number(button.dataset.direction);
-          button.disabled = disabled || !clocks.choices_mhz.some(mhz => direction > 0 ? mhz > clocks.mhz : mhz < clocks.mhz);
-        }
         const slider = singleRow.querySelector('.cores-clock-slider');
         if (slider && clocks.choices_mhz && clocks.choices_mhz.length) {
           slider._choices = clocks.choices_mhz;
@@ -128,6 +123,16 @@ function createCoresDeck(root, handlers) {
           const idx = clocks.choices_mhz.indexOf(clocks.mhz);
           slider.value = idx >= 0 ? idx : 0;
           slider.disabled = disabled;
+        }
+        const ticks = singleRow.querySelector('.cores-clock-ticks');
+        if (ticks && clocks.choices_mhz && clocks.choices_mhz.length) {
+          ticks.replaceChildren();
+          for (const mhz of clocks.choices_mhz) {
+            const tick = document.createElement('span');
+            tick.className = 'cores-clock-tick' + (mhz === clocks.mhz ? ' active' : '');
+            tick.title = mhz + ' MHz';
+            ticks.appendChild(tick);
+          }
         }
       }
       for (const type of ['use-all','show-all']) root.querySelector(`[data-action="${type}"]`).disabled = busy;
