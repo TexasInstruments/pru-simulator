@@ -3,8 +3,8 @@ name: pru-assembly
 description: Write, review, debug, simulate and build assembly for TI PRU cores (PRU-ICSS, PRU_ICSSG, PRUSS) on AM243x, AM64x, AM62x, AM261x, AM263x, AM263Px and legacy AM335x/BeagleBone, using the TI clpru toolchain, the OpenPRU repo and TI's pru-simulator. Use this skill whenever the user mentions PRU, ICSS, ICSSG, PRUSS, clpru, pasm, OpenPRU, open-pru, pru-simulator, remoteproc PRU firmware, R30/R31 pin bit-banging, or cycle-exact timing, or asks to write, port, optimize, simulate or explain PRU .asm code, even if they don't say "assembly".
 compatibility: TI PRU Code Generation Tools (clpru) 2.3.x; Python 3.9+ for the linter and simulator; optional TI pru-simulator (MCP server or headless runner); Linux remoteproc or MCU+ SDK on the target.
 metadata:
-  version: "0.2.1"
-  sources: "TexasInstruments/open-pru @ 36ad470 (2026-08-19); TexasInstruments/pru-simulator @ a17fd62 (2026-10-01, v0.2.6)"
+  version: "0.2.2"
+  sources: "TexasInstruments/open-pru @ 36ad470 (2026-08-19), instruction cheat sheet @ 58cbf1a8 (2026-10-29); TexasInstruments/pru-simulator @ a17fd62 (2026-10-01, v0.2.6)"
   tested-with: "Not yet tested. Run evals/evals.json on every model you use and record them here (e.g. claude-opus-5-5, claude-sonnet-5-5)."
 ---
 

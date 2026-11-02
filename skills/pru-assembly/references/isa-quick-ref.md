@@ -1,6 +1,6 @@
 # PRU instruction set quick reference (clpru syntax)
 
-Covers PRU core revisions V3 and V4. Checked against TI's `docs/PRU Assembly Instruction Cheat Sheet.md` in OpenPRU (commit 36ad470) and the *PRU Assembly Instruction User Guide* (SPRUIJ2). Where this file and those disagree, they win.
+Covers PRU core revisions V3 and V4. Checked against TI's `docs/PRU Assembly Instruction Cheat Sheet.md` in OpenPRU (commit 58cbf1a8) and the *PRU Assembly Instruction User Guide* (SPRUIJ2). Where this file and those disagree, they win.
 
 ## Contents
 
@@ -121,7 +121,7 @@ Pick the instruction by what you want to test:
 | r1 = 10 | `qbeq label, r1, 10` | 10 = r1 |
 | r1 ≠ 10 | `qbne label, r1, 10` | 10 ≠ r1 |
 
-Comparisons are unsigned. Quick branches have a limited range. If the assembler reports a target out of range, branch to a nearby `JMP`.
+Comparisons are unsigned. A quick branch reaches at most +511 or -512 instructions from the branch (signed 10-bit word offset). For a farther target, branch to a nearby `JMP`, which takes an absolute 16-bit address.
 
 ## 7. Calls, loops and halt
 
