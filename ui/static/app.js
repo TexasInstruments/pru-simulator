@@ -4314,16 +4314,18 @@ function renderCorePanes() {
   registers.dataset.count = String(shownReg.length);
 
   for (const extra of sources.querySelectorAll('.core-extra-pane')) {
-    if (!coreSelection.shown.includes(extra.dataset.core) || extra.dataset.core === currentCore) extra.remove();
+    if (!coreSelection.shown.includes(extra.dataset.core) || extra.dataset.core === currentCore || !srcVis(extra.dataset.core)) extra.remove();
   }
   for (const extra of registers.querySelectorAll('.core-extra-pane')) {
-    if (!coreSelection.shown.includes(extra.dataset.core) || extra.dataset.core === currentCore) extra.remove();
+    if (!coreSelection.shown.includes(extra.dataset.core) || extra.dataset.core === currentCore || !regVis(extra.dataset.core)) extra.remove();
   }
 
   for (const core of coreSelection.shown) {
     if (core === currentCore) {
       if (srcVis(core)) { paneHeading(sourceFocus, core, 'pc'); sources.appendChild(sourceFocus); }
+      else if (sourceFocus.parentNode === sources) sources.removeChild(sourceFocus);
       if (regVis(core)) { paneHeading(registerFocus, core, 'carry'); registers.appendChild(registerFocus); }
+      else if (registerFocus.parentNode === registers) registers.removeChild(registerFocus);
       continue;
     }
     // Source pane
