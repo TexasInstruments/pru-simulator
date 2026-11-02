@@ -13,7 +13,11 @@ apart from this note.
 
 **Done and pushed:**
 - Branch pushed to `origin` at `f4be861b`, 11 commits on top of `main`.
-- No Pull Request yet. The user chose "push the branch" and stopped there.
+- Open as [open-pru PR #188](https://github.com/TexasInstruments/open-pru/pull/188)
+  into `main`.
+- This note is in
+  [pru-simulator PR #102](https://github.com/TexasInstruments/pru-simulator/pull/102),
+  branch `docs/handoff-2026-11-02`.
 
 **Built in this session:** the simulator example
 `source/i2c_tca9538_running_led.asm` became a booth demo with four stages:
@@ -89,6 +93,15 @@ Entry points:
 - **The repo-root `make` dirties `examples/pru_i2s`.** It regenerates tracked
   `*_array.h` files. Revert them with `git restore`.
 
+## Branches (end of session)
+
+- **pru_simulator:** the `dev` branch is retired. It was merged into `main`
+  and deleted on GitHub, and the local copy was deleted on 2026-11-02 (it was
+  at `ccbd839`). Work now goes through short-lived branches and pull requests
+  into `main`, for example `docs/handoff-2026-11-02`. Don't recreate `dev`.
+- **open-pru:** the local branches are `dev_tley_electronica2026_i2c_io` (PR
+  #188) and `main`.
+
 ## Environment on the Linux desktop
 
 - **open-pru build:** `imports.mak` defaults don't match this PC. Run
@@ -104,7 +117,7 @@ Entry points:
 
 ## Open items
 
-1. **Pull Request:** open one for `dev_tley_electronica2026_i2c_io`, when wanted.
+1. **Review and merge:** open-pru PR #188 and pru-simulator PR #102.
 2. **Board revision:** record the LP-AM243 revision in `i2c_io/readme.md`
    (currently FIXME).
 3. **J-header positions:** check J4.8 / J4.9 against the board silkscreen.
