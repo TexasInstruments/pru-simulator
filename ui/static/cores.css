@@ -177,3 +177,19 @@
     .panel-toggle-icon { display:none; }
   }
 }
+
+/* ---- Per-core circle tabs in multi-core panel title bars ------------------- */
+.panel-core-tabs { display:inline-flex; align-items:center; gap:4px; margin-inline-start:6px; }
+.pane-core-chip {
+  display:inline-block; flex:0 0 8px; width:8px; height:8px; border-radius:50%;
+  background:transparent; border:1.5px solid var(--core-color);
+  cursor:pointer; vertical-align:middle; transition:box-shadow 100ms;
+}
+.pane-core-chip.visible { background:var(--core-color); }
+@media (hover:hover) and (pointer:fine) {
+  .pane-core-chip:hover { box-shadow:0 0 0 3px color-mix(in srgb,var(--core-color) 35%,transparent); }
+}
+.pane-core-chip:focus-visible { outline:2px solid var(--core-color); outline-offset:2px; }
+/* Keep circle tabs visible when the panel is collapsed */
+.panel.panel-collapsed > .panel-title > .panel-core-tabs,
+.panel.panel-collapsed > .panel-title .panel-core-tabs { display:inline-flex !important; }

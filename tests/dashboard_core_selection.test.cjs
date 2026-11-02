@@ -196,3 +196,80 @@ test('multicore keyboard undo restores one shared snapshot', () => {
   assert.deepEqual(actions.map(action => action.core), ['pru0']);
   assert(actions.every(action => action.action === 'step_back'));
 });
+
+// ---- B9+B10: per-core circle tabs + minimize persistence -------------------
+
+const layoutSrc = readFileSync(`${__dirname}/../ui/static/layout.js`, 'utf8');
+
+function makeLayoutContext() {
+  const storage = {};
+  const context = vm.createContext({
+    localStorage: {
+      getItem: key => storage[key] ?? null,
+      setItem: (key, val) => { storage[key] = val; },
+    },
+    document: { dispatchEvent() {} },
+    CustomEvent: class CustomEvent { constructor(type, opts) { this.type = type; this.detail = opts?.detail; } },
+    currentMode: 'sc', currentTree: {},
+  });
+  vm.runInContext(layoutSrc, context);
+  // Override the DOM-dependent render() with a stub AFTER loading layout.js
+  // (function declarations become context properties, so this replaces it)
+  context._renders = [];
+  context.render = function(tree) { context._renders.push(tree); };
+  return { context, storage };
+}
+
+test('clicking a panel-title core chip toggles that core visibility in that pane', () => {
+  const { context, storage } = makeLayoutContext();
+
+  // Default: visible (no entry → true)
+  assert.equal(context.getCoreVisibility('source', 'pru1'), true);
+
+  // Set invisible; setCoreVisibility calls render() + notifyLayoutChanged()
+  context.setCoreVisibility('source', 'pru1', false);
+  assert.equal(context.getCoreVisibility('source', 'pru1'), false);
+
+  // Set back visible
+  context.setCoreVisibility('source', 'pru1', true);
+  assert.equal(context.getCoreVisibility('source', 'pru1'), true);
+
+  // Each call triggered a render
+  assert.equal(context._renders.length, 2);
+
+  // State is persisted in localStorage
+  const stored = JSON.parse(storage['pru-core-visibility-sc'] || '{}');
+  assert.equal(stored.source?.pru1, true);
+});
+
+test('minimize state survives render (getCoreVisibility reads from coreVisibility map)', () => {
+  const { context, storage } = makeLayoutContext();
+
+  // Seed localStorage with pru0 hidden in registers
+  storage['pru-core-visibility-sc'] = JSON.stringify({ registers: { pru0: false } });
+
+  // Simulate initLayout loading persisted state (let binding — must use runInContext)
+  vm.runInContext('coreVisibility = loadCoreVisibility("sc")', context);
+
+  // pru0 should be hidden in registers
+  assert.equal(context.getCoreVisibility('registers', 'pru0'), false);
+  // pru1 defaults to visible (no entry)
+  assert.equal(context.getCoreVisibility('registers', 'pru1'), true);
+  // source panel pru0 defaults to visible (no entry)
+  assert.equal(context.getCoreVisibility('source', 'pru0'), true);
+});
+
+test('collapse state persists in localStorage', () => {
+  const { context, storage } = makeLayoutContext();
+
+  // Add 'source' to the collapsedPanelIds set (let binding — must use runInContext)
+  vm.runInContext('collapsedPanelIds.add("source"); saveCollapsedPanels("sc");', context);
+
+  const stored = JSON.parse(storage['pru-panel-collapsed-sc'] || '[]');
+  assert.ok(stored.includes('source'), 'source in collapsed localStorage');
+
+  // loadCollapsedPanels reads it back
+  const loaded = context.loadCollapsedPanels('sc');
+  assert.ok(loaded.has('source'), 'loadCollapsedPanels restores source');
+  assert.ok(!loaded.has('registers'), 'registers not in set');
+});

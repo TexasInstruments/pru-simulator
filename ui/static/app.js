@@ -4276,37 +4276,58 @@ function renderCorePanes() {
   const registers = document.getElementById('reg-body');
   const sourceFocus = document.getElementById('source-focus-pane');
   const registerFocus = document.getElementById('register-focus-pane');
-  for (const container of [sources, registers]) {
-    container.dataset.count = String(coreSelection.shown.length);
-    for (const extra of container.querySelectorAll('.core-extra-pane')) {
-      if (!coreSelection.shown.includes(extra.dataset.core) || extra.dataset.core === currentCore) extra.remove();
-    }
+
+  // Determine visibility per panel per core (default true when no entry)
+  const srcVis  = core => typeof getCoreVisibility === 'function' ? getCoreVisibility('source', core) : true;
+  const regVis  = core => typeof getCoreVisibility === 'function' ? getCoreVisibility('registers', core) : true;
+
+  // Effective shown lists after applying per-core visibility.
+  // The focus core is always present (can't hide the primary pane).
+  const shownSrc = coreSelection.shown.filter(c => c === currentCore || srcVis(c));
+  const shownReg = coreSelection.shown.filter(c => c === currentCore || regVis(c));
+
+  sources.dataset.count   = String(shownSrc.length);
+  registers.dataset.count = String(shownReg.length);
+
+  for (const extra of sources.querySelectorAll('.core-extra-pane')) {
+    if (!coreSelection.shown.includes(extra.dataset.core) || extra.dataset.core === currentCore) extra.remove();
   }
+  for (const extra of registers.querySelectorAll('.core-extra-pane')) {
+    if (!coreSelection.shown.includes(extra.dataset.core) || extra.dataset.core === currentCore) extra.remove();
+  }
+
   for (const core of coreSelection.shown) {
     if (core === currentCore) {
       paneHeading(sourceFocus, core, 'pc'); paneHeading(registerFocus, core, 'carry');
       sources.appendChild(sourceFocus); registers.appendChild(registerFocus);
       continue;
     }
-    let source = document.getElementById(`core-source-${core}`);
-    if (!source) {
-      source = document.createElement('section'); source.className = 'core-pane core-extra-pane'; source.id = `core-source-${core}`;
-      source.innerHTML = `<div class="core-scroll"><ul class="source-list" id="mc-${core}-source-list"></ul></div>`;
-      source.addEventListener('dblclick', e => {
-        const line = e.target.closest('li[data-address]');
-        if (line) sendAction({action:'toggle_breakpoint',core,addr:Number(line.dataset.address)});
-      });
-      mcLastSourceKey[core] = '';
+    // Source pane
+    if (srcVis(core)) {
+      let source = document.getElementById(`core-source-${core}`);
+      if (!source) {
+        source = document.createElement('section'); source.className = 'core-pane core-extra-pane'; source.id = `core-source-${core}`;
+        source.innerHTML = `<div class="core-scroll"><ul class="source-list" id="mc-${core}-source-list"></ul></div>`;
+        source.addEventListener('dblclick', e => {
+          const line = e.target.closest('li[data-address]');
+          if (line) sendAction({action:'toggle_breakpoint',core,addr:Number(line.dataset.address)});
+        });
+        mcLastSourceKey[core] = '';
+      }
+      paneHeading(source, core, 'pc'); sources.appendChild(source);
     }
-    paneHeading(source, core, 'pc'); sources.appendChild(source);
-    let reg = document.getElementById(`core-register-${core}`);
-    if (!reg) {
-      reg = document.createElement('section'); reg.className = 'core-pane core-extra-pane'; reg.id = `core-register-${core}`;
-      reg.innerHTML = `<div class="core-scroll"><table class="reg-table"><tbody id="mc-${core}-reg-tbody"></tbody></table></div>`;
-      paneHeading(reg, core, 'carry'); registers.appendChild(reg);
-      mcPrevRegs[core] = mcFreshRegs(); buildMCRegTable(core);
-    } else { paneHeading(reg, core, 'carry'); registers.appendChild(reg); }
+    // Register pane
+    if (regVis(core)) {
+      let reg = document.getElementById(`core-register-${core}`);
+      if (!reg) {
+        reg = document.createElement('section'); reg.className = 'core-pane core-extra-pane'; reg.id = `core-register-${core}`;
+        reg.innerHTML = `<div class="core-scroll"><table class="reg-table"><tbody id="mc-${core}-reg-tbody"></tbody></table></div>`;
+        paneHeading(reg, core, 'carry'); registers.appendChild(reg);
+        mcPrevRegs[core] = mcFreshRegs(); buildMCRegTable(core);
+      } else { paneHeading(reg, core, 'carry'); registers.appendChild(reg); }
+    }
   }
+
   for (const id of ['source-core-chips','register-core-chips']) {
     const chips = document.getElementById(id); chips.replaceChildren();
     for (const core of coreSelection.shown) {
@@ -4314,6 +4335,35 @@ function renderCorePanes() {
       chip.style.setProperty('--core-color', `var(--core-${core})`); chips.appendChild(chip);
     }
   }
+
+  // Update per-core circle tabs in the panel title bars
+  for (const [panelId, visFn] of [['source', srcVis], ['registers', regVis]]) {
+    const tabs = document.querySelector(`.panel-core-tabs[data-panel-id="${panelId}"]`);
+    if (!tabs) continue;
+    tabs.replaceChildren();
+    for (const core of coreSelection.used) {
+      const isVisible = visFn(core);
+      const dot = document.createElement('span');
+      dot.className = `pane-core-chip${isVisible ? ' visible' : ''}`;
+      dot.style.setProperty('--core-color', `var(--core-${core})`);
+      dot.title = `${isVisible ? 'Hide' : 'Show'} ${core.toUpperCase()} in ${panelId}`;
+      dot.setAttribute('aria-label', `${isVisible ? 'Hide' : 'Show'} ${core.toUpperCase()} in ${panelId}`);
+      dot.setAttribute('role', 'button');
+      dot.setAttribute('tabindex', '0');
+      dot.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (typeof setCoreVisibility === 'function') setCoreVisibility(panelId, core, !isVisible);
+      });
+      dot.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault(); e.stopPropagation();
+          if (typeof setCoreVisibility === 'function') setCoreVisibility(panelId, core, !isVisible);
+        }
+      });
+      tabs.appendChild(dot);
+    }
+  }
+
   document.getElementById('carry-row').hidden = coreSelection.shown.length > 1;
 }
 
