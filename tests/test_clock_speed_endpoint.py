@@ -1,5 +1,4 @@
 """Tests for the PRU core clock speed REST endpoint."""
-import configparser
 import json
 
 import pytest
@@ -26,7 +25,10 @@ def test_get_clock_speed_returns_current_value(tmp_path, monkeypatch):
 
     response = client.get("/config/clock_speed")
     assert response.status_code == 200
-    assert response.json()["mhz"] == 200
+    data = response.json()
+    assert data["mhz"] == 200
+    assert "groups" not in data
+    assert "choices_mhz" in data
 
 
 def test_put_clock_speed_valid_updates_both_keys(tmp_path, monkeypatch):
@@ -105,9 +107,8 @@ def test_put_clock_speed_rejects_disallowed_value(tmp_path, monkeypatch):
     assert cfg_file.read_text() == original
 
 
-@pytest.mark.parametrize("group", [None, 0, 1])
 def test_put_clock_speed_invalid_config_leaves_file_and_simulator_untouched(
-    tmp_path, monkeypatch, group
+    tmp_path, monkeypatch
 ):
     import ui.server as srv
     cfg_file = tmp_path / "memory.cfg"
@@ -130,10 +131,7 @@ def test_put_clock_speed_invalid_config_leaves_file_and_simulator_untouched(
     cfg_file.write_bytes((valid + "\n[DRAM1\nbase = 0\n").encode("utf-8"))
     before = cfg_file.read_bytes()
 
-    body = {"mhz": 250}
-    if group is not None:
-        body["group"] = group
-    response = client.put("/config/clock_speed", json=body)
+    response = client.put("/config/clock_speed", json={"mhz": 250})
     assert response.status_code == 400
     assert repr(str(cfg_file))[1:-1] in response.json()["error"]
     assert cfg_file.read_bytes() == before
@@ -161,21 +159,15 @@ def clock_config(tmp_path, monkeypatch):
     return make
 
 
-@pytest.mark.parametrize("device,rates,members", [
-    ("target = AM243x\n", [200, 200], ["pru1", "rtu1"]),
-    ("target = AM243x\npru_clock_mhz = 225\n", [225, 225], ["pru1", "rtu1"]),
-    ("target = AM263x\npru_clock_mhz = 211.25\npru1_clock_mhz = 299.5\n",
-     [211.25, 299.5], ["pru1"]),
+@pytest.mark.parametrize("device,rate", [
+    ("target = AM243x\n", 200),
+    ("target = AM243x\npru_clock_mhz = 225\n", 225),
 ])
-def test_clock_readout_reports_actual_groups_and_presets(clock_config, device, rates, members):
+def test_clock_readout_reports_single_mhz_and_presets(clock_config, device, rate):
     path = clock_config(device)
     original = path.read_bytes()
     expected = {
-        "mhz": rates[0],
-        "groups": [
-            {"id": 0, "mhz": rates[0], "cores": ["pru0", "rtu0"]},
-            {"id": 1, "mhz": rates[1], "cores": members},
-        ],
+        "mhz": rate,
         "choices_mhz": [200, 225, 250, 300, 333],
     }
     assert client.get("/config/clock_speed").json() == expected
@@ -185,63 +177,28 @@ def test_clock_readout_reports_actual_groups_and_presets(clock_config, device, r
     assert path.read_bytes() == original
 
 
-@pytest.mark.parametrize("group,rates", [(0, [300, 211.25]), (1, [225, 300]),
-                                         (1.0, [225, 300])])
-def test_group_edit_changes_only_members_of_selected_group(clock_config, group, rates):
+def test_clock_edit_updates_all_cores(clock_config):
     import ui.server as srv
 
     path = clock_config(
         "target = AM243x\npru_clock_mhz = 225\npru1_clock_mhz = 211.25\n"
         "iep_clock_mhz = 217.5\n"
     )
-    before = path.read_text()
     srv._set_iep_clock(333.333)
-    assert client.put("/config/clock_speed", json={"group": group, "mhz": 300}).status_code == 200
-    untouched_key = "pru1_clock_mhz = 211.25" if group == 0 else "pru_clock_mhz = 225"
-    changed_key = "pru_clock_mhz" if group == 0 else "pru1_clock_mhz"
-    assert path.read_text() == before.replace(
-        f"{changed_key} = {225 if group == 0 else 211.25}", f"{changed_key} = 300"
-    )
-    assert untouched_key in path.read_text()
-    for name, rate in zip(["pru0", "rtu0", "pru1", "rtu1"], [rates[0]] * 2 + [rates[1]] * 2):
-        assert srv.sim.iep.core_clock_hz(name) == rate * 1_000_000
-        assert srv.sim.cores[name].io_port.sd_filter.pru_clock_mhz == rate
+    assert client.put("/config/clock_speed", json={"mhz": 300}).status_code == 200
+    text = path.read_text()
+    assert "pru_clock_mhz = 300" in text
+    assert "pru1_clock_mhz = 300" in text
+    for name in ["pru0", "rtu0", "pru1", "rtu1"]:
+        assert srv.sim.iep.core_clock_hz(name) == 300 * 1_000_000
+        assert srv.sim.cores[name].io_port.sd_filter.pru_clock_mhz == 300
     assert srv.sim.iep.external_clock_hz == 333_333_000
     assert srv._configured_iep_mhz() == 217.5
     assert srv._iep_clock_override == 333.333
-    assert [g["mhz"] for g in client.get("/config/clock_speed").json()["groups"]] == rates
+    assert client.get("/config/clock_speed").json()["mhz"] == 300
 
 
-@pytest.mark.parametrize("device,old_rate", [
-    ("target = AM243x\npru_clock_mhz = 211.25\n", 211.25),
-    ("target = AM243x\n", 200),
-])
-def test_group_zero_edit_preserves_inherited_group_one(clock_config, device, old_rate):
-    import ui.server as srv
-
-    path = clock_config(device)
-    assert client.put("/config/clock_speed", json={"group": 0, "mhz": 300}).status_code == 200
-    cfg = configparser.ConfigParser()
-    cfg.read(path)
-    assert cfg.getfloat("device", "pru_clock_mhz") == 300
-    assert cfg.getfloat("device", "pru1_clock_mhz") == old_rate
-    assert srv.sim.iep.core_clock_hz("pru1") == old_rate * 1_000_000
-    assert srv.sim.iep.core_clock_hz("rtu1") == old_rate * 1_000_000
-
-
-def test_group_one_edit_does_not_materialize_default_group_zero(clock_config):
-    path = clock_config("target = AM263x\n")
-    assert client.put("/config/clock_speed", json={"group": 1, "mhz": 333}).status_code == 200
-    cfg = configparser.ConfigParser()
-    cfg.read(path)
-    assert "pru_clock_mhz" not in cfg["device"]
-    assert client.get("/config/clock_speed").json()["groups"] == [
-        {"id": 0, "mhz": 200, "cores": ["pru0", "rtu0"]},
-        {"id": 1, "mhz": 333, "cores": ["pru1"]},
-    ]
-
-
-def test_group_edit_reloads_programs_and_clears_step_history(clock_config):
+def test_clock_edit_reloads_programs_and_clears_step_history(clock_config):
     import ui.server as srv
 
     clock_config("target = AM243x\npru_clock_mhz = 200\npru1_clock_mhz = 225\n")
@@ -251,7 +208,7 @@ def test_group_edit_reloads_programs_and_clears_step_history(clock_config):
     live.iep.write_iepclk(1)
     srv._record_step("pru0")
     live.cores["pru0"].step()
-    assert client.put("/config/clock_speed", json={"group": 1, "mhz": 300}).status_code == 200
+    assert client.put("/config/clock_speed", json={"mhz": 300}).status_code == 200
     assert srv.sim is not live
     for core in srv.sim.cores.values():
         assert core.instructions == []
@@ -262,13 +219,6 @@ def test_group_edit_reloads_programs_and_clears_step_history(clock_config):
     # Like saved config reloads, the rebuild resets firmware's IEP source choice.
     assert srv.sim.iep.iepclk == 0
     assert srv.sim.iep.active_clock_mhz == 200
-
-
-def test_unchanged_group_zero_does_not_materialize_inherited_group_one(clock_config):
-    path = clock_config("target = AM243x\npru_clock_mhz = 225\n")
-    before = path.read_bytes()
-    assert client.put("/config/clock_speed", json={"group": 0, "mhz": 225}).status_code == 200
-    assert path.read_bytes() == before
 
 
 def test_failed_atomic_replace_preserves_config_simulator_and_history(clock_config, monkeypatch):
@@ -285,7 +235,7 @@ def test_failed_atomic_replace_preserves_config_simulator_and_history(clock_conf
         raise OSError("replacement denied")
 
     monkeypatch.setattr(srv.os, "replace", fail_replace)
-    response = client.put("/config/clock_speed", json={"group": 1, "mhz": 300})
+    response = client.put("/config/clock_speed", json={"mhz": 300})
     assert response.status_code == 400
     assert path.read_bytes() == before
     assert list(path.parent.iterdir()) == [path]
@@ -295,11 +245,7 @@ def test_failed_atomic_replace_preserves_config_simulator_and_history(clock_conf
 
 
 @pytest.mark.parametrize("body", [
-    {"group": True, "mhz": 300}, {"group": False, "mhz": 300},
-    {"group": "0", "mhz": 300}, {"group": None, "mhz": 300},
-    {"group": -1, "mhz": 300}, {"group": 2, "mhz": 300},
-    {"group": 0.5, "mhz": 300}, {"group": [], "mhz": 300},
-    {"group": {}, "mhz": 300}, {"mhz": True}, {"mhz": "300"},
+    {"mhz": True}, {"mhz": "300"},
     {"mhz": []}, {"mhz": {}}, {"mhz": None}, {}, [], "300", None,
 ])
 def test_invalid_clock_edits_are_non_mutating(clock_config, body):

@@ -450,14 +450,6 @@ def _set_ini_value(text: str, section: str, key: str, value: str) -> str:
 def _clock_speed_state() -> dict:
     return {
         "mhz": sim._pru_clock_mhz,
-        "groups": [
-            {"id": group, "mhz": mhz,
-             "cores": [name for name in members if name in sim.cores]}
-            for group, mhz, members in (
-                (0, sim._pru_clock_mhz, ("pru0", "rtu0")),
-                (1, sim._pru1_clock_mhz, ("pru1", "rtu1")),
-            )
-        ],
         "choices_mhz": sorted(ALLOWED_CLOCK_MHZ),
     }
 
@@ -483,25 +475,12 @@ async def put_clock_speed(request: Request):
             {"error": f"mhz must be one of {sorted(ALLOWED_CLOCK_MHZ)}"},
             status_code=400,
         )
-    group = body.get("group")
-    if "group" in body and (isinstance(group, bool) or not isinstance(group, (int, float))
-                            or group not in (0, 1)):
-        return JSONResponse({"error": "group must be 0 or 1"}, status_code=400)
     async with _config_lock:
         try:
             with open(config_path, "r") as f:
                 text = f.read()
-            if group == 0:
-                cfg = configparser.ConfigParser()
-                cfg.read_string(text, source=config_path)
-                # An omitted second clock inherits the first. Pin its old rate
-                # before changing the first so the other cores keep their rate.
-                if not cfg.has_option("device", "pru1_clock_mhz") and mhz != sim._pru1_clock_mhz:
-                    text = _set_ini_value(text, "device", "pru1_clock_mhz", str(sim._pru1_clock_mhz))
-            if group is None or group == 0:
-                text = _set_ini_value(text, "device", "pru_clock_mhz", str(mhz))
-            if group is None or group == 1:
-                text = _set_ini_value(text, "device", "pru1_clock_mhz", str(mhz))
+            text = _set_ini_value(text, "device", "pru_clock_mhz", str(mhz))
+            text = _set_ini_value(text, "device", "pru1_clock_mhz", str(mhz))
             sim = _replace_config(text)
             _apply_iep_override()
             _clear_history()

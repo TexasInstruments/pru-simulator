@@ -40,7 +40,7 @@ const mcFreshRegs = () => new Array(32).fill("0x00000000");
 const mcPrevRegs = Object.fromEntries(PruCores.ORDER.map(core => [core, mcFreshRegs()]));
 const mcLastSourceKey = Object.fromEntries(PruCores.ORDER.map(core => [core, '']));
 const mcBreakpoints = Object.fromEntries(PruCores.ORDER.map(core => [core, new Set()]));
-let clockState = { groups: [], choices_mhz: [] };
+let clockState = { mhz: 0, choices_mhz: [] };
 let clockChanging = false;
 let coresDeck = null;
 
@@ -2628,7 +2628,7 @@ document.getElementById('iep-clock-custom-form').addEventListener('submit', even
 });
 // ---- end IEP counter clock selector ----
 
-// ---- Group clock configuration ----------------------------------------------
+// ---- Clock configuration ----------------------------------------------------
 async function loadClockSpeed() {
   try {
     const res = await fetch("/config/clock_speed");
@@ -2639,20 +2639,19 @@ async function loadClockSpeed() {
 }
 loadClockSpeed();
 
-async function changeGroupClock(group, direction) {
+async function changeClock(direction) {
   if (running || simRunning || runPending !== null || clockChanging) return;
-  const entry = clockState.groups.find(item => item.id === group);
-  if (!entry || !entry.cores.some(core => coreSelection.used.includes(core))) return;
+  if (coreSelection.used.length === 0) return;
   const choices = clockState.choices_mhz;
-  const next = direction > 0 ? choices.find(rate => rate > entry.mhz)
-    : [...choices].reverse().find(rate => rate < entry.mhz);
+  const next = direction > 0 ? choices.find(rate => rate > clockState.mhz)
+    : [...choices].reverse().find(rate => rate < clockState.mhz);
   if (next === undefined) return;
   clockChanging = true; updateCoresControl();
   try {
     const res = await fetch('/config/clock_speed', { method: 'PUT',
-      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({group, mhz:next}) });
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({mhz:next}) });
     const result = await res.json();
-    if (!res.ok || !result.ok) throw new Error(result.error || 'Could not set the group clock');
+    if (!res.ok || !result.ok) throw new Error(result.error || 'Could not set the clock');
     for (const core of availableCores) { delete coreStates[core]; mcLastSourceKey[core] = ''; }
     _lastSourceKey = ''; sourceList.replaceChildren();
     document.querySelectorAll('.core-extra-pane .source-list').forEach(list => list.replaceChildren());
@@ -4216,7 +4215,7 @@ function initCoresControl() {
       }
       if (action.type === 'solo' && next.used.includes(action.core)) selectEditorCore(action.core);
     },
-    clock: changeGroupClock,
+    clock: changeClock,
   });
   renderCorePanes(); syncDeviceCoreSelect(); updateCoresControl();
   document.addEventListener('pru-cores-reset', () => {

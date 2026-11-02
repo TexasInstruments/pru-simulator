@@ -89,30 +89,24 @@ by **Got it** or a deck interaction. Reset Layout preserves that dismissal.
 
 ### Core frequencies
 
-One frequency applies to PRU0 + RTU0 (`pru_clock_mhz`). The other applies
-to PRU1 + RTU1 (`pru1_clock_mhz`). Unsupported cores are omitted on targets
-such as AM263x. The controls list the affected cores, including hidden and
-unused cores. These pairings describe the current simulator implementation;
-they do not define hardware clock domains and may change in the future.
-Do not label them as slices or ICSSG instances. The API retains its existing
-`group` identifiers and configuration keys for compatibility.
+One frequency applies to all PRU cores (`pru_clock_mhz`). The CORES deck
+shows a single stepper that sets the same rate for PRU0, RTU0, PRU1, and RTU1.
+`pru1_clock_mhz` in the config is always written to match `pru_clock_mhz` on
+any clock change from the dashboard. Unsupported cores are omitted on targets
+such as AM263x, but the shared frequency still applies to those that exist.
 
 The presets are **200, 225, 250, 300 and 333 MHz**, supplied by
 `ui/server.py:ALLOWED_CLOCK_MHZ`. These are dashboard choices, not hardware
-limits. Configured finite positive custom rates, including fractions, are
-displayed unchanged; the arrows move to the next lower or higher preset.
-Omitting `pru_clock_mhz` uses the 200 MHz fallback; omitting
-`pru1_clock_mhz` inherits `pru_clock_mhz`. Editing `pru_clock_mhz` pins the old effective `pru1_clock_mhz`
-rate when necessary to preserve it. No independent RTU clock key is introduced.
+limits. The arrows move to the next lower or higher preset.
+Omitting `pru_clock_mhz` uses the 200 MHz fallback.
 
-The deck explains before an edit that changing a group clock recreates the
-simulator and clears loaded programs. **Reload programs after editing.** This
-also resets registers, devices, step-back history and firmware's IEP source
-selection, then refreshes the dashboard. Steppers are disabled during Run/SIM,
-while an execution chunk or clock change is pending, or when no group member is
-used. A group edit preserves the other group's effective rate, the configured
-IEP rate and the external IEP session override. Layout restoration and Reset
-Layout never write either clock group.
+Changing the clock recreates the simulator and clears loaded programs.
+**Reload programs after editing.** This also resets registers, devices,
+step-back history and firmware's IEP source selection, then refreshes the
+dashboard. The stepper is disabled during Run/SIM, while an execution chunk or
+clock change is pending, or when no core is used. A clock edit preserves the
+configured IEP rate and the external IEP session override. Layout restoration
+and Reset Layout never write the clock.
 
 **Run and Stop.** Run waits for each instruction chunk to finish before sending
 another, including all core states in multicore mode. Stop prevents further

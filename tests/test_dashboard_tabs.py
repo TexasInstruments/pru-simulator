@@ -105,9 +105,9 @@ def test_ssi_signal_capture_and_mailbox_reach_a_recording_observer(dashboard, na
 
 def test_clock_config_change_reaches_open_tabs_without_reload(dashboard):
     with dashboard.websocket_connect("/ws") as view:
-        response = dashboard.put("/config/clock_speed", json={"mhz": 250, "group": 0})
+        response = dashboard.put("/config/clock_speed", json={"mhz": 250})
         assert response.status_code == 200
-        assert state(view)["clocks"]["groups"][0]["mhz"] == 250
+        assert state(view)["clocks"]["mhz"] == 250
 
 
 def test_memory_updates_use_each_tabs_own_address(dashboard):
@@ -179,9 +179,8 @@ def test_new_tab_sees_running_status_and_owner_disconnect_stops_it(dashboard):
     ["pru0", "pru1", "rtu0", "rtu1"],
 ])
 def test_manual_multicore_steps_each_have_one_shared_undo(dashboard, cores):
-    # Unequal rates make a follower execute more than one instruction per click.
-    assert dashboard.put("/config/clock_speed", json={"mhz": 200, "group": 0}).status_code == 200
-    assert dashboard.put("/config/clock_speed", json={"mhz": 300, "group": 1}).status_code == 200
+    # All cores share one clock; use a uniform rate for deterministic follower behaviour.
+    assert dashboard.put("/config/clock_speed", json={"mhz": 200}).status_code == 200
     for index, core in enumerate(cores):
         assert srv.sim.load(core, "add r0, r0, 1\nsbbo &r0, r2, 0, 4\nqba 0") == []
         srv.sim.cores[core].registers.write_full(2, 0x10000 + index * 4)
