@@ -12,7 +12,7 @@ apart from this note.
 ## Status
 
 **Done and pushed:**
-- Branch pushed to `origin` at `f4be861b`, 11 commits on top of `main`.
+- Branch pushed to `origin` at `8d2cbffb`, 12 commits on top of `main`.
 - Open as [open-pru PR #188](https://github.com/TexasInstruments/open-pru/pull/188)
   into `main`.
 - This note is in
@@ -47,6 +47,7 @@ Entry points:
 | `c09be788` … `a84bfaa5` | Visualizer, 6 tasks, built test-first |
 | `cdb430a7` | Fixes from the final review |
 | `f4be861b` | Demo readme and flow image (SVG/PNG plus generator `.py`) |
+| `8d2cbffb` | Readmes: `source ~/.cargo/env` hint, start the release binary directly |
 
 ## Key facts
 
@@ -109,7 +110,7 @@ Entry points:
 - **Git identity:** the open-pru checkout has no git identity configured.
   Commit with `git -c user.name="Thomas Leyrer" -c user.email="t-leyrer@ti.com" commit …`.
 - **Rust:** installed in `~/.cargo` but not on `PATH` by default. Run
-  `source ~/.cargo/env`.
+  `source ~/.cargo/env`. Both readmes now say so (`8d2cbffb`).
 - **PicoScope MCP port:** auto-assigned 18123. The visualizer defaults to
   18123, so set the port to manual 18123 in Preferences to make it stable.
 - **Excluded workspace:** `.superpowers/` is excluded through open-pru's
