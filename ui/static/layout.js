@@ -255,20 +255,6 @@ function renderNode(node) {
         const btn = panel.querySelector('.panel-collapse-btn');
         if (btn) btn.textContent = '+';
       }
-      // Inject per-core circle tabs for multi-core panels
-      if (MULTI_CORE_PANELS.has(node.panelId) && titleEl) {
-        let tabs = titleEl.querySelector('.panel-core-tabs');
-        if (!tabs) {
-          tabs = document.createElement('span');
-          tabs.className = 'panel-core-tabs';
-          // Insert before the collapse button (order: title text | tabs | collapse btn)
-          const collapseBtn = titleEl.querySelector('.panel-collapse-btn');
-          if (collapseBtn) titleEl.insertBefore(tabs, collapseBtn);
-          else titleEl.appendChild(tabs);
-        }
-        // Tabs are re-populated by renderCorePanelTabs() called from app.js after core selection
-        tabs.dataset.panelId = node.panelId;
-      }
     }
     return leaf;
   }

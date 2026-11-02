@@ -4282,9 +4282,9 @@ function renderCorePanes() {
   const regVis  = core => typeof getCoreVisibility === 'function' ? getCoreVisibility('registers', core) : true;
 
   // Effective shown lists after applying per-core visibility.
-  // The focus core is always present (can't hide the primary pane).
-  const shownSrc = coreSelection.shown.filter(c => c === currentCore || srcVis(c));
-  const shownReg = coreSelection.shown.filter(c => c === currentCore || regVis(c));
+  // All cores (including focus core) are subject to the user's toggle.
+  const shownSrc = coreSelection.shown.filter(c => srcVis(c));
+  const shownReg = coreSelection.shown.filter(c => regVis(c));
 
   sources.dataset.count   = String(shownSrc.length);
   registers.dataset.count = String(shownReg.length);
@@ -4298,8 +4298,8 @@ function renderCorePanes() {
 
   for (const core of coreSelection.shown) {
     if (core === currentCore) {
-      paneHeading(sourceFocus, core, 'pc'); paneHeading(registerFocus, core, 'carry');
-      sources.appendChild(sourceFocus); registers.appendChild(registerFocus);
+      if (srcVis(core)) { paneHeading(sourceFocus, core, 'pc'); sources.appendChild(sourceFocus); }
+      if (regVis(core)) { paneHeading(registerFocus, core, 'carry'); registers.appendChild(registerFocus); }
       continue;
     }
     // Source pane
@@ -4329,38 +4329,30 @@ function renderCorePanes() {
   }
 
   for (const id of ['source-core-chips','register-core-chips']) {
+    const panelId = id === 'source-core-chips' ? 'source' : 'registers';
+    const visFn   = id === 'source-core-chips' ? srcVis : regVis;
     const chips = document.getElementById(id); chips.replaceChildren();
     for (const core of coreSelection.shown) {
-      const chip = document.createElement('span'); chip.className = 'core-chip'; chip.textContent = core.toUpperCase();
-      chip.style.setProperty('--core-color', `var(--core-${core})`); chips.appendChild(chip);
-    }
-  }
-
-  // Update per-core circle tabs in the panel title bars
-  for (const [panelId, visFn] of [['source', srcVis], ['registers', regVis]]) {
-    const tabs = document.querySelector(`.panel-core-tabs[data-panel-id="${panelId}"]`);
-    if (!tabs) continue;
-    tabs.replaceChildren();
-    for (const core of coreSelection.used) {
-      const isVisible = visFn(core);
-      const dot = document.createElement('span');
-      dot.className = `pane-core-chip${isVisible ? ' visible' : ''}`;
-      dot.style.setProperty('--core-color', `var(--core-${core})`);
-      dot.title = `${isVisible ? 'Hide' : 'Show'} ${core.toUpperCase()} in ${panelId}`;
-      dot.setAttribute('aria-label', `${isVisible ? 'Hide' : 'Show'} ${core.toUpperCase()} in ${panelId}`);
-      dot.setAttribute('role', 'button');
-      dot.setAttribute('tabindex', '0');
-      dot.addEventListener('click', (e) => {
+      const visible = visFn(core);
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = `core-chip${visible ? ' visible' : ' hidden'}`;
+      chip.textContent = core.toUpperCase();
+      chip.style.setProperty('--core-color', `var(--core-${core})`);
+      chip.title = `${visible ? 'Hide' : 'Show'} ${core.toUpperCase()} in this panel`;
+      chip.setAttribute('aria-pressed', String(visible));
+      chip.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (typeof setCoreVisibility === 'function') setCoreVisibility(panelId, core, !isVisible);
-      });
-      dot.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault(); e.stopPropagation();
-          if (typeof setCoreVisibility === 'function') setCoreVisibility(panelId, core, !isVisible);
+        if (typeof setCoreVisibility === 'function') {
+          // If hiding the focus core, auto-move focus to next visible core
+          if (visible && core === currentCore) {
+            const next = coreSelection.shown.find(c => c !== core && visFn(c));
+            if (next) currentCore = next;
+          }
+          setCoreVisibility(panelId, core, !visible);
         }
       });
-      tabs.appendChild(dot);
+      chips.appendChild(chip);
     }
   }
 

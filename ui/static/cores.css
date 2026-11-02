@@ -60,7 +60,10 @@
 .register-panes[data-count="4"] { grid-template-columns:repeat(4,minmax(0,1fr)); }
 #reg-body.core-panes { padding:0; overflow:hidden; }
 .shown-core-chips { display:flex; align-items:center; gap:4px; flex-wrap:wrap; margin-inline-start:8px; }
-.core-chip { font-size:10px; color:var(--core-color); background:color-mix(in srgb,var(--core-color) 12%,transparent); border:1px solid color-mix(in srgb,var(--core-color) 60%,transparent); border-radius:4px; padding:1px 5px; }
+.core-chip { cursor:pointer; font-size:10px; color:var(--core-color); background:color-mix(in srgb,var(--core-color) 12%,transparent); border:1px solid color-mix(in srgb,var(--core-color) 60%,transparent); border-radius:4px; padding:2px 7px; min-height:20px; transition:background 0.12s; }
+.core-chip.hidden { background:transparent; color:color-mix(in srgb,var(--core-color) 70%,var(--text-dim)); border-color:color-mix(in srgb,var(--core-color) 30%,transparent); }
+.core-chip:hover { background:color-mix(in srgb,var(--core-color) 25%,transparent); }
+.core-chip:focus-visible { outline:2px solid var(--core-color); outline-offset:2px; }
 .core-pane .source-list li.current-pc { background:color-mix(in srgb,var(--core-color) 17%,var(--panel)); border-left-color:var(--core-color); }
 .core-pane .reg-table tr.changed .reg-val { color:var(--core-color); }
 #assembly-core-target,#bp-focus-core { color:var(--core-color); }
@@ -178,18 +181,3 @@
   }
 }
 
-/* ---- Per-core circle tabs in multi-core panel title bars ------------------- */
-.panel-core-tabs { display:inline-flex; align-items:center; gap:4px; margin-inline-start:6px; }
-.pane-core-chip {
-  display:inline-block; flex:0 0 8px; width:8px; height:8px; border-radius:50%;
-  background:transparent; border:1.5px solid var(--core-color);
-  cursor:pointer; vertical-align:middle; transition:box-shadow 100ms;
-}
-.pane-core-chip.visible { background:var(--core-color); }
-@media (hover:hover) and (pointer:fine) {
-  .pane-core-chip:hover { box-shadow:0 0 0 3px color-mix(in srgb,var(--core-color) 35%,transparent); }
-}
-.pane-core-chip:focus-visible { outline:2px solid var(--core-color); outline-offset:2px; }
-/* Keep circle tabs visible when the panel is collapsed */
-.panel.panel-collapsed > .panel-title > .panel-core-tabs,
-.panel.panel-collapsed > .panel-title .panel-core-tabs { display:inline-flex !important; }
