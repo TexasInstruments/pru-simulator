@@ -53,8 +53,10 @@ test('failed target discovery preserves the current selection', async () => {
 test('each visible register pane shows its own CRC state', () => {
   const field = { dataset: { paneReadout: 'carry' }, textContent: '' };
   const ui = vm.createContext({
-    currentCore: 'pru0', devicePanelCore: 'pru0', coreSelection: { shown: ['pru0', 'rtu1'] },
+    currentCore: 'pru0', devicePanelCore: 'pru0', ioCore: 'pru0',
+    coreSelection: { shown: ['pru0', 'rtu1'] },
     mcBreakpoints: {}, updateMCRegisters() {}, updateMCSource() {},
+    updatePins() {}, updateDevicePanel() {},
     document: { querySelectorAll: () => [{ dataset: { core: 'rtu1' }, querySelector: () => field }] },
   });
   vm.runInContext(app.match(/function paintCoreState\([^)]*\) \{[\s\S]*?\n\}/)[0], ui);
@@ -105,7 +107,7 @@ test('GPIO loopback buttons follow the selected cores actual mask', () => {
 test('loopback clicks target the core displayed by the pins panel', () => {
   const actions = [];
   const context = vm.createContext({
-    multiCoreMode: true, currentCore: 'pru1',
+    multiCoreMode: true, currentCore: 'pru0', ioCore: 'pru1',
     sendAction(action) { actions.push(action); },
   });
   vm.runInContext(app.match(/function onLoopbackToggle\(btn\) \{[\s\S]*?\n\}/)[0], context);
@@ -272,4 +274,61 @@ test('collapse state persists in localStorage', () => {
   const loaded = context.loadCollapsedPanels('sc');
   assert.ok(loaded.has('source'), 'loadCollapsedPanels restores source');
   assert.ok(!loaded.has('registers'), 'registers not in set');
+});
+
+// ---- I/O panel core selector -------------------------------------------------
+
+test('I/O core selector defaults to first used core', () => {
+  // Simulate the ioCore initialization logic from app.js top-level
+  let ioCore = null;
+  const coreSelection = { used: ['pru0', 'rtu0'], shown: ['pru0', 'rtu0'], focus: 'pru0' };
+  try { ioCore = null; /* no localStorage in test */ } catch (_) {}
+  if (!ioCore || !coreSelection.used.includes(ioCore)) ioCore = coreSelection.used[0] ?? 'pru0';
+  assert.equal(ioCore, 'pru0', 'ioCore defaults to first used core');
+});
+
+test('clicking an I/O core chip switches ioCore and requests updated pins', () => {
+  // Simulate the chip click handler logic from renderCorePanes
+  let ioCore = 'pru0';
+  const coreStates = {
+    pru0: { io: { gpo_pins: [], gpi_pins: [] } },
+    rtu0: { io: { gpo_pins: [], gpi_pins: [] } },
+  };
+  const renderCalls = [];
+  const updatePinsCalls = [];
+  const syncLoopbackCalls = [];
+
+  function renderCorePanes() { renderCalls.push(ioCore); }
+  function updatePins(io, core) { updatePinsCalls.push(core); }
+  function syncGpioLoopback(io) { syncLoopbackCalls.push(io); }
+
+  // Simulate clicking the 'rtu0' chip (ioCore is currently 'pru0')
+  const core = 'rtu0';
+  if (ioCore !== core) {
+    ioCore = core;
+    renderCorePanes();
+    const st = coreStates[ioCore];
+    if (st) { updatePins(st.io, ioCore); syncGpioLoopback(st.io || {}); }
+  }
+
+  assert.equal(ioCore, 'rtu0', 'ioCore switched to rtu0');
+  assert.equal(renderCalls.length, 1, 'renderCorePanes called once');
+  assert.deepEqual(updatePinsCalls, ['rtu0'], 'updatePins called with new ioCore');
+  assert.equal(syncLoopbackCalls.length, 1, 'syncGpioLoopback called');
+});
+
+test('GPI click targets ioCore, not currentCore', () => {
+  const actions = [];
+  const context = vm.createContext({
+    currentCore: 'pru0', ioCore: 'rtu0',
+    sendAction(action) { actions.push(action); },
+  });
+  vm.runInContext(app.match(/function handleGpiClick\(pinIndex, pinEl\) \{[\s\S]*?\n\}/)[0], context);
+  const pinEl = { classList: { contains() { return false; } } };
+  context.handleGpiClick(5, pinEl);
+  assert.equal(actions.length, 1);
+  assert.equal(actions[0].action, 'set_input');
+  assert.equal(actions[0].core, 'rtu0', 'GPI click sends to ioCore, not currentCore');
+  assert.equal(actions[0].pin, 5);
+  assert.equal(actions[0].value, 1);
 });

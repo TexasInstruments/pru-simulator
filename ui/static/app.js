@@ -9,6 +9,7 @@ let ws = null;
 let prevRegisters = new Array(32).fill("0x00000000");
 let currentCore = "pru0";
 let devicePanelCore = "pru0";
+let ioCore = null;   // currently selected core for the I/O Pins panel
 let ssiPresets = {};
 let running = false;
 let runInterval = null;
@@ -33,6 +34,8 @@ try { savedCoreSelection = JSON.parse(localStorage.getItem('pru-cores-v1') || 'n
 let coreSelection = PruCores.normalize(savedCoreSelection, availableCores);
 currentCore = coreSelection.focus;
 devicePanelCore = currentCore;
+try { ioCore = localStorage.getItem('pru-io-core') || null; } catch (_) {}
+if (!ioCore || !coreSelection.used.includes(ioCore)) ioCore = coreSelection.used[0] ?? currentCore;
 let multiCoreMode = coreSelection.used.length > 1;
 const executionCores = () => coreSelection.used;
 const coreStates = {};
@@ -579,8 +582,8 @@ function updateUI(state, fromCache = false) {
   // Source listing
   updateSource(state.instructions, state.pc, state.labels || {});
 
-  // IO pins
-  updatePins(state.io, state.core);
+  // IO pins — only if this core is the one the I/O panel is tracking
+  if (state.core === ioCore) updatePins(state.io, state.core);
   updateSDPanel(state.io);
   updatePerifPanel(state.io);
   updateI2CPanel(state.io);
@@ -2797,8 +2800,7 @@ function handleGpiClick(pinIndex, pinEl) {
   // Toggle: determine current state from CSS class
   const isHigh = pinEl.classList.contains("high");
   const newVal = isHigh ? 0 : 1;
-  const targetCore = currentCore;
-  sendAction({ action: "set_input", core: targetCore, pin: pinIndex, value: newVal });
+  sendAction({ action: "set_input", core: ioCore, pin: pinIndex, value: newVal });
 }
 
 // ---- Loopback strip -------------------------------------------------------
@@ -2815,8 +2817,8 @@ function onLoopbackToggle(btn) {
   const group = parseInt(btn.dataset.group, 10);
   const enabled = !btn.classList.contains('active');
   btn.classList.toggle('active', enabled);
-  sendAction({ action: 'set_loopback', core: currentCore, group, enabled });
-  sendAction({ action: 'get_state', core: currentCore });
+  sendAction({ action: 'set_loopback', core: ioCore, group, enabled });
+  sendAction({ action: 'get_state', core: ioCore });
 }
 
 document.querySelectorAll('#loopback-strip .lb-btn').forEach(btn => {
@@ -4082,7 +4084,7 @@ function updateMCUI(state) {
     cntInstrs.textContent = state.instruction_count;
     cntIpc.textContent    = state.ipc.toFixed(3);
     cntPc.textContent     = state.pc;
-    updatePins(state.io);
+    if (state.core === ioCore) updatePins(state.io, state.core);
     updateSDPanel(state.io);
     updateI2CPanel(state.io);
     // Update SPAD columns in PRU0 MC reg panel
@@ -4382,6 +4384,39 @@ function renderCorePanes() {
     }
   }
 
+  // I/O panel: single-select core picker (radio behavior across used cores)
+  const ioChips = document.getElementById('io-core-chips');
+  if (ioChips) {
+    const used = coreSelection.used;
+    // Ensure ioCore is valid
+    if (!used.includes(ioCore)) {
+      ioCore = used[0] ?? null;
+      try { localStorage.setItem('pru-io-core', ioCore); } catch (_) {}
+    }
+    ioChips.replaceChildren();
+    for (const core of used) {
+      const active = core === ioCore;
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = `core-chip${active ? ' visible' : ' hidden'}`;
+      chip.textContent = core.toUpperCase();
+      chip.style.setProperty('--core-color', `var(--core-${core})`);
+      chip.title = `Show ${core.toUpperCase()} I/O pins`;
+      chip.setAttribute('aria-pressed', String(active));
+      chip.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (ioCore !== core) {
+          ioCore = core;
+          try { localStorage.setItem('pru-io-core', ioCore); } catch (_) {}
+          renderCorePanes();
+          const st = coreStates[ioCore];
+          if (st) { updatePins(st.io, ioCore); syncGpioLoopback(st.io || {}); }
+        }
+      });
+      ioChips.appendChild(chip);
+    }
+  }
+
   document.getElementById('carry-row').hidden = coreSelection.shown.length > 1;
 }
 
@@ -4395,6 +4430,8 @@ function paintCoreState(state, fromCache = false) {
       updateMCSource(core, state.instructions, state.pc, state.labels || {});
     }
     if (core === devicePanelCore) updateDevicePanel(state.io, core);
+    // I/O panel may be pinned to a different core than the focus core
+    if (core === ioCore) updatePins(state.io, core);
   }
   for (const pane of document.querySelectorAll('.core-pane')) {
     if (pane.dataset.core !== core) continue;
