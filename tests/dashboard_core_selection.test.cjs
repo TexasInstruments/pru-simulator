@@ -123,6 +123,64 @@ test('loopback clicks target the core displayed by the pins panel', () => {
   assert.equal(actions.length, 2);
 });
 
+test('clicking Use on a core also marks it as shown', () => {
+  // Simulate the action handler added in initCoresControl:
+  // when a core is newly added by 'use', the handler also applies a 'show' transition.
+  const context = vm.createContext({
+    coreSelection: { used: ['pru0'], shown: ['pru0'], focus: 'pru0', pinned: false },
+    availableCores: ['pru0', 'pru1', 'rtu0', 'rtu1'],
+    pulseCore: null,
+    appliedSelections: [],
+  });
+  vm.runInContext(selection, context);
+  // Run the handler logic from initCoresControl directly
+  vm.runInContext(`
+    function handleUseAction(action) {
+      const next = PruCores.transition(coreSelection, action, availableCores);
+      if (action.type === 'use' && !coreSelection.used.includes(action.core) && next.used.includes(action.core)) {
+        const withShow = PruCores.transition(next, {type:'show', core:action.core}, availableCores);
+        appliedSelections.push(withShow);
+        pulseCore = action.core;
+      } else {
+        appliedSelections.push(next);
+      }
+    }
+    handleUseAction({type:'use', core:'rtu0'});
+  `, context);
+  assert.ok(context.appliedSelections[0].used.includes('rtu0'), 'rtu0 added to used');
+  assert.ok(context.appliedSelections[0].shown.includes('rtu0'), 'rtu0 also added to shown');
+  assert.equal(context.pulseCore, 'rtu0', 'pulse called for the newly-used core');
+});
+
+test('clicking Use again (toggle off) keeps shown unchanged', () => {
+  // When toggling off a used core, shown should NOT be affected by the Use handler
+  // (only the core being removed gets pruned from shown via PruCores.normalize).
+  const context = vm.createContext({
+    coreSelection: { used: ['pru0', 'rtu0'], shown: ['pru0', 'rtu0'], focus: 'pru0', pinned: false },
+    availableCores: ['pru0', 'pru1', 'rtu0', 'rtu1'],
+    pulseCore: null,
+    appliedSelections: [],
+  });
+  vm.runInContext(selection, context);
+  vm.runInContext(`
+    function handleUseAction(action) {
+      const next = PruCores.transition(coreSelection, action, availableCores);
+      if (action.type === 'use' && !coreSelection.used.includes(action.core) && next.used.includes(action.core)) {
+        const withShow = PruCores.transition(next, {type:'show', core:action.core}, availableCores);
+        appliedSelections.push(withShow);
+        pulseCore = action.core;
+      } else {
+        appliedSelections.push(next);
+      }
+    }
+    handleUseAction({type:'use', core:'rtu0'});
+  `, context);
+  const result = context.appliedSelections[0];
+  assert.ok(!result.used.includes('rtu0'), 'rtu0 removed from used');
+  assert.ok(!result.shown.includes('rtu0'), 'rtu0 pruned from shown by normalize (was in shown)');
+  assert.equal(context.pulseCore, null, 'pulse not called when toggling off');
+});
+
 test('multicore keyboard undo restores one shared snapshot', () => {
   const actions = []; let onKey;
   const context = vm.createContext({

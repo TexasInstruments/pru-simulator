@@ -4208,7 +4208,12 @@ function initCoresControl() {
       if (action.type === 'use' && JSON.stringify(next.used) === JSON.stringify(coreSelection.used)) {
         coresDeck.shake(action.core);
       }
-      applyCoreSelection(next);
+      if (action.type === 'use' && !coreSelection.used.includes(action.core) && next.used.includes(action.core)) {
+        applyCoreSelection(PruCores.transition(next, {type:'show', core:action.core}, availableCores));
+        coresDeck.pulse(action.core);
+      } else {
+        applyCoreSelection(next);
+      }
       if (action.type === 'solo' && next.used.includes(action.core)) selectEditorCore(action.core);
     },
     clock: changeGroupClock,

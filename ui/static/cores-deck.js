@@ -69,6 +69,15 @@ function createCoresDeck(root, handlers) {
       if (!card || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
       card.animate([{transform:'translateX(0)'},{transform:'translateX(-3px)'},{transform:'translateX(3px)'},{transform:'translateX(0)'}],{duration:180});
     },
+    pulse(core) {
+      const card = root.querySelector(`[data-card="${core}"]`);
+      if (!card || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+      card.animate([
+        {boxShadow:'0 0 0 0 var(--core-color)', transform:'scale(1)'},
+        {boxShadow:'0 0 0 8px transparent', transform:'scale(1.03)', offset:0.5},
+        {boxShadow:'0 0 0 0 transparent', transform:'scale(1)'}
+      ], {duration:360});
+    },
     update({selection,available,states,clocks,running,busy}) {
       positionDeck();
       pinned = selection.pinned;
