@@ -4222,6 +4222,7 @@ function initCoresControl() {
     const first = coreSelection.used[0];
     applyCoreSelection({...coreSelection, shown:[first], focus:first, pinned:false});
   });
+  document.addEventListener('pru-layout-changed', () => renderCorePanes());
 }
 
 function applyCoreSelection(next, fromSession = false) {
