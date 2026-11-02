@@ -11,7 +11,7 @@ from simulator import Simulator
 
 ROOT = Path(__file__).parents[1]
 SINGLE = "SSI encoder (single core)"
-MULTI = "SSI multi-core (emulator + reader)"
+MULTI = "SSI (encoder PRU + reader)"
 
 
 def _new(config=None):

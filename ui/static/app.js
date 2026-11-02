@@ -321,7 +321,7 @@ btnXfrShift.addEventListener("click", () => {
   sendAction({ action: "set_xfr_shift", core: currentCore, enabled: nowEnabled });
 });
 
-// Toggle a SPAD bank column on/off (single-core panel)
+// Toggle a SPAD bank column on/off
 document.querySelectorAll(".spad-btn[data-bank]").forEach(btn => {
   btn.addEventListener("click", () => {
     const key = btn.dataset.bank;

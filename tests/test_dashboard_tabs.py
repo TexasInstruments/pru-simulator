@@ -74,7 +74,7 @@ def test_load_step_input_and_reset_are_visible_in_an_idle_second_tab(dashboard):
 
 @pytest.mark.parametrize("name,partners", [
     ("SSI encoder (single core)", []),
-    ("SSI multi-core (emulator + reader)", ["pru1"]),
+    ("SSI (encoder PRU + reader)", ["pru1"]),
 ])
 def test_ssi_signal_capture_and_mailbox_reach_a_recording_observer(dashboard, name, partners):
     with dashboard.websocket_connect("/ws") as control, dashboard.websocket_connect("/ws") as view:
@@ -357,7 +357,7 @@ def test_slow_controller_cannot_publish_old_capture_after_another_tabs_mutation(
         assert receive(view)["type"] == "state"
 
 
-MULTI_SSI = "SSI multi-core (emulator + reader)"
+MULTI_SSI = "SSI (encoder PRU + reader)"
 
 
 def test_scenario_selection_is_shared_with_observers_and_late_joiners(dashboard):

@@ -1706,7 +1706,7 @@
   </div>
 
 
-  <!-- Global error band (shown above main for both SC and MC modes) -->
+  <!-- Global error band -->
   <div id="error-band" style="display:none;"></div>
 
   <!-- Core memory fault (Simulator view): the same fault is listed in I/O & Devices > Events -->
@@ -2183,7 +2183,7 @@ Example:
           </div>
           <div class="runtime-device-actions">
             <button class="runtime-device-button btn-17" type="button" data-scenario="SSI encoder (single core)" disabled><span class="text-container"><span class="text">Set up reader + encoder model</span></span></button>
-            <button class="runtime-device-button btn-17" type="button" data-scenario="SSI multi-core (emulator + reader)" disabled><span class="text-container"><span class="text">Set up reader + encoder PRU</span></span></button>
+            <button class="runtime-device-button btn-17" type="button" data-scenario="SSI (encoder PRU + reader)" disabled><span class="text-container"><span class="text">Set up reader + encoder PRU</span></span></button>
           </div>
           <p class="runtime-device-help">Encoder model: PRU0 reads a software device. Encoder PRU: PRU0 reads encoder code on PRU1. Both use the settings above and set the reader timing automatically.</p>
           <div id="ssi-demo-result" hidden>

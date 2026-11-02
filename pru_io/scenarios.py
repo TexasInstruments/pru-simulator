@@ -85,7 +85,7 @@ SCENARIOS = {scenario.name: scenario for scenario in (
         ("pru0",), "pru0", False, {"pru0": _READER_FIRMWARE}, _SSI_UI,
         _ssi_single_core),
     Scenario(
-        "SSI multi-core (emulator + reader)",
+        "SSI (encoder PRU + reader)",
         "SSI reader on PRU0 clocking frames out of the SSI emulator firmware on PRU1.",
         ("pru0", "pru1"), "pru0", True,
         {"pru0": _READER_FIRMWARE, "pru1": _EMULATOR_FIRMWARE},

@@ -144,7 +144,7 @@ test('loading an example cannot cancel Run requested before the load reply arriv
   d.context.document.querySelector = () => null;
   const start = app.indexOf('async function applyScenario(');
   vm.runInContext(app.slice(start, app.indexOf('function buildMCRegTable(',start)),d.context);
-  d.context.sendAction({action:'scenario_load',name:'SSI multi-core (emulator + reader)'});
+  d.context.sendAction({action:'scenario_load',name:'SSI (encoder PRU + reader)'});
   d.context.btnRun.click();
   await d.context.applyScenario({cores:['pru0','pru1'],lead:'pru0',firmware:{},ui:{}});
   acknowledgeStart(d); d.tick();

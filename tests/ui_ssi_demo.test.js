@@ -17,7 +17,7 @@ const nodes = new Map();
 const get = id => { if (!nodes.has(id)) nodes.set(id, new Element()); return nodes.get(id); };
 const single = new Element(), multi = new Element();
 single.dataset.scenario = 'SSI encoder (single core)';
-multi.dataset.scenario = 'SSI multi-core (emulator + reader)';
+multi.dataset.scenario = 'SSI (encoder PRU + reader)';
 const buttons = [single, multi];
 const sent = [], files = [];
 let view = '';
