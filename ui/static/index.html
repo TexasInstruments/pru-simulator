@@ -1857,14 +1857,13 @@ Example:
             <div class="pin-grid" id="gpi-grid"></div>
           </div>
           <div class="io-section io-settings">
-            <div class="io-section-title">Loopback — GPO to GPI</div>
+            <div class="io-section-title">Loopback (GPO[n] → GPI[n])</div>
             <div class="lb-strip" id="loopback-strip">
-              <span class="lb-label">&#x21A9; Loopback</span>
-              <button class="lb-btn" data-group="0">3:0</button>
-              <button class="lb-btn" data-group="1">7:4</button>
-              <button class="lb-btn" data-group="2">11:8</button>
-              <button class="lb-btn" data-group="3">15:12</button>
-              <button class="lb-btn" data-group="4">19:16</button>
+              <button class="lb-btn" data-group="0" title="Loop GPO[3:0] back to GPI[3:0]">3:0</button>
+              <button class="lb-btn" data-group="1" title="Loop GPO[7:4] back to GPI[7:4]">7:4</button>
+              <button class="lb-btn" data-group="2" title="Loop GPO[11:8] back to GPI[11:8]">11:8</button>
+              <button class="lb-btn" data-group="3" title="Loop GPO[15:12] back to GPI[15:12]">15:12</button>
+              <button class="lb-btn" data-group="4" title="Loop GPO[19:16] back to GPI[19:16]">19:16</button>
             </div>
           </div>
           <div class="io-section io-settings">
@@ -2087,7 +2086,7 @@ Example:
         <div class="help-heading">IO Panel</div>
         <table class="help-table">
           <tr><td><b>GPO pins</b></td><td>Live R30 bit indicators — updated every step</td></tr>
-          <tr><td><b>Loopback strip</b></td><td>Five toggle buttons below the GPO and GPI rows; each wires a 4-bit group (3:0, 7:4, …) of GPO directly to GPI combinatorially</td></tr>
+          <tr><td><b>Loopback strip</b></td><td>Five toggles. Each wires one 4-bit group of GPO identity-mapped to the SAME group of GPI (GPO[n] → GPI[n]).</td></tr>
           <tr><td><b>GPI pins</b></td><td>R31 bit indicators — click any pin to drive it high/low when SD is disabled</td></tr>
           <tr><td><b>UART Record / Stop recording</b></td><td>Start or stop the shared Signal Graph capture. Run firmware while recording, then Decode GPO0.</td></tr>
           <tr><td><b>▶ Decode</b></td><td>UART decode of recorded GPO0 transitions (8N1, auto-detect baud); shows hex + ASCII bytes</td></tr>
