@@ -624,3 +624,28 @@ def test_trailing_publish_skips_the_owner_and_keeps_the_captured_flag(dashboard,
         # The owner got only chunk replies: the next state it sees is the reply to chunk 3.
         reply = run_chunk(control, 3)
         assert reply["run_id"] == 3 and reply["instruction_count"] == 30
+
+
+def test_throttled_chunk_trailing_publish_reaches_observer_via_real_timer(dashboard):
+    """Second chunk is throttled; the trailing timer must deliver the final state without Stop."""
+    assert srv.sim.load("pru0", "add r0, r0, 1\nqba 0") == []
+    with dashboard.websocket_connect("/ws") as control, dashboard.websocket_connect("/ws") as view:
+        control.send_json({"action": "start_execution", "mode": "run"})
+        assert receive(control)["running"] is True
+        until(view, lambda msg: msg["type"] == "execution")
+        # First chunk: within the interval from t=−∞ so it publishes immediately.
+        control.send_json({"action": "run", "managed": True, "max_steps": 10, "run_id": 1})
+        first = state(control)
+        assert first["instruction_count"] == 10
+        assert state(view)["instruction_count"] == 10
+        # Second chunk: arrives within OBSERVER_STATE_INTERVAL_S of the first → throttled.
+        control.send_json({"action": "run", "managed": True, "max_steps": 10, "run_id": 2})
+        second = state(control)
+        assert second["instruction_count"] == 20
+        # The owner then goes silent. The trailing timer (≤ OBSERVER_STATE_INTERVAL_S from now)
+        # must eventually wake up and push the final state to the observer.
+        async def sleep_past_interval():
+            await asyncio.sleep(srv.OBSERVER_STATE_INTERVAL_S + 0.05)
+        control.portal.call(sleep_past_interval)
+        trailing = state(view)
+        assert trailing["instruction_count"] == 20
