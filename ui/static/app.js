@@ -2665,6 +2665,29 @@ async function changeClock(direction) {
   finally { clockChanging = false; updateCoresControl(); }
 }
 
+async function setClockDirect(mhz) {
+  if (running || simRunning || runPending !== null || clockChanging) return;
+  if (coreSelection.used.length === 0) return;
+  if (mhz === clockState.mhz) return;
+  clockChanging = true; updateCoresControl();
+  try {
+    const res = await fetch('/config/clock_speed', { method: 'PUT',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({mhz}) });
+    const result = await res.json();
+    if (!res.ok || !result.ok) throw new Error(result.error || 'Could not set the clock');
+    for (const core of availableCores) { delete coreStates[core]; mcLastSourceKey[core] = ''; }
+    _lastSourceKey = ''; sourceList.replaceChildren();
+    document.querySelectorAll('.core-extra-pane .source-list').forEach(list => list.replaceChildren());
+    graphSetRecording(false); graphResizeWindow(signalGraph.windowSize); drawGraph();
+    flashStatus('RELOADED — reload programs', 'reloaded');
+    refreshMemory(); refreshMemory2(); loadRegions();
+    sendAction({action:'device_discover'});
+    for (const core of availableCores) sendAction({action:'get_state',core});
+    await loadClockSpeed();
+  } catch (error) { showErrors([String(error)]); }
+  finally { clockChanging = false; updateCoresControl(); }
+}
+
 // ---- Help modal ------------------------------------------------------------
 const btnHelp      = document.getElementById("btn-help");
 const helpModal    = document.getElementById("help-modal");
@@ -4216,6 +4239,7 @@ function initCoresControl() {
       if (action.type === 'solo' && next.used.includes(action.core)) selectEditorCore(action.core);
     },
     clock: changeClock,
+    setClock: setClockDirect,
   });
   renderCorePanes(); syncDeviceCoreSelect(); updateCoresControl();
   document.addEventListener('pru-cores-reset', () => {

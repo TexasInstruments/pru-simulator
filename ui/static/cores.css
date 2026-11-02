@@ -43,6 +43,11 @@
 .clock-stepper { display:flex; align-items:center; gap:5px; white-space:nowrap; }
 .clock-stepper b { font-size:11px; font-weight:500; min-width:62px; text-align:center; }
 .cores-clock-notice { font-size:10px; color:var(--text-dim); line-height:1.5; margin:7px 2px; }
+.cores-clock-single { display:flex; flex-direction:column; align-items:center; gap:8px; padding:12px; margin-top:6px; border-top:1px solid var(--border); }
+.cores-clock-label { text-align:center; font-size:11px; }
+.cores-clock-label small { display:block; font-size:10px; color:var(--text-dim); margin-top:2px; }
+.cores-clock-controls { display:flex; align-items:center; gap:12px; }
+.cores-clock-slider { width:80%; max-width:400px; accent-color:var(--accent); }
 .cores-deck-footer { display:flex; align-items:center; gap:5px; flex-wrap:wrap; font-size:10px; color:var(--text-dim); }
 .cores-deck-footer > span { flex:1; min-width:220px; }
 .core-panes { display:grid; flex:1; min-height:0; min-width:0; gap:1px; background:var(--border); overflow:hidden; }
