@@ -249,15 +249,11 @@ function renderNode(node) {
         });
         titleEl.appendChild(btn);
       }
-      // Apply persisted collapse state
+      // Apply persisted collapse state (only add — removal is user-driven via togglePanelCollapse)
       if (collapsedPanelIds.has(node.panelId) && !panel.classList.contains('panel-collapsed')) {
         panel.classList.add('panel-collapsed');
         const btn = panel.querySelector('.panel-collapse-btn');
         if (btn) btn.textContent = '+';
-      } else if (!collapsedPanelIds.has(node.panelId) && panel.classList.contains('panel-collapsed')) {
-        panel.classList.remove('panel-collapsed');
-        const btn = panel.querySelector('.panel-collapse-btn');
-        if (btn) btn.textContent = '−';
       }
       // Inject per-core circle tabs for multi-core panels
       if (MULTI_CORE_PANELS.has(node.panelId) && titleEl) {
