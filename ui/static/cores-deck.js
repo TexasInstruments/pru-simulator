@@ -15,7 +15,7 @@ function createCoresDeck(root, handlers) {
     </section>`).join('')}</div>
     <div class="cores-clock-single"><span class="cores-clock-head">PRU core frequency: <b data-core-rate>— MHz</b></span><div class="cores-clock-track"><input type="range" class="cores-clock-slider" min="0" max="0" step="1" value="0" aria-label="PRU core clock"><div class="cores-clock-ticks" aria-hidden="true"></div></div></div>
     <p class="cores-clock-notice">The PRU core frequency applies to all cores within the PRU subsystem. Changing it reloads the simulator and clears loaded programs. IEP is separate.</p>
-    <div class="cores-deck-footer"><span>Use = include in RUN/STEP · Show = open Source &amp; Registers panes</span><button type="button" data-action="use-all">Use all</button><button type="button" data-action="show-all">Show all used</button><button type="button" data-action="pin" aria-label="Pin CORES deck" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 3 8 0-1 6 4 4v2H5v-2l4-4-1-6Zm4 12v7"/></svg></button></div>
+    <div class="cores-deck-footer"><span>Use = include in RUN/STEP · Show = open Source &amp; Registers panes</span><button type="button" data-action="use-all">Use all</button><button type="button" data-action="show-all">Show all used</button></div>
     </div></div>`;
   const toggle = root.querySelector('#cores-toggle');
   const overlay = root.querySelector('#cores-deck');
@@ -26,7 +26,6 @@ function createCoresDeck(root, handlers) {
     indicator.innerHTML = `<span class="core-status-dot"></span><b><span class="core-name-full">${core.toUpperCase()}</span><span class="core-name-short">${core.replace('pru','P').replace('rtu','R')}</span></b>`;
     pill.appendChild(indicator); indicators[core] = indicator;
   }
-  let pinned = false;
   function positionDeck() {
     const trigger = root.getBoundingClientRect();
     const box = root.closest('.toolbar-context').getBoundingClientRect();
@@ -36,9 +35,9 @@ function createCoresDeck(root, handlers) {
   }
   function open(value) {
     positionDeck();
-    root.classList.toggle('is-open',value || pinned);
-    toggle.setAttribute('aria-expanded',String(value || pinned));
-    overlay.inert = !(value || pinned);
+    root.classList.toggle('is-open',value);
+    toggle.setAttribute('aria-expanded',String(value));
+    overlay.inert = !value;
   }
   window.addEventListener('resize',positionDeck);
   root.addEventListener('pointerenter',event => { if (event.pointerType !== 'touch') open(true); });
@@ -47,7 +46,7 @@ function createCoresDeck(root, handlers) {
   root.addEventListener('focusout',event => { if (!root.contains(event.relatedTarget) && !root.matches(':hover')) open(false); });
   root.addEventListener('keydown',event => {
     if (event.key === 'Escape') {
-      event.preventDefault(); if (pinned) handlers.action({type:'pin'});
+      event.preventDefault();
       toggle.focus(); open(false);
     }
   });
@@ -64,7 +63,6 @@ function createCoresDeck(root, handlers) {
   });
   document.addEventListener('pointerdown',event => {
     if (!root.contains(event.target)) {
-      if (pinned) handlers.action({type:'pin'});
       open(false);
     }
   });
@@ -85,10 +83,6 @@ function createCoresDeck(root, handlers) {
     },
     update({selection,available,states,clocks,running,busy}) {
       positionDeck();
-      pinned = selection.pinned;
-      root.classList.toggle('pinned',pinned);
-      if (pinned) open(true);
-      root.querySelector('[data-action="pin"]').setAttribute('aria-pressed',String(pinned));
       root.querySelector('.cores-mode').textContent = '×' + selection.used.length;
       for (const core of PruCores.ORDER) {
         const card = root.querySelector(`[data-card="${core}"]`);

@@ -217,5 +217,5 @@ console.log('Chrome helpers, glider, fault badge and markup contract pass');
 
 // Actual target capabilities prune membership and visibility after a target reload.
 assert.deepEqual(plain(context.PruCores.normalize(selection, ['pru0', 'pru1', 'rtu0'])), {
-  used: ['pru1', 'rtu0'], shown: ['pru1'], focus: 'pru1', pinned: false,
+  used: ['pru1', 'rtu0'], shown: ['pru1'], focus: 'pru1',
 });

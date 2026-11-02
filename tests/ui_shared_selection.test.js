@@ -15,7 +15,7 @@ function tab() {
   const requests = [], stops = [];
   const context = vm.createContext({
     module: {exports:{}}, availableCores:['pru0','pru1','rtu0','rtu1'],
-    coreSelection:{used:['pru0'],shown:['pru0'],focus:'pru0',pinned:false},
+    coreSelection:{used:['pru0'],shown:['pru0'],focus:'pru0'},
     currentCore:'pru0', devicePanelCore:'pru0', multiCoreMode:false, coreStates:{},
     sharedExecution:{running:false}, executionStartPending:null, executionReady:true, captureStride:null,
     stopRun:notify => stops.push(['run',notify]), stopSim:notify => stops.push(['sim',notify]),
@@ -73,13 +73,11 @@ test('Reset Layout preserves shared execution cores and does not stop a run', ()
   load(t.context,'initCoresControl');
   t.context.receiveExecution(session({running:true,owner:false}));
   t.context.coreSelection.shown = ['pru0','pru1'];
-  t.context.coreSelection.pinned = true;
   t.context.initCoresControl();
   t.stops.length = 0; t.requests.length = 0;
   reset();
   assert.deepEqual(plain(t.context.coreSelection.used),['pru0','pru1']);
   assert.deepEqual(plain(t.context.coreSelection.shown),['pru0']);
-  assert.equal(t.context.coreSelection.pinned,false);
   assert.equal(t.stops.length,0);
   assert.equal(t.requests.some(r => r.action === 'set_execution_cores'),false);
 });

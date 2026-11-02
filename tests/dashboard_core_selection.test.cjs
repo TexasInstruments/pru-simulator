@@ -10,7 +10,7 @@ function dashboard(cores) {
   const context = vm.createContext({
     fetch: async () => ({ ok: true, json: async () => cores }),
     availableCores: ['pru0', 'pru1', 'rtu0', 'rtu1'],
-    coreSelection: { used: ['rtu1'], shown: ['rtu1'], focus: 'rtu1', pinned: false },
+    coreSelection: { used: ['rtu1'], shown: ['rtu1'], focus: 'rtu1' },
     currentCore: 'rtu1', stopRun() {}, stopSim() {}, selectEditorCore() {},
   });
   vm.runInContext(selection, context);
@@ -127,7 +127,7 @@ test('clicking Use on a core also marks it as shown', () => {
   // Simulate the action handler added in initCoresControl:
   // when a core is newly added by 'use', the handler also applies a 'show' transition.
   const context = vm.createContext({
-    coreSelection: { used: ['pru0'], shown: ['pru0'], focus: 'pru0', pinned: false },
+    coreSelection: { used: ['pru0'], shown: ['pru0'], focus: 'pru0' },
     availableCores: ['pru0', 'pru1', 'rtu0', 'rtu1'],
     pulseCore: null,
     appliedSelections: [],
@@ -156,7 +156,7 @@ test('clicking Use again (toggle off) keeps shown unchanged', () => {
   // When toggling off a used core, shown should NOT be affected by the Use handler
   // (only the core being removed gets pruned from shown via PruCores.normalize).
   const context = vm.createContext({
-    coreSelection: { used: ['pru0', 'rtu0'], shown: ['pru0', 'rtu0'], focus: 'pru0', pinned: false },
+    coreSelection: { used: ['pru0', 'rtu0'], shown: ['pru0', 'rtu0'], focus: 'pru0' },
     availableCores: ['pru0', 'pru1', 'rtu0', 'rtu1'],
     pulseCore: null,
     appliedSelections: [],

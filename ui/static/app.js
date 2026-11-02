@@ -3949,7 +3949,7 @@ for (const button of scenarioButtons) {
 async function applyScenario(scenario) {
   const generation = ++scenarioGeneration;
   applyCoreSelection(PruCores.normalize({used:scenario.cores, shown:scenario.cores,
-    focus:scenario.lead, pinned:coreSelection.pinned}, availableCores), true);
+    focus:scenario.lead}, availableCores), true);
   devicePanelCore = scenario.lead;
   syncDeviceCoreSelect();
   for (const core of scenario.cores) sendAction({ action: "get_state", core });
@@ -4244,7 +4244,7 @@ function initCoresControl() {
   renderCorePanes(); syncDeviceCoreSelect(); updateCoresControl();
   document.addEventListener('pru-cores-reset', () => {
     const first = coreSelection.used[0];
-    applyCoreSelection({...coreSelection, shown:[first], focus:first, pinned:false});
+    applyCoreSelection({...coreSelection, shown:[first], focus:first});
   });
   document.addEventListener('pru-layout-changed', () => renderCorePanes());
 }

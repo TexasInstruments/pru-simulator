@@ -26,7 +26,7 @@ const context = vm.createContext({ document: { getElementById: get,
   localStorage: { setItem: (key, value) => storage.set(key, value) },
   sendAction: action => sent.push(action), currentCore: 'rtu1',
   availableCores: ['pru0','pru1','rtu0','rtu1'],
-  coreSelection: { used: ['pru0', 'pru1', 'rtu1'], shown: ['rtu1'], focus: 'rtu1', pinned: true },
+  coreSelection: { used: ['pru0', 'pru1', 'rtu1'], shown: ['rtu1'], focus: 'rtu1' },
   multiCoreMode: true, devicePanelCore: 'rtu1', coreStates: {},
   deviceCoreSelect: get('device-core-select'), iepClockSelect: get('iep-clock-select'),
   deviceCoreSelectWrap: get('device-core-select-wrap'), sourceList: new Element(),
@@ -48,7 +48,7 @@ for (const name of ['persistCoreSelection', 'applyCoreSelection', 'syncDeviceCor
 context.showAvailableCores(['pru0', 'rtu0', 'pru1']);
 assert.equal(context.currentCore, 'pru0');
 assert.deepEqual(JSON.parse(JSON.stringify(context.coreSelection)), {
-  used: ['pru0', 'pru1'], shown: ['pru0'], focus: 'pru0', pinned: true,
+  used: ['pru0', 'pru1'], shown: ['pru0'], focus: 'pru0',
 });
 assert.deepEqual(get('device-core-select').options.map(option => option.value), ['pru0', 'pru1', 'rtu0']);
 assert.equal(context.devicePanelCore, 'pru0');
