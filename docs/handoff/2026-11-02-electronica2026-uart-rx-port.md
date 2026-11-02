@@ -11,15 +11,18 @@ pru_simulator changed apart from this note.
 ## Status
 
 **Done and pushed:**
-- open-pru branch `dev_tley_electronica2026_uart_rx` at `b2159555`, one
-  commit on top of `main` (58cbf1a8). No PR yet. Open one with
-  https://github.com/TexasInstruments/open-pru/pull/new/dev_tley_electronica2026_uart_rx
+- open-pru branch `dev_tley_electronica2026_uart_rx` at `b06cf37a`, two
+  commits on top of `main` (58cbf1a8). Open as
+  [open-pru PR #189](https://github.com/TexasInstruments/open-pru/pull/189)
+  into `main`.
 - open-pru branch `dev_tley_electronica2026_i2c_io` at `4a8cad5c`: readme pin
   labels fixed (see "Not bugs" below). This updates PR #188.
 - This note is in pru-simulator PR #102 (branch `docs/handoff-2026-11-02`),
   next to the morning's note.
 
-**Not done:** no hardware run of the UART receiver yet.
+**On the user's side:** both CCS projects import and build with no errors
+(CCS 21, user, 2026-11-02). The hardware run with the PicoScope AWG as the
+sender is the next step, not yet reported.
 
 **What was built:** the simulator example `source/uart_rx_11frame.asm`
 (4 Mbaud 8N1 bit-bang UART receiver, 11-byte frames) was ported to the
@@ -38,6 +41,8 @@ Entry points in that folder:
 - `readme.md`: wiring, DRAM0 layout, build, run and validate steps.
 - `docs/porting_report.md`: the prompt, model (Opus 5.5, effort high), time
   (12 min 04 s), tokens, every change, the checks and the open items.
+- `test/helloworld_4mbaud_awg.csv` and `test/make_awg_csv.py`: the PicoScope
+  AWG test frame (see "Hardware test sender" below).
 
 ## How the session went
 
@@ -52,7 +57,13 @@ Entry points in that folder:
    at 200 MHz in the UI.
 3. **Port to open-pru**, following the i2c_io port step by step. One question
    was put to the user (below).
-4. **Pin label correction** by the user, then both branches pushed.
+4. **Pin label correction** by the user, then both branches pushed and
+   PR #189 opened.
+5. **CCS import failed** for the user, because the open-pru checkout was on
+   the i2c_io branch (see "Not bugs"). After switching, import and build
+   worked.
+6. **PicoScope AWG test frame** for the hardware test, committed as
+   `b06cf37a`.
 
 ## Decision made with the user
 
@@ -84,6 +95,29 @@ the porting report.
   both projects with 0 errors. The one R5F warning is the SysConfig
   part-number migration notice that the `empty` syscfg also gives.
 
+## Hardware test sender (PicoScope 3416E AWG)
+
+- `test/helloworld_4mbaud_awg.csv`: 1600 samples of -1/+1, 8 per bit. One
+  period is 200 bit times: 45 idle bits, the 110-bit `HelloWorld!` frame,
+  45 idle bits. PicoScope 7 imports AWG data as CSV with values between -1
+  and +1, and the whole buffer repeats at the Frequency setting.
+- Settings: Arbitrary, **20 kHz** (250 ns per bit), amplitude 1 V, offset
+  +1 V, giving 0 V / 2 V.
+- **Start order:** DC +2 V (line idle high), run the R5F, then switch to
+  Arbitrary. A disabled AWG outputs 0 V, which looks like endless start
+  bits. If the PRU starts mid-frame, every frame is shifted by a byte and
+  the error flag sets; that was reproduced in pru-simulator.
+- Expected: every 11-byte slot from 0x30000000 holds `HelloWorld!`, the count
+  at 0x30000FFC climbs by 20,000 per second, and 0x30000FFE stays 0.
+- **2 V is the AWG maximum** (the PicoScope MCP reports amplitude 0-2 V,
+  offset narrowing with amplitude). That is at the bottom of the 3.3 V
+  input-high range. If bytes are wrong, use a level shifter (e.g.
+  SN74LVC1T45, VCCA = 1.8 V, VCCB = 3.3 V).
+- The PicoScope MCP server has no tool to upload an arbitrary waveform:
+  `configure_signal_generator` only sets the preset waveforms. Import the
+  CSV in the GUI. The MCP can still read back a UART decode if the AWG
+  output is also wired to a scope channel.
+
 ## Not bugs, so don't chase them
 
 - **"J4.10" does not exist.** The first version of the readme said RX was
@@ -94,6 +128,11 @@ the porting report.
   (GPO0/1/2 = BP.33/32/31). The i2c_io readme had the same mistake (J4.8 /
   J4.9) and was fixed in `4a8cad5c`. This closes open item 3 of the
   morning's note.
+- **CCS finds no uart_rx project.** The project files exist only on
+  `dev_tley_electronica2026_uart_rx`. On the i2c_io branch, the
+  `uart_rx_frame/uart_rx` folder still exists but holds only untracked build
+  outputs, so CCS has nothing to import. Check `git branch --show-current`
+  in open-pru first. The reverse holds for i2c_io.
 - **No frames received in the simulator.** Check the PRU clock first. At
   300 MHz the receiver gets nothing and sets the framing error flag. This is
   expected, not a simulator bug.
@@ -107,8 +146,9 @@ the porting report.
 - **pru_simulator:** `main`, plus `docs/handoff-2026-11-02` (PR #102) with
   both notes from today.
 - **open-pru:** `dev_tley_electronica2026_i2c_io` (PR #188, at `4a8cad5c`),
-  `dev_tley_electronica2026_uart_rx` (no PR, at `b2159555`) and `main`. The
-  checkout was left on the i2c_io branch.
+  `dev_tley_electronica2026_uart_rx` (PR #189, at `b06cf37a`) and `main`.
+  The checkout was left on the **uart_rx** branch, so the user's CCS can see
+  that project.
 
 ## Open items
 
@@ -120,9 +160,11 @@ the porting report.
    Not verified. Next step: reconnect with `/mcp` and call it again. If it
    still shows a string, look at how `build_server()` derives the schema
    from the signature.
-2. **Hardware run of uart_rx** on the LP-AM243 with a 4 Mbaud 3.3 V sender.
-   Check DRAM0 at 0x30000000 in the CCS memory browser.
-3. **Open a PR** for `dev_tley_electronica2026_uart_rx`.
+2. **Hardware run of uart_rx** on the LP-AM243 with the PicoScope AWG
+   frame (see "Hardware test sender"). Check DRAM0 at 0x30000000 in the CCS
+   memory browser, then record the result in the readme and porting report
+   (both still say FIXME).
+3. **Review and merge** open-pru PR #189.
 4. **Merge conflict:** `examples/makefile` and `examples/readme.md` get an
    `electronica2026/...` entry on both open-pru branches. Whichever merges
    second needs a small resolution.
