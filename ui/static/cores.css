@@ -45,11 +45,6 @@
 .cores-clock-notice { font-size:10px; color:var(--text-dim); line-height:1.5; margin:7px 2px; }
 .cores-deck-footer { display:flex; align-items:center; gap:5px; flex-wrap:wrap; font-size:10px; color:var(--text-dim); }
 .cores-deck-footer > span { flex:1; min-width:220px; }
-#cores-coach { display:none; position:absolute; top:calc(100% + 12px); left:0; width:290px; padding:12px; border:1px solid var(--accent); border-radius:9px; background:var(--panel); color:var(--text); font-size:12px; line-height:1.5; box-shadow:0 12px 24px #0006; }
-#cores-coach button { display:block; margin:8px 0 0 auto; padding:4px 12px; border:1px solid var(--accent); border-radius:var(--control-radius); color:var(--text); background:var(--panel-inset); cursor:pointer; }
-#cores-control.needs-coach:not(.is-open) #cores-coach { display:block; }
-#cores-control.needs-coach #cores-toggle { animation:core-coaching 2s 3; }
-@keyframes core-coaching { 50% { box-shadow:0 0 0 5px color-mix(in srgb,var(--accent) 25%,transparent); } }
 .core-panes { display:grid; flex:1; min-height:0; min-width:0; gap:1px; background:var(--border); overflow:hidden; }
 .core-pane { display:flex; flex-direction:column; min-height:0; min-width:0; background:var(--panel); overflow:hidden; }
 .core-scroll { flex:1; min-height:0; min-width:0; overflow:auto; }
@@ -86,11 +81,11 @@
   .core-card { transform:translateY(-8px); }
   .cores-clock-groups { grid-template-columns:1fr; }
 }
-@media (prefers-reduced-motion:reduce) { .core-card,.cores-chevron { transition:none; transform:none; } .core-status-dot.active,#status-badge.running::before,#cores-control.needs-coach #cores-toggle { animation:none; } }
+@media (prefers-reduced-motion:reduce) { .core-card,.cores-chevron { transition:none; transform:none; } .core-status-dot.active,#status-badge.running::before { animation:none; } }
 /* The deck overrides toolbar button sizing, and wraps its explanatory copy. */
 #cores-control button { text-transform:none; letter-spacing:0; font-weight:600; min-height:24px; }
 #cores-control .core-card-heading { border:0; padding:0; background:transparent; min-height:20px; }
-#cores-control .cores-clock-notice,#cores-control .cores-deck-footer,#cores-coach { white-space:normal; }
+#cores-control .cores-clock-notice,#cores-control .cores-deck-footer { white-space:normal; }
 #source-panes .source-list li.current-pc { background:color-mix(in srgb,var(--core-color) 17%,var(--panel)); border-left-color:var(--core-color); }
 #source-panes .source-list li.current-pc .addr,.core-pane .reg-table .reg-name { color:var(--core-color); }
 /* Keep the hover bridge over the trigger only; adjacent Execute controls remain clickable. */

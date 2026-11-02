@@ -2043,7 +2043,7 @@ Example:
           <tr><td><b>SIM</b></td><td>Toggle timed simulation mode</td></tr>
           <tr><td><b>Reset</b></td><td>Soft reset — registers and PC to 0, plus this core's Peripheral Interface status/FIFOs</td></tr>
           <tr><td><b>HW Reset</b></td><td>Hard reset — clears SPAD, XFR config, and every core's Peripheral Interface state (FIFOs, overrun/underrun, RX valid/overflow, busy); perif config registers, GP Mux and loopback settings are kept</td></tr>
-          <tr><td><b>CORES</b></td><td>Use selects execution cores; Show splits the shared Source and Registers panels. One frequency applies to PRU0 + RTU0; the other applies to PRU1 + RTU1. This simulator pairing may change. Telemetry selects the inspection and assembly target.</td></tr>
+          <tr><td><b>CORES</b></td><td>Use selects execution cores; Show splits the shared Source and Registers panels. The PRU core frequency applies to all cores within the PRU subsystem. Telemetry selects the inspection and assembly target.</td></tr>
           <tr><td><b>Config</b></td><td>Edit simulator configuration (JSON)</td></tr>
           <tr><td><b>⊞ Reset Layout</b></td><td>Restore default panel layout</td></tr>
         </table>
@@ -2103,7 +2103,6 @@ Example:
           <tr><td><b>Drag panel title</b></td><td>Split any panel by dragging its title to another panel edge</td></tr>
           <tr><td><b>Drag divider</b></td><td>Resize adjacent panels</td></tr>
           <tr><td><b>Collapse (−/+)</b></td><td>Click the button at the top-right of any panel to collapse/expand</td></tr>
-          <tr><td><b>SC / MC mode</b></td><td>Single-core and multi-core layouts saved independently</td></tr>
         </table>
       </section>
     </div>
