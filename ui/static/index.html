@@ -1902,10 +1902,10 @@ Example:
 
       <!-- Memory Graph panel (memory waveform visualization) -->
       <div class="panel" id="mem-graph-panel">
-        <div class="panel-title" data-panel-id="mem-graph">Memory Graph</div>
+        <div class="panel-title" data-panel-id="mem-graph" title="Memory Graph: analog scope that plots values read from configured memory addresses over time. Each memory channel is one {address, length} pair sampled per simulation step (up to 8 channels).">Memory Graph</div>
         <div class="panel-body">
           <div class="graph-header">
-            <span class="graph-section-title">Memory Channels</span>
+            <span class="graph-section-title" title="Each channel samples a memory range (address + length) and plots the values over time.">Memory Channels</span>
             <button id="graph-mem-refresh-btn" class="graph-btn" title="Read memory now">↻</button>
             <button id="mgraph-taller-btn" class="graph-btn" title="Taller">▲</button>
             <button id="mgraph-shorter-btn" class="graph-btn" title="Shorter">▼</button>
@@ -2045,6 +2045,7 @@ Example:
           <tr><td><b>HW Reset</b></td><td>Hard reset — clears SPAD, XFR config, and every core's Peripheral Interface state (FIFOs, overrun/underrun, RX valid/overflow, busy); perif config registers, GP Mux and loopback settings are kept</td></tr>
           <tr><td><b>CORES</b></td><td>Use selects execution cores; Show splits the shared Source and Registers panels. The PRU core frequency applies to all cores within the PRU subsystem. Telemetry selects the inspection and assembly target.</td></tr>
           <tr><td><b>Config</b></td><td>Edit simulator configuration (JSON)</td></tr>
+          <tr><td><b>Memory Graph</b></td><td>Scope-style plot of values at configured memory addresses</td></tr>
           <tr><td><b>⊞ Reset Layout</b></td><td>Restore default panel layout</td></tr>
         </table>
       </section>
