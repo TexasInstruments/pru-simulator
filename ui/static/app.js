@@ -8,33 +8,47 @@
 let ws = null;
 let prevRegisters = new Array(32).fill("0x00000000");
 let currentCore = "pru0";
+let devicePanelCore = "pru0";
+let ssiPresets = {};
 let running = false;
 let runInterval = null;
+let runPending = null;
+let runSequence = 0;
 let simRunning = false;
 let simTimer = null;
 let _flashTimer = null;
 let clientBreakpoints = new Set();
 let _lastSourceKey = '';
+let captureStride = null;   // Signal Graph sample interval requested by the loaded example
+let sharedExecution = {running:false, owner:false, mode:null};
+let executionStartPending = null;
+let executionReady = false;
+let prevExecutionOwner = false;   // tracks last known owner state for transition detection
+let lastAppliedCores = null;       // tracks last cores value passed to applyCoreSelection
 
-// ---- Multi-core state ------------------------------------------------------
-let multiCoreMode = false;
-let mcPartner = "rtu0";            // second core shown in multi-core view
-let mcPrevRegs = {
-  pru0: new Array(32).fill("0x00000000"),
-  rtu0: new Array(32).fill("0x00000000"),
-  pru1: new Array(32).fill("0x00000000"),
-};
-let mcLastSourceKey = { pru0: '', rtu0: '', pru1: '' };
-let mcBreakpoints   = { pru0: new Set(), rtu0: new Set(), pru1: new Set() };
-let mcHaltedState   = { pru0: false, rtu0: false, pru1: false };
-let mcBreakState    = { pru0: false, rtu0: false, pru1: false };
-let mcSpadVisible   = new Set();   // SPAD banks visible in PRU0 MC reg panel
-let mcPrevSpad      = {};          // key -> Array for change detection
+// ---- Core selection: execution membership is separate from inspection -------
+let availableCores = [...PruCores.ORDER];
+let savedCoreSelection = null;
+try { savedCoreSelection = JSON.parse(localStorage.getItem('pru-cores-v1') || 'null'); } catch (_) {}
+let coreSelection = PruCores.normalize(savedCoreSelection, availableCores);
+currentCore = coreSelection.focus;
+devicePanelCore = currentCore;
+let multiCoreMode = coreSelection.used.length > 1;
+const executionCores = () => coreSelection.used;
+const coreStates = {};
+const mcFreshRegs = () => new Array(32).fill("0x00000000");
+const mcPrevRegs = Object.fromEntries(PruCores.ORDER.map(core => [core, mcFreshRegs()]));
+const mcLastSourceKey = Object.fromEntries(PruCores.ORDER.map(core => [core, '']));
+const mcBreakpoints = Object.fromEntries(PruCores.ORDER.map(core => [core, new Set()]));
+let clockState = { groups: [], choices_mhz: [] };
+let clockChanging = false;
+let coresDeck = null;
 
 // ---- Editor tab state ------------------------------------------------------
-let tabs = [];              // [{path: string, content: string, dirty: boolean}]
-let activeTab = -1;         // index into tabs[], -1 = no open tabs
-let activeProjectManifest = null;  // {project: string, files: string[]} or null
+const editorWorkspaces = Object.fromEntries(PruCores.ORDER.map(core => [core,
+  {tabs: [], activeTab: -1, project: null, draft: ''}]));
+let editorCore = currentCore;
+let editor = editorWorkspaces[editorCore];
 
 // ---- Signal graph state ----------------------------------------------------
 
@@ -74,7 +88,6 @@ const signalGraph = {
 };
 
 // ---- DOM references -------------------------------------------------------
-const coreSelect    = document.getElementById("core-select");
 const btnStep       = document.getElementById("btn-step");
 const btnRun        = document.getElementById("btn-run");
 const btnReset      = document.getElementById("btn-reset");
@@ -98,26 +111,23 @@ const btnSim          = document.getElementById("btn-sim");
 const simIntervalInput = document.getElementById("sim-interval");
 const btnSaveAsm      = document.getElementById("btn-save-asm");
 
-const btnMulticore    = document.getElementById("btn-multicore");
 const editorPanel     = document.getElementById("editor-panel");
-const mcLoadCore      = document.getElementById("mc-load-core");
 
 const btnOpenProject  = document.getElementById("btn-open-project");
 
 const btnConfig       = document.getElementById("btn-config");
 const configModal     = document.getElementById("config-modal");
 const configTextarea  = document.getElementById("config-textarea");
-const pruSpeedSelect  = document.getElementById("pru-speed-select");
+const iepClockSelect  = document.getElementById("iep-clock-select");
 const configError     = document.getElementById("config-error");
 const btnConfigSave   = document.getElementById("btn-config-save");
 const btnConfigCancel = document.getElementById("btn-config-cancel");
 
 // ---- Editor dirty tracking -----------------------------------------------
 asmSource.addEventListener('input', () => {
-  if (activeTab >= 0 && tabs[activeTab] && !tabs[activeTab].dirty) {
-    tabs[activeTab].dirty = true;
-    renderTabs();
-  }
+  saveEditorDraft();
+  const tab = editor.tabs[editor.activeTab];
+  if (tab && !tab.dirty) { tab.dirty = true; renderTabs(); }
 });
 
 // ---- SPAD display --------------------------------------------------------
@@ -157,83 +167,115 @@ function initSpadState() {
 
 // ---- Tab management --------------------------------------------------------
 
+function saveEditorDraft() {
+  const tab = editor.tabs[editor.activeTab];
+  if (tab) tab.content = asmSource.value;
+  else editor.draft = asmSource.value;
+}
+
+function selectEditorCore(core) {
+  if (!availableCores.includes(core)) return;
+  saveEditorDraft();
+  editorCore = core;
+  editor = editorWorkspaces[core];
+  asmSource.value = editor.tabs[editor.activeTab]?.content ?? editor.draft;
+  renderTabs();
+  syncEditorCoreSelect();
+}
+
+function syncEditorCoreSelect() {
+  const select = document.getElementById('assembly-core-target');
+  if (!availableCores.includes(editorCore)) selectEditorCore(availableCores[0]);
+  const key = availableCores.join(',');
+  if (select.dataset.cores !== key) {
+    select.replaceChildren();
+    for (const core of availableCores) {
+      const option = document.createElement('option');
+      option.value = core; option.textContent = core.toUpperCase();
+      select.appendChild(option);
+    }
+    select.dataset.cores = key;
+  }
+  select.value = editorCore;
+  select.style.setProperty('--core-color', `var(--core-${editorCore})`);
+}
+
+document.getElementById('assembly-core-target').addEventListener('change', event => {
+  selectEditorCore(event.target.value);
+});
+
 function renderTabs() {
   const bar = document.getElementById('editor-tab-bar');
   if (!bar) return;
   bar.innerHTML = '';
-  tabs.forEach((tab, i) => {
+  editor.tabs.forEach((tab, i) => {
     const name = tab.path.split('/').pop();
     const el = document.createElement('div');
-    el.className = 'editor-tab' + (i === activeTab ? ' active' : '');
-
+    el.className = 'editor-tab' + (i === editor.activeTab ? ' active' : '');
     const label = document.createElement('span');
     label.className = 'tab-label';
-    label.textContent = (i === activeTab ? '▶ ' : '') + name + (tab.dirty ? '*' : '');
-
+    label.textContent = (i === editor.activeTab ? '▶ ' : '') + name + (tab.dirty ? '*' : '');
     const close = document.createElement('span');
-    close.className = 'tab-close';
-    close.textContent = '×';
+    close.className = 'tab-close'; close.textContent = '×';
+    close.title = `Close ${name} in the ${editorCore.toUpperCase()} editor`;
     close.addEventListener('click', e => { e.stopPropagation(); closeTab(i); });
-
-    el.appendChild(label);
-    el.appendChild(close);
+    el.appendChild(label); el.appendChild(close);
     el.addEventListener('click', () => switchTab(i));
     bar.appendChild(el);
   });
 }
 
 function switchTab(i) {
-  if (i === activeTab) return;
-  if (activeTab >= 0 && tabs[activeTab]) {
-    tabs[activeTab].content = asmSource.value;
-  }
-  activeTab = i;
-  asmSource.value = tabs[i] ? tabs[i].content : '';
+  if (i === editor.activeTab) return;
+  saveEditorDraft();
+  editor.activeTab = i;
+  asmSource.value = editor.tabs[i]?.content ?? editor.draft;
   renderTabs();
 }
 
 function closeTab(i) {
-  if (tabs[i] && tabs[i].dirty) {
-    if (!confirm(`Close ${tabs[i].path.split('/').pop()} without saving?`)) return;
+  const tab = editor.tabs[i];
+  if (!tab) return;
+  if (tab.dirty && !confirm(`Close ${tab.path.split('/').pop()} in ${editorCore.toUpperCase()} without saving?`)) return;
+  saveEditorDraft();
+  if (editor.project) {
+    const project = editor.project.project;
+    if (!editor.tabs.some((t, index) => index !== i && t.path.startsWith(project + '/'))) editor.project = null;
   }
-  // If this was the only tab in a project, clear manifest
-  if (activeProjectManifest) {
-    const proj = activeProjectManifest.project;
-    const remaining = tabs.filter((t, idx) => idx !== i && t.path.startsWith(proj + '/'));
-    if (remaining.length === 0) activeProjectManifest = null;
-  }
-  tabs.splice(i, 1);
-  if (i < activeTab) activeTab--;
-  if (activeTab >= tabs.length) activeTab = tabs.length - 1;
-  asmSource.value = activeTab >= 0 && tabs[activeTab] ? tabs[activeTab].content : '';
+  editor.tabs.splice(i, 1);
+  if (i < editor.activeTab) editor.activeTab--;
+  if (editor.activeTab >= editor.tabs.length) editor.activeTab = editor.tabs.length - 1;
+  asmSource.value = editor.tabs[editor.activeTab]?.content ?? editor.draft;
   renderTabs();
 }
 
-function openFileAsTab(path, content) {
-  const existing = tabs.findIndex(t => t.path === path);
-  if (existing >= 0) {
-    switchTab(existing);
-    return;
+function openFileAsTab(path, content, core = editorCore) {
+  const workspace = editorWorkspaces[core];
+  if (!workspace) return;
+  if (workspace === editor) saveEditorDraft();
+  const existing = workspace.tabs.findIndex(tab => tab.path === path);
+  if (existing >= 0) workspace.activeTab = existing;
+  else {
+    workspace.tabs.push({path, content, dirty: false});
+    workspace.activeTab = workspace.tabs.length - 1;
   }
-  if (activeTab >= 0 && tabs[activeTab]) {
-    tabs[activeTab].content = asmSource.value;
+  if (workspace === editor) {
+    asmSource.value = workspace.tabs[workspace.activeTab].content;
+    renderTabs();
   }
-  tabs.push({ path, content, dirty: false });
-  activeTab = tabs.length - 1;
-  asmSource.value = content;
-  renderTabs();
 }
 
 async function initEditorTabs() {
+  const core = editorCore;
+  const workspace = editor;
+  let text = '';
   try {
     const res = await fetch('/source/program.asm');
-    const text = res.ok ? await res.text() : '';
-    openFileAsTab('program.asm', text);
-  } catch (_) {
-    tabs.push({ path: 'program.asm', content: '', dirty: false });
-    activeTab = 0;
-    renderTabs();
-  }
+    if (res.ok) text = await res.text();
+  } catch (_) {}
+  // A delayed initial fetch must not replace a file or draft the user opened.
+  if (workspace.tabs.length || workspace.draft || (workspace === editor && asmSource.value)) return;
+  openFileAsTab('program.asm', text, core);
 }
 
 // ---- Build static UI elements --------------------------------------------
@@ -280,7 +322,7 @@ btnXfrShift.addEventListener("click", () => {
 });
 
 // Toggle a SPAD bank column on/off (single-core panel)
-document.querySelectorAll(".spad-btn:not(.mc-spad-btn)").forEach(btn => {
+document.querySelectorAll(".spad-btn[data-bank]").forEach(btn => {
   btn.addEventListener("click", () => {
     const key = btn.dataset.bank;
     if (spadVisible.has(key)) {
@@ -293,22 +335,6 @@ document.querySelectorAll(".spad-btn:not(.mc-spad-btn)").forEach(btn => {
     buildRegTable();
     // Re-apply last known values so the rebuilt table isn't all zeros
     updateRegisters(prevRegisters, null);
-  });
-});
-
-// Toggle a SPAD bank column in the PRU0 MC register panel
-document.querySelectorAll(".mc-spad-btn").forEach(btn => {
-  btn.addEventListener("click", () => {
-    const key = btn.dataset.bank;
-    if (mcSpadVisible.has(key)) {
-      mcSpadVisible.delete(key);
-      btn.classList.remove("active");
-    } else {
-      mcSpadVisible.add(key);
-      btn.classList.add("active");
-    }
-    buildMCRegTable("pru0");
-    updateMCRegisters("pru0", mcPrevRegs.pru0);
   });
 });
 
@@ -331,8 +357,10 @@ function initUI() {
   initSpadState();
   buildRegTable();
   buildPinGrid(gpoGrid, 20, "gpo", null);
+  buildGpioDirectionControls();
   buildPinGrid(gpiGrid, 20, "gpi", handleGpiClick);
   initLayout('sc');
+  initCoresControl();
   initEditorTabs();
 }
 
@@ -342,30 +370,12 @@ async function loadCoreChoices() {
   const response = await fetch("/cores");
   if (!response.ok) throw new Error(`Server returned ${response.status}`);
   const cores = await response.json();
-  const previousCore = currentCore;
-  for (const [select, choices, prefix] of [
-    [coreSelect, cores, ""],
-    [mcPartnerSelect, cores.filter(core => core !== "pru0"), ""],
-    [mcLoadCore, cores, "→ "],
-  ]) {
-    const previous = select.value;
-    select.replaceChildren(...choices.map(core => new Option(prefix + core.toUpperCase(), core)));
-    if (choices.includes(previous)) select.value = previous;
-  }
-  currentCore = coreSelect.value;
-  if (currentCore !== previousCore) {
-    prevRegisters = new Array(32).fill("0x00000000");
-    _lastSourceKey = '';
-    sourceList.innerHTML = '';
-    initSpadState();
-    document.querySelectorAll('#loopback-strip .lb-btn').forEach(b => b.classList.remove('active'));
-    document.getElementById('i2c-attach-btn')?.classList.remove('active');
-  }
-  mcPartner = mcPartnerSelect.value;
-  applyMCPartnerLabels();
+  showAvailableCores(cores);
 }
 
 function connect() {
+  wsStatus.textContent = "Connecting...";
+  wsStatus.className = "";
   const url = `ws://${location.host}/ws`;
   ws = new WebSocket(url);
 
@@ -378,11 +388,13 @@ function connect() {
       showErrors(["Could not load core choices: " + String(e)]);
     }
     if (multiCoreMode) {
-      sendAction({ action: "get_state", core: "pru0" });
-      sendAction({ action: "get_state", core: mcPartner });
+      for (const core of executionCores()) sendAction({ action: "get_state", core });
     } else {
       sendAction({ action: "get_state", core: currentCore });
     }
+    sendAction({ action: "device_discover" });
+    sendAction({ action: "scenario_list" });
+    sendAction({ action: "subscribe_capture", enabled: signalGraph.recording });
     refreshMemory();
     refreshMemory2();
     loadRegions();
@@ -391,9 +403,15 @@ function connect() {
   ws.onclose = () => {
     wsStatus.textContent = "Disconnected";
     wsStatus.className = "error";
-    stopRun();
-    // Attempt reconnect after 2 s
-    setTimeout(connect, 2000);
+    runPending = null;
+    executionStartPending = null;
+    executionReady = false;
+    sharedExecution = {running:false,owner:false,mode:null};
+    stopRun(false); stopSim(false);
+    updateCoresControl();
+    // Check HTTP availability before another handshake. Failed WebSocket
+    // attempts can add a browser-level delay shared by other tabs.
+    setTimeout(reconnectWhenReady, 2000);
   };
 
   ws.onerror = () => {
@@ -406,11 +424,16 @@ function connect() {
       const msg = JSON.parse(event.data);
       if (msg.type === "state") {
         maybeRefreshCtable();
-        if (multiCoreMode) {
-          updateMCUI(msg);
-        } else if (!msg.core || msg.core === currentCore) {
-          updateUI(msg);
-        }
+        if (msg.available_cores) showAvailableCores(msg.available_cores);
+        if (msg.execution) receiveExecution(msg.execution);
+        if (msg.run_id === runPending) runPending = null;
+        if (msg.iep) showIepClock(msg.iep);
+        updateSsiDemo(msg.io?.ssi_demo || null);
+        window.updateWorkspaceEvents?.(msg, multiCoreMode ? executionCores() : [currentCore]);
+        if (msg.clocks) { clockState = msg.clocks; }
+        updateCoreState(msg);
+      } else if (msg.type === "execution") {
+        receiveExecution(msg);
       } else if (msg.type === "capture") {
         graphHandleCapture(msg);
         drawGraph();
@@ -424,9 +447,15 @@ function connect() {
           st.textContent = "\u2713 Armed: " + msg.payload_len + " bytes \u00D7 " +
             msg.frames + " frame" + (msg.frames > 1 ? "s" : "") +
             " \u00B7 trigger cycle " + msg.trigger_cycle + " \u00B7 run to receive";
-          st.style.color = "#6a9955";
+          st.style.color = "var(--green)";
           st.style.display = "";
         }
+      } else if (msg.type === "device_profiles") {
+        populateSsiPresets(msg.profiles);
+      } else if (msg.type === "scenarios") {
+        populateScenarios(msg.scenarios);
+      } else if (msg.type === "scenario_loaded") {
+        applyScenario(msg);
       } else if (msg.type === "perif_ok") {
         const st = document.getElementById("perif-lb-status");
         if (st) {
@@ -439,12 +468,44 @@ function connect() {
           stopRun(); stopSim();
         }
         if (msg.tag && msg.tag.startsWith("graph-")) graphMarkChannelError(msg.tag);
-        else showErrors(msg.errors);
+        else if (msg.tag === "gpio") {
+          const error = document.getElementById('gpio-drive-error');
+          error.textContent = msg.errors.join('; ');
+          error.hidden = false;
+        }
+        else if (msg.tag === "iep") {
+          const error = document.getElementById('iep-clock-error');
+          error.textContent = msg.errors.join('; ');
+          error.hidden = false;
+        }
+        else if (msg.tag === "device") showDeviceError(msg.errors);
+        else if (msg.tag === "scenario" || msg.tag === "ssi_demo") {
+          showDeviceError(msg.errors);
+          document.querySelector('[data-workspace-view="io"]')?.click();
+          document.querySelector('[data-io-tab="devices"]')?.click();
+        }
+        else {
+          showErrors(msg.errors);
+        }
       }
     } catch (e) {
       console.error("Failed to parse message", e);
     }
   };
+}
+
+async function reconnectWhenReady() {
+  if (ws && ws.readyState !== WebSocket.CLOSED) return;
+  let available = false;
+  try {
+    const response = await fetch('/cores', {cache:'no-store'});
+    available = response.ok;
+  } catch (_) { /* The server may still be stopped. */ }
+  if (ws && ws.readyState !== WebSocket.CLOSED) return;
+  if (available) { connect(); return; }
+  wsStatus.textContent = "Waiting for server";
+  wsStatus.className = "error";
+  setTimeout(reconnectWhenReady, 2000);
 }
 
 function sendAction(obj) {
@@ -453,9 +514,31 @@ function sendAction(obj) {
   }
 }
 
+function receiveExecution(state) {
+  executionReady = true;
+  // Only apply core selection when cores actually changed AND no step/run loop is active,
+  // to prevent rebuilding the UI mid-step which kills the setInterval loop.
+  const newCoresKey = JSON.stringify(state.cores);
+  if (Array.isArray(state.cores) && newCoresKey !== lastAppliedCores && !simRunning && runPending === null) {
+    lastAppliedCores = newCoresKey;
+    applyCoreSelection({...coreSelection, used:state.cores}, true);
+  }
+  if (Object.hasOwn(state, 'scenario')) captureStride = state.scenario?.ui?.capture_stride || null;
+  sharedExecution = state;
+  if (executionStartPending !== null) {
+    if (state.request_id !== executionStartPending) { updateCoresControl(); return; }
+    executionStartPending = null;
+  }
+  // Only stop on a true owner->!owner transition; suppress spurious stops on every state push
+  // where this tab was never the owner, which would kill the setInterval SIM step loop.
+  if (prevExecutionOwner && (!state.running || !state.owner)) { stopRun(false); stopSim(false); }
+  prevExecutionOwner = !!(state.running && state.owner);
+  updateCoresControl();
+}
+
 // ---- UI update ------------------------------------------------------------
 
-function updateUI(state) {
+function updateUI(state, fromCache = false) {
   // Counters / header
   cntCycles.textContent   = state.cycles;
   cntStalls.textContent   = state.stall_cycles;
@@ -465,20 +548,6 @@ function updateUI(state) {
 
   // Sync breakpoints from server
   if (state.breakpoints) clientBreakpoints = new Set(state.breakpoints);
-
-  // Status badge
-  if (state.halted) {
-    statusBadge.textContent = "HALTED";
-    statusBadge.className   = "halted";
-    stopRun(); stopSim();
-  } else if (state.at_breakpoint) {
-    statusBadge.textContent = "BREAK";
-    statusBadge.className   = "halted";
-    stopRun(); stopSim();
-  } else {
-    statusBadge.textContent = "RUNNING";
-    statusBadge.className   = "";
-  }
 
   // XFR shift button state
   if (state.xfr_shift_en !== undefined) {
@@ -507,16 +576,17 @@ function updateUI(state) {
   updateSource(state.instructions, state.pc, state.labels || {});
 
   // IO pins
-  updatePins(state.io);
+  updatePins(state.io, state.core);
   updateSDPanel(state.io);
   updatePerifPanel(state.io);
   updateI2CPanel(state.io);
+  updateDevicePanel(state.io, state.core || currentCore);
 
   // Signal graph sample
-  graphSample(state);
+  if (!fromCache) graphSample(state);
   drawGraph();
 
-  memAutoOnStateChange();
+  if (!fromCache) memAutoOnStateChange();
 }
 
 function updateRegisters(regs, carry) {
@@ -681,14 +751,42 @@ function updateSource(instructions, pc, labels) {
   const currentLine = document.getElementById(`src-line-${pc}`);
   if (currentLine) {
     currentLine.classList.add("current-pc");
-    currentLine.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    currentLine.scrollIntoView({ block: "nearest", behavior: "auto" });
   }
 
   renderBpBar("", currentCore, clientBreakpoints);
 }
 
-function updatePins(io) {
+function buildGpioDirectionControls() {
+  const container = document.getElementById('gpio-drive-controls');
+  for (let pin = 0; pin < 20; pin++) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.addEventListener('click', () => {
+      document.getElementById('gpio-drive-error').hidden = true;
+      sendAction({ action: 'set_gpio_drive_mask', core: container.dataset.core || currentCore,
+        pin });
+    });
+    container.appendChild(button);
+  }
+}
+
+function updateGpioDirections(io, core = currentCore) {
+  const container = document.getElementById('gpio-drive-controls');
+  const mask = io.gpo_drive_mask || 0;
+  container.dataset.mask = String(mask);
+  container.dataset.core = core;
+  [...container.children].forEach((button, pin) => {
+    const driving = !!(mask & (1 << pin));
+    button.textContent = `${pin}: ${driving ? 'Drive' : 'Release'}`;
+    button.setAttribute('aria-pressed', String(driving));
+    button.setAttribute('aria-label', `GPIO ${pin}: ${driving ? 'driving; release pin' : 'released; drive pin'}`);
+  });
+}
+
+function updatePins(io, core = currentCore) {
   if (!io) return;
+  updateGpioDirections(io, core);
   syncGpioLoopback(io);
 
   (io.gpo_pins || []).forEach((val, i) => {
@@ -711,25 +809,29 @@ function updatePins(io) {
 const _ACC_SEL_NAMES = ['sinc3', 'sinc2', 'sinc1'];
 const _CLK_SEL_NAMES = ['r31[16]', 'own', 'shared', 'rsvd'];
 
+function setPeripheralActive(cardId, active, muxName) {
+  const card = document.getElementById(cardId);
+  if (!card) return;
+  card.dataset.active = String(active);
+  const name = card.querySelector('.periph-mux-name');
+  if (name) name.textContent = muxName;
+}
+
+const _MUX_NAMES = { gpio: 'GPIO', perif: 'Peripheral Interface', sd: 'SD (Sigma-Delta)' };
+
 function updateSDPanel(io) {
   const sdSection = document.getElementById('sd-interface');
   if (!sdSection) return;
 
-  const gpioSections = document.querySelectorAll(
-    '#io-panel .io-section:not(.sd-interface):not(.perif-interface):not(.io-mux-row):not(.i2c-interface)'
-  );
-
-  if (!io || io.mode !== 'sd') {
+  // The R30/R31 grids stay in every mux mode; this card only shows its
+  // controls when the GP mux selects SD, otherwise an "inactive" notice.
+  const active = !!io && io.mode === 'sd';
+  setPeripheralActive('periph-sd-card', active, _MUX_NAMES[io && io.mode] || 'GPIO');
+  if (!active) {
     sdSection.style.display = 'none';
-    // GPIO sections visible only in GPIO mode; in perif mode the perif panel owns the view.
-    const showGpio = !io || io.mode === 'gpio';
-    gpioSections.forEach(s => { s.style.display = showGpio ? '' : 'none'; });
     return;
   }
-
-  // Switch to SD view
   sdSection.style.display = '';
-  gpioSections.forEach(s => { s.style.display = 'none'; });
 
   const sd = io.sd;
   if (!sd) return;
@@ -741,9 +843,9 @@ function updateSDPanel(io) {
   // R30 decode
   const r30El = document.getElementById('sd-r30-decode');
   if (r30El) {
-    r30El.innerHTML = '<span style="color:#ce93d8;">R30:</span> ' +
+    r30El.innerHTML = '<span style="color:var(--accent);">R30:</span> ' +
       `<span class="sd-r30-field">[29:26] ch_sel=<b>${sd.ch_sel}</b></span>` +
-      `<span class="sd-r30-field">[25] sd_en=<b style="color:#66bb6a;">${sd.sd_en ? 1 : 0}</b></span>` +
+      `<span class="sd-r30-field">[25] sd_en=<b style="color:var(--green);">${sd.sd_en ? 1 : 0}</b></span>` +
       `<span class="sd-r30-field">[24] snoop=<b>${sd.snoop ? 1 : 0}</b></span>` +
       `<span class="sd-r30-field">[23] data_sel=<b>${sd.data_sel ? 1 : 0}</b></span>`;
   }
@@ -758,8 +860,8 @@ function updateSDPanel(io) {
       const cfg = ch.config || {};
       const accName = _ACC_SEL_NAMES[cfg.acc_sel || 0] || 'sinc3';
       const clkName = _CLK_SEL_NAMES[cfg.clk_sel || 0] || 'own';
-      const titleColor = ch.selected ? '#4fc3f7' : '#888';
-      const dotColor = ch.valid ? '#66bb6a' : '#666';
+      const titleColor = ch.selected ? 'var(--accent)' : 'var(--text-dim)';
+      const dotColor = ch.valid ? 'var(--green)' : 'var(--gray)';
       card.innerHTML = `
         <div class="sd-channel-title" style="color:${titleColor};">
           CH ${ch.id} <span style="color:${dotColor};">●</span>${ch.selected ? ' <span style="font-size:9px;">★</span>' : ''}
@@ -769,8 +871,8 @@ function updateSDPanel(io) {
         <div class="sd-acc-row">acc2: <span class="sd-acc-val">0x${(ch.acc2 || 0).toString(16).toUpperCase().padStart(4,'0')}</span></div>
         <div class="sd-acc-row">acc3: <span class="sd-acc-val">0x${(ch.acc3 || 0).toString(16).toUpperCase().padStart(6,'0')}</span></div>
         <div class="sd-status">
-          <div style="color:${ch.valid ? '#ffb74d' : '#555'};">ovf=${ch.ovf ? 1 : 0} valid=<b style="color:${ch.valid ? '#66bb6a' : '#666'};">${ch.valid ? 1 : 0}</b></div>
-          <div style="color:#fff;">data=0x${(ch.shadow_acc3 || 0).toString(16).toUpperCase().padStart(7,'0')}</div>
+          <div style="color:${ch.valid ? 'var(--accent)' : 'var(--text-dim)'};">ovf=${ch.ovf ? 1 : 0} valid=<b style="color:${ch.valid ? 'var(--green)' : 'var(--gray)'};">${ch.valid ? 1 : 0}</b></div>
+          <div style="color:var(--text);">data=0x${(ch.shadow_acc3 || 0).toString(16).toUpperCase().padStart(7,'0')}</div>
         </div>`;
       chContainer.appendChild(card);
     });
@@ -854,22 +956,12 @@ function updateSDPanel(io) {
       chipsEl.appendChild(btn);
     });
   }
-
-  // GPIO switch link
-  const switchEl = document.getElementById('sd-switch-gpio');
-  if (switchEl) {
-    switchEl.onclick = (e) => {
-      e.preventDefault();
-      sdSection.style.display = 'none';
-      gpioSections.forEach(s => { s.style.display = ''; });
-    };
-  }
 }
 
 // ---- Peripheral Interface (3-channel) panel --------------------------------
 
 function _fifoHex(arr) {
-  if (!arr || !arr.length) return '<span style="color:#555;">empty</span>';
+  if (!arr || !arr.length) return '<span style="color:var(--text-dim);">empty</span>';
   return arr.map(b => '0x' + b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
 }
 
@@ -887,9 +979,14 @@ function updatePerifPanel(io) {
   if (muxSel && document.activeElement !== muxSel) {
     muxSel.value = (io && io.mux_sel != null) ? String(io.mux_sel) : '0';
   }
-  if (muxNote) muxNote.textContent = io ? ('mode: ' + io.mode) : '';
+  if (muxNote) {
+    muxNote.textContent = !io ? '' : (io.mode === 'gpio' ? 'mode: gpio'
+      : `mode: ${io.mode} (controls in I/O & Devices \u203a Peripherals)`);
+  }
 
-  if (!io || io.mode !== 'perif') { sec.style.display = 'none'; return; }
+  const active = !!io && io.mode === 'perif';
+  setPeripheralActive('periph-pi-card', active, _MUX_NAMES[io && io.mode] || 'GPIO');
+  if (!active) { sec.style.display = 'none'; return; }
   sec.style.display = '';
 
   const p = io.perif;
@@ -905,7 +1002,7 @@ function updatePerifPanel(io) {
   const dec = document.getElementById('perif-r30-decode');
   if (dec) {
     const sh = p.shared || {};
-    dec.innerHTML = '<span style="color:#ce93d8;">shared:</span> ' +
+    dec.innerHTML = '<span style="color:var(--accent);">shared:</span> ' +
       `<span class="perif-r30-field">tx_clk_sel=<b>${sh.tx_clk_sel ?? 0}</b></span>` +
       `<span class="perif-r30-field">tx_div=<b>${sh.tx_div_factor ?? 0}</b></span>` +
       `<span class="perif-r30-field">rx_clk_sel=<b>${sh.rx_clk_sel ?? 0}</b></span>` +
@@ -1018,13 +1115,42 @@ function updatePerifPanel(io) {
   }
 }
 
-// ---- TCA9538 I2C IO expander panel -----------------------------------------
+// ---- TCA9538 I2C IO expander ------------------------------------------------
 
+const _hex2 = v => `0x${v.toString(16).toUpperCase().padStart(2, '0')}`;
+
+// Parse "0x23" / "35" into a 7-bit I2C address, or null when it is not one.
+function parseI2CAddress(text) {
+  const match = /^(?:0[xX]([0-9a-fA-F]{1,2})|([0-9]{1,3}))$/.exec(String(text).trim());
+  if (!match) return null;
+  const value = match[1] !== undefined ? parseInt(match[1], 16) : parseInt(match[2], 10);
+  return value <= 0x7F ? value : null;
+}
+
+// Eight pin boxes, P0 first, each showing its level as a digit (not colour only).
+function renderI2CLeds(container, levels) {
+  container.replaceChildren();
+  levels.forEach((level, i) => {
+    const led = document.createElement('div');
+    led.className = 'i2c-led' + (level ? ' on' : '');
+    led.setAttribute('role', 'img');
+    led.setAttribute('aria-label', `P${i} ${level ? 'high' : 'low or not driven'}`);
+    led.title = `P${i}`;
+    led.textContent = level ? '1' : '0';
+    container.appendChild(led);
+  });
+}
+
+function i2cTransactionText(t) {
+  const regStr = t.reg === null || t.reg === undefined ? '--' : _hex2(t.reg);
+  const dataStr = t.data === null || t.data === undefined ? '--' : _hex2(t.data);
+  return `addr=0x${t.address.toString(16).toUpperCase()} reg=${regStr} data=${dataStr} ${t.ack ? 'ACK' : 'NACK'}`;
+}
+
+// Legacy attach (i2c_attach / pru_i2c_attach, deprecated): state.io.i2c.
 function updateI2CPanel(io) {
   const section = document.getElementById('i2c-interface');
   if (!section) return;
-
-  document.getElementById('i2c-attach-btn')?.classList.toggle('active', !!(io && io.i2c));
 
   const i2c = io && io.i2c;
   if (!i2c || !i2c.saw_start) {
@@ -1036,28 +1162,278 @@ function updateI2CPanel(io) {
   const infoEl = document.getElementById('i2c-mode-info');
   if (infoEl) {
     infoEl.textContent = `addr=0x${i2c.address.toString(16).toUpperCase()} ` +
-      `CONFIG=0x${i2c.config_reg.toString(16).toUpperCase().padStart(2, '0')}`;
+      `CONFIG=${_hex2(i2c.config_reg)}`;
   }
 
   const ledContainer = document.getElementById('i2c-leds');
   if (ledContainer) {
-    ledContainer.innerHTML = '';
     const driven = i2c.output_reg & (~i2c.config_reg & 0xFF);
-    for (let i = 0; i < 8; i++) {
-      const led = document.createElement('div');
-      led.className = 'i2c-led' + (((driven >> i) & 1) ? ' on' : '');
-      led.title = `P${i}`;
-      ledContainer.appendChild(led);
-    }
+    renderI2CLeds(ledContainer, Array.from({ length: 8 }, (_, i) => (driven >> i) & 1));
   }
 
   const logEl = document.getElementById('i2c-log');
-  if (logEl && i2c.last_transaction) {
-    const t = i2c.last_transaction;
-    const regStr = t.reg === null || t.reg === undefined ? '--' : `0x${t.reg.toString(16).toUpperCase().padStart(2, '0')}`;
-    const dataStr = t.data === null || t.data === undefined ? '--' : `0x${t.data.toString(16).toUpperCase().padStart(2, '0')}`;
-    logEl.textContent = `addr=0x${t.address.toString(16).toUpperCase()} reg=${regStr} data=${dataStr} ${t.ack ? 'ACK' : 'NACK'}`;
+  if (logEl && i2c.last_transaction) logEl.textContent = i2cTransactionText(i2c.last_transaction);
+}
+
+// TCA9538 card in Devices: the first expander attached to the selected core.
+function updateTcaCard(tcaDevices, core) {
+  const empty = document.getElementById('tca-empty-state');
+  const state = document.getElementById('tca-state');
+  const detachButton = document.getElementById('tca-detach-button');
+  if (!empty || !state) return;
+  const device = tcaDevices[0];
+  empty.textContent = device
+    ? `${device.name} attached to ${core} at 0x${device.address.toString(16).toUpperCase()} ` +
+      `(SCL pin ${device.scl_pin}, SDA pin ${device.sda_pin}).`
+    : `No TCA9538 attached to ${core}.`;
+  if (detachButton) {
+    detachButton.hidden = !device;
+    detachButton.dataset.name = device ? device.name : '';
   }
+  state.hidden = !device;
+  if (!device) return;
+  renderI2CLeds(document.getElementById('tca-leds'), device.levels || []);
+  const driven = (device.driven_mask || 0) === 0
+    ? 'all pins are inputs (CONFIG 0xFF), none driven' : `driven pins mask ${_hex2(device.driven_mask)}`;
+  document.getElementById('tca-registers').textContent =
+    `OUTPUT=${_hex2(device.output_reg)}  POLARITY=${_hex2(device.polarity_reg)}  ` +
+    `CONFIG=${_hex2(device.config_reg)}  \u00b7 ${driven}\n` +
+    `${device.events || 0} bus event${device.events === 1 ? '' : 's'} \u00b7 ` +
+    `${device.faults || 0} fault${device.faults === 1 ? '' : 's'} \u00b7 state ${device.protocol_state}`;
+  document.getElementById('tca-log').textContent = device.last_transaction
+    ? i2cTransactionText(device.last_transaction) : 'No transaction yet.';
+}
+
+function showDeviceError(errors) {
+  const errorEl = document.getElementById('device-error');
+  if (!errorEl) {
+    showErrors(errors);
+    return;
+  }
+  errorEl.textContent = Array.isArray(errors) ? errors.join('\n') : String(errors || 'Device action failed');
+  errorEl.hidden = false;
+}
+
+function clearDeviceError() {
+  const errorEl = document.getElementById('device-error');
+  if (!errorEl) return;
+  errorEl.textContent = '';
+  errorEl.hidden = true;
+}
+
+function updateDevicePanel(io, core) {
+  const panel = document.getElementById('device-runtime-panel');
+  if (!panel || !io) return;
+
+  const incomingCore = core || currentCore;
+  if (incomingCore !== devicePanelCore) return;
+  devicePanelCore = incomingCore;
+  const bus = io && io.device_bus ? io.device_bus : {};
+  const devices = Array.isArray(bus.devices) ? bus.devices : [];
+  const events = Array.isArray(bus.events) ? bus.events : [];
+  const faults = Array.isArray(bus.faults) ? bus.faults : [];
+  const list = document.getElementById('ssi-device-list');
+
+  const coreDevices = devices.filter(device => device.core === devicePanelCore);
+  const isSsiDevice = device => Number.isInteger(device.clock_pin) && Number.isInteger(device.data_pin);
+  const ssiDevices = coreDevices.filter(isSsiDevice);
+  updateTcaCard(coreDevices.filter(device => device.model === 'tca9538'), devicePanelCore);
+  const empty = document.getElementById('ssi-empty-state');
+  if (empty) {
+    empty.textContent = ssiDevices.length
+      ? `${ssiDevices.length} SSI encoder${ssiDevices.length === 1 ? '' : 's'} attached to ${devicePanelCore}.`
+      : `No SSI encoder attached to ${devicePanelCore}.`;
+  }
+  if (list) {
+    const existingRows = new Map(
+      Array.from(list.children, row => [row.dataset.deviceName, row])
+    );
+    const nextRows = [];
+    for (const device of coreDevices) {
+      let row = existingRows.get(device.name);
+      if (row && row.dataset.kind !== (isSsiDevice(device) ? 'ssi' : 'generic')) {
+        row.remove();
+        row = undefined;
+        existingRows.delete(device.name);
+      }
+      if (!isSsiDevice(device)) {
+        if (row) existingRows.delete(device.name);
+        nextRows.push(updateGenericDeviceRow(row, device, faults));
+        continue;
+      }
+      if (row) {
+        existingRows.delete(device.name);
+      } else {
+        row = document.createElement('div');
+        row.className = 'runtime-device-row';
+        row.dataset.deviceName = device.name;
+        row.dataset.kind = 'ssi';
+
+        const title = document.createElement('div');
+        title.className = 'runtime-device-row-title';
+        row.appendChild(title);
+
+        const detail = document.createElement('div');
+        detail.className = 'runtime-device-row-detail';
+        detail.dataset.role = 'detail';
+        row.appendChild(detail);
+
+        for (const [key, text] of [['position', 'Set next position'], ['error', 'Set next error']]) {
+          const label = document.createElement('label');
+          label.className = `runtime-device-field runtime-device-${key}-field`;
+          label.dataset.role = `${key}-field`;
+          label.textContent = text;
+          const input = document.createElement('input');
+          input.type = 'number';
+          input.min = '0';
+          input.step = '1';
+          input.required = true;
+          input.dataset[key] = 'true';
+          input.addEventListener('input', () => {
+            input.dataset.dirty = 'true';
+            delete input.dataset.pending;
+          });
+          label.appendChild(input);
+          row.appendChild(label);
+        }
+
+        const actions = document.createElement('div');
+        actions.className = 'runtime-device-actions';
+        for (const [action, label] of [['set-position', 'Set position'], ['set-error', 'Set error'], ['detach', 'Detach']]) {
+          const button = document.createElement('button');
+          button.className = 'runtime-device-button btn-17';
+          button.type = 'button';
+          setButtonLabel(button, label);
+          button.dataset.deviceAction = action;
+          actions.appendChild(button);
+        }
+        row.appendChild(actions);
+      }
+
+      row.querySelector('.runtime-device-row-title').textContent = device.name;
+      const detail = row.querySelector('[data-role="detail"]');
+      detail.textContent = `CLK GPO ${device.clock_pin} · DATA GPI ${device.data_pin} · ` +
+        `${device.preset ? `${device.preset} · ` : ''}` +
+        `${device.resolution}-bit ${device.encoding} · position ${device.position} · ` +
+        `${device.error_bits ? `error ${device.error} · ` : ''}` +
+        `${device.frames_captured || 0} frame${device.frames_captured === 1 ? '' : 's'} · ` +
+        `${device.bits_clocked || 0}/${device.resolution} bits (${device.state || 'idle'})`;
+
+      const deviceEvents = events.filter(event => event.device === device.name);
+      const lastFrame = deviceEvents.slice().reverse().find(event => event.kind === 'frame');
+      let frame = row.querySelector('[data-role="frame"]');
+      if (!frame) {
+        frame = document.createElement('div');
+        frame.className = 'runtime-device-row-detail';
+        frame.dataset.role = 'frame';
+        row.insertBefore(frame, row.querySelector('.runtime-device-field'));
+      }
+      frame.hidden = !lastFrame;
+      if (lastFrame) {
+        const frameError = lastFrame.error === undefined ? '' : ` (error ${lastFrame.error})`;
+        frame.textContent = `Latest frame: ${lastFrame.position}${frameError} at cycle ${lastFrame.cycle}`;
+      }
+      const lastFaultEvent = deviceEvents.slice().reverse().find(event => event.kind === 'fault');
+      const lastFault = faults.slice().reverse().find(message => message.startsWith(`${device.name}:`));
+      let fault = row.querySelector('[data-role="fault"]');
+      if (!fault) {
+        fault = document.createElement('div');
+        fault.className = 'runtime-device-error';
+        fault.dataset.role = 'fault';
+        row.insertBefore(fault, row.querySelector('.runtime-device-field'));
+      }
+      fault.hidden = !lastFaultEvent && !lastFault;
+      if (lastFaultEvent || lastFault) {
+        fault.textContent = `Latest fault: ${lastFaultEvent ? lastFaultEvent.message : lastFault.slice(device.name.length + 1).trim()}`;
+      }
+
+      syncSsiSetter(row.querySelector('input[data-position]'), device.position,
+        ssiFieldMax(device.position_bits || device.resolution));
+      const hasError = device.error_bits > 0;
+      row.querySelector('[data-role="error-field"]').hidden = !hasError;
+      row.querySelector('button[data-device-action="set-error"]').hidden = !hasError;
+      if (hasError) {
+        syncSsiSetter(row.querySelector('input[data-error]'), device.error,
+          ssiFieldMax(device.error_bits));
+      }
+      for (const button of row.querySelectorAll('button[data-device-action]')) {
+        button.dataset.name = device.name;
+      }
+      nextRows.push(row);
+    }
+    existingRows.forEach(row => row.remove());
+    nextRows.forEach((row, index) => {
+      const current = list.children[index];
+      if (current !== row) list.insertBefore(row, current || null);
+    });
+  }
+}
+
+// One row for any attached device that is not an SSI encoder (TCA9538, ...).
+function updateGenericDeviceRow(row, device, faults) {
+  if (!row) {
+    row = document.createElement('div');
+    row.className = 'runtime-device-row';
+    row.dataset.deviceName = device.name;
+    row.dataset.kind = 'generic';
+    const title = document.createElement('div');
+    title.className = 'runtime-device-row-title';
+    row.appendChild(title);
+    const detail = document.createElement('div');
+    detail.className = 'runtime-device-row-detail';
+    detail.dataset.role = 'detail';
+    row.appendChild(detail);
+    const fault = document.createElement('div');
+    fault.className = 'runtime-device-error';
+    fault.dataset.role = 'fault';
+    row.appendChild(fault);
+    const actions = document.createElement('div');
+    actions.className = 'runtime-device-actions';
+    row.appendChild(actions);
+  }
+  const isTca = device.model === 'tca9538';
+  row.querySelector('.runtime-device-row-title').textContent = device.name;
+  row.querySelector('[data-role="detail"]').textContent = isTca
+    ? `I2C expander (tca9538) \u00b7 ${device.core} \u00b7 address 0x${device.address.toString(16).toUpperCase()} \u00b7 ` +
+      `SCL pin ${device.scl_pin} \u00b7 SDA pin ${device.sda_pin} \u00b7 OUTPUT=${_hex2(device.output_reg)} ` +
+      `CONFIG=${_hex2(device.config_reg)}`
+    : `${device.model || 'device'} \u00b7 ${device.core}`;
+  const lastFault = faults.slice().reverse().find(message => message.startsWith(`${device.name}:`));
+  const fault = row.querySelector('[data-role="fault"]');
+  fault.hidden = !lastFault;
+  fault.textContent = lastFault ? `Latest fault (${device.faults} total): ${lastFault.slice(device.name.length + 1).trim()}` : '';
+  const actions = row.querySelector('.runtime-device-actions');
+  const wanted = ['detach'];
+  if (actions.children.length !== wanted.length) {
+    actions.replaceChildren();
+    for (const action of wanted) {
+      const button = document.createElement('button');
+      button.className = 'runtime-device-button btn-17';
+      button.type = 'button';
+      setButtonLabel(button, 'Detach');
+      button.dataset.deviceAction = action;
+      actions.appendChild(button);
+    }
+  }
+  for (const button of actions.children) button.dataset.name = device.name;
+  return row;
+}
+
+// The UI sends numbers, so wide fields are limited to 2^53 - 1.
+function ssiFieldMax(bits) {
+  return Math.min(2 ** bits - 1, Number.MAX_SAFE_INTEGER);
+}
+
+function syncSsiSetter(input, value, max) {
+  input.min = '0';
+  input.max = String(max);
+  input.step = '1';
+  input.required = true;
+  if (input.dataset.pending === String(value)) {
+    delete input.dataset.pending;
+    delete input.dataset.dirty;
+  }
+  if (input.dataset.dirty !== 'true') input.value = String(value);
 }
 
 // ---- Signal graph — buffer -------------------------------------------------
@@ -1226,6 +1602,7 @@ function graphSample(state) {
   const perifChannels = (state.io.perif && state.io.perif.channels) || [];
   const sample = {
     step: state.instruction_count,
+    core: state.core || currentCore,
     // IO mux mode at capture time: in perif mode the GPO/GPI pins are owned by
     // the Peripheral Interface, so R30/R31 must not be plotted as pin state.
     mode: state.io.mode || "gpio",
@@ -1251,6 +1628,7 @@ function graphSample(state) {
  *
  * Wire format is packed ints, see _capture_sample() in ui/server.py:
  *   [step, r30(20 bits), gpi bits, perif out bits, out_en bits, clk bits]
+ * A multi-core run appends [r30, gpi bits] per name in msg.partners.
  */
 function graphHandleCapture(msg) {
   if (!signalGraph.recording) return;
@@ -1267,9 +1645,13 @@ function graphHandleCapture(msg) {
       break;
     }
     const [step, r30, gpiBits, outBits, oeBits, clkBits] = s;
+    const pins = bits => Array.from({ length: 20 }, (_, i) => (bits >> i) & 1);
     graphPushSample({
       step,
       mode,
+      core: msg.core,
+      peers: (msg.partners || []).map((name, k) => (
+        { name, gpo: pins(s[6 + 2 * k]), gpi: pins(s[7 + 2 * k]) })),
       gpo: Array.from({ length: 20 }, (_, i) => (r30 >> i) & 1),
       gpi: Array.from({ length: 20 }, (_, i) => (gpiBits >> i) & 1),
       perif: [0, 1, 2].map(i => (outBits >> i) & 1),
@@ -1325,6 +1707,32 @@ function drawGraph() {
   drawMemGraph();
 }
 
+// Canvas colours come from the theme tokens in index.html (read at draw time).
+function graphThemeColor(name, fallback) {
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return value || fallback;
+}
+
+// Both themes change the tokens, so every themed canvas is redrawn.
+document.addEventListener("pru-theme-changed", () => {
+  drawGraph();
+  if (typeof fillWaveCanvas !== "undefined" && fillWaveCanvas) drawWavePreview();
+});
+
+function graphCoreNames(samples) {
+  const names = new Set();
+  for (const sample of samples) {
+    names.add(sample.core || "");
+    for (const peer of sample.peers || []) names.add(peer.name);
+  }
+  return [...names];
+}
+
+function graphCoreSample(sample, name) {
+  return (sample.core || "") === name ? sample
+    : (sample.peers || []).find(peer => peer.name === name);
+}
+
 function drawDigitalGraph() {
   const canvas = document.getElementById("signal-graph-canvas");
   if (!canvas) return;
@@ -1336,13 +1744,13 @@ function drawDigitalGraph() {
   const ctx = canvas.getContext("2d");
 
   // Background
-  ctx.fillStyle = "#141414";
+  ctx.fillStyle = graphThemeColor("--graph-bg", "#1b2127");
   ctx.fillRect(0, 0, W, H);
 
   const samples = graphGetSamples();
 
   // Faint vertical grid lines (8 divisions)
-  ctx.strokeStyle = "#222";
+  ctx.strokeStyle = graphThemeColor("--graph-grid", "#35414b");
   ctx.lineWidth = 1;
   for (let gx = 1; gx < 8; gx++) {
     const x = (gx / 8) * W;
@@ -1357,35 +1765,55 @@ function drawDigitalGraph() {
                     samples[samples.length - 1].mode === "perif";
   const activeDig = [];
   if (samples.length >= 2) {
+    const names = graphCoreNames(samples);
     if (!perifMode) {
-      for (let i = 0; i < 20; i++) {
-        const vals = samples.map(s => s.gpo[i] || 0);
-        if (vals.some(v => v !== vals[0])) {
-          activeDig.push({ label: `GPO ${i}`, color: GRAPH_GPO_COLORS[i], data: vals });
-        }
-      }
-      for (let i = 0; i < 20; i++) {
-        const vals = samples.map(s => s.gpi[i] || 0);
-        if (vals.some(v => v !== vals[0])) {
-          activeDig.push({ label: `GPI ${i}`, color: GRAPH_GPI_COLORS[i], data: vals });
+      // A multi-core capture plots every core's pins, prefixed by core name so
+      // PRU0 GPI 16 and PRU1 GPO 16 (two ends of one wire) read apart.
+      const cores = names.map(name => ({
+        tag: names.length > 1 ? `${name.toUpperCase()} ` : "",
+        samples: samples.map(s => graphCoreSample(s, name)),
+      }));
+      for (const kind of ["gpo", "gpi"]) {
+        for (const c of cores) {
+          for (let i = 0; i < 20; i++) {
+            const data = c.samples.map(s => s ? (s[kind] || [])[i] || 0 : null);
+            // Multi-core: a GPI that is sample-for-sample its own core's GPO
+            // is just the readback of a pin it drives; the GPO lane shows it.
+            // Any disagreement (contention, outside driver) keeps the lane.
+            const own = cores.length > 1 && kind === "gpi" &&
+              c.samples.every((s, j) => !s || data[j] === ((s.gpo || [])[i] || 0));
+            const observed = data.filter(v => v !== null);
+            if (!own && observed.some(v => v !== observed[0])) {
+              activeDig.push({ label: `${c.tag}${kind.toUpperCase()} ${i}`,
+                color: (kind === "gpo" ? GRAPH_GPO_COLORS : GRAPH_GPI_COLORS)[i], data });
+            }
+          }
         }
       }
     }
-    for (let i = 0; i < 3; i++) {
-      // Data lane first, then out_en and the bit clock, so the group reads
-      // together: out_en says when the pad is driven, the clock says where the
-      // bits start (the perif serializer has no framing of its own).
-      const out = samples.map(s => (s.perif && s.perif[i]) || 0);
-      const oe  = samples.map(s => (s.perifOe && s.perifOe[i]) || 0);
-      const clk = samples.map(s => (s.perifClk && s.perifClk[i]) || 0);
-      const moved = a => a.some(v => v !== a[0]);
-      // A channel that moved at all shows its full group, so a steady out_en
-      // stays visible next to the data it qualifies.
-      const chActive = moved(out) || moved(oe) || moved(clk);
-      if (!chActive) continue;
-      activeDig.push({ label: `perif${i}_out`,    color: GRAPH_PERIF_COLORS[i],     data: out });
-      activeDig.push({ label: `perif${i}_out_en`, color: GRAPH_PERIF_OE_COLORS[i],  data: oe  });
-      activeDig.push({ label: `perif${i}_clk`,    color: GRAPH_PERIF_CLK_COLORS[i], data: clk });
+    const leads = names.filter(name => samples.some(s => (s.core || "") === name));
+    for (const name of leads) {
+      const tag = leads.length > 1 ? `${name.toUpperCase()} ` : "";
+      const leadSamples = samples.map(s => (s.core || "") === name ? s : null);
+      for (let i = 0; i < 3; i++) {
+        // Data lane first, then out_en and the bit clock, so the group reads
+        // together: out_en says when the pad is driven, the clock says where the
+        // bits start (the perif serializer has no framing of its own).
+        const out = leadSamples.map(s => s ? (s.perif?.[i] || 0) : null);
+        const oe  = leadSamples.map(s => s ? (s.perifOe?.[i] || 0) : null);
+        const clk = leadSamples.map(s => s ? (s.perifClk?.[i] || 0) : null);
+        const moved = a => {
+          const observed = a.filter(v => v !== null);
+          return observed.some(v => v !== observed[0]);
+        };
+        // A channel that moved at all shows its full group, so a steady out_en
+        // stays visible next to the data it qualifies.
+        const chActive = moved(out) || moved(oe) || moved(clk);
+        if (!chActive) continue;
+        activeDig.push({ label: `${tag}perif${i}_out`,    color: GRAPH_PERIF_COLORS[i],     data: out });
+        activeDig.push({ label: `${tag}perif${i}_out_en`, color: GRAPH_PERIF_OE_COLORS[i],  data: oe  });
+        activeDig.push({ label: `${tag}perif${i}_clk`,    color: GRAPH_PERIF_CLK_COLORS[i], data: clk });
+      }
     }
   }
 
@@ -1408,15 +1836,16 @@ function drawDigitalGraph() {
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ch.data.forEach((v, i) => {
+        if (v === null) return;
         const x = (i / (N - 1)) * W;
         const y = v ? yHigh : yLow;
-        if (i === 0) { ctx.moveTo(x, y); return; }
+        if (i === 0 || ch.data[i - 1] === null) { ctx.moveTo(x, y); return; }
         if (v !== ch.data[i - 1]) {
           const xm = ((i - 0.5) / (N - 1)) * W;
           ctx.lineTo(xm, ch.data[i - 1] ? yHigh : yLow);
           ctx.lineTo(xm, y);
         }
-        ctx.lineTo(x, y);
+        if (v !== ch.data[i - 1] || i === N - 1 || ch.data[i + 1] === null) ctx.lineTo(x, y);   // flat runs add no vertex
       });
       ctx.stroke();
       ctx.fillStyle = ch.color;
@@ -1440,11 +1869,11 @@ function drawMemGraph() {
   const ctx = canvas.getContext("2d");
 
   // Background
-  ctx.fillStyle = "#141414";
+  ctx.fillStyle = graphThemeColor("--graph-bg", "#1b2127");
   ctx.fillRect(0, 0, W, H);
 
   // Faint vertical grid lines (8 divisions)
-  ctx.strokeStyle = "#222";
+  ctx.strokeStyle = graphThemeColor("--graph-grid", "#35414b");
   ctx.lineWidth = 1;
   for (let gx = 1; gx < 8; gx++) {
     const x = (gx / 8) * W;
@@ -1470,7 +1899,7 @@ function drawMemGraph() {
     const yH    = rowH - 1;
 
     if (ri > 0) {
-      ctx.strokeStyle = "#2a2a2a"; ctx.lineWidth = 1;
+      ctx.strokeStyle = graphThemeColor("--graph-grid-strong", "#4b5863"); ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(0, yBase); ctx.lineTo(W, yBase); ctx.stroke();
     }
 
@@ -1480,7 +1909,7 @@ function drawMemGraph() {
 
     const snap = ch.snapshot;
     if (!snap || snap.length < 2) {
-      ctx.fillStyle = "#444";
+      ctx.fillStyle = graphThemeColor("--graph-placeholder", "#9da9b3");
       ctx.fillText("waiting…", 28, yBase + yH * 0.6);
       return;
     }
@@ -1495,7 +1924,7 @@ function drawMemGraph() {
       : v.toString();
 
     // Y-axis labels
-    ctx.fillStyle = "#555";
+    ctx.fillStyle = graphThemeColor("--graph-label", "#c0c7cd");
     ctx.font = "8px Consolas, monospace";
     if (flat) {
       ctx.fillText(`= ${fmtV(vMin)}`, 28, yBase + yH * 0.5 + 4);
@@ -1652,22 +2081,25 @@ function exportGraphCSV() {
   const samples = graphGetSamples();
   if (samples.length === 0) return;
 
-  const gpoHeaders = Array.from({ length: 20 }, (_, i) => `gpo${i}`);
-  const gpiHeaders = Array.from({ length: 20 }, (_, i) => `gpi${i}`);
-  const perifHeaders = Array.from({ length: 3 }, (_, i) => `perif${i}_out`);
-  const perifOeHeaders = Array.from({ length: 3 }, (_, i) => `perif${i}_out_en`);
-  const perifClkHeaders = Array.from({ length: 3 }, (_, i) => `perif${i}_clk`);
-  const header = ["step", "mode", ...gpoHeaders, ...gpiHeaders,
-                  ...perifHeaders, ...perifOeHeaders, ...perifClkHeaders].join(",");
+  const cores = graphCoreNames(samples);
+  const pinHeaders = cores.flatMap(core => ["gpo", "gpi"].flatMap(kind =>
+    Array.from({ length: 20 }, (_, i) => `${cores.length > 1 ? core + "_" : ""}${kind}${i}`)));
+  const leads = cores.filter(core => samples.some(s => (s.core || "") === core));
+  const perifHeaders = leads.flatMap(core => ["out", "out_en", "clk"].flatMap(kind =>
+    Array.from({ length: 3 }, (_, i) => `${leads.length > 1 ? core + "_" : ""}perif${i}_${kind}`)));
+  const header = ["step", "mode", ...pinHeaders,
+                  ...perifHeaders].join(",");
 
   const rows = samples.map(s => {
-    const gpo = Array.from({ length: 20 }, (_, i) => s.gpo[i] ?? 0);
-    const gpi = Array.from({ length: 20 }, (_, i) => s.gpi[i] ?? 0);
-    const perif = Array.from({ length: 3 }, (_, i) => (s.perif && s.perif[i]) ?? 0);
-    const perifOe = Array.from({ length: 3 }, (_, i) => (s.perifOe && s.perifOe[i]) ?? 0);
-    const perifClk = Array.from({ length: 3 }, (_, i) => (s.perifClk && s.perifClk[i]) ?? 0);
-    return [s.step, s.mode ?? "gpio", ...gpo, ...gpi,
-            ...perif, ...perifOe, ...perifClk].join(",");
+    const pins = cores.flatMap(core => {
+      const sample = graphCoreSample(s, core);
+      return ["gpo", "gpi"].flatMap(kind =>
+        Array.from({ length: 20 }, (_, i) => sample ? sample[kind]?.[i] ?? 0 : ""));
+    });
+    const perif = leads.flatMap(core => ["perif", "perifOe", "perifClk"].flatMap(kind =>
+      Array.from({ length: 3 }, (_, i) => (s.core || "") === core ? s[kind]?.[i] ?? 0 : "")));
+    return [s.step, s.mode ?? "gpio", ...pins,
+            ...perif].join(",");
   });
 
   // Append memory channel snapshots as separate blocks after the signal rows
@@ -1698,37 +2130,16 @@ function exportGraphCSV() {
 
 // ---- Button handlers ------------------------------------------------------
 
-coreSelect.addEventListener("change", () => {
-  stopRun(); stopSim();
-  // Reset loopback state on the core we're leaving
-  for (let g = 0; g < 5; g++) {
-    sendAction({ action: 'set_loopback', core: currentCore, group: g, enabled: false });
-  }
-  // Detach any I2C device left attached on the core we're leaving
-  sendAction({ action: 'i2c_attach', core: currentCore, enabled: false });
-  document.getElementById('i2c-attach-btn')?.classList.remove('active');
-  currentCore = coreSelect.value;
-  prevRegisters = new Array(32).fill("0x00000000");
-  document.querySelectorAll('#loopback-strip .lb-btn').forEach(b => b.classList.remove('active'));
-  initSpadState();
-  sourceList.innerHTML = "";
-  sendAction({ action: "get_state", core: currentCore });
-  updateCtableForCore();
-});
-
 btnStep.addEventListener("click", () => {
   stopRun(); stopSim();
-  if (multiCoreMode) {
-    sendAction({ action: "step", core: "pru0", count: 1 });
-    sendAction({ action: "step", core: mcPartner, count: 1 });
-  } else {
-    sendAction({ action: "step", core: currentCore, count: 1 });
-  }
+  requestSelectedStep();
 });
 
 
 btnRun.addEventListener("click", () => {
-  if (running) {
+  if (sharedExecution.running && !running) {
+    sendAction({action:'stop_execution'});
+  } else if (running) {
     stopRun();
   } else {
     startRun();
@@ -1740,9 +2151,8 @@ btnReset.addEventListener("click", () => {
   clearErrors();
   prevRegisters = new Array(32).fill("0x00000000");
   if (multiCoreMode) {
-    mcPrevRegs = { pru0: new Array(32).fill("0x00000000"), rtu0: new Array(32).fill("0x00000000") };
-    sendAction({ action: "reset", core: "pru0" });
-    sendAction({ action: "reset", core: mcPartner });
+    for (const core of availableCores) mcPrevRegs[core] = mcFreshRegs();
+    for (const core of executionCores()) sendAction({ action: "reset", core });
   } else {
     sendAction({ action: "reset", core: currentCore });
   }
@@ -1753,81 +2163,61 @@ btnHardReset.addEventListener("click", () => {
   clearErrors();
   prevRegisters = new Array(32).fill("0x00000000");
   if (multiCoreMode) {
-    mcPrevRegs = { pru0: new Array(32).fill("0x00000000"), rtu0: new Array(32).fill("0x00000000") };
-    sendAction({ action: "hard_reset", core: "pru0" });
-    sendAction({ action: "get_state", core: mcPartner });
+    for (const core of availableCores) mcPrevRegs[core] = mcFreshRegs();
+    sendAction({ action: "hard_reset", core: executionCores()[0] });
+    for (const core of executionCores().slice(1)) sendAction({ action: "get_state", core });
   } else {
     sendAction({ action: "hard_reset", core: currentCore });
   }
 });
 
 btnLoad.addEventListener("click", async () => {
-  stopRun(); stopSim();
-  clearErrors();
-
-  // Sync active textarea content into tab buffer
-  if (activeTab >= 0 && tabs[activeTab]) {
-    tabs[activeTab].content = asmSource.value;
+  const core = editorCore;
+  const workspace = editor;
+  stopRun(); stopSim(); clearErrors();
+  saveEditorDraft();
+  const active = workspace.tabs[workspace.activeTab];
+  let source = active?.content ?? workspace.draft;
+  let filename = active?.path;
+  const projectName = filename?.includes('/') ? filename.split('/')[0] : null;
+  if (projectName && workspace.project?.project === projectName) {
+    source = workspace.project.files.map(name =>
+      workspace.tabs.find(tab => tab.path === `${projectName}/${name}`)?.content ?? '').join('\n');
+    filename = `${projectName}/${workspace.project.files[0]}`;
   }
-
-  // Auto-save all dirty tabs
-  for (let i = 0; i < tabs.length; i++) {
-    const tab = tabs[i];
-    if (tab.dirty) {
-      try {
-        await fetch(`/source/${tab.path}`, { method: "PUT", body: tab.content });
-        tab.dirty = false;
-      } catch (e) { console.error(`Auto-save failed for ${tab.path}:`, e); }
-    }
+  // Keep this load bound to its original target and text while saves wait.
+  for (const tab of workspace.tabs.filter(tab => tab.dirty)) {
+    const content = tab.content;
+    try {
+      const res = await fetch(`/source/${tab.path}`, {method: "PUT", body: content});
+      if (res.ok && tab.content === content) tab.dirty = false;
+    } catch (e) { console.error(`Auto-save failed for ${tab.path}:`, e); }
   }
   renderTabs();
-
-  // Determine source text and filename for include path resolution
-  let source = asmSource.value;
-  let filename;
-  if (activeTab >= 0 && tabs[activeTab]) {
-    const activeTabPath = tabs[activeTab].path;
-    const projName = activeTabPath.includes('/') ? activeTabPath.split('/')[0] : null;
-
-    if (projName && activeProjectManifest &&
-        activeProjectManifest.project === projName &&
-        Array.isArray(activeProjectManifest.files)) {
-      // Concatenate tabs in manifest order
-      const parts = activeProjectManifest.files.map(fname => {
-        const path = `${projName}/${fname}`;
-        const t = tabs.find(tab => tab.path === path);
-        return t ? t.content : '';
-      });
-      source = parts.join('\n');
-      filename = `${projName}/${activeProjectManifest.files[0]}`;
-    } else {
-      source = asmSource.value;
-      filename = activeTabPath;
-    }
+  if (!availableCores.includes(core)) return;
+  if (core === currentCore) {
+    prevRegisters = mcFreshRegs(); sourceList.innerHTML = ""; _lastSourceKey = '';
   }
-
-  if (multiCoreMode) {
-    const targetCore = mcLoadCore.value || "pru0";
-    mcPrevRegs[targetCore] = new Array(32).fill("0x00000000");
-    mcLastSourceKey[targetCore] = '';
-    const srcList = document.getElementById(`mc-${targetCore}-source-list`);
-    if (srcList) srcList.innerHTML = "";
-    sendAction({ action: "load", core: targetCore, source, filename });
-  } else {
-    prevRegisters = new Array(32).fill("0x00000000");
-    sourceList.innerHTML = "";
-    sendAction({ action: "load", core: currentCore, source, filename });
-  }
+  mcLastSourceKey[core] = '';
+  delete coreStates[core];
+  sendAction({action: "load", core, source, filename});
 });
 
 // ---- Signal graph controls -------------------------------------------------
 
 function graphSetRecording(on) {
   signalGraph.recording = on;
+  sendAction({ action: "subscribe_capture", enabled: on });
   const btn = document.getElementById("graph-rec-btn");
   const dot = document.getElementById("graph-rec-dot");
   if (btn) btn.classList.toggle("rec-on", on);
   if (dot) dot.classList.toggle("active", on);
+  const uartBtn = document.getElementById("uart-record-btn");
+  if (uartBtn) {
+    uartBtn.classList.toggle("rec-on", on);
+    uartBtn.setAttribute("aria-pressed", String(on));
+    setButtonLabel(uartBtn, on ? "Stop recording" : "Record");
+  }
 }
 
 document.getElementById("graph-rec-btn").addEventListener("click", () => {
@@ -1985,32 +2375,33 @@ btnFile.addEventListener("click", async () => {
 
   const menu = document.createElement("div");
   menu.id = "_src-menu";
-  menu.style.cssText = "position:fixed;background:#252526;border:1px solid #3c3c3c;border-radius:4px;z-index:2000;min-width:200px;max-height:300px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,.6);font-size:12px;";
+  menu.style.cssText = "position:fixed;background:var(--panel-raised);border:1px solid var(--border-strong);border-radius:6px;z-index:2000;min-width:200px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px var(--shadow);font-size:12px;";
   const rect = btnFile.getBoundingClientRect();
   menu.style.left = rect.left + "px";
   menu.style.top  = (rect.bottom + 4) + "px";
 
   // "Browse..." item at top — opens native file picker for .asm/.out files
   const browseItem = document.createElement("div");
-  browseItem.style.cssText = "padding:6px 12px;cursor:pointer;color:#569cd6;border-bottom:1px solid #3c3c3c;font-style:italic;";
+  browseItem.style.cssText = "padding:6px 12px;cursor:pointer;color:var(--accent);border-bottom:1px solid var(--border);font-style:italic;";
   browseItem.textContent = "Browse file system...";
-  browseItem.addEventListener("mouseover", () => browseItem.style.background = "#094771");
+  browseItem.addEventListener("mouseover", () => browseItem.style.background = "var(--highlight)");
   browseItem.addEventListener("mouseout",  () => browseItem.style.background = "");
   browseItem.addEventListener("click", () => { menu.remove(); fileInput.click(); });
   menu.appendChild(browseItem);
 
   allFiles.forEach(path => {
     const item = document.createElement("div");
-    item.style.cssText = "padding:6px 12px;cursor:pointer;color:#d4d4d4;";
+    item.style.cssText = "padding:6px 12px;cursor:pointer;color:var(--text);";
     item.textContent = path;
-    item.addEventListener("mouseover", () => item.style.background = "#094771");
+    item.addEventListener("mouseover", () => item.style.background = "var(--highlight)");
     item.addEventListener("mouseout",  () => item.style.background = "");
     item.addEventListener("click", async () => {
       menu.remove();
-      activeProjectManifest = null;
+      const core = editorCore;
+      editor.project = null;
       try {
         const text = await fetch(`/source/${path}`).then(r => r.text());
-        openFileAsTab(path, text);
+        openFileAsTab(path, text, core);
       } catch (e) { console.error(e); }
     });
     menu.appendChild(item);
@@ -2025,62 +2416,51 @@ btnFile.addEventListener("click", async () => {
 });
 
 btnSaveAsm.addEventListener("click", async () => {
-  if (activeTab < 0 || !tabs[activeTab]) return;
-  tabs[activeTab].content = asmSource.value;
-  const path = tabs[activeTab].path;
+  saveEditorDraft();
+  const workspace = editor;
+  const tab = workspace.tabs[workspace.activeTab];
+  if (!tab) return;
+  const content = tab.content;
   try {
-    const res = await fetch(`/source/${path}`, { method: "PUT", body: asmSource.value });
+    const res = await fetch(`/source/${tab.path}`, {method: "PUT", body: content});
     if (res.ok) {
-      tabs[activeTab].dirty = false;
+      if (tab.content === content) tab.dirty = false;
       renderTabs();
       flashStatus("SAVED", "reloaded");
     } else {
-      const d = await res.json();
-      console.error("Save failed:", d.error);
+      const d = await res.json(); console.error("Save failed:", d.error);
     }
   } catch (e) { console.error(e); }
 });
 
-fileInput.addEventListener("change", (e) => {
+fileInput.addEventListener("change", e => {
   const file = e.target.files[0];
   if (!file) return;
-
-  // Binary .out ELF files — load directly into simulator
+  const core = editorCore;
+  const reader = new FileReader();
   if (file.name.toLowerCase().endsWith('.out')) {
-    const elfName = file.name;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = ev => {
+      if (!availableCores.includes(core)) return;
       const bytes = new Uint8Array(ev.target.result);
       const b64 = btoa(String.fromCharCode(...bytes));
-      const core = multiCoreMode
-        ? document.getElementById("mc-load-core").value
-        : currentCore;
-      sendAction({ action: "load_elf", core, data: b64 });
-      // Show loaded filename in source panel title
-      const srcTitle = document.querySelector('#source-panel .panel-title');
-      if (srcTitle) {
-        const span = srcTitle.querySelector('span') || srcTitle;
-        span.textContent = 'Source: ' + elfName;
-      }
+      sendAction({action: "load_elf", core, data: b64});
     };
     reader.readAsArrayBuffer(file);
-    fileInput.value = "";
-    return;
+  } else {
+    reader.onload = ev => {
+      editorWorkspaces[core].project = null;
+      openFileAsTab(file.name, ev.target.result, core);
+    };
+    reader.readAsText(file);
   }
-
-  // Text assembly files — open in editor tab
-  const reader = new FileReader();
-  reader.onload = (ev) => {
-    activeProjectManifest = null;
-    openFileAsTab(file.name, ev.target.result);
-  };
-  reader.readAsText(file);
   fileInput.value = "";
 });
 
 // ---- Open Project ----------------------------------------------------------
 
 async function openProject(projName, projFiles) {
+  const core = editorCore;
+  const workspace = editor;
   let manifest = null;
   try {
     const res = await fetch(`/source/${projName}/project.json`);
@@ -2102,17 +2482,19 @@ async function openProject(projName, projFiles) {
     const path = `${projName}/${fname}`;
     try {
       const text = await fetch(`/source/${path}`).then(r => r.text());
-      openFileAsTab(path, text);
+      openFileAsTab(path, text, core);
     } catch (e) { console.error(`Failed to open ${path}:`, e); }
   }
 
-  const firstAsm = tabs.findIndex(
+  const firstAsm = workspace.tabs.findIndex(
     t => t.path.startsWith(projName + '/') &&
          (t.path.endsWith('.asm') || t.path.endsWith('.s'))
   );
-  if (firstAsm >= 0) switchTab(firstAsm);
-
-  activeProjectManifest = manifest ? { project: projName, files: manifest.files } : null;
+  if (firstAsm >= 0) {
+    workspace.activeTab = firstAsm;
+    if (workspace === editor) { asmSource.value = workspace.tabs[firstAsm].content; renderTabs(); }
+  }
+  workspace.project = manifest ? {project: projName, files: manifest.files} : null;
 }
 
 btnOpenProject.addEventListener("click", async () => {
@@ -2125,16 +2507,16 @@ btnOpenProject.addEventListener("click", async () => {
 
   const menu = document.createElement("div");
   menu.id = "_proj-menu";
-  menu.style.cssText = "position:fixed;background:#252526;border:1px solid #3c3c3c;border-radius:4px;z-index:2000;min-width:200px;max-height:300px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,.6);font-size:12px;";
+  menu.style.cssText = "position:fixed;background:var(--panel-raised);border:1px solid var(--border-strong);border-radius:6px;z-index:2000;min-width:200px;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px var(--shadow);font-size:12px;";
   const rect = btnOpenProject.getBoundingClientRect();
   menu.style.left = rect.left + "px";
   menu.style.top  = (rect.bottom + 4) + "px";
 
   projectNames.forEach(projName => {
     const item = document.createElement("div");
-    item.style.cssText = "padding:6px 12px;cursor:pointer;color:#d4d4d4;";
+    item.style.cssText = "padding:6px 12px;cursor:pointer;color:var(--text);";
     item.textContent = projName;
-    item.addEventListener("mouseover", () => item.style.background = "#094771");
+    item.addEventListener("mouseover", () => item.style.background = "var(--highlight)");
     item.addEventListener("mouseout",  () => item.style.background = "");
     item.addEventListener("click", async () => {
       menu.remove();
@@ -2179,7 +2561,7 @@ btnConfigSave.addEventListener("click", async () => {
   stopRun(); stopSim();
   configError.textContent      = "";
   btnConfigSave.disabled       = true;
-  btnConfigSave.textContent    = "Saving...";
+  setButtonLabel(btnConfigSave, "Saving...");
   try {
     const res  = await fetch("/config", { method: "PUT", body: configTextarea.value });
     const data = await res.json();
@@ -2187,12 +2569,7 @@ btnConfigSave.addEventListener("click", async () => {
       configModal.style.display = "none";
       flashStatus("RELOADED", "reloaded");
       await loadCoreChoices();
-      if (multiCoreMode) {
-        sendAction({ action: "get_state", core: "pru0" });
-        sendAction({ action: "get_state", core: mcPartner });
-      } else {
-        sendAction({ action: "get_state", core: currentCore });
-      }
+      for (const core of executionCores()) sendAction({ action: "get_state", core });
       refreshMemory();
       loadRegions();
       loadClockSpeed();
@@ -2203,47 +2580,87 @@ btnConfigSave.addEventListener("click", async () => {
     configError.textContent = String(e);
   } finally {
     btnConfigSave.disabled    = false;
-    btnConfigSave.textContent = "Save \u0026 Reload";
+    setButtonLabel(btnConfigSave, "Save \u0026 Reload");
   }
 });
 
-// ---- PRU core speed selector ------------------------------------------------
+// ---- IEP counter clock selector ----------------------------------------------
+// Runtime only: the server applies it to the live IepTimer and never writes memory.cfg.
 
+function showIepClock(iep) {
+  const known = [...iepClockSelect.options].some(o => o.value !== 'configured' &&
+    o.value !== 'custom' && Number(o.value) === iep.external_mhz);
+  const custom = document.getElementById('iep-clock-custom');
+  if (!document.getElementById('iep-clock-custom-form').contains(document.activeElement)) {
+    iepClockSelect.value = iep.override_mhz == null ? 'configured'
+      : known ? String(iep.external_mhz) : 'custom';
+    custom.value = String(iep.external_mhz);
+  }
+  document.getElementById('iep-clock-custom-form').hidden = iepClockSelect.value !== 'custom';
+  iepClockSelect.title =
+    `Active ${iep.clock_mhz} MHz (${iep.core_clock ? 'core' : 'external'} source) · ` +
+    `Configured ${iep.configured_mhz} MHz · External ${iep.external_mhz} MHz. Session only; memory.cfg is not changed.`;
+}
+
+iepClockSelect.addEventListener("change", () => {
+  document.getElementById('iep-clock-error').hidden = true;
+  const custom = iepClockSelect.value === 'custom';
+  document.getElementById('iep-clock-custom-form').hidden = !custom;
+  if (custom) document.getElementById('iep-clock-custom').focus();
+  else sendAction({ action: 'set_iep_clock',
+    mhz: iepClockSelect.value === 'configured' ? null : Number(iepClockSelect.value) });
+});
+document.getElementById('iep-clock-custom-form').addEventListener('submit', event => {
+  event.preventDefault();
+  const mhz = Number(document.getElementById('iep-clock-custom').value);
+  const error = document.getElementById('iep-clock-error');
+  error.hidden = true;
+  if (!Number.isFinite(mhz) || mhz <= 0) {
+    error.textContent = 'Enter a finite positive IEP rate in MHz';
+    error.hidden = false;
+    return;
+  }
+  sendAction({ action: 'set_iep_clock', mhz });
+});
+// ---- end IEP counter clock selector ----
+
+// ---- Group clock configuration ----------------------------------------------
 async function loadClockSpeed() {
   try {
-    const res  = await fetch("/config/clock_speed");
-    const data = await res.json();
-    pruSpeedSelect.value = String(Math.round(data.mhz));
-  } catch (e) {
-    // leave dropdown at its last-known value
-  }
+    const res = await fetch("/config/clock_speed");
+    if (!res.ok) throw new Error(`Clock settings: ${res.status}`);
+    clockState = await res.json();
+    updateCoresControl();
+  } catch (error) { showErrors([String(error)]); }
 }
 loadClockSpeed();
 
-pruSpeedSelect.addEventListener("change", async () => {
-  pruSpeedSelect.disabled = true;
+async function changeGroupClock(group, direction) {
+  if (running || simRunning || runPending !== null || clockChanging) return;
+  const entry = clockState.groups.find(item => item.id === group);
+  if (!entry || !entry.cores.some(core => coreSelection.used.includes(core))) return;
+  const choices = clockState.choices_mhz;
+  const next = direction > 0 ? choices.find(rate => rate > entry.mhz)
+    : [...choices].reverse().find(rate => rate < entry.mhz);
+  if (next === undefined) return;
+  clockChanging = true; updateCoresControl();
   try {
-    const res = await fetch("/config/clock_speed", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mhz: Number(pruSpeedSelect.value) }),
-    });
-    const data = await res.json();
-    if (data.ok) {
-      flashStatus("RELOADED", "reloaded");
-      refreshMemory();
-      loadRegions();
-    } else {
-      alert(data.error || "Failed to set clock speed");
-      loadClockSpeed();
-    }
-  } catch (e) {
-    alert(String(e));
-    loadClockSpeed();
-  } finally {
-    pruSpeedSelect.disabled = false;
-  }
-});
+    const res = await fetch('/config/clock_speed', { method: 'PUT',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({group, mhz:next}) });
+    const result = await res.json();
+    if (!res.ok || !result.ok) throw new Error(result.error || 'Could not set the group clock');
+    for (const core of availableCores) { delete coreStates[core]; mcLastSourceKey[core] = ''; }
+    _lastSourceKey = ''; sourceList.replaceChildren();
+    document.querySelectorAll('.core-extra-pane .source-list').forEach(list => list.replaceChildren());
+    graphSetRecording(false); graphResizeWindow(signalGraph.windowSize); drawGraph();
+    flashStatus('RELOADED — reload programs', 'reloaded');
+    refreshMemory(); refreshMemory2(); loadRegions();
+    sendAction({action:'device_discover'});
+    for (const core of availableCores) sendAction({action:'get_state',core});
+    await loadClockSpeed();
+  } catch (error) { showErrors([String(error)]); }
+  finally { clockChanging = false; updateCoresControl(); }
+}
 
 // ---- Help modal ------------------------------------------------------------
 const btnHelp      = document.getElementById("btn-help");
@@ -2267,12 +2684,20 @@ document.addEventListener("keydown", (e) => {
 // ---- Run mode -------------------------------------------------------------
 
 function startRun() {
+  if (running || clockChanging || !ws || ws.readyState !== WebSocket.OPEN || (sharedExecution.running && !sharedExecution.owner)) return;
   stopSim();
   running = true;
-  btnRun.textContent = "Stop";
+  executionStartPending = ++runSequence;
+  sendAction({action:'start_execution',mode:'run',request_id:executionStartPending});
+  setButtonLabel(btnRun, "Stop");
   btnRun.classList.add("btn-reset");
   btnRun.classList.remove("btn-run");
   runInterval = setInterval(() => {
+    // Device chunks can take longer than this timer interval. Wait for the
+    // final state of our chunk so Run and Stop never build up a command queue.
+    if (executionStartPending !== null || runPending !== null || !ws || ws.readyState !== WebSocket.OPEN) return;
+    const run_id = ++runSequence;
+    runPending = run_id;
     // While recording, the server samples the graph inside its run loop and
     // ships the batch as a "capture" message (per instruction in perif mode,
     // 100:1 otherwise). The chunk size no longer sets the sample rate, so it
@@ -2280,57 +2705,64 @@ function startRun() {
     const capture = signalGraph.recording;
     const max_steps = 1000;
     if (multiCoreMode) {
-      sendAction({ action: "run_multicore", core: "pru0",
-                   partner: mcPartner, max_steps, capture });
+      sendAction({ action: "run_multicore", core: executionCores()[0],
+                   partners: executionCores().slice(1), max_steps, capture, run_id, stride: captureStride, managed:true });
     } else {
-      sendAction({ action: "run", core: currentCore, max_steps, capture });
+      sendAction({ action: "run", core: currentCore, max_steps, capture, run_id, stride: captureStride, managed:true });
     }
   }, 10);
+  updateCoresControl();
 }
 
-function stopRun() {
+function stopRun(notify = true) {
   if (!running) return;
   running = false;
-  btnRun.textContent = "Run";
+  executionStartPending = null;
+  if (notify) sendAction({action:'stop_execution'});
+  setButtonLabel(btnRun, "Run");
   btnRun.classList.add("btn-run");
   btnRun.classList.remove("btn-reset");
   if (runInterval !== null) {
     clearInterval(runInterval);
     runInterval = null;
   }
+  updateCoresControl();
 }
 
 function startSim() {
+  if (clockChanging || !ws || ws.readyState !== WebSocket.OPEN || (sharedExecution.running && !sharedExecution.owner)) return;
   stopRun();
   simRunning = true;
-  btnSim.textContent = "Stop SIM";
+  executionStartPending = ++runSequence;
+  sendAction({action:'start_execution',mode:'sim',request_id:executionStartPending});
+  setButtonLabel(btnSim, "Stop SIM");
   btnSim.classList.add("btn-reset");
   btnSim.classList.remove("btn-sim");
   const ms = Math.round((parseFloat(simIntervalInput.value) || 1.0) * 1000);
   simTimer = setInterval(() => {
-    if (multiCoreMode) {
-      sendAction({ action: "step", core: "pru0", count: 1 });
-      sendAction({ action: "step", core: mcPartner, count: 1 });
-    } else {
-      sendAction({ action: "step", core: currentCore, count: 1 });
-    }
+    requestSelectedStep();
   }, ms);
+  updateCoresControl();
 }
 
-function stopSim() {
+function stopSim(notify = true) {
   if (!simRunning) return;
   simRunning = false;
-  btnSim.textContent = "SIM";
+  executionStartPending = null;
+  if (notify) sendAction({action:'stop_execution'});
+  setButtonLabel(btnSim, "SIM");
   btnSim.classList.remove("btn-reset");
   btnSim.classList.add("btn-sim");
   if (simTimer !== null) {
     clearInterval(simTimer);
     simTimer = null;
   }
+  updateCoresControl();
 }
 
 btnSim.addEventListener("click", () => {
-  if (simRunning) { stopSim(); } else { startSim(); }
+  if (sharedExecution.running && !simRunning) sendAction({action:'stop_execution'});
+  else if (simRunning) { stopSim(); } else { startSim(); }
 });
 
 // ---- GPI pin click --------------------------------------------------------
@@ -2339,7 +2771,7 @@ function handleGpiClick(pinIndex, pinEl) {
   // Toggle: determine current state from CSS class
   const isHigh = pinEl.classList.contains("high");
   const newVal = isHigh ? 0 : 1;
-  const targetCore = multiCoreMode ? "pru0" : currentCore;
+  const targetCore = currentCore;
   sendAction({ action: "set_input", core: targetCore, pin: pinIndex, value: newVal });
 }
 
@@ -2357,30 +2789,147 @@ function onLoopbackToggle(btn) {
   const group = parseInt(btn.dataset.group, 10);
   const enabled = !btn.classList.contains('active');
   btn.classList.toggle('active', enabled);
-  const core = multiCoreMode ? 'pru0' : currentCore;
-  sendAction({ action: 'set_loopback', core, group, enabled });
+  sendAction({ action: 'set_loopback', core: currentCore, group, enabled });
+  sendAction({ action: 'get_state', core: currentCore });
 }
 
 document.querySelectorAll('#loopback-strip .lb-btn').forEach(btn => {
   btn.addEventListener('click', () => onLoopbackToggle(btn));
 });
 
-// ---- I2C attach toggle (TCA9538) -------------------------------------------
+function sendDeviceAction(action) {
+  clearDeviceError();
+  sendAction(action);
+}
 
-function onI2CAttachToggle(btn) {
-  const enabled = !btn.classList.contains('active');
-  btn.classList.toggle('active', enabled);
-  sendAction({ action: 'i2c_attach', core: currentCore, enabled, address: 0x23 });
-  if (!enabled) {
-    const section = document.getElementById('i2c-interface');
-    if (section) section.style.display = 'none';
+function deviceNumberValue(id) {
+  const input = document.getElementById(id);
+  if (!input || !input.checkValidity()) {
+    input?.reportValidity();
+    return null;
+  }
+  return input.valueAsNumber;
+}
+
+function populateSsiPresets(profiles) {
+  const select = document.getElementById('ssi-preset');
+  const presets = profiles && profiles.ssi_encoder && profiles.ssi_encoder.presets;
+  if (!select || !presets) return;
+  ssiPresets = presets;
+  while (select.options.length > 1) select.remove(1);
+  for (const name of Object.keys(presets)) {
+    const option = document.createElement('option');
+    option.value = name;
+    option.textContent = name;
+    select.appendChild(option);
   }
 }
 
-const _i2cAttachBtn = document.getElementById('i2c-attach-btn');
-if (_i2cAttachBtn) {
-  _i2cAttachBtn.addEventListener('click', () => onI2CAttachToggle(_i2cAttachBtn));
+document.getElementById('ssi-preset')?.addEventListener('change', event => {
+  const preset = ssiPresets[event.target.value];
+  if (!preset) return;
+  document.getElementById('ssi-resolution').value = String(preset.resolution);
+  document.getElementById('ssi-error-bits').value = String(preset.error_bits);
+  document.getElementById('ssi-encoding').value = preset.encoding;
+});
+
+function readSsiFrameConfig() {
+  const positionInput = document.getElementById('ssi-position');
+  const errorBitsInput = document.getElementById('ssi-error-bits');
+  const errorValueInput = document.getElementById('ssi-error-value');
+  for (const input of [positionInput, errorBitsInput, errorValueInput]) input.setCustomValidity('');
+  const resolution = deviceNumberValue('ssi-resolution');
+  const errorBits = deviceNumberValue('ssi-error-bits');
+  if (resolution === null || errorBits === null) return null;
+  const positionBits = resolution - errorBits;
+  if (positionBits < 1) {
+    errorBitsInput.setCustomValidity('Error bits must leave at least one position bit.');
+    errorBitsInput.reportValidity();
+    return null;
+  }
+  for (const [input, bits, label] of [[positionInput, positionBits, 'Position'],
+                                      [errorValueInput, errorBits, 'Error value']]) {
+    if (!input.checkValidity()) { input.reportValidity(); return null; }
+    if (!Number.isSafeInteger(input.valueAsNumber) || input.valueAsNumber > ssiFieldMax(bits)) {
+      input.setCustomValidity(`${label} must be a whole number from 0 to ${ssiFieldMax(bits)}.`);
+      input.reportValidity();
+      return null;
+    }
+  }
+  return {
+    preset: document.getElementById('ssi-preset').value || null,
+    position: positionInput.valueAsNumber,
+    resolution,
+    position_bits: positionBits,
+    error_bits: errorBits,
+    error_value: errorValueInput.valueAsNumber,
+    encoding: document.getElementById('ssi-encoding').value,
+  };
 }
+
+document.getElementById('ssi-attach-button')?.addEventListener('click', () => {
+  const nameInput = document.getElementById('ssi-device-name');
+  if (!nameInput.checkValidity()) { nameInput.reportValidity(); return; }
+  const clockPin = deviceNumberValue('ssi-clock-pin');
+  const dataPin = deviceNumberValue('ssi-data-pin');
+  if (clockPin === null || dataPin === null) return;
+  const config = readSsiFrameConfig();
+  if (!config) return;
+  sendDeviceAction({
+    action: 'device_attach',
+    core: devicePanelCore,
+    profile: 'ssi_encoder',
+    config: { ...config, name: nameInput.value.trim(), clock_pin: clockPin, data_pin: dataPin },
+  });
+});
+
+document.getElementById('tca-attach-button')?.addEventListener('click', () => {
+  const nameInput = document.getElementById('tca-device-name');
+  const addressInput = document.getElementById('tca-address');
+  const address = parseI2CAddress(addressInput.value);
+  addressInput.setCustomValidity(address === null ? 'Enter a 7-bit address such as 0x23 (0-127).' : '');
+  if (!nameInput.checkValidity()) { nameInput.reportValidity(); return; }
+  if (address === null) { addressInput.reportValidity(); return; }
+  const sclPin = deviceNumberValue('tca-scl-pin');
+  const sdaPin = deviceNumberValue('tca-sda-pin');
+  if (sclPin === null || sdaPin === null) return;
+  sendDeviceAction({
+    action: 'device_attach',
+    core: devicePanelCore,
+    profile: 'tca9538',
+    config: { name: nameInput.value.trim(), address, scl_pin: sclPin, sda_pin: sdaPin },
+  });
+});
+
+document.getElementById('tca-detach-button')?.addEventListener('click', event => {
+  const name = event.currentTarget.dataset.name;
+  if (name) sendDeviceAction({ action: 'device_detach', core: devicePanelCore, name });
+});
+
+document.getElementById('ssi-device-list')?.addEventListener('click', event => {
+  const button = event.target.closest('button[data-device-action]');
+  if (!button) return;
+  const name = button.dataset.name;
+  if (button.dataset.deviceAction === 'detach') {
+    sendDeviceAction({ action: 'device_detach', core: devicePanelCore, name });
+    return;
+  }
+  const field = button.dataset.deviceAction === 'set-error' ? 'error' : 'position';
+  const row = button.closest('.runtime-device-row');
+  const input = row && row.querySelector(`input[data-${field}]`);
+  if (!input || !input.checkValidity()) {
+    input?.reportValidity();
+    return;
+  }
+  sendDeviceAction({
+    action: `ssi_set_${field}`,
+    core: devicePanelCore,
+    name,
+    [field]: input.valueAsNumber,
+  });
+  input.dataset.pending = String(input.valueAsNumber);
+  input.dataset.dirty = 'true';
+});
 
 // ---- Memory panel ---------------------------------------------------------
 
@@ -2550,7 +3099,7 @@ function editWord2(el, absoluteAddr, wordSize) {
   const maxLen = wordSize * 2;
   const oldVal = el.textContent;
   const input = document.createElement("input");
-  input.style.cssText = `width:${Math.max(56, maxLen * 8)}px;font-size:13px;text-align:center;background:#1a1a1a;color:#fff;border:1px solid var(--accent);padding:0;font-family:inherit;`;
+  input.style.cssText = `width:${Math.max(56, maxLen * 8)}px;font-size:13px;text-align:center;background:var(--panel-inset);color:var(--text);border:1px solid var(--accent);padding:0;font-family:inherit;`;
   input.value = oldVal;
   input.maxLength = maxLen;
   el.textContent = "";
@@ -2619,7 +3168,7 @@ function drawWavePreview() {
   fillWaveCanvas.height = H;
 
   const ctx = fillWaveCanvas.getContext("2d");
-  ctx.fillStyle = "#1a1a1a";
+  ctx.fillStyle = graphThemeColor("--graph-bg", "#1b2127");
   ctx.fillRect(0, 0, W, H);
 
   // ---- Compute y range from current parameters ----------------------------
@@ -2647,13 +3196,13 @@ function drawWavePreview() {
   // ---- Y reference lines --------------------------------------------------
   ctx.lineWidth = 1;
   for (const [py, bright] of [[yTopPx, false], [midY, true], [yBotPx, false]]) {
-    ctx.strokeStyle = bright ? "#3c3c3c" : "#262626";
+    ctx.strokeStyle = bright ? graphThemeColor("--graph-grid-strong", "#4b5863") : graphThemeColor("--graph-grid", "#35414b");
     ctx.beginPath(); ctx.moveTo(Y_MAR, py); ctx.lineTo(W, py); ctx.stroke();
   }
 
   // ---- Y-axis labels -------------------------------------------------------
   ctx.font      = "9px Consolas, monospace";
-  ctx.fillStyle = "#858585";
+  ctx.fillStyle = graphThemeColor("--graph-label", "#c0c7cd");
   ctx.textAlign = "right";
   ctx.fillText(fmtYLabel(yMax), Y_MAR - 4, yTopPx + 4);
   ctx.fillText(fmtYLabel(yMid), Y_MAR - 4, midY   + 3);
@@ -2661,7 +3210,7 @@ function drawWavePreview() {
 
   // ---- Waveform -----------------------------------------------------------
   const cycles = parseFloat(fillWaveCycles.value) || 1;
-  ctx.strokeStyle = "#569cd6";
+  ctx.strokeStyle = graphThemeColor("--graph-wave", "#ff7c84");
   ctx.lineWidth   = 1.5;
   ctx.beginPath();
   for (let xi = 0; xi < WAVE_W; xi++) {
@@ -2682,13 +3231,13 @@ function drawWavePreview() {
   const nTicks = 5;
 
   ctx.font      = "9px Consolas, monospace";
-  ctx.fillStyle = "#858585";
+  ctx.fillStyle = graphThemeColor("--graph-label", "#c0c7cd");
   for (let i = 0; i <= nTicks; i++) {
     const frac  = i / nTicks;
     const px    = Y_MAR + Math.round(frac * WAVE_W);
     const label = Math.round(frac * nElems).toString();
 
-    ctx.strokeStyle = "#555";
+    ctx.strokeStyle = graphThemeColor("--graph-grid-strong", "#4b5863");
     ctx.lineWidth   = 1;
     ctx.beginPath(); ctx.moveTo(px + 0.5, WAVE_H); ctx.lineTo(px + 0.5, WAVE_H + 3); ctx.stroke();
 
@@ -2923,7 +3472,7 @@ function editWord(el, absoluteAddr, wordSize) {
   const maxLen = wordSize * 2;
   const oldVal = el.textContent;
   const input = document.createElement("input");
-  input.style.cssText = `width:80px;font-size:13px;text-align:center;background:#1a1a1a;color:#fff;border:1px solid var(--accent);padding:0;font-family:inherit;`;
+  input.style.cssText = `width:80px;font-size:13px;text-align:center;background:var(--panel-inset);color:var(--text);border:1px solid var(--accent);padding:0;font-family:inherit;`;
   input.value = oldVal;
   input.maxLength = maxLen;
   el.textContent = "";
@@ -2958,7 +3507,7 @@ function editWord(el, absoluteAddr, wordSize) {
 function editRegister(valEl, index) {
   const oldVal = valEl.textContent;
   const input = document.createElement("input");
-  input.style.cssText = "width:88px;font-size:13px;text-align:right;background:#1a1a1a;color:#fff;border:1px solid var(--accent);padding:0 2px;font-family:inherit;";
+  input.style.cssText = "width:88px;font-size:13px;text-align:right;background:var(--panel-inset);color:var(--text);border:1px solid var(--accent);padding:0 2px;font-family:inherit;";
   input.value = oldVal.slice(2);  // strip leading "0x"
   input.maxLength = 8;
   valEl.textContent = "";
@@ -3093,7 +3642,7 @@ const ctableDivider   = document.getElementById("ctable-divider");
 
 btnCtableToggle.addEventListener("click", () => {
   const open = ctableSection.classList.toggle("open");
-  btnCtableToggle.textContent = open ? "C-Table ▲" : "C-Table";
+  setButtonLabel(btnCtableToggle, open ? "C-Table ▲" : "C-Table");
   ctableDivider.style.display = open ? "" : "none";
   if (open && !document.getElementById("ctable-tbody").hasChildNodes()) {
     buildCtable();
@@ -3261,139 +3810,163 @@ function flashStatus(text, cssClass) {
     clearTimeout(_flashTimer);
     _flashTimer = null;
   }
-  const origText  = statusBadge.textContent;
-  const origClass = statusBadge.className;
   statusBadge.textContent = text;
   statusBadge.className   = cssClass;
   _flashTimer = setTimeout(() => {
     _flashTimer = null;
-    statusBadge.textContent = origText;
-    statusBadge.className   = origClass;
+    updateCoresControl();
   }, 2000);
 }
 
-// ---- Multi-core mode ------------------------------------------------------
-
-btnMulticore.addEventListener("click", toggleMultiCore);
 document.getElementById("btn-reset-layout").addEventListener("click", resetLayout);
 
-// ---- Multi-core partner (second available core shown beside PRU0) --------
-const mcPartnerSelect = document.getElementById("mc-partner-select");
+// ---- Available cores and device target ---------------------------------------
+const deviceCoreSelect = document.getElementById('device-core-select');
+const deviceCoreSelectWrap = document.getElementById('device-core-select-wrap');
 
-function applyMCPartnerLabels() {
-  const label = mcPartner.toUpperCase();
-  const srcTitle = document.getElementById("mc-partner-source-title");
-  const regTitle = document.getElementById("mc-partner-reg-title");
-  const cntLabel = document.getElementById("cnt-p1-label");
-  if (srcTitle) srcTitle.textContent = `${label} Source`;
-  if (regTitle) regTitle.textContent = `${label} Registers`;
-  if (cntLabel) cntLabel.textContent = label;
+function showAvailableCores(cores) {
+  cores = PruCores.ORDER.filter(core => cores.includes(core));
+  if (JSON.stringify(availableCores) === JSON.stringify(cores)) return;
+  availableCores = PruCores.ORDER.filter(core => cores.includes(core));
+  applyCoreSelection(PruCores.normalize(coreSelection, availableCores), true);
 }
 
-mcPartnerSelect.addEventListener("change", () => {
-  stopRun(); stopSim();
-  mcPartner = mcPartnerSelect.value;
-  applyMCPartnerLabels();
-  if (multiCoreMode) {
-    // Reset the partner DOM slot and re-request state for the new core.
-    mcPrevRegs.rtu0 = new Array(32).fill("0x00000000");
-    mcLastSourceKey.rtu0 = '';
-    mcBreakpoints.rtu0 = new Set();
-    mcHaltedState.rtu0 = false;
-    mcBreakState.rtu0 = false;
-    buildMCRegTable("rtu0");
-    sendAction({ action: "get_state", core: "pru0" });
-    sendAction({ action: "get_state", core: mcPartner });
+function syncDeviceCoreSelect() {
+  if (!deviceCoreSelect) return;
+  deviceCoreSelect.replaceChildren();
+  for (const core of availableCores) {
+    const option = document.createElement('option'); option.value = core; option.textContent = core.toUpperCase();
+    deviceCoreSelect.appendChild(option);
   }
+  if (!availableCores.includes(devicePanelCore)) devicePanelCore = currentCore;
+  deviceCoreSelect.value = devicePanelCore;
+  deviceCoreSelectWrap.hidden = availableCores.length < 2;
+}
+
+deviceCoreSelect?.addEventListener('change', () => {
+  devicePanelCore = deviceCoreSelect.value;
+  sendAction({ action: 'get_state', core: devicePanelCore });
 });
 
-function toggleMultiCore() {
-  multiCoreMode = !multiCoreMode;
-  stopRun(); stopSim();
+// ---- Examples (one-click scenarios) ------------------------------------------
+const scenarioButtons = document.querySelectorAll("[data-scenario]");
+let scenarioGeneration = 0;
 
-  if (multiCoreMode) {
-    coreSelect.style.display = "none";
-    mcLoadCore.style.display = "";
-    mcPartnerSelect.style.display = "";
-    applyMCPartnerLabels();
-    btnMulticore.classList.add("mc-active");
+function updateSsiDemo(demo) {
+  const result = document.getElementById('ssi-demo-result');
+  if (!result) return;
+  result.hidden = !demo;
+  const button = document.getElementById('ssi-demo-set-position');
+  button.disabled = !demo;
+  if (!demo) return;
+  button.dataset.core = demo.reader_core;
+  document.getElementById('ssi-demo-wiring').textContent = demo.encoder_core
+    ? `${demo.reader_core.toUpperCase()} reader → ${demo.encoder_core.toUpperCase()} encoder firmware: ${demo.frame_bits}-bit frame, clock pin 0, data pin 16.`
+    : `${demo.reader_core.toUpperCase()} reader → encoder model: ${demo.frame_bits}-bit frame, clock GPO0, data GPI16.`;
+  const value = document.getElementById('ssi-demo-position');
+  syncSsiSetter(value, demo.requested_position, Math.min(demo.position_max, Number.MAX_SAFE_INTEGER));
+  document.getElementById('ssi-demo-requested').textContent = String(demo.requested_position);
+  document.getElementById('ssi-received-position').textContent = demo.position == null
+    ? '—' : `${demo.position} (${demo.raw_frame})`;
+  document.getElementById('ssi-received-error').textContent = demo.error_bits === 0
+    ? 'Not present' : String(demo.error ?? '—');
+  document.getElementById('ssi-received-count').textContent = String(demo.frame_count ?? '—');
+  document.getElementById('ssi-firmware-status').textContent = `Reader ${demo.reader_status}` +
+    (demo.encoder_core ? ` / encoder ${demo.emulator_status}` : '');
+  const status = demo.reader_status || demo.emulator_status
+    ? `Firmware status ${demo.reader_status || demo.emulator_status}; reload the example.`
+    : demo.encoder_core && !demo.timer_enabled ? 'IEP disabled; reload the encoder example.'
+    : !demo.coherent ? 'Publishing a frame…'
+    : demo.frame_count ? 'Received frames. Position changes apply to the next frame.'
+    : 'Ready. Press Run to receive frames.';
+  const statusElement = document.getElementById('ssi-demo-status');
+  if (statusElement.textContent !== status) statusElement.textContent = status;
+}
 
-    // Show per-core counter labels and RTU0 counter spans
-    document.getElementById("cnt-p0-label").style.display = "";
-    document.getElementById("cnt-sep").style.display = "";
-    document.getElementById("cnt-p1-label").style.display = "";
-    document.getElementById("cnt-rtu-cycles-wrap").style.display = "";
-    document.getElementById("cnt-rtu-stalls-wrap").style.display = "";
-    document.getElementById("cnt-rtu-pc-wrap").style.display = "";
-    document.getElementById("cnt-instrs-wrap").style.display = "none";
-    document.getElementById("cnt-ipc-wrap").style.display = "none";
+document.getElementById('ssi-demo-position')?.addEventListener('input', event => {
+  event.target.dataset.dirty = 'true';
+  event.target.setCustomValidity('');
+});
+document.getElementById('ssi-demo-set-position')?.addEventListener('click', event => {
+  const input = document.getElementById('ssi-demo-position');
+  const position = input.valueAsNumber;
+  input.setCustomValidity(Number.isSafeInteger(position) && position >= 0 && position <= Number(input.max)
+    ? '' : `Enter a whole position from 0 to ${input.max}.`);
+  if (!input.reportValidity()) return;
+  input.dataset.pending = String(position);
+  clearDeviceError();
+  sendAction({ action: 'ssi_demo_position', core: event.currentTarget.dataset.core, position });
+});
+document.getElementById('ssi-demo-waveforms')?.addEventListener('click', () => {
+  document.querySelector('[data-workspace-view="simulator"]')?.click();
+});
 
-    // Reset MC SPAD state
-    for (const b of SPAD_BANKS) {
-      mcPrevSpad[b.key] = new Array(b.count).fill("0x00000000");
-    }
+function populateScenarios(scenarios) {
+  for (const button of scenarioButtons) {
+    const scenario = scenarios.find(item => item.name === button.dataset.scenario);
+    button.disabled = !scenario;
+    button.title = scenario ? scenario.description : "Example not offered by the server (restart it?)";
+  }
+}
 
-    // Build register tables for both cores
-    buildMCRegTable("pru0");
-    buildMCRegTable("rtu0");
+for (const button of scenarioButtons) {
+  button.addEventListener("click", () => {
+    const config = readSsiFrameConfig();
+    if (!config) return;
+    stopRun(); stopSim();
+    clearDeviceError();
+    sendAction({ action: "scenario_load", name: button.dataset.scenario, config });
+  });
+}
 
-    // Switch to MC layout
-    switchLayoutMode("mc");
-
-    // Request state for both cores
-    sendAction({ action: "get_state", core: "pru0" });
-    sendAction({ action: "get_state", core: mcPartner });
-
-  } else {
-    coreSelect.style.display = "";
-    mcLoadCore.style.display = "none";
-    mcPartnerSelect.style.display = "none";
-    btnMulticore.classList.remove("mc-active");
-
-    // Restore SC counter layout
-    document.getElementById("cnt-p0-label").style.display = "none";
-    document.getElementById("cnt-sep").style.display = "none";
-    document.getElementById("cnt-p1-label").style.display = "none";
-    document.getElementById("cnt-rtu-cycles-wrap").style.display = "none";
-    document.getElementById("cnt-rtu-stalls-wrap").style.display = "none";
-    document.getElementById("cnt-rtu-pc-wrap").style.display = "none";
-    document.getElementById("cnt-instrs-wrap").style.display = "";
-    document.getElementById("cnt-ipc-wrap").style.display = "";
-
-    // Switch to SC layout
-    switchLayoutMode("sc");
-
-    sendAction({ action: "get_state", core: currentCore });
+// The server has already reset and set up the simulator; bring every view in line.
+async function applyScenario(scenario) {
+  const generation = ++scenarioGeneration;
+  applyCoreSelection(PruCores.normalize({used:scenario.cores, shown:scenario.cores,
+    focus:scenario.lead, pinned:coreSelection.pinned}, availableCores), true);
+  devicePanelCore = scenario.lead;
+  syncDeviceCoreSelect();
+  for (const core of scenario.cores) sendAction({ action: "get_state", core });
+  const ui = scenario.ui || {};
+  captureStride = ui.capture_stride || null;
+  document.getElementById("graph-clear-btn").click();   // no samples from the previous example
+  if (ui.capture_stride) {
+    document.getElementById("graph-win-sel").value = String(ui.graph_window);
+    graphResizeWindow(ui.graph_window);
+    graphSetRecording(true);
+    drawGraph();
+  }
+  if (ui.memory_addr !== undefined) {
+    memAddrInput.value = "0x" + ui.memory_addr.toString(16).padStart(8, "0").toUpperCase();
+    memLenInput.value = String(ui.memory_length);
+    memAutoRefreshBox.checked = true;
+    memAutoRefresh = true;
+    refreshMemory();
+  }
+  document.querySelector(`[data-workspace-view="${ui.view || "simulator"}"]`)?.click();
+  if (ui.view === 'io') document.querySelector('[data-io-tab="devices"]')?.click();
+  selectEditorCore(scenario.lead);
+  // Keep each core's firmware in its own editor workspace.
+  for (const core of [...scenario.cores].reverse()) {
+    const path = scenario.firmware[core];
+    try {
+      const res = await fetch(`/source/${path}`);
+      if (res.ok) {
+        const source = await res.text();
+        if (generation !== scenarioGeneration) return;
+        openFileAsTab(path, source, core);
+      }
+    } catch (_) { /* the disassembly panels still show the loaded program */ }
   }
 }
 
 function buildMCRegTable(core) {
   const tbody = document.getElementById(`mc-${core}-reg-tbody`);
   tbody.innerHTML = "";
-  // Only PRU0 MC panel shows SPAD columns
-  const visibleBanks = (core === "pru0") ? SPAD_BANKS.filter(b => mcSpadVisible.has(b.key)) : [];
-
-  if (visibleBanks.length > 0) {
-    const hdrRow = document.createElement("tr");
-    hdrRow.innerHTML = `<td></td><td></td>`;
-    for (const bank of visibleBanks) {
-      hdrRow.innerHTML += `<td class="spad-hdr">${bank.label}</td>`;
-    }
-    tbody.appendChild(hdrRow);
-  }
-
   for (let i = 0; i < 32; i++) {
     const tr = document.createElement("tr");
     tr.id = `mc-${core}-reg-row-${i}`;
-    let html = `<td class="reg-name">R${i}</td><td class="reg-val" id="mc-${core}-reg-val-${i}">0x00000000</td>`;
-    for (const bank of visibleBanks) {
-      const wordIdx = i - bank.regStart;
-      if (wordIdx >= 0 && wordIdx < bank.count) {
-        html += `<td class="spad-val" id="mc-spad-${bank.key}-${i}">0x00000000</td>`;
-      } else {
-        html += `<td class="spad-val empty">--</td>`;
-      }
-    }
+    const html = `<td class="reg-name">R${i}</td><td class="reg-val" id="mc-${core}-reg-val-${i}">0x00000000</td>`;
     tr.innerHTML = html;
     const valCell = tr.querySelector(".reg-val");
     const regIdx = i;
@@ -3405,7 +3978,7 @@ function buildMCRegTable(core) {
 function editMCRegister(valEl, core, index) {
   const oldVal = valEl.textContent;
   const input = document.createElement("input");
-  input.style.cssText = "width:88px;font-size:13px;text-align:right;background:#1a1a1a;color:#fff;border:1px solid var(--accent);padding:0 2px;font-family:inherit;";
+  input.style.cssText = "width:88px;font-size:13px;text-align:right;background:var(--panel-inset);color:var(--text);border:1px solid var(--accent);padding:0 2px;font-family:inherit;";
   input.value = oldVal.slice(2);
   input.maxLength = 8;
   valEl.textContent = "";
@@ -3583,6 +4156,7 @@ function updateMCSource(core, instructions, pc, labels) {
 
       const li = document.createElement("li");
       li.id = `mc-${core}-src-line-${instr.addr}`;
+      li.dataset.address = String(instr.addr);
       const bpDot = document.createElement("span");
       bpDot.className = "bp-dot";
       bpDot.textContent = "●";
@@ -3610,35 +4184,207 @@ function updateMCSource(core, instructions, pc, labels) {
   const currentLine = document.getElementById(`mc-${core}-src-line-${pc}`);
   if (currentLine) {
     currentLine.classList.add("current-pc");
-    currentLine.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    currentLine.scrollIntoView({ block: "nearest", behavior: "auto" });
   }
 
-  // "rtu0" is this panel's fixed DOM slot; the core actually loaded into it
-  // (RTU0 or PRU1) is whatever mcPartner currently points at.
-  const realCore = core === "pru0" ? "pru0" : mcPartner;
-  renderBpBar(`mc-${core}-`, realCore, mcBreakpoints[core]);
+  // The slot's DOM ids are fixed; the core it shows is whichever is chosen.
+
 }
 
-// Breakpoint toggle via dblclick on MC source panels
-document.getElementById("mc-pru0-source-panel").addEventListener("dblclick", (e) => {
-  const li = e.target.closest("li[id^='mc-pru0-src-line-']");
-  if (!li) return;
-  const addr = parseInt(li.id.replace("mc-pru0-src-line-", ""), 10);
-  if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: "pru0", addr });
-});
+// ---- CORES deck and shared inspector -----------------------------------------
+function persistCoreSelection() {
+  try { localStorage.setItem('pru-cores-v1', JSON.stringify(coreSelection)); } catch (_) {}
+}
 
-document.getElementById("mc-rtu0-source-panel").addEventListener("dblclick", (e) => {
-  const li = e.target.closest("li[id^='mc-rtu0-src-line-']");
-  if (!li) return;
-  const addr = parseInt(li.id.replace("mc-rtu0-src-line-", ""), 10);
-  if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: mcPartner, addr });
-});
+function initCoresControl() {
+  coresDeck = createCoresDeck(document.getElementById('cores-control'), {
+    action: action => {
+      if (!executionReady && ['use','use-all'].includes(action.type)) return;
+      const next = PruCores.transition(coreSelection, action, availableCores);
+      if (action.type === 'use' && JSON.stringify(next.used) === JSON.stringify(coreSelection.used)) {
+        coresDeck.shake(action.core);
+      }
+      applyCoreSelection(next);
+      if (action.type === 'solo' && next.used.includes(action.core)) selectEditorCore(action.core);
+    },
+    clock: changeGroupClock,
+  });
+  renderCorePanes(); syncDeviceCoreSelect(); updateCoresControl();
+  document.addEventListener('pru-cores-reset', () => {
+    const first = coreSelection.used[0];
+    applyCoreSelection({...coreSelection, shown:[first], focus:first, pinned:false});
+  });
+}
+
+function applyCoreSelection(next, fromSession = false) {
+  next = PruCores.normalize(next, availableCores);
+  const usedChanged = JSON.stringify(next.used) !== JSON.stringify(coreSelection.used);
+  const panesChanged = next.focus !== currentCore || JSON.stringify(next.shown) !== JSON.stringify(coreSelection.shown);
+  if (usedChanged && !fromSession) {
+    stopRun(); stopSim();
+    sendAction({action:'set_execution_cores', cores:next.used});
+  }
+  const focusChanged = next.focus !== currentCore;
+  coreSelection = next;
+  currentCore = next.focus;
+  multiCoreMode = next.used.length > 1;
+  if (focusChanged) {
+    // Inspection must not detach a running device or change execution membership.
+    selectEditorCore(currentCore);
+    prevRegisters = mcFreshRegs(); _lastSourceKey = '';
+    sourceList.replaceChildren(); initSpadState();
+    syncGpioLoopback({});
+    devicePanelCore = currentCore;
+    updateCtableForCore();
+  }
+  persistCoreSelection();
+  if (panesChanged) renderCorePanes();
+  syncDeviceCoreSelect();
+  for (const state of Object.values(coreStates)) paintCoreState(state, true);
+  updateCoresControl();
+  for (const core of new Set([...next.used, devicePanelCore])) sendAction({action:'get_state',core});
+}
+
+function paneHeading(pane, core, kind) {
+  let heading = pane.querySelector('.core-pane-heading');
+  if (!heading) { heading = document.createElement('div'); heading.className = 'core-pane-heading'; pane.prepend(heading); }
+  if (heading.dataset.core !== core) {
+    heading.dataset.core = core;
+    heading.replaceChildren();
+    const name = document.createElement('b'); name.textContent = core.toUpperCase();
+    const value = document.createElement('span'); value.dataset.paneReadout = kind;
+    const close = document.createElement('button'); close.type = 'button'; close.textContent = '×';
+    close.setAttribute('aria-label', `Hide ${core.toUpperCase()} in Source and Registers`);
+    close.addEventListener('click', () => applyCoreSelection(PruCores.transition(coreSelection, {type:'show',core}, availableCores)));
+    heading.append(name, value, close);
+  }
+  pane.dataset.core = core;
+  pane.style.setProperty('--core-color', `var(--core-${core})`);
+}
+
+function renderCorePanes() {
+  const sources = document.getElementById('source-panes');
+  const registers = document.getElementById('reg-body');
+  const sourceFocus = document.getElementById('source-focus-pane');
+  const registerFocus = document.getElementById('register-focus-pane');
+  for (const container of [sources, registers]) {
+    container.dataset.count = String(coreSelection.shown.length);
+    for (const extra of container.querySelectorAll('.core-extra-pane')) {
+      if (!coreSelection.shown.includes(extra.dataset.core) || extra.dataset.core === currentCore) extra.remove();
+    }
+  }
+  for (const core of coreSelection.shown) {
+    if (core === currentCore) {
+      paneHeading(sourceFocus, core, 'pc'); paneHeading(registerFocus, core, 'carry');
+      sources.appendChild(sourceFocus); registers.appendChild(registerFocus);
+      continue;
+    }
+    let source = document.getElementById(`core-source-${core}`);
+    if (!source) {
+      source = document.createElement('section'); source.className = 'core-pane core-extra-pane'; source.id = `core-source-${core}`;
+      source.innerHTML = `<div class="core-scroll"><ul class="source-list" id="mc-${core}-source-list"></ul></div>`;
+      source.addEventListener('dblclick', e => {
+        const line = e.target.closest('li[data-address]');
+        if (line) sendAction({action:'toggle_breakpoint',core,addr:Number(line.dataset.address)});
+      });
+      mcLastSourceKey[core] = '';
+    }
+    paneHeading(source, core, 'pc'); sources.appendChild(source);
+    let reg = document.getElementById(`core-register-${core}`);
+    if (!reg) {
+      reg = document.createElement('section'); reg.className = 'core-pane core-extra-pane'; reg.id = `core-register-${core}`;
+      reg.innerHTML = `<div class="core-scroll"><table class="reg-table"><tbody id="mc-${core}-reg-tbody"></tbody></table></div>`;
+      paneHeading(reg, core, 'carry'); registers.appendChild(reg);
+      mcPrevRegs[core] = mcFreshRegs(); buildMCRegTable(core);
+    } else { paneHeading(reg, core, 'carry'); registers.appendChild(reg); }
+  }
+  for (const id of ['source-core-chips','register-core-chips']) {
+    const chips = document.getElementById(id); chips.replaceChildren();
+    for (const core of coreSelection.shown) {
+      const chip = document.createElement('span'); chip.className = 'core-chip'; chip.textContent = core.toUpperCase();
+      chip.style.setProperty('--core-color', `var(--core-${core})`); chips.appendChild(chip);
+    }
+  }
+  document.getElementById('carry-row').hidden = coreSelection.shown.length > 1;
+}
+
+function paintCoreState(state, fromCache = false) {
+  const core = state.core;
+  if (core === currentCore) updateUI(state, fromCache);
+  else {
+    if (coreSelection.shown.includes(core)) {
+      mcBreakpoints[core] = new Set(state.breakpoints || []);
+      updateMCRegisters(core, state.registers);
+      updateMCSource(core, state.instructions, state.pc, state.labels || {});
+    }
+    if (core === devicePanelCore) updateDevicePanel(state.io, core);
+  }
+  for (const pane of document.querySelectorAll('.core-pane')) {
+    if (pane.dataset.core !== core) continue;
+    const field = pane.querySelector('[data-pane-readout]');
+    if (field) field.textContent = field.dataset.paneReadout === 'pc' ? `PC ${state.pc}`
+      : `Carry ${state.carry ? 1 : 0}${state.crc ? ` · ${state.crc.mode} ${state.crc.value}` : ''}`;
+  }
+}
+
+function updateCoreState(state) {
+  if (!availableCores.includes(state.core)) return;
+  coreStates[state.core] = state;
+  paintCoreState(state, !!state.view_only);
+  updateCoresControl();
+}
+
+function updateCoresControl() {
+  if (!coresDeck) return;
+  coresDeck.update({selection:coreSelection, available:availableCores, states:coreStates,
+    clocks:clockState, running:running || simRunning || sharedExecution.running, busy:!executionReady || clockChanging || runPending !== null});
+  const label = currentCore.toUpperCase();
+  syncEditorCoreSelect();
+  const focusLabel = document.getElementById('bp-focus-core');
+  focusLabel.textContent = label;
+  focusLabel.style.setProperty('--core-color', `var(--core-${currentCore})`);
+  const tele = document.getElementById('telemetry-cores');
+  const key = coreSelection.used.join(',');
+  if (tele.dataset.cores !== key) {
+    tele.dataset.cores = key; tele.replaceChildren();
+    for (const core of coreSelection.used) {
+      const button = document.createElement('button'); button.type = 'button'; button.dataset.core = core;
+      button.textContent = core.toUpperCase(); button.style.setProperty('--core-color', `var(--core-${core})`);
+      button.title = `Inspect ${core.toUpperCase()} and target it in the Assembly Editor`;
+      button.addEventListener('click', () => {
+        applyCoreSelection(PruCores.transition(coreSelection,{type:'focus',core},availableCores));
+        selectEditorCore(core);
+      });
+      tele.appendChild(button);
+    }
+  }
+  for (const button of tele.children) button.setAttribute('aria-pressed',String(button.dataset.core === currentCore));
+  const anyBreak = coreSelection.used.some(core => coreStates[core]?.at_breakpoint);
+  const active = running || simRunning || sharedExecution.running;
+  statusBadge.textContent = anyBreak ? 'BREAK' : active ? 'RUNNING' : 'HALTED';
+  statusBadge.className = active ? 'running' : 'halted';
+  setButtonLabel(btnRun, active ? 'Stop' : 'Run');
+  btnRun.classList.toggle('btn-reset', active);
+  btnRun.classList.toggle('btn-run', !active);
+  const activeSim = simRunning || (sharedExecution.running && sharedExecution.mode === 'sim');
+  setButtonLabel(btnSim, activeSim ? 'Stop SIM' : 'SIM');
+  btnSim.classList.toggle('btn-reset', activeSim);
+  btnSim.classList.toggle('btn-sim', !activeSim);
+}
+
+function requestSelectedStep() {
+  if (clockChanging || runPending !== null || !ws || ws.readyState !== WebSocket.OPEN || executionStartPending !== null) return;
+  if (sharedExecution.running && !sharedExecution.owner && !simRunning) sendAction({action:'stop_execution'});
+  const cores = executionCores();
+  if (cores.length > 1) {
+    const run_id = ++runSequence; runPending = run_id;
+    sendAction({action:'step_multicore',core:cores[0],partners:cores.slice(1),run_id,managed:simRunning});
+  } else sendAction({action:'step',core:cores[0],count:1,managed:simRunning});
+}
 
 // ---- Init -----------------------------------------------------------------
 
 wireBpBar("", () => currentCore);
-wireBpBar("mc-pru0-", () => "pru0");
-wireBpBar("mc-rtu0-", () => mcPartner);
 
 initUI();
 connect();
@@ -3653,45 +4399,26 @@ sourceList.addEventListener("dblclick", (e) => {
 
 // Keyboard shortcuts (Space, ArrowRight, ArrowLeft, ?) — skip when typing in inputs
 document.addEventListener("keydown", (e) => {
-  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+  if (["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(e.target.tagName) || e.target.isContentEditable) return;
   if (e.key === "?") {
     helpModal.style.display !== "none" ? closeHelp() : openHelp();
     return;
   }
   if (e.key === " ") {
     e.preventDefault();
-    if (multiCoreMode) {
-      const pru0Line = document.querySelector("#mc-pru0-source-list li.current-pc");
-      if (pru0Line) {
-        const addr = parseInt(pru0Line.id.replace("mc-pru0-src-line-", ""), 10);
-        if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: "pru0", addr });
-      }
-      const partnerLine = document.querySelector("#mc-rtu0-source-list li.current-pc");
-      if (partnerLine) {
-        const addr = parseInt(partnerLine.id.replace("mc-rtu0-src-line-", ""), 10);
-        if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: mcPartner, addr });
-      }
-    } else {
-      const pcLine = sourceList.querySelector("li.current-pc");
-      if (!pcLine) return;
-      const addr = parseInt(pcLine.id.replace("src-line-", ""), 10);
-      if (!isNaN(addr)) sendAction({ action: "toggle_breakpoint", core: currentCore, addr });
-    }
+    const pcLine = sourceList.querySelector('li.current-pc');
+    if (!pcLine) return;
+    const addr = parseInt(pcLine.id.replace('src-line-', ''), 10);
+    if (!isNaN(addr)) sendAction({action:'toggle_breakpoint', core:currentCore, addr});
   } else if (e.key === "ArrowRight") {
     e.preventDefault();
     stopRun(); stopSim();
-    if (multiCoreMode) {
-      sendAction({ action: "step", core: "pru0", count: 1 });
-      sendAction({ action: "step", core: mcPartner, count: 1 });
-    } else {
-      sendAction({ action: "step", core: currentCore, count: 1 });
-    }
+    requestSelectedStep();
   } else if (e.key === "ArrowLeft") {
     e.preventDefault();
     stopRun(); stopSim();
     if (multiCoreMode) {
-      sendAction({ action: "step_back", core: mcPartner });
-      sendAction({ action: "step_back", core: "pru0" });
+      sendAction({ action: "step_back", core: executionCores()[0] });
     } else {
       sendAction({ action: "step_back", core: currentCore });
     }
@@ -3699,6 +4426,10 @@ document.addEventListener("keydown", (e) => {
 });
 
 // ---- UART decoder controls -------------------------------------------------
+
+document.getElementById("uart-record-btn").addEventListener("click", () => {
+  graphSetRecording(!signalGraph.recording);
+});
 
 document.getElementById("uart-decode-btn").addEventListener("click", () => {
   const samples  = graphGetSamples();
@@ -3714,7 +4445,7 @@ document.getElementById("uart-decode-btn").addEventListener("click", () => {
   };
 
   if (samples.length === 0) {
-    return showHint("Use Signal Graph ● REC to capture GPO0 first");
+    return showHint("Click Record, then run the firmware to capture GPO0. Stop recording, then click Decode.");
   }
 
   const { bytes, tBit, error } = decodeUART(samples);
@@ -3736,7 +4467,7 @@ document.getElementById("uart-decode-btn").addEventListener("click", () => {
 document.getElementById("uart-clear-btn").addEventListener("click", () => {
   document.getElementById("uart-status").style.display = "none";
   document.getElementById("uart-output").style.display = "none";
-  document.getElementById("uart-hint").textContent = "Use Signal Graph ● REC to capture GPO0 first";
+  document.getElementById("uart-hint").textContent = "Click Record, then run the firmware to capture GPO0. Stop recording, then click Decode.";
   document.getElementById("uart-hint").style.display = "";
 });
 
@@ -3820,6 +4551,20 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     }
   };
 
+  document.getElementById("uart-inj-reset-btn").addEventListener("click", () => {
+    switchMode("hex");
+    payloadEl.value = payloadEl.defaultValue;
+    document.getElementById("uart-inj-pin").value = "0";
+    for (const id of ["uart-inj-baud", "uart-inj-frames"]) {
+      const input = document.getElementById(id);
+      input.value = input.defaultValue;
+    }
+    updateByteCount();
+    const statusEl = document.getElementById("uart-inj-status");
+    statusEl.textContent = "";
+    statusEl.style.display = "none";
+  });
+
   // Inject button handler
   const injBtn = document.getElementById("uart-inj-btn");
   if (!injBtn) { console.warn("UART Inject: btn not found"); return; }
@@ -3829,7 +4574,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
 
     if (!bytes || bytes.length === 0) {
       statusEl.textContent = "\u2717 Invalid payload \u2014 enter space-separated hex bytes or ASCII text";
-      statusEl.style.color = "#f38ba8";
+      statusEl.style.color = "var(--halted)";
       statusEl.style.display = "";
       return;
     }
@@ -3838,7 +4583,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     const baudMb = parseFloat(baudStr);
     if (isNaN(baudMb) || baudMb <= 0 || baudMb > 10) {
       statusEl.textContent = "\u2717 Baud must be between 0.01 and 10.00 Mb";
-      statusEl.style.color = "#f38ba8";
+      statusEl.style.color = "var(--halted)";
       statusEl.style.display = "";
       return;
     }
@@ -3847,7 +4592,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     const framesVal = parseInt(document.getElementById("uart-inj-frames").value, 10);
     if (isNaN(framesVal) || framesVal < 1 || framesVal > 100) {
       statusEl.textContent = "\u2717 Frames must be between 1 and 100";
-      statusEl.style.color = "#f38ba8";
+      statusEl.style.color = "var(--halted)";
       statusEl.style.display = "";
       return;
     }
@@ -3864,7 +4609,7 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     });
 
     statusEl.textContent = "\u231B Arming...";
-    statusEl.style.color = "#888";
+    statusEl.style.color = "var(--text-dim)";
     statusEl.style.display = "";
   });
 })();
@@ -3877,4 +4622,11 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
     const mux = parseInt(sel.value, 10) || 0;
     sendAction({ action: "gpcfg_write", core: currentCore, mux_sel: mux });
   });
+  // Peripherals-tab links: switch the GP mux (the selector follows the next state).
+  for (const [id, mux] of [["sd-switch-gpio", 0], ["sd-switch-sd", 3], ["pi-switch-pi", 1]]) {
+    document.getElementById(id)?.addEventListener("click", (e) => {
+      e.preventDefault();
+      sendAction({ action: "gpcfg_write", core: currentCore, mux_sel: mux });
+    });
+  }
 })();
