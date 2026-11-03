@@ -139,7 +139,7 @@ matters only for ad-hoc client scripts.
 
 - **pru_simulator:** `main` (`46efc4a`), plus `docs/handoff-2026-11-02`
   (PR #102) with the two notes from 2026-11-02 and this one.
-- **open-pru:** `dev_tley_electronica2026_i2c_io` (PR #188, `4a8cad5c`),
+- **open-pru:** `dev_tley_electronica2026_i2c_io` (PR #188, `b38990d9` on GitHub),
   `dev_tley_electronica2026_uart_rx` (PR #189, `d9250549`) and `main`. The
   checkout is on the **uart_rx** branch. Untracked in that checkout:
   - uart_rx build outputs (`pru0_load_bin.h`, `uart_rx.release.lnkxml`);
@@ -178,7 +178,16 @@ New:
    by running the server against a pinned config. Offered as a small PR, not
    started.
 10. **i2c_io open items** from
-    [2026-11-02-electronica2026-i2c-io-demo.md](2026-11-02-electronica2026-i2c-io-demo.md)
-    are unchanged: board revision, portability, SysConfig, untracked outputs
-    and the visualizer minors. The uart_rx answers (Rev A, Yport) probably
-    apply to i2c_io as well, but the user has not decided that.
+    [2026-11-02-electronica2026-i2c-io-demo.md](2026-11-02-electronica2026-i2c-io-demo.md):
+    the user already set the board revision (REV A) and portability (Yport
+    for all five devices) in the GitHub web editor on the evening of
+    2026-11-02: open-pru `00a2d89f` and `b38990d9` on
+    `dev_tley_electronica2026_i2c_io`, PR #188 now at `b38990d9`. The second
+    one also adds a readme note that the TCA9534 supports 1 Mbit/s but has
+    only 4 outputs. Still open:
+    - the matching two FIXME items in `i2c_io/docs/porting_report.md`
+      (lines 186 and 192), which are not ticked yet;
+    - SysConfig re-save, untracked outputs and the visualizer minors.
+
+    The local open-pru checkout does not have these commits yet; pull before
+    working on that branch.
