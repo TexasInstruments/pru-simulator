@@ -419,6 +419,20 @@
     function dropPicture() { spectrograms.forEach(spec => spec.reset()); }
 
     const NOT_CONNECTED = 'Not connected to the server. Try again once it is back.';
+    // The firmware the setup loaded, shown in the Simulator view's editors so
+    // the code the cores execute is visible there (spec §11).
+    const DEMO_FIRMWARE = [['pru0', 'pdm/pdm_rx.asm'], ['pru1', 'pdm/pdm_gen.asm']];
+
+    async function showFirmware() {
+      const open = globalThis.openFileAsTab;
+      if (typeof open !== 'function') return;
+      for (const [core, path] of DEMO_FIRMWARE) {
+        try {
+          const response = await fetch(`/source/${path}`);
+          if (response.ok) open(path, await response.text(), core);
+        } catch (_) { /* the demo runs either way; the editor just keeps its file */ }
+      }
+    }
 
     function sendRun() {
       const id = runSeq + 1;
@@ -508,6 +522,7 @@
         pendingStart = false;
         selfChange = false;
         syncPickers();
+        showFirmware();
         startLoop();
         return;
       }

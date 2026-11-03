@@ -295,20 +295,13 @@ def test_chunk_stopping_at_a_breakpoint_stops_the_run(server):
     with client.websocket_connect("/ws") as ws:
         _setup(ws)
         srv.sim.cores["pru0"].breakpoints.add(3)
-        ws.send_json({"action": "pdm_run", "run_id": "bp"})
-        msgs = []
-        while True:
-            msg = ws.receive_json()
-            if msg["type"] == "execution":
-                continue
-            msgs.append(msg)
-            if msg["type"] == "state":
-                break
-        status = [m for m in msgs if m["type"] == "pdm_status"][0]
+        msgs = _run(ws, "bp")
+        status = msgs[-1]
         assert status["running"] is False and status["breakpoint"] == "pru0"
         assert status["run_id"] == "bp"
-        state = msgs[-1]
-        assert state["core"] == "pru0" and state["at_breakpoint"] is True and state["pc"] == 3
+        states = _core_states(msgs)       # both cores, sent before the status
+        assert states["pru0"]["at_breakpoint"] is True and states["pru0"]["pc"] == 3
+        assert states["pru1"]["at_breakpoint"] is False
         assert srv._execution_owner is None
         # the next pdm_run resumes past the breakpoint
         srv.sim.cores["pru0"].breakpoints.clear()
@@ -531,3 +524,28 @@ def test_step_back_restores_the_link_and_skipped_cycles(server):
                 pru0.counters.cycles) == before
         status = _run(ws)[-1]
         assert all(0 <= v <= 1 for v in status["load"].values()), status["load"]
+
+
+def _core_states(msgs):
+    return {m["core"]: m for m in msgs if m["type"] == "state" and "core" in m}
+
+
+def test_setup_shows_the_demo_programs_in_the_simulator_view(server):
+    """The tab that sets the demo up gets both cores' state, so its Simulator
+    view shows pdm_rx/pdm_gen, not the programs the setup replaced."""
+    client = server()
+    with client.websocket_connect("/ws") as ws:
+        states = _core_states(_setup(ws))
+    assert {"pru0", "pru1"} <= set(states)
+    assert "PDM_RX" in states["pru0"]["labels"] and states["pru0"]["instructions"]
+    assert "PDM_GEN" in states["pru1"]["labels"] and states["pru1"]["instructions"]
+
+
+def test_run_chunks_update_both_cores_for_the_running_tab(server):
+    client = server()
+    with client.websocket_connect("/ws") as ws:
+        _setup(ws)
+        states = _core_states(_run(ws))
+    assert {"pru0", "pru1"} <= set(states)
+    assert states["pru0"]["cycles"] >= CHUNK
+    assert states["pru1"]["cycles"] >= CHUNK

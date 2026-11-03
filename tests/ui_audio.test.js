@@ -66,6 +66,7 @@ function page({ clips = [{ name: 'hello.wav', ms: 250 }, { name: 'chirp.wav', ms
   const sent = [];
   const timers = new Map();
   const net = { open: true };
+  const opened = [];
   let nextTimer = 1;
   const document = {
     fullscreenElement: null,
@@ -79,14 +80,17 @@ function page({ clips = [{ name: 'hello.wav', ms: 250 }, { name: 'chirp.wav', ms
     window: { addEventListener() {} },
     // Outer-realm copy, comparable with deepEqual. Like the real one it drops a message and returns false when closed.
     sendAction: obj => { if (!net.open) return false; sent.push(JSON.parse(JSON.stringify(obj))); return true; },
-    fetch: async () => ({ ok: true, json: async () => ({ clips }) }),
+    fetch: async url => (String(url).startsWith('/source/')
+      ? { ok: true, text: async () => `; ${url}` }
+      : { ok: true, json: async () => ({ clips }) }),
+    openFileAsTab: (path, content, core) => { opened.push({ path, content, core }); },
     requestAnimationFrame: fn => fn(),
     setInterval: (fn, ms) => { timers.set(nextTimer, { fn, ms }); return nextTimer++; },
     clearInterval: id => { timers.delete(id); },
     getComputedStyle: () => ({ getPropertyValue: () => '' }),
   });
   vm.runInContext(source, context);
-  return { context, elements, document, sent, timers, net, audio: context.PruAudio,
+  return { context, elements, document, sent, timers, net, opened, audio: context.PruAudio,
     el: id => elements.get(id) };
 }
 
@@ -278,6 +282,23 @@ test('Run sets up, then re-sends pdm_run while running and not done', async () =
   assert.equal(elements.get('audio-progress-fill').style.width, '100%');
   assert.match(elements.get('audio-load-pru0').textContent, /PRU0 21 ?%/);
   assert.match(elements.get('audio-mode').textContent, /run-ahead/);
+});
+
+test('our own setup opens the demo firmware in the PRU0 and PRU1 editors', async () => {
+  const { audio, elements, sent, opened } = runSetup();
+  await flush();
+  sent.length = 0;
+  elements.get('audio-run').fire('click');
+  assert.equal(opened.length, 0, 'nothing is opened before the setup succeeds');
+  audio.handleMessage(status({ audio_ms: 0 }));                          // setup reply
+  await flush();
+  assert.deepEqual(opened.map(o => [o.core, o.path]).sort(),
+    [['pru0', 'pdm/pdm_rx.asm'], ['pru1', 'pdm/pdm_gen.asm']]);
+  assert.equal(opened.find(o => o.core === 'pru0').content, '; /source/pdm/pdm_rx.asm');
+  opened.length = 0;
+  audio.handleMessage(status({ running: true, run_id: sent[1].run_id }));  // a run chunk
+  await flush();
+  assert.equal(opened.length, 0, 'run chunks do not reopen the files');
 });
 
 test('Stop does not wait for a reply and a late status does not restart the run', async () => {

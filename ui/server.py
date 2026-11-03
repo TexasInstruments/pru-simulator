@@ -550,6 +550,7 @@ PDM_CLOCK_NOTICE = "PRU clocks set to 200 MHz for the PDM demo"
 PDM_NOT_SET_UP = "PDM demo is not set up; send pdm_setup first"
 PDM_PROGRAMS_NOTICE = ("Audio Run loaded pdm_gen.asm on PRU1 and pdm_rx.asm on PRU0 "
                        "(Simulator-view programs replaced)")
+PDM_CORES = ("pru0", "pru1")      # the cores the Audio demo runs
 OWNERSHIP_ERROR = "Execution stopped or controlled by another tab"
 _pdm = None            # PdmDemo of the current simulator, or None
 _pdm_clips = None      # {"left", "right", "swap"} of the last good setup
@@ -663,6 +664,15 @@ async def _pdm_send_history(websocket) -> None:
                                        "samples": samples})
 
 
+async def _pdm_send_core_states(websocket, **kw) -> None:
+    """Give *websocket* the state of both demo cores, so its Simulator view
+    shows pdm_gen/pdm_rx and follows their execution; other tabs get it via
+    _publish_updates."""
+    for core in PDM_CORES:
+        if core in sim.cores:
+            await _send_state(websocket, core, **kw)
+
+
 async def _pdm_run(websocket, msg) -> None:
     global _execution_owner, _execution_mode, _last_observer_publish
     extra = {"run_id": msg["run_id"]} if "run_id" in msg else {}
@@ -707,9 +717,10 @@ async def _pdm_run(websocket, msg) -> None:
     finished = result["status"]["done"]
     if stopped_at or finished:
         _stop_execution()
+    for core in PDM_CORES:
+        if core in sim.cores:
+            await _send_state(websocket, core, at_breakpoint=core == stopped_at)
     await websocket.send_json(_pdm_status_message(extra))
-    if stopped_at:
-        await _send_state(websocket, stopped_at, at_breakpoint=True, run_id=extra.get("run_id"))
     _publish_updates(websocket, breakpoint_cores={stopped_at} if stopped_at else (),
                      throttle=_pdm_running())
 
@@ -724,12 +735,16 @@ async def _handle_pdm(websocket, action: str, msg: dict) -> None:
         if not isinstance(swap, bool):
             await _pdm_error(websocket, "swap must be true or false")
         elif await _pdm_setup(websocket, msg.get("clip_left"), msg.get("clip_right"), swap):
+            await _pdm_send_core_states(websocket)
+            _publish_updates(websocket)
             await websocket.send_json(_pdm_status_message())
     elif action == "pdm_reset":
         if _pdm_clips is None or not _pdm_ready():
             await _pdm_error(websocket, PDM_NOT_SET_UP)
         elif await _pdm_setup(websocket, _pdm_clips["left"], _pdm_clips["right"],
                               _pdm_clips["swap"]):
+            await _pdm_send_core_states(websocket)
+            _publish_updates(websocket)
             await websocket.send_json(_pdm_status_message())
     elif action == "pdm_run":
         await _pdm_run(websocket, msg)
