@@ -562,6 +562,16 @@ def test_set_idle_skip_accepts_only_a_json_bool(server_sim, bad):
         assert _receive_until_state(ws)[-1]["idle_skip"] is False
 
 
+def test_set_idle_skip_reaches_the_other_tabs(server_sim):
+    """The toolbar SKIP toggle is session-wide: every open tab shows the new state."""
+    from ui.server import app
+    client = TestClient(app)
+    with client.websocket_connect("/ws") as ws_a, client.websocket_connect("/ws") as ws_b:
+        ws_a.send_json({"action": "set_idle_skip", "core": "pru0", "enabled": False})
+        assert _receive_until_state(ws_a)[-1]["idle_skip"] is False
+        assert _receive_until_state(ws_b)[-1]["idle_skip"] is False
+
+
 def test_run_multicore_uses_skip_but_step_multicore_does_not(server_sim):
     from ui.server import app
     assert server_sim.load("pru1", PDM_DELAY_PRODUCER_ASM.read_text()) == []

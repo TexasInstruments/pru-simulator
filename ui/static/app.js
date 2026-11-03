@@ -321,6 +321,23 @@ btnXfrShift.addEventListener("click", () => {
   sendAction({ action: "set_xfr_shift", core: currentCore, enabled: nowEnabled });
 });
 
+// Idle skip toggle (toolbar SKIP): session-wide, the server echoes it in every state
+const btnIdleSkip = document.getElementById("btn-idle-skip");
+
+function showIdleSkip(enabled) {
+  btnIdleSkip.setAttribute("aria-pressed", enabled ? "true" : "false");
+  btnIdleSkip.title = enabled
+    ? "Idle skip on: Run executes NOP delay loops and PDM poll waits in one jump; results are identical to stepping"
+    : "Idle skip off: Run steps every instruction (slower, same results)";
+}
+
+function toggleIdleSkip() {
+  const enabled = btnIdleSkip.getAttribute("aria-pressed") !== "true";
+  sendAction({ action: "set_idle_skip", core: currentCore, enabled });
+}
+
+btnIdleSkip.addEventListener("click", toggleIdleSkip);
+
 // Toggle a SPAD bank column on/off (single-core panel)
 document.querySelectorAll(".spad-btn[data-bank]").forEach(btn => {
   btn.addEventListener("click", () => {
@@ -557,6 +574,8 @@ function updateUI(state, fromCache = false) {
 
   // Sync breakpoints from server
   if (state.breakpoints) clientBreakpoints = new Set(state.breakpoints);
+
+  if (state.idle_skip !== undefined) showIdleSkip(state.idle_skip);
 
   // XFR shift button state
   if (state.xfr_shift_en !== undefined) {

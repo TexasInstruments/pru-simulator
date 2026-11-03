@@ -202,6 +202,8 @@
     .btn-load { border-color: var(--brand-red-bright); }
     .btn-sim { border-color: var(--brand-red-bright); color: var(--text); }
     .btn-run.running, .btn-sim.running { box-shadow: inset 0 -2px 0 var(--brand-red-bright); }
+    .btn-skip { color: var(--text-dim); }
+    .btn-skip[aria-pressed="true"] { color: var(--text); box-shadow: inset 0 -2px 0 var(--green); }
 
     /* ---- Controls bar: labelled groups on a grid ------------------------------ */
     #controls {
@@ -1702,6 +1704,8 @@
       <button id="btn-step" class="btn-17 btn-step"><span class="text-container"><span class="text">Step</span></span></button>
       <button id="btn-run" class="btn-17 btn-run"><span class="text-container"><span class="text">Run</span></span></button>
       <button id="btn-sim" class="btn-17 btn-sim"><span class="text-container"><span class="text">SIM</span></span></button>
+      <button id="btn-idle-skip" class="btn-17 btn-skip" aria-pressed="true"
+              title="Idle skip on: Run executes NOP delay loops and PDM poll waits in one jump; results are identical to stepping"><span class="text-container"><span class="text">Skip</span></span></button>
       <label class="toolbar-time-pill" title="SIM step interval in seconds">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M9 2h6m-3 3v3m0 2v4l2 2"/></svg>
         <input id="sim-interval" type="text" inputmode="decimal" value="1.0" placeholder="1.0" aria-label="SIM step interval in seconds" />
@@ -2482,7 +2486,7 @@ Gen R → PRU0 SD ch1 · falling edge · same data line</pre>
   <script src="/static/cores.js"></script>
   <script src="/static/cores-deck.js"></script>
   <script src="/static/audio.js?v=20261103-audio2"></script>
-  <script src="/static/app.js?v=20261015-cores"></script>
+  <script src="/static/app.js?v=20261103-skip"></script>
   <script src="/static/workspace.js"></script>
 </body>
 </html>

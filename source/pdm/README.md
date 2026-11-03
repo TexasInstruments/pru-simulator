@@ -139,7 +139,10 @@ compensate this known half-PCM-sample offset, or use same-phase decimation.
 - **Exact idle skip** (`step_run`, `step_paced_many(..., idle_skip=True)`): NOP delay
   loops and R31 poll spins are advanced in one span. Bit- and cycle-identical to
   stepping; single-step, the MCP step tools and runs with the Signal Graph
-  capturing never skip.
+  capturing never skip. It applies to every Run, not only this demo. The toolbar
+  **Skip** button (Execute group) turns it off and on for the whole session. Off,
+  Run steps every instruction: slower, same results. A config or clock change
+  rebuilds the simulator and turns it back on.
 - **Run-ahead scheduling** (`Simulator.run_ahead`): the producer (PRU1) runs a
   slice ahead and the consumer (PRU0) follows, instead of lockstep catch-up per
   instruction. It needs the four declared shared-RAM range lists and refuses
