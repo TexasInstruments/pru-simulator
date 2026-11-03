@@ -245,6 +245,23 @@ async def browser_flow(port: int, chrome: str, shots: Path | None, seconds: int)
                 print("running:", running)
                 assert running["runDisabled"] and not running["error"], running
                 await a.shot("02-running")
+                # The Simulator view shows the demo firmware and follows its execution.
+                await a.js("document.querySelector('[data-workspace-view=\"simulator\"]').click()")
+                await asyncio.sleep(3)
+                sim_view = json.loads(await a.js("""JSON.stringify({
+                  source: document.getElementById('source-list').textContent,
+                  editor: document.getElementById('asm-source').value.slice(0, 400),
+                  tabs: document.getElementById('editor-tab-bar').textContent})"""))
+                await asyncio.sleep(seconds)
+                later = await a.js("document.getElementById('source-list').innerHTML")
+                await a.shot("02b-simulator-view")
+                print("simulator view: PDM_RX in source", "PDM_RX" in sim_view["source"],
+                      "| editor tabs:", sim_view["tabs"].strip())
+                assert "PDM_RX" in sim_view["source"] or "PDM_GEN" in sim_view["source"], sim_view
+                assert "pdm_" in sim_view["tabs"], sim_view
+                assert later != "", "source pane empty"
+                await a.js("document.getElementById('audio-nav-button').click()")
+                await asyncio.sleep(2)
                 await a.js("document.getElementById('audio-booth').click()")
                 await asyncio.sleep(2)
                 inbooth = await a.js("document.getElementById('audio-view').classList.contains('audio-booth')")
