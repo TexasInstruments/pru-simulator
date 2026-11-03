@@ -23,6 +23,7 @@ from mem.constant_table import (
 from xfr.xfr_bus import XFRBus
 from pru_io.device_model import DeviceBus, DeviceModel
 from pru_io.io_port import IOPort
+from pru_io.pdm_link import PdmLink
 from pru_io.sd_filter import SigmaDeltaFilter
 from pru_io.sd_registers import SDRegisters
 from pru_io.tca9538 import TCA9538Device
@@ -326,6 +327,9 @@ class Simulator:
 
         # Loopback: PRU0 TX channel-N -> PRU1 RX channel-N.
         self._loopback = Loopback(self._perif["pru0"], self._perif["pru1"])
+
+        # Producer GPO -> consumer SD pin link (attach_pdm_link); None = off.
+        self._pdm_link: PdmLink | None = None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -701,6 +705,43 @@ class Simulator:
             if hasattr(mod, key):
                 setattr(mod, key, val)
 
+    def set_sd_source(self, core: str, ch: int, mode: str) -> None:
+        """Select SD channel *ch*'s bit source on *core*: "modulator", "pin" or "off"."""
+        self._get_core(core).io_port.sd_filter.set_source(ch, mode)
+
+    def attach_pdm_link(self, producer: str = "pru1", consumer: str = "pru0",
+                        clock_pin: int = 0, data_pins: dict[int, int] = {0: 1, 1: 1},
+                        keep_history: bool = False) -> PdmLink:
+        """Drive *consumer*'s SD clock net 0 and data inputs from *producer*'s GPO.
+
+        *clock_pin* is the producer GPO pin carrying the clock (SD0_CLK);
+        *data_pins* maps consumer SD channel -> producer GPO data pin. Only
+        channels set to "pin" (set_sd_source) sample the link, on the edge
+        their CLK_SEL/CLK_INV select. Replaces any link already attached.
+        *keep_history* records edges and sampled bits (tests only: unbounded).
+        """
+        producer_core = self._get_core(producer)
+        consumer_core = self._get_core(consumer)
+        if producer_core is consumer_core:
+            raise ValueError("PDM link producer and consumer must differ")
+        self.detach_pdm_link()
+        link = PdmLink(producer_core, consumer_core, self.iep.core_time_units,
+                       clock_pin=clock_pin, data_pins=dict(data_pins),
+                       keep_history=keep_history)
+        producer_core.io_port.gpo_listeners.append(link.on_producer_gpo)
+        consumer_core.io_port.sd_filter.pin_link = link
+        self._pdm_link = link
+        return link
+
+    def detach_pdm_link(self) -> None:
+        """Remove the PDM link, if any. Pin-mode channels then get no clock."""
+        link = self._pdm_link
+        if link is None:
+            return
+        link.producer.io_port.gpo_listeners.remove(link.on_producer_gpo)
+        link.consumer.io_port.sd_filter.pin_link = None
+        self._pdm_link = None
+
     def set_iep_clock_mhz(self, mhz: float) -> None:
         """Set the IEP0 clock (ICSSG_IEP_CLK) independently of the PRU clocks.
 
@@ -767,6 +808,8 @@ class Simulator:
             core.reset()
             core.constant_table.reset_ctrl()
         self.xfr.reset()
+        if self._pdm_link is not None:
+            self._pdm_link.reset()
 
     def uart_inject(
         self,

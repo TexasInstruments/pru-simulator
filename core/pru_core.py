@@ -267,6 +267,11 @@ class PRUCore:
         if self.io_port.uart_generator is not None:
             self.io_port.uart_generator.tick(self.counters.cycles)
 
+        # Pre-tick: apply producer pin edges to pin-driven SD channels, so
+        # this instruction sees every edge stamped up to its start time.
+        sd = self.io_port.sd_filter
+        if sd is not None and sd.pin_link is not None and sd.pin_link.consumer is self:
+            sd.pin_link.advance_consumer(self.counters.cycles)
 
         # The MAC samples R28/R29 one instruction late (silicon, upstream #58).
         self.accelerators[MACAccelerator.DEVICE_ID].begin_step()
