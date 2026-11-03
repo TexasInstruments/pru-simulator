@@ -1,6 +1,6 @@
 # electronica 2026 booth demos: how to run
 
-This page is for booth staff. It covers the two PRU demos on the AM243x
+This page is for booth staff. It covers the three PRU demos on the AM243x
 LaunchPad (LP-AM243). Each demo needs the PicoScope set up differently, so
 that setup gets its own section for each demo, and a side-by-side table
 comes first.
@@ -9,8 +9,9 @@ comes first.
 | ---- | ----------------- | -------------------- |
 | **A. I2C IO expander** | A PRU bit-bangs 1 Mbit/s I2C. One LED runs along 8 LEDs, the PicoScope decodes the bus, and a PC window lights the same LED. | **Logic analyzer** (digital inputs D0/D1) |
 | **B. UART RX frames** | A PRU receives 4 Mbaud UART frames. `HelloWorld!` fills the PRU memory, shown in CCS. | **Signal generator** (AWG output) |
+| **C. UART print** | A PRU sends `Hello 2026` as 115200 baud UART, every 1.87 ms. The PicoScope decodes the text. | **Logic analyzer** (digital input D0) |
 
-Both demos run on the same board, but **only one at a time**: both use
+All three demos run on the same board, but **only one at a time**: all use
 ICSSG0 PRU0. To switch, load the other demo's R5F program (see "Switching
 between demos").
 
@@ -21,49 +22,52 @@ The source code is in the open-pru repository, under
 | ---- | ------ | -------------------- |
 | A | `i2c_io_expander/` (`i2c_io/` firmware, `visualizer/` PC window) | `dev_tley_electronica2026_i2c_io`, PR #188 |
 | B | `uart_rx_frame/uart_rx/` | `dev_tley_electronica2026_uart_rx`, PR #189 |
+| C | `uart_print/uart_print/` | `dev_tley_electronica2026_uart_print`, PR #190 |
 
-Until both PRs are merged, each demo exists only on its own branch.
+Until the PRs are merged, each demo exists only on its own branch.
 
 ---
 
 ## PicoScope settings at a glance
 
-| Setting | Demo A: I2C IO expander | Demo B: UART RX |
-| ------- | ----------------------- | --------------- |
-| Used for | Capture and decode | Send the test signal |
-| Inputs | **D0 = SCL, D1 = SDA** (digital) | none needed |
-| Output | none | **AWG** output → BP.31 |
-| Signal generator | **Off** | **Arbitrary**, CSV `helloworld_4mbaud_awg.csv`, **20 kHz**, amplitude **1 V**, offset **+1 V** |
-| Trigger | **Pulse width** on D0 (SCL), positive pulse **> 1 µs**, mode **Repeat**, about 20 % pre-trigger | not needed |
-| Serial decoder | **I2C**, Data = D1, Clock = D0, **Fast-mode Plus (1 Mbit/s)**. The visualizer adds it if missing. | none |
-| Timebase | About 100 µs across the screen (one I2C frame lasts 29 µs) | any |
-| MCP server (beta) | **On**, port **manual 18123** (the LED window needs it) | not needed |
-| What good looks like | One decoded frame per capture: `23 W 01 xx`, xx walks 01 → 80 | CCS shows `HelloWorld!` repeating in PRU memory |
+| Setting | Demo A: I2C IO expander | Demo B: UART RX | Demo C: UART print |
+| ------- | ----------------------- | --------------- | ------------------ |
+| Used for | Capture and decode | Send the test signal | Capture and decode |
+| Inputs | **D0 = SCL, D1 = SDA** (digital) | none needed | **D0 = UART TX** (digital, same wire as Demo A's SCL) |
+| Output | none | **AWG** output → BP.31 | none |
+| Signal generator | **Off** | **Arbitrary**, CSV `helloworld_4mbaud_awg.csv`, **20 kHz**, amplitude **1 V**, offset **+1 V** | **Off** |
+| Trigger | **Pulse width** on D0 (SCL), positive pulse **> 1 µs**, mode **Repeat**, about 20 % pre-trigger | not needed | **Pulse width** on D0, positive pulse **> 500 µs**, mode **Repeat**, about 10 % pre-trigger |
+| Serial decoder | **I2C**, Data = D1, Clock = D0, **Fast-mode Plus (1 Mbit/s)**. The visualizer adds it if missing. | none | **UART/RS-232** on D0, **115200** baud, 8 data bits, no parity, 1 stop bit, LSB first, idle high |
+| Timebase | About 100 µs across the screen (one I2C frame lasts 29 µs) | any | About 1 ms across the screen (the string lasts 871 µs) |
+| MCP server (beta) | **On**, port **manual 18123** (the LED window needs it) | not needed | not needed |
+| What good looks like | One decoded frame per capture: `23 W 01 xx`, xx walks 01 → 80 | CCS shows `HelloWorld!` repeating in PRU memory | `Hello 2026` decoded in every capture, no framing errors |
 
 **Tip:** once each setup works, save it as a PicoScope settings file
-(for example `demoA_i2c` and `demoB_uart`), so switching later is just
+(for example `demoA_i2c`, `demoB_uart` and `demoC_uart_tx`), so switching later is just
 "open settings".
 
 ---
 
-## Wiring (both demos, can stay connected)
+## Wiring (all demos, can stay connected)
 
-The demos use different pins, so all wires can stay connected. Demo A does
-not touch BP.31, and Demo B does not touch BP.32/33.
+All wires can stay connected. Demo A does not touch BP.31, Demo B does not
+touch BP.32/33, and Demo C uses only BP.33, the wire that already goes to
+PicoScope D0 for Demo A.
 
 The LaunchPad headers are labelled with **BoosterPack (BP) pin numbers**.
 There is no "J4.10" or "J4.8"; use the BP numbers below.
 
 | Signal | LaunchPad pin | Connect to | Demo |
 | ------ | ------------- | ---------- | ---- |
-| SCL | **BP.33** (J4) | TCA9538 SCL, PicoScope **D0** | A |
+| SCL / UART TX | **BP.33** (J4) | TCA9538 SCL, PicoScope **D0** | A + C |
 | SDA | **BP.32** (J4) | TCA9538 SDA, PicoScope **D1** | A |
 | 3V3 | BP.1 (J1) | TCA9538 VCC | A |
 | UART RX | **BP.31** (J4) | PicoScope **AWG** output (centre) | B |
-| GND | BP.20 (J2) | TCA9538 GND, PicoScope digital GND, AWG ground | A + B |
+| GND | BP.20 (J2) | TCA9538 GND, PicoScope digital GND, AWG ground | A + B + C |
 
 TCA9538 board: A1 = A0 = high (address 0x23), RESET high, LEDs with series
-resistors on P0 to P7. No I2C pull-ups needed.
+resistors on P0 to P7. No I2C pull-ups needed. During Demo C the TCA9538
+sees the UART signal on its SCL pin; ignore the LEDs then.
 
 ---
 
@@ -76,6 +80,8 @@ resistors on P0 to P7. No I2C pull-ups needed.
      `i2c_io_am243x-lp_r5fss0-0_freertos_ti-arm-clang`
    - Demo B: `uart_rx_am243x-lp_icss_g0_pru0_fw_ti-pru-cgt` and
      `uart_rx_am243x-lp_r5fss0-0_freertos_ti-arm-clang`
+   - Demo C: `uart_print_am243x-lp_icss_g0_pru0_fw_ti-pru-cgt` and
+     `uart_print_am243x-lp_r5fss0-0_freertos_ti-arm-clang`
    - Build each **PRU project first**, then its R5F project.
 2. **PicoScope 7** (7.2.30 or later) with the **MCP server** feature
    switched on, for Demo A's LED window. It is hidden behind a flag; see
@@ -195,11 +201,73 @@ Open a **Memory Browser**:
 
 ---
 
+## Demo C: UART print
+
+PRU0 bit-bangs a UART transmitter: 115200 baud, 8N1, on BP.33. It sends
+`Hello 2026`, keeps the line high for 1 ms, and sends it again, forever.
+There is no receiver on the board; the PicoScope is the receiver.
+
+### PicoScope setup
+1. Signal generator: **Off**.
+2. Digital inputs: enable **D0**. D1 can stay on; Demo C does not use it.
+3. Serial decoder: **UART/RS-232** on **D0**, **115200** baud, 8 data bits,
+   no parity, 1 stop bit, LSB first, idle high.
+4. Trigger: **Pulse width**, source **D0**, positive pulse **longer than
+   500 µs**, mode **Repeat**, pre-trigger about 10 %. The only high level
+   that long is the 1 ms gap after each string, so every capture starts at
+   the first character. Inside the string the line is never high for more
+   than 78 µs.
+5. Timebase: about 1 ms across the screen. The string lasts 871 µs.
+
+If the digital inputs are not available, channel A on BP.33 works the same
+way (DC, ±5 V, decoder and trigger on A, threshold about 1.65 V).
+
+### Run
+1. In CCS, load and run the R5F program
+   `uart_print_am243x-lp_r5fss0-0_freertos_ti-arm-clang`.
+   The UART console prints
+   `UART print: ICSSG0 PRU0 running, 115200 8N1 TX on PRG0_PRU0_GPO0 (BP.33)`.
+
+The start order does not matter: the transmitter repeats, and the trigger
+waits for the gap.
+
+### What good looks like
+- **PicoScope:** every capture decodes as `48 65 6C 6C 6F 20 32 30 32 36`,
+  shown as `Hello 2026`, with no framing errors. One character lasts
+  about 87 µs; the string repeats every 1.87 ms.
+- **CCS Memory Browser:** address **0x30000000**, format **Packed Char**,
+  shows `Hello 2026` followed by a 0 byte. The PRU reads the text from
+  there on every pass.
+
+### Optional: change the text live
+Because the PRU reads the string from memory on every pass, you can type a
+new one in the CCS Memory Browser at 0x30000000. The PicoScope shows it
+from the next pass on (within 2 ms).
+
+- End the text with a **0 byte**, or the PRU keeps sending what follows in
+  memory.
+- At most 255 bytes.
+- Not yet tried on hardware. If it does not work, reload the R5F program to
+  get `Hello 2026` back.
+
+### If something is wrong
+
+| You see | Do this |
+| ------- | ------- |
+| Flat line on D0 | The R5F program is not running, or a different demo is loaded. Reload `uart_print_am243x-lp_r5fss0-0_freertos_ti-arm-clang`. |
+| Signal there, but the decoder shows garbage or framing errors | Check the decoder: 115200 baud, 8N1, idle high, LSB first. The decoder must be on D0 (or on A, if you use channel A). |
+| Capture starts in the middle of the text | The trigger is not set as above (pulse width on D0, positive, > 500 µs). |
+| All characters decode, but slightly off in time | Normal: the PRU sends 0.37 % slow (114,780 baud). That is well within UART tolerance. |
+| Wrong baud rate, about 172 kbaud | The PRU clock is not 200 MHz. Do a system reset and reload the R5F program; it sets 200 MHz. |
+
+---
+
 ## Switching between demos
 
 1. Stop the current demo:
    - Demo A: close the LED window.
    - Demo B: set the signal generator to **Off** or **DC +2 V**.
+   - Demo C: nothing to stop.
 2. In PicoScope, switch to the other demo's settings (open the saved
    settings file, or use the table at the top).
 3. In CCS, do a **system reset** of the board, or power-cycle it. Then load
@@ -212,7 +280,7 @@ The wiring can stay as it is.
 
 ## Optional: show the simulator first
 
-Both demos started in TI's pru-simulator. To show that step:
+All three demos started in TI's pru-simulator. To show that step:
 
 ```
 pip install -r requirements.txt
@@ -227,6 +295,11 @@ python ui/server.py      # then open http://localhost:8080
   RX Inject** with `HelloWorld!` (`getting_started.md`, Example 6).
   **The PRU0 clock must be 200 MHz** (speed selector). At other clocks
   nothing is received.
+- **Demo C:** load `source/uart_print.asm`, set the Signal Graph window to
+  2048, click **● REC** and **Run**, then **▶ Decode** in the IO panel's
+  UART Decoder. It shows `Hello 2026` (`getting_started.md`, Example 11).
+  The simulator source sends the string once and halts; the board version
+  repeats it.
 
 ---
 
@@ -235,6 +308,7 @@ python ui/server.py      # then open http://localhost:8080
 - Demo A: open-pru `examples/electronica2026/i2c_io_expander/readme.md`,
   `i2c_io/readme.md`, `visualizer/readme.md`
 - Demo B: open-pru `examples/electronica2026/uart_rx_frame/uart_rx/readme.md`
+- Demo C: open-pru `examples/electronica2026/uart_print/uart_print/readme.md`
 - How each demo was ported: the `docs/porting_report.md` in each project
 - Session notes: `docs/handoff/2026-11-02-*.md` and
-  `docs/handoff/2026-11-03-uart-rx-hw-run-and-mcp-venv.md` (PR #102)
+  `docs/handoff/2026-11-03-*.md` (PR #102)
