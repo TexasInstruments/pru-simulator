@@ -25,6 +25,9 @@ from tests.test_idle_skip import (PDM_DELAY_PRODUCER_ASM, SD_CONSUMER,
 
 _TESTS = Path(__file__).parent
 PATTERN_PRODUCER_ASM = _TESTS / "asm" / "pdm_pattern_producer.asm"
+#: The demo pair shares no memory: all four declared range lists are empty.
+NO_RANGES = dict(producer_reads=[], consumer_writes=[],
+                 producer_writes=[], consumer_reads=[])
 
 
 def _pair(config, producer_src=None):
@@ -70,7 +73,7 @@ def _equivalence(config, cycles, skip, producer_src=None):
     a_sim, a_pins = _pair(config, producer_src)
     a_sim.idle_skip = skip
     out = a_sim.run_ahead("pru1", "pru0", cycles,
-                          producer_reads=[], consumer_writes=[])
+                          **NO_RANGES)
     assert out["breakpoint"] is None
     pru0_a = a_sim.cores["pru0"].counters.cycles
     assert out["consumer_cycles"] == pru0_a >= cycles
@@ -81,6 +84,9 @@ def _equivalence(config, cycles, skip, producer_src=None):
     _lockstep_to(b_sim, pru0_a)
     skipped = {name: c.skipped_cycles for name, c in a_sim.cores.items()}
     assert out["skipped"] == {"pru1": skipped["pru1"], "pru0": skipped["pru0"]}
+    # Upper bound on how far run-ahead's producer is past lockstep's lead.
+    ahead = a_sim.cores["pru1"].counters.cycles - b_sim.cores["pru1"].counters.cycles
+    assert 0 <= ahead <= out["producer_ahead_cycles"]
     _assert_same(a_sim, a_pins, b_sim, b_pins)
     return a_sim, out
 
@@ -113,7 +119,7 @@ def test_run_ahead_equals_lockstep_unequal_clocks(sim_config):
 @pytest.mark.parametrize("slice_cycles", [1, 7, 100_000])
 def test_slice_size_does_not_change_the_result(nominal_config, slice_cycles):
     a_sim, a_pins = _pair(nominal_config)
-    a_sim.run_ahead("pru1", "pru0", 30_000, producer_reads=[], consumer_writes=[],
+    a_sim.run_ahead("pru1", "pru0", 30_000, **NO_RANGES,
                     slice_cycles=slice_cycles)
     b_sim, b_pins = _pair(nominal_config)
     _lockstep_to(b_sim, a_sim.cores["pru0"].counters.cycles)
@@ -125,7 +131,7 @@ def test_repeated_calls_continue_where_the_last_stopped(nominal_config):
     total = 0
     for chunk in (5_000, 1, 12_345, 20_000):
         out = a_sim.run_ahead("pru1", "pru0", chunk,
-                              producer_reads=[], consumer_writes=[])
+                              **NO_RANGES)
         assert out["consumer_cycles"] >= chunk
         total += out["consumer_cycles"]
     assert a_sim.cores["pru0"].counters.cycles == total
@@ -138,7 +144,7 @@ def test_halted_producer_lets_the_consumer_finish(nominal_config):
     halting = PDM_DELAY_PRODUCER_ASM.read_text().replace(
         "    qba   LOOP\n", "    add r20, r20, 1\n    qbgt LOOP, r20, 250\n    halt\n")
     sim, _ = _pair(nominal_config, halting)
-    out = sim.run_ahead("pru1", "pru0", 60_000, producer_reads=[], consumer_writes=[])
+    out = sim.run_ahead("pru1", "pru0", 60_000, **NO_RANGES)
     assert sim.cores["pru1"].halted
     assert out["consumer_cycles"] >= 60_000
     assert out["consumer_cycles"] > out["producer_cycles"]
@@ -149,8 +155,8 @@ def test_halted_producer_lets_the_consumer_finish(nominal_config):
 # ---------------------------------------------------------------------------
 
 def _refused(sim, **kw):
-    kw.setdefault("producer_reads", [])
-    kw.setdefault("consumer_writes", [])
+    for key, value in NO_RANGES.items():
+        kw.setdefault(key, value)
     before = {name: c.counters.cycles for name, c in sim.cores.items()}
     with pytest.raises(RunAheadRefused) as err:
         sim.run_ahead("pru1", "pru0", 10_000, **kw)
@@ -158,14 +164,13 @@ def _refused(sim, **kw):
     assert err.value.reasons
     assert err.value.reasons == sim.one_way_violations(
         "pru1", "pru0", kw["producer_reads"], kw["consumer_writes"],
-        **{k: v for k, v in kw.items()
-           if k in ("producer_writes", "consumer_reads")})
+        producer_writes=kw["producer_writes"], consumer_reads=kw["consumer_reads"])
     return " | ".join(err.value.reasons)
 
 
 def test_demo_pair_has_no_violations(nominal_config):
     sim, _ = _pair(nominal_config)
-    assert sim.one_way_violations("pru1", "pru0", [], []) == []
+    assert sim.one_way_violations("pru1", "pru0", **NO_RANGES) == []
 
 
 def test_refuses_on_gpio_wire(nominal_config):
@@ -185,7 +190,8 @@ def test_refuses_on_range_overlap(nominal_config):
 def test_adjacent_ranges_do_not_overlap(nominal_config):
     sim, _ = _pair(nominal_config)
     assert sim.one_way_violations("pru1", "pru0", [(0x10000, 0x100)],
-                                  [(0x10100, 0x400)]) == []
+                                  [(0x10100, 0x400)], producer_writes=[(0x10100, 4)],
+                                  consumer_reads=[(0x10000, 0x100)]) == []
 
 
 def test_refuses_on_producer_write_consumer_read_overlap(nominal_config):
@@ -231,7 +237,7 @@ def test_mac_xfr_is_allowed(nominal_config):
     producer = PATTERN_PRODUCER_ASM.read_text().replace(
         "start:\n", "start:\n    xin   0, &r26, 4\n")
     sim, _ = _build(nominal_config, SD_CONSUMER, producer, _link_consumer)
-    assert sim.one_way_violations("pru1", "pru0", [], []) == []
+    assert sim.one_way_violations("pru1", "pru0", **NO_RANGES) == []
 
 
 @pytest.mark.parametrize("program", ["producer", "consumer"])
@@ -274,10 +280,10 @@ def test_enabled_iep_counter_alone_is_allowed(nominal_config):
     """A counting IEP nobody reads ends at the same count: no violation."""
     sim, _ = _pair(nominal_config)
     sim.iep.global_cfg = 0x551
-    assert sim.one_way_violations("pru1", "pru0", [], []) == []
+    assert sim.one_way_violations("pru1", "pru0", **NO_RANGES) == []
     a_sim, a_pins = _pair(nominal_config)
     a_sim.iep.global_cfg = 0x551
-    a_sim.run_ahead("pru1", "pru0", 20_000, producer_reads=[], consumer_writes=[])
+    a_sim.run_ahead("pru1", "pru0", 20_000, **NO_RANGES)
     b_sim, b_pins = _pair(nominal_config)
     b_sim.iep.global_cfg = 0x551
     _lockstep_to(b_sim, a_sim.cores["pru0"].counters.cycles)
@@ -294,7 +300,7 @@ def test_refuses_on_reversed_pdm_link(nominal_config):
 def test_refuses_same_core(nominal_config):
     sim, _ = _pair(nominal_config)
     with pytest.raises(ValueError):
-        sim.one_way_violations("pru1", "pru1", [], [])
+        sim.one_way_violations("pru1", "pru1", **NO_RANGES)
 
 
 # ---------------------------------------------------------------------------
@@ -328,12 +334,13 @@ def test_stops_at_breakpoint(nominal_config, skip):
     pru0 = sim.cores["pru0"]
     store = _first_pc(pru0, "SBBO")
     pru0.breakpoints.add(store)
-    out = sim.run_ahead("pru1", "pru0", 400_000, producer_reads=[], consumer_writes=[])
+    out = sim.run_ahead("pru1", "pru0", 400_000, **NO_RANGES)
     assert out["breakpoint"] == "pru0"
     assert pru0.pc == store
     assert out["consumer_cycles"] < 400_000
 
-    # PRU0 stops exactly where lockstep stops; PRU1 may be ahead by a slice.
+    # PRU0 stops exactly where lockstep stops. PRU1 (and with it the IEP
+    # time and the link queue) may be up to a slice ahead: reported.
     ref, _ = _pair(nominal_config)
     ref.idle_skip = skip
     ref.cores["pru0"].breakpoints.add(store)
@@ -341,9 +348,13 @@ def test_stops_at_breakpoint(nominal_config, skip):
     a, b = _state(sim), _state(ref)
     assert a["pru0"] == b["pru0"]
     assert a["mem"] == b["mem"]
+    ahead = sim.cores["pru1"].counters.cycles - ref.cores["pru1"].counters.cycles
+    assert 0 < ahead <= out["producer_ahead_cycles"] <= 4096 + 1
+    # 1-cycle producer instructions: the bound is exact here.
+    assert ahead == out["producer_ahead_cycles"]
 
     # Resuming from the breakpoint runs on to the next store.
-    out = sim.run_ahead("pru1", "pru0", 400_000, producer_reads=[], consumer_writes=[])
+    out = sim.run_ahead("pru1", "pru0", 400_000, **NO_RANGES)
     assert out["breakpoint"] == "pru0" and pru0.pc == store
     assert out["consumer_cycles"] > 0
 
@@ -363,8 +374,9 @@ def test_stops_at_producer_breakpoint_like_lockstep(nominal_config, skip):
     # Run past the first hit so the consumer has real work behind it.
     for _ in range(50):
         out = sim.run_ahead("pru1", "pru0", 400_000,
-                            producer_reads=[], consumer_writes=[])
+                            **NO_RANGES)
         assert out["breakpoint"] == "pru1"
+        assert out["producer_ahead_cycles"] == 0
         assert sim.cores["pru1"].pc == rise
 
     ref, ref_pins = _pair(nominal_config)
@@ -377,8 +389,9 @@ def test_stops_at_producer_breakpoint_like_lockstep(nominal_config, skip):
     assert _per_core(pins) == _per_core(ref_pins)
 
 
-def test_consumer_breakpoint_during_producer_catch_up_wins(nominal_config):
-    """PRU0 reaches its breakpoint before PRU1's: PRU0 is reported."""
+def test_earlier_consumer_breakpoint_is_reported(nominal_config):
+    """PRU0 reaches its breakpoint earlier in time than PRU1 reaches its
+    own: run-ahead reports PRU0, with its pc on the breakpoint."""
     sim, _ = _pair(nominal_config)
     pru0, pru1 = sim.cores["pru0"], sim.cores["pru1"]
     store = _first_pc(pru0, "SBBO")
@@ -387,7 +400,170 @@ def test_consumer_breakpoint_during_producer_catch_up_wins(nominal_config):
     # PRU0's first store (~1400 cycles in) comes first in time.
     sim.step("pru1", 3000)
     pru1.breakpoints.add(_first_pc(pru1, "JMP"))
-    out = sim.run_ahead("pru1", "pru0", 400_000, producer_reads=[],
-                        consumer_writes=[], slice_cycles=4096)
+    out = sim.run_ahead("pru1", "pru0", 400_000, **NO_RANGES, slice_cycles=4096)
     assert out["breakpoint"] == "pru0"
     assert pru0.pc == store
+
+
+def _consumer_alone_to_breakpoint(sim, hits):
+    """Exact reference without lockstep: PRU1 far ahead, then PRU0 alone,
+    stopping at each breakpoint it reaches."""
+    pru0, pru1 = sim.cores["pru0"], sim.cores["pru1"]
+    while pru1.counters.cycles < 40_000:
+        pru1.step()
+    for _ in range(hits):
+        pru0.step()
+        while pru0.pc not in pru0.breakpoints:
+            pru0.step()
+
+
+@pytest.mark.parametrize("skip", [True, False], ids=["skip_on", "skip_off"])
+@pytest.mark.parametrize("hits", [1, 5])
+def test_fast_consumer_stops_at_breakpoint_lockstep_steps_over(sim_config, skip, hits):
+    """PRU0 at 400 MHz, PRU1 at 200 MHz: lockstep runs PRU0 two instructions
+    per lead step and only checks breakpoints between lead steps, so it can
+    step over a PRU0 breakpoint. Run-ahead stops on it (the intended stop;
+    lockstep is unchanged)."""
+    config = sim_config(pru_clock_mhz=400.0, pru1_clock_mhz=200.0)
+    sim, _ = _pair(config)
+    sim.idle_skip = skip
+    pru0 = sim.cores["pru0"]
+    store = _first_pc(pru0, "SBBO")
+    pru0.breakpoints.add(store)
+    for _ in range(hits):
+        out = sim.run_ahead("pru1", "pru0", 2_000_000, **NO_RANGES)
+        assert out["breakpoint"] == "pru0"
+        assert pru0.pc == store
+    ref, _ = _pair(config)
+    ref.cores["pru0"].breakpoints.add(store)
+    _consumer_alone_to_breakpoint(ref, hits)
+    assert ref.cores["pru0"].pc == store
+    a, b = _state(sim), _state(ref)
+    assert a["pru0"] == b["pru0"]
+    assert a["mem"] == b["mem"]
+
+
+def test_range_lists_are_required(nominal_config):
+    sim, _ = _pair(nominal_config)
+    with pytest.raises(TypeError):
+        sim.run_ahead("pru1", "pru0", 100, producer_reads=[], consumer_writes=[])
+    with pytest.raises(TypeError):
+        sim.one_way_violations("pru1", "pru0", [], [])
+    assert sim.cores["pru0"].counters.cycles == 0
+
+
+# ---------------------------------------------------------------------------
+# Cross-core register windows: static scan and run-time guard
+# ---------------------------------------------------------------------------
+
+def _with_access(producer_extra="", consumer_extra=""):
+    producer = PATTERN_PRODUCER_ASM.read_text().replace(
+        "start:\n", "start:\n" + producer_extra)
+    return consumer_extra + SD_CONSUMER, producer
+
+
+@pytest.mark.parametrize("program,addr,what", [
+    ("producer", 0x26048, "SD config"),        # PRU0 SD CLK_SEL0
+    ("producer", 0x26008, "GPCFG"),            # GPCFG0
+    ("producer", 0x260E4, "PERIF"),
+    ("producer", 0x22020, "CTRL"),             # PRU0 CTBIR0
+    ("consumer", 0x2600C, "GPCFG"),            # GPCFG1
+    ("consumer", 0x26100, "PERIF"),
+    ("consumer", 0x24024, "CTRL"),             # PRU1 CTBIR1
+])
+@pytest.mark.parametrize("op", ["lbbo", "sbbo"])
+def test_refuses_on_other_cores_register_block(nominal_config, program, addr, what, op):
+    access = f"    ldi32 r10, 0x{addr:08X}\n    {op}  &r11, r10, 0, 4\n"
+    consumer, producer = _with_access(**{f"{program}_extra": access})
+    sim, _ = _build(nominal_config, consumer, producer, _link_consumer)
+    text = _refused(sim)
+    owner = "pru0" if program == "producer" else "pru1"
+    accessor = "pru1" if program == "producer" else "pru0"
+    assert f"{accessor} program accesses {owner}'s {what}" in text
+
+
+def test_producer_writing_sd_config_is_refused(nominal_config):
+    consumer, producer = _with_access(
+        producer_extra="    ldi32 r10, 0x00026048\n    sbbo  &r11, r10, 0, 4\n")
+    sim, _ = _build(nominal_config, consumer, producer, _link_consumer)
+    assert "pru1 program accesses pru0's SD config" in _refused(sim)
+
+
+@pytest.mark.parametrize("program,addr", [("producer", 0x2600C), ("producer", 0x24020),
+                                          ("consumer", 0x26048), ("consumer", 0x26008),
+                                          ("consumer", 0x22020)])
+def test_own_register_blocks_are_allowed(nominal_config, program, addr):
+    access = f"    ldi32 r10, 0x{addr:08X}\n    lbbo  &r11, r10, 0, 4\n"
+    consumer, producer = _with_access(**{f"{program}_extra": access})
+    sim, _ = _build(nominal_config, consumer, producer, _link_consumer)
+    assert sim.one_way_violations("pru1", "pru0", **NO_RANGES) == []
+
+
+# Addresses the static scan cannot see: built by a shift at run time.
+_COMPUTED_SD_READ = ("    ldi   r10, 0x4C09\n"      # 0x4C09 << 3 = 0x26048
+                     "    lsl   r10, r10, 3\n"
+                     "    lbbo  &r11, r10, 0, 4\n")
+_COMPUTED_IEP_READ = ("    ldi   r10, 0x5C02\n"     # 0x5C02 << 3 = 0x2E010
+                      "    lsl   r10, r10, 3\n"
+                       "    lbbo  &r11, r10, 0, 4\n")
+
+
+def _guard_bus_clean(sim):
+    return "read" not in sim.memory.__dict__ and "write" not in sim.memory.__dict__
+
+
+@pytest.mark.parametrize("skip", [True, False], ids=["skip_on", "skip_off"])
+@pytest.mark.parametrize("program,code,addr,core", [
+    ("producer", _COMPUTED_SD_READ, 0x26048, "pru1"),
+    ("consumer", _COMPUTED_IEP_READ, 0x2E010, "pru0"),
+])
+def test_guard_refuses_computed_access_at_run_time(nominal_config, skip, program,
+                                                   code, addr, core):
+    consumer, producer = _with_access(**{f"{program}_extra": code})
+    sim, _ = _build(nominal_config, consumer, producer, _link_consumer)
+    sim.idle_skip = skip
+    assert sim.one_way_violations("pru1", "pru0", **NO_RANGES) == []
+    with pytest.raises(RunAheadRefused) as err:
+        sim.run_ahead("pru1", "pru0", 10_000, **NO_RANGES)
+    [reason] = err.value.reasons
+    lbbo = _first_pc(sim.cores[core], "LBBO")
+    assert reason.startswith(f"{core} pc {lbbo} accessed ")
+    assert f"0x{addr:X}" in reason
+    assert "not lockstep-consistent" in reason
+    assert sim.cores[core].pc == lbbo           # cut short before the access
+    assert _guard_bus_clean(sim)
+
+    # The guard is gone: a lockstep run through the same access works. (A
+    # PRU0 left a slice behind needs several calls to catch up: at most
+    # 1000 follower steps per lead step.)
+    while sim.cores[core].pc <= lbbo:
+        result = sim.step_paced_many("pru1", ["pru0"], 1)
+        assert result["complete"] or result["reason"] == "pacing_incomplete", result
+    assert sim.cores[core].fault is None
+
+
+def test_guard_is_removed_after_a_normal_return(nominal_config):
+    sim, _ = _pair(nominal_config)
+    plain = sim.memory.read
+    sim.run_ahead("pru1", "pru0", 5_000, **NO_RANGES)
+    assert _guard_bus_clean(sim)
+    assert sim.memory.read == plain
+    # A later IEP read by stepping (outside run_ahead) is not guarded.
+    assert len(sim.memory_read(0x2E010, 4)) == 4
+    assert sim.load("pru0", "    ldi32 r10, 0x0002E010\n    lbbo  &r11, r10, 0, 4\n") == []
+    sim.step("pru0", 3)
+    assert sim.cores["pru0"].fault is None
+
+
+def test_guard_is_removed_when_run_ahead_raises_otherwise(nominal_config):
+    """Any exception out of the run (here a step that raises) restores the bus."""
+    sim, _ = _pair(nominal_config)
+
+    def boom(*_a, **_k):
+        raise KeyError("boom")
+
+    sim.cores["pru0"].step = boom
+    sim.cores["pru0"].step_run = boom
+    with pytest.raises(KeyError):
+        sim.run_ahead("pru1", "pru0", 5_000, **NO_RANGES)
+    assert _guard_bus_clean(sim)
