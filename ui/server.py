@@ -190,6 +190,8 @@ def _snapshot_core(c) -> dict:
         "cycles": c.counters.cycles,
         "stall_cycles": c.counters.stall_cycles,
         "instruction_count": c.counters.instruction_count,
+        "skipped_cycles": c.skipped_cycles,
+        "step_start_cycle": c.step_start_cycle,
         "sd": sd.snapshot() if sd is not None else None,
         "perif": perif.snapshot() if perif is not None else None,
         "i2c_device": i2c,
@@ -216,6 +218,11 @@ def _snapshot(core: str) -> dict:
         "mem": [bytes(r._data) for r in sim.memory.regions],
         "iep": sim.iep.snapshot(),
         "paced_pending": copy.deepcopy(sim._paced_pending),
+        # The PDM link's queued edges move with both cores. A snapshot only
+        # restores into the same link object (setup and teardown clear the
+        # history, so an older one never meets a different link).
+        "pdm_link": ((sim._pdm_link, sim._pdm_link.snapshot())
+                     if sim._pdm_link is not None else None),
     }
 
 
@@ -233,6 +240,8 @@ def _restore_core(c, snap: dict) -> None:
     c.counters.cycles = snap["cycles"]
     c.counters.stall_cycles = snap["stall_cycles"]
     c.counters.instruction_count = snap["instruction_count"]
+    c.skipped_cycles = snap.get("skipped_cycles", c.skipped_cycles)
+    c.step_start_cycle = snap.get("step_start_cycle", c.step_start_cycle)
     if snap.get("sd") is not None and c.io_port.sd_filter is not None:
         c.io_port.sd_filter.restore(snap["sd"])
     if snap.get("perif") is not None and c.io_port.perif is not None:
@@ -260,6 +269,9 @@ def _restore(core: str, snap: dict) -> None:
         if i < len(sim.memory.regions):
             sim.memory.regions[i]._data[:] = region_data
     sim._paced_pending = copy.deepcopy(snap.get("paced_pending", {}))
+    saved_link = snap.get("pdm_link")
+    if saved_link is not None and saved_link[0] is sim._pdm_link:
+        sim._pdm_link.restore(saved_link[1])
     if snap.get("iep") is not None:
         sim.iep.restore(snap["iep"])
         _apply_iep_override()
@@ -639,6 +651,7 @@ async def _pdm_setup(websocket, left, right, swap) -> bool:
         await _pdm_error(websocket, str(exc))
         return False
     _pdm, _pdm_clips = demo, {"left": left, "right": right, "swap": swap}
+    _clear_history()          # a step-back must not cross the setup
     await websocket.send_json({"type": "pdm_notice", "text": PDM_PROGRAMS_NOTICE})
     return True
 

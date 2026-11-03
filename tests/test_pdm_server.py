@@ -501,3 +501,33 @@ def test_producer_running_alone_hits_the_queue_cap_cleanly(server):
         assert [m for m in msgs if m["type"] == "error"]
         state = _ws_do(ws, {"action": "get_state", "core": "rtu0"})[-1]
         assert state["type"] == "state" and state["core"] == "rtu0"
+
+
+def test_setup_clears_the_step_history(server):
+    client = server()
+    with client.websocket_connect("/ws") as ws:
+        _ws_do(ws, {"action": "step", "core": "pru0"})
+        assert srv._history_order
+        _setup(ws)
+        assert not srv._history_order
+
+
+def test_step_back_restores_the_link_and_skipped_cycles(server):
+    client = server()
+    with client.websocket_connect("/ws") as ws:
+        _setup(ws)
+        _run(ws)
+        sim = srv.sim
+        link, pru0, pru1 = sim._pdm_link, sim.cores["pru0"], sim.cores["pru1"]
+        _ws_do(ws, {"action": "step", "core": "pru1", "count": 300})   # queue edges
+        before = (link.snapshot(), pru1.skipped_cycles, pru1.counters.cycles,
+                  pru0.counters.cycles)
+        assert before[0]["queue"] and before[1] > 0
+        _ws_do(ws, {"action": "step", "core": "pru0", "count": 100})   # takes edges
+        _ws_do(ws, {"action": "run", "core": "pru1", "max_steps": 2000})   # skips
+        assert pru1.skipped_cycles > before[1] and link.snapshot() != before[0]
+        _ws_do(ws, {"action": "step_back", "core": "pru0"}, kind="state")
+        assert (link.snapshot(), pru1.skipped_cycles, pru1.counters.cycles,
+                pru0.counters.cycles) == before
+        status = _run(ws)[-1]
+        assert all(0 <= v <= 1 for v in status["load"].values()), status["load"]
