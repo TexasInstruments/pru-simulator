@@ -82,6 +82,7 @@ class PdmDemo:
         self.notices: list[str] = []
         self.history: dict[int, list[int]] = {ch: [] for ch in CHANNELS}
         self.overrun: str | None = None
+        self.breakpoint: str | None = None   # core the last chunk stopped at, else None
         self.clip_len = 0
         self._speed: deque[tuple[float, float]] = deque(maxlen=SPEED_WINDOW)
 
@@ -136,6 +137,7 @@ class PdmDemo:
         self.history = {ch: [] for ch in CHANNELS}
         self.overrun = None
         self._speed.clear()
+        self.breakpoint = None
         self.notices = []
         self.mode = "run-ahead" if self.run_ahead else "lockstep"
         if self.run_ahead:
@@ -162,19 +164,27 @@ class PdmDemo:
         """Advance PRU0 by about ``chunk_cycles`` cycles and drain the rings.
 
         Returns ``{"new": {ch: (start_index, samples)}, "status": status()}``.
+        ``breakpoint`` names the core the chunk stopped at (run-ahead stops at
+        the first breakpoint; lockstep only reports a core that ends on one),
+        else None; the next chunk resumes past it.
         Raises RuntimeError on a ring overrun (also kept in
         ``status()["overrun"]``, and raised again on every later call until
         the next ``setup``) or when a core faults or stops.
         """
         if self.overrun is not None:
             raise RuntimeError(self.overrun)
+        self.breakpoint = None
         pru0 = self.sim.cores["pru0"]
         start_ms = self._audio_ms()
         t0 = time.perf_counter()
         if self.mode == "run-ahead":
-            self.sim.run_ahead("pru1", "pru0", self._chunk_cycles, **RANGES)
+            self.breakpoint = self.sim.run_ahead(
+                "pru1", "pru0", self._chunk_cycles, **RANGES)["breakpoint"]
         else:
             self._lockstep(pru0.counters.cycles + self._chunk_cycles)
+            self.breakpoint = next((name for name in ("pru0", "pru1")
+                                    if self.sim.cores[name].pc
+                                    in self.sim.cores[name].breakpoints), None)
         for name in ("pru1", "pru0"):
             core = self.sim.cores[name]
             if core.fault is not None or core.halted:
