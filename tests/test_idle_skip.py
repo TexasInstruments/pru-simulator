@@ -577,3 +577,88 @@ def test_mcp_step_never_skips(nominal_config):
     core = api.sim.cores["pru1"]
     assert core.counters.instruction_count == 500
     assert core.skipped_cycles == 0
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1: delay loop on the PdmLink consumer, run_until max_steps
+# ---------------------------------------------------------------------------
+
+# PRU0: a 200-NOP delay loop before each valid poll. The core is the link's
+# consumer, so stepping applies producer edges before every NOP and raises
+# once a NOP starts past the producer's horizon.
+CONSUMER_DELAY_LOOP = """\
+    ldi32 r30, 0x02000000
+top:
+    loop  dly, 200
+    nop
+dly:
+    qbbc  top, r31, 28
+    mov   r5, r31
+    set   r31, r31, 24
+    qba   top
+"""
+
+
+def _consumer_delay_sim(config):
+    sim, pins = _build(config, CONSUMER_DELAY_LOOP, None)
+    load_pattern_producer(sim)
+    _link_consumer(sim)
+    return sim, pins
+
+
+def test_consumer_delay_loop_collapse_is_exact(nominal_config):
+    def run(skip, stop):
+        sim, pins = _consumer_delay_sim(nominal_config)
+        producer, consumer = sim.cores["pru1"], sim.cores["pru0"]
+        while producer.counters.cycles < 20_000:
+            producer.step()
+        while consumer.counters.cycles < stop:
+            if skip:
+                consumer.step_run(stop - consumer.counters.cycles)
+            else:
+                consumer.step()
+        return sim, pins
+
+    # 150 cycles ends inside the first delay loop; 15 000 crosses many.
+    for stop in (150, 15_000):
+        on_sim, on_pins = run(True, stop)
+        off_sim, off_pins = run(False, on_sim.cores["pru0"].counters.cycles)
+        on, off = _state(on_sim), _state(off_sim)
+        for key in off:
+            assert on[key] == off[key], (stop, key)
+        assert on_pins == off_pins
+        assert on_sim._pdm_link.sampled_bits == off_sim._pdm_link.sampled_bits
+        assert on_sim.cores["pru0"].skipped_cycles > 0.5 * stop
+
+
+def test_consumer_ahead_error_point_matches_stepping_with_skip(nominal_config):
+    from pru_io.pdm_link import PdmLinkError
+    out = {}
+    for skip in (True, False):
+        sim, _ = _consumer_delay_sim(nominal_config)
+        producer, consumer = sim.cores["pru1"], sim.cores["pru0"]
+        while producer.counters.cycles < 500:
+            producer.step()
+        with pytest.raises(PdmLinkError) as err:
+            for _ in range(100_000):
+                consumer.step_run(1 << 16) if skip else consumer.step()
+        out[skip] = (consumer.counters.cycles, consumer.pc, str(err.value),
+                     _state(sim), consumer.skipped_cycles > 0)
+    assert out[True][:4] == out[False][:4]
+    assert out[True][4], "the delay loop did not collapse at all"
+
+
+def test_run_until_max_steps_stop_matches_stepping(nominal_config):
+    results = {}
+    for skip in (True, False):
+        api = _mcp(nominal_config)
+        api.sim.idle_skip = skip
+        assert api.sim.load("pru1", _pdm_clk()) == []
+        out = api.pru_run_until("pru1", "halt", max_steps=200)
+        core = api.sim.cores["pru1"]
+        results[skip] = (out, core.counters.cycles, core.counters.instruction_count,
+                         core.pc, core.skipped_cycles)
+    on, off = results[True], results[False]
+    assert on[:4] == off[:4]
+    assert on[0]["reason"] == "max_steps" and on[2] == 200
+    assert on[4] > 0 and off[4] == 0

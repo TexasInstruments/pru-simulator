@@ -881,7 +881,17 @@ class PRUCore:
             body = self._nop_body_len(loop.start_address, loop.end_address)
             if body and not any(a in breakpoints for a in range(loop.start_address,
                                                                 loop.end_address)):
-                k = min(loop.count, max_cycles // body)
+                budget = max_cycles
+                sd = io_port.sd_filter
+                link = sd.pin_link if sd is not None else None
+                if link is not None and link.consumer is self:
+                    # step() pre-ticks the link before every instruction, NOPs
+                    # included, and raises once a start passes the horizon.
+                    # Keep every start of the span within the horizon.
+                    starts = self._starts_within_horizon(link, horizon)
+                    if starts is not None:
+                        budget = min(budget, starts)
+                k = min(loop.count, budget // body)
                 if k >= 1:
                     return ("loop", k * body)
             return None
@@ -935,24 +945,34 @@ class PRUCore:
             if not valid:
                 return None
             te = None
-        cycles = self.counters.cycles
-        time_of = link.time_of
-        name = self.name.lower()
-        t0 = time_of(name, cycles)
-        unit = time_of(name, cycles + 1) - t0
-        if unit <= 0:
-            return None
         k = max_cycles
         if te is not None:
             # Iteration j starts at t0 + j*unit; count the starts before te.
+            t0, unit = self._link_clock(link)
             k = min(k, max(0, -((t0 - te) // unit)))
-        h = link.horizon() if horizon is None else horizon
-        if h != math.inf:
-            # The consumer may not start an instruction past the horizon.
-            k = min(k, 0 if h < t0 else (h - t0) // unit + 1)
+        starts = self._starts_within_horizon(link, horizon)
+        if starts is not None:
+            k = min(k, starts)
         if k < 1:
             return None
         return ("poll", int(k))
+
+    def _link_clock(self, link) -> tuple[int, int]:
+        """(time of the current cycle, time units per cycle) on the link."""
+        cycles = self.counters.cycles
+        name = self.name.lower()
+        t0 = link.time_of(name, cycles)
+        return t0, link.time_of(name, cycles + 1) - t0
+
+    def _starts_within_horizon(self, link, horizon: int | float | None) -> int | None:
+        """How many consecutive 1-cycle instruction starts, from now, lie at
+        or before the producer horizon (the consumer may not start past it).
+        None = unbounded. *horizon* overrides ``link.horizon()``."""
+        h = link.horizon() if horizon is None else horizon
+        if h == math.inf:
+            return None
+        t0, unit = self._link_clock(link)
+        return 0 if h < t0 else int((h - t0) // unit + 1)
 
     def _nop_body_len(self, start: int, end: int) -> int:
         """Length of [start, end) if every instruction in it is a NOP, else 0."""
@@ -981,6 +1001,11 @@ class PRUCore:
                 # The last NOP retired at end_address and ended the loop.
                 self.pc = loop.end_address
                 self.loop_state = None
+            sd = self.io_port.sd_filter
+            link = sd.pin_link if sd is not None else None
+            if link is not None and link.consumer is self:
+                # As stepping: every edge up to the last NOP's start applied.
+                link.advance_consumer(last_start)
         else:
             # Each skipped iteration is one taken 1-cycle branch: pc stays.
             # Stepping pre-ticks the link at every iteration start, the last

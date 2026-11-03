@@ -327,7 +327,8 @@ class PRUSimulatorMCP:
             cycles_goal = int(condition[7:], 0) + 1   # first count that meets it
 
         reason = None
-        for _ in range(max_steps):
+        steps = 0
+        while steps < max_steps:
             if condition_met():
                 reason = "halted" if condition == "halt" else "condition_met"
                 break
@@ -335,13 +336,15 @@ class PRUSimulatorMCP:
                 reason = "breakpoint"
                 break
             if skip:
-                budget = IDLE_SKIP_MAX_CYCLES
+                # A skipped span of n 1-cycle instructions is n steps, so the
+                # span may not run past max_steps either.
+                budget = min(IDLE_SKIP_MAX_CYCLES, max_steps - steps)
                 if max_cycles:
                     budget = min(budget, max_cycles - (c.counters.cycles - start_cycles))
                 if cycles_goal is not None:
                     budget = min(budget, cycles_goal - c.counters.cycles)
                 if c.idle_span(budget):
-                    c.step_run(budget)
+                    steps += c.step_run(budget)
                     continue
             if max_cycles:
                 # An instruction may add memory stall cycles.  Predict it on a
@@ -366,6 +369,7 @@ class PRUSimulatorMCP:
                         "condition_met": False,
                     }
             c.step()
+            steps += 1
         if reason is None and condition_met():
             reason = "halted" if condition == "halt" else "condition_met"
         return {
