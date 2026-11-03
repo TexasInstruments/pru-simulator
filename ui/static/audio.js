@@ -176,8 +176,9 @@
       if (!ctx) return;
       const W = canvas.width;
       const H = canvas.height;
-      // Text follows the canvas height, so booth mode is readable from a distance.
-      const font = Math.round(Math.min(48, Math.max(9, H * 0.07)));
+      // Text follows the canvas height, so booth mode is readable from a distance;
+      // the width caps it so the time-axis labels do not run into each other.
+      const font = Math.round(Math.min(48, Math.max(9, Math.min(H * 0.07, W * 0.035))));
       const left = Math.round(font * 3.6);
       const right = Math.round(font * 4.6);
       const top = Math.round(font * 0.8);
