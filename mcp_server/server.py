@@ -12,9 +12,10 @@ import random
 # Allow imports from parent directory when run directly
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from simulator import Simulator
+from simulator import IDLE_SKIP_MAX_CYCLES, Simulator
 from pru_io.device_profiles import create_device, discover_device_profiles
 from pru_io.device_model import PUSH_PULL
+from pru_io.pdm_link import PdmLinkError
 from mcp_server.vcd_export import export_pin_waveform
 
 
@@ -317,14 +318,40 @@ class PRUSimulatorMCP:
                 return io_state[f"{kind}_pins"][index] == target
             raise ValueError(f"Unsupported run condition: {condition}")
 
+        # Idle skip (Simulator.idle_skip): a NOP delay loop or SD-valid spin
+        # runs as one step. Such a span changes no register, memory or pin,
+        # so only conditions on time need a budget. GPI conditions never skip
+        # (attached devices may move a pin inside the span), and neither does
+        # reg:r31: R31 reads the GPI pins and the SD status, which move inside
+        # a span.
+        reads_inputs = condition.startswith(("pin:", "gpi:")) or (
+            condition.startswith("reg:")
+            and condition[4:].split("==", 1)[0].strip().lower() == "r31")
+        skip = getattr(self.sim, "idle_skip", False) and not reads_inputs
+        cycles_goal = None
+        if skip and condition.startswith("cycles>"):
+            cycles_goal = int(condition[7:], 0) + 1   # first count that meets it
+
         reason = None
-        for _ in range(max_steps):
+        steps = 0
+        while steps < max_steps:
             if condition_met():
                 reason = "halted" if condition == "halt" else "condition_met"
                 break
             if c.pc in c.breakpoints:
                 reason = "breakpoint"
                 break
+            if skip:
+                # A skipped span of n 1-cycle instructions is n steps, so the
+                # span may not run past max_steps either.
+                budget = min(IDLE_SKIP_MAX_CYCLES, max_steps - steps)
+                if max_cycles:
+                    budget = min(budget, max_cycles - (c.counters.cycles - start_cycles))
+                if cycles_goal is not None:
+                    budget = min(budget, cycles_goal - c.counters.cycles)
+                if c.idle_span(budget):
+                    steps += c.step_run(budget)
+                    continue
             if max_cycles:
                 # An instruction may add memory stall cycles.  Predict it on a
                 # private copy, and do not mutate the live simulator unless the
@@ -348,6 +375,7 @@ class PRUSimulatorMCP:
                         "condition_met": False,
                     }
             c.step()
+            steps += 1
         if reason is None and condition_met():
             reason = "halted" if condition == "halt" else "condition_met"
         return {
@@ -548,22 +576,40 @@ class PRUSimulatorMCP:
         return {"cores": self.sim.status()}
 
 
-def build_server():
+def build_server(mcp_wrapper: PRUSimulatorMCP | None = None):
     """Build an MCP server with every public PRUSimulatorMCP method registered as a tool.
 
-    Requires the 'mcp' SDK (>= 2.0) to be installed.
+    *mcp_wrapper* defaults to a new ``PRUSimulatorMCP()``. Requires the 'mcp'
+    SDK (>= 2.0) to be installed.
     """
+    import functools
     import inspect
     from mcp.server import MCPServer
+    from mcp.server.mcpserver.exceptions import ToolError
 
     server = MCPServer("pru-simulator")
-    mcp_wrapper = PRUSimulatorMCP()
+    if mcp_wrapper is None:
+        mcp_wrapper = PRUSimulatorMCP()
 
-    # The input schema of each tool is derived from the method signature.
+    def reported(method):
+        # The SDK turns any exception into an error result but keeps the text
+        # of anything but a ToolError on the server. A PdmLinkError (a core
+        # wired to the PDM demo ran past its partner, or the link's queue is
+        # full) is the caller's to read, so it goes out as a ToolError.
+        @functools.wraps(method)
+        def call(*args, **kwargs):
+            try:
+                return method(*args, **kwargs)
+            except PdmLinkError as exc:
+                raise ToolError(str(exc)) from exc
+        return call
+
+    # The input schema of each tool is derived from the method signature
+    # (functools.wraps keeps it visible through __wrapped__).
     for name, method in inspect.getmembers(mcp_wrapper, predicate=inspect.ismethod):
         if name.startswith("_"):
             continue
-        server.add_tool(method, name=name, description=method.__doc__ or name)
+        server.add_tool(reported(method), name=name, description=method.__doc__ or name)
     return server
 
 

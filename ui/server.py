@@ -12,6 +12,7 @@ import shutil
 import sys
 import tempfile
 import time
+import wave
 
 # Ensure project root is on path so simulator can be imported
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -21,7 +22,7 @@ import base64
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from simulator import Simulator
+from simulator import IDLE_SKIP_MAX_CYCLES, RunAheadRefused, Simulator
 from mcp_server.server import PRUSimulatorMCP
 from core.branch import LoopState
 from perif.gpcfg import MUX_SD
@@ -47,6 +48,9 @@ _trailing_publish = None  # timer that publishes a withheld state if the owner g
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 config_path = os.path.join(PROJECT_ROOT, "memory.cfg")
 SOURCE_DIR = pathlib.Path(PROJECT_ROOT) / "source"
+sys.path.insert(0, str(SOURCE_DIR))   # the pdm package lives in source/pdm
+from pdm import pdm_layout                      # noqa: E402
+from pdm.pdm_demo import PdmDemo                # noqa: E402
 
 
 def _safe_source_subpath(path: str) -> pathlib.Path | None:
@@ -186,6 +190,8 @@ def _snapshot_core(c) -> dict:
         "cycles": c.counters.cycles,
         "stall_cycles": c.counters.stall_cycles,
         "instruction_count": c.counters.instruction_count,
+        "skipped_cycles": c.skipped_cycles,
+        "step_start_cycle": c.step_start_cycle,
         "sd": sd.snapshot() if sd is not None else None,
         "perif": perif.snapshot() if perif is not None else None,
         "i2c_device": i2c,
@@ -212,6 +218,11 @@ def _snapshot(core: str) -> dict:
         "mem": [bytes(r._data) for r in sim.memory.regions],
         "iep": sim.iep.snapshot(),
         "paced_pending": copy.deepcopy(sim._paced_pending),
+        # The PDM link's queued edges move with both cores. A snapshot only
+        # restores into the same link object (setup and teardown clear the
+        # history, so an older one never meets a different link).
+        "pdm_link": ((sim._pdm_link, sim._pdm_link.snapshot())
+                     if sim._pdm_link is not None else None),
     }
 
 
@@ -229,6 +240,8 @@ def _restore_core(c, snap: dict) -> None:
     c.counters.cycles = snap["cycles"]
     c.counters.stall_cycles = snap["stall_cycles"]
     c.counters.instruction_count = snap["instruction_count"]
+    c.skipped_cycles = snap.get("skipped_cycles", c.skipped_cycles)
+    c.step_start_cycle = snap.get("step_start_cycle", c.step_start_cycle)
     if snap.get("sd") is not None and c.io_port.sd_filter is not None:
         c.io_port.sd_filter.restore(snap["sd"])
     if snap.get("perif") is not None and c.io_port.perif is not None:
@@ -256,6 +269,9 @@ def _restore(core: str, snap: dict) -> None:
         if i < len(sim.memory.regions):
             sim.memory.regions[i]._data[:] = region_data
     sim._paced_pending = copy.deepcopy(snap.get("paced_pending", {}))
+    saved_link = snap.get("pdm_link")
+    if saved_link is not None and saved_link[0] is sim._pdm_link:
+        sim._pdm_link.restore(saved_link[1])
     if snap.get("iep") is not None:
         sim.iep.restore(snap["iep"])
         _apply_iep_override()
@@ -382,6 +398,7 @@ async def put_config(request: Request):
     text = (await request.body()).decode("utf-8")
     async with _config_lock:
         try:
+            _pdm_teardown()
             sim = _replace_config(text)
             _iep_clock_override = None   # a saved config speaks for itself
             _clear_history()
@@ -467,9 +484,34 @@ async def get_clock_speed():
     return _clock_speed_state()
 
 
+def _apply_clock_speed(mhz, group=None) -> None:
+    """Write *mhz* to memory.cfg for both clock groups (or only *group*), rebuild
+    the simulator from it and stop execution. Raises on a bad config; *mhz*
+    and *group* are validated by the caller."""
+    global sim
+    with open(config_path, "r") as f:
+        text = f.read()
+    if group == 0:
+        cfg = configparser.ConfigParser()
+        cfg.read_string(text, source=config_path)
+        # An omitted second clock inherits the first. Pin its old rate
+        # before changing the first so the other cores keep their rate.
+        if not cfg.has_option("device", "pru1_clock_mhz") and mhz != sim._pru1_clock_mhz:
+            text = _set_ini_value(text, "device", "pru1_clock_mhz", str(sim._pru1_clock_mhz))
+    if group is None or group == 0:
+        text = _set_ini_value(text, "device", "pru_clock_mhz", str(mhz))
+    if group is None or group == 1:
+        text = _set_ini_value(text, "device", "pru1_clock_mhz", str(mhz))
+    _pdm_teardown()
+    sim = _replace_config(text)
+    _apply_iep_override()
+    _clear_history()
+    _stop_execution()
+    _publish_updates()
+
+
 @app.put("/config/clock_speed")
 async def put_clock_speed(request: Request):
-    global sim
     try:
         body = await request.json()
     except (ValueError, UnicodeDecodeError):
@@ -489,27 +531,237 @@ async def put_clock_speed(request: Request):
         return JSONResponse({"error": "group must be 0 or 1"}, status_code=400)
     async with _config_lock:
         try:
-            with open(config_path, "r") as f:
-                text = f.read()
-            if group == 0:
-                cfg = configparser.ConfigParser()
-                cfg.read_string(text, source=config_path)
-                # An omitted second clock inherits the first. Pin its old rate
-                # before changing the first so the other cores keep their rate.
-                if not cfg.has_option("device", "pru1_clock_mhz") and mhz != sim._pru1_clock_mhz:
-                    text = _set_ini_value(text, "device", "pru1_clock_mhz", str(sim._pru1_clock_mhz))
-            if group is None or group == 0:
-                text = _set_ini_value(text, "device", "pru_clock_mhz", str(mhz))
-            if group is None or group == 1:
-                text = _set_ini_value(text, "device", "pru1_clock_mhz", str(mhz))
-            sim = _replace_config(text)
-            _apply_iep_override()
-            _clear_history()
-            _stop_execution()
-            _publish_updates()
+            _apply_clock_speed(mhz, group)
             return {"ok": True}
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=400)
+
+
+# ---------------------------------------------------------------------------
+# PDM audio demo (spec §11). The browser drives it chunk by chunk: one pdm_run
+# is one PdmDemo.run_chunk(); there is no server-side run loop. The demo
+# object and its PCM history outlive a connection (a drop only pauses).
+# ---------------------------------------------------------------------------
+
+PDM_CLIPS_DIR = SOURCE_DIR / "pdm" / "clips"
+PDM_CHUNK_CYCLES = 400_000          # PRU0 cycles per pdm_run (tests lower it)
+PDM_CLOCK_MHZ = 200
+PDM_CLOCK_NOTICE = "PRU clocks set to 200 MHz for the PDM demo"
+PDM_NOT_SET_UP = "PDM demo is not set up; send pdm_setup first"
+PDM_PROGRAMS_NOTICE = ("Audio Run loaded pdm_gen.asm on PRU1 and pdm_rx.asm on PRU0 "
+                       "(Simulator-view programs replaced)")
+PDM_CORES = ("pru0", "pru1")      # the cores the Audio demo runs
+OWNERSHIP_ERROR = "Execution stopped or controlled by another tab"
+_pdm = None            # PdmDemo of the current simulator, or None
+_pdm_clips = None      # {"left", "right", "swap"} of the last good setup
+
+
+def _pdm_clip_names() -> list[str]:
+    return sorted(p.name for p in PDM_CLIPS_DIR.glob("*.wav") if p.is_file())
+
+
+def _pdm_clip_path(name) -> pathlib.Path:
+    """Path of the clip called *name*: a bare file name that is listed in
+    PDM_CLIPS_DIR. Anything else is rejected before the filesystem is read."""
+    if (not isinstance(name, str) or not name or name in (".", "..")
+            or name != os.path.basename(name) or "\\" in name):
+        raise ValueError(f"clip must be a bare file name from the clip list, got {name!r}")
+    if name not in _pdm_clip_names():
+        raise ValueError(f"unknown clip {name!r}")
+    return PDM_CLIPS_DIR / name
+
+
+@app.get("/pdm/clips")
+async def get_pdm_clips():
+    clips = []
+    for name in _pdm_clip_names():
+        try:
+            with wave.open(str(PDM_CLIPS_DIR / name), "rb") as w:
+                clips.append({"name": name, "ms": w.getnframes() * 1000 / w.getframerate()})
+        except (wave.Error, EOFError, ZeroDivisionError):
+            continue            # not a usable clip: leave it out of the list
+    return {"clips": clips}
+
+
+def _pdm_running() -> bool:
+    return _execution_owner is not None and _execution_mode == "pdm"
+
+
+def _pdm_status_message(extra=None) -> dict:
+    """The pdm_status message; load is the busy fraction since setup (1.0 with
+    the idle skip off)."""
+    message = {"type": "pdm_status", **_pdm.status(),
+               "clips": {"left": _pdm_clips["left"], "right": _pdm_clips["right"]},
+               "swap": _pdm_clips["swap"], "running": _pdm_running(),
+               "breakpoint": _pdm.breakpoint}
+    message.update(extra or {})
+    return message
+
+
+async def _pdm_error(websocket, text: str) -> None:
+    await websocket.send_json({"type": "error", "tag": "pdm", "errors": [text]})
+
+
+def _pdm_ready() -> bool:
+    """True when a demo exists for the current simulator (a config or clock
+    change replaces the simulator and orphans the demo)."""
+    return _pdm is not None and _pdm.sim is sim
+
+
+def _pdm_teardown() -> None:
+    """Leave the PDM demo: undo its wiring on the current simulator (PdmDemo.
+    teardown) and forget it, so the Audio view sets up again on its next Run.
+    Called by every action that replaces programs or configuration."""
+    global _pdm, _pdm_clips
+    if _pdm is not None and _pdm.sim is sim:
+        _pdm.teardown()
+    _pdm, _pdm_clips = None, None
+
+
+async def _pdm_setup(websocket, left, right, swap) -> bool:
+    """Force 200 MHz, build a fresh PdmDemo and set it up. Replies with errors
+    and notices itself; True when the demo is ready."""
+    global _pdm, _pdm_clips
+    try:
+        paths = _pdm_clip_path(left), _pdm_clip_path(right)
+        for path in paths:
+            pdm_layout.load_clip(path)          # a bad clip fails before anything changes
+    except ValueError as exc:
+        await _pdm_error(websocket, str(exc))
+        return False
+    if _execution_owner is not None:
+        _stop_execution()
+        _flush_skipped_publish()
+    # The previous demo first restores what it changed, so this setup saves
+    # the user's wiring, not the demo's own.
+    _pdm_teardown()
+    if not all(math.isclose(sim.cores[name].clock_mhz, PDM_CLOCK_MHZ)
+               for name in ("pru0", "pru1")):
+        try:
+            async with _config_lock:
+                _apply_clock_speed(PDM_CLOCK_MHZ)
+        except Exception as exc:
+            await _pdm_error(websocket, f"cannot set the PRU clocks to 200 MHz: {exc}")
+            return False
+        await websocket.send_json({"type": "pdm_notice", "text": PDM_CLOCK_NOTICE})
+    demo = PdmDemo(sim, chunk_cycles=PDM_CHUNK_CYCLES)   # after the sim was replaced
+    try:
+        demo.setup(*paths, swap=swap)
+    except (ValueError, RuntimeError) as exc:
+        demo.teardown()                 # a half-done setup leaves no wiring behind
+        await _pdm_error(websocket, str(exc))
+        return False
+    _pdm, _pdm_clips = demo, {"left": left, "right": right, "swap": swap}
+    _clear_history()          # a step-back must not cross the setup
+    await websocket.send_json({"type": "pdm_notice", "text": PDM_PROGRAMS_NOTICE})
+    return True
+
+
+async def _pdm_send_history(websocket) -> None:
+    for ch, samples in _pdm.history.items():
+        if samples:
+            await websocket.send_json({"type": "pdm_pcm", "ch": ch, "start": 0,
+                                       "samples": samples})
+
+
+async def _pdm_send_core_states(websocket, **kw) -> None:
+    """Give *websocket* the state of both demo cores, so its Simulator view
+    shows pdm_gen/pdm_rx and follows their execution; other tabs get it via
+    _publish_updates."""
+    for core in PDM_CORES:
+        if core in sim.cores:
+            await _send_state(websocket, core, **kw)
+
+
+async def _pdm_run(websocket, msg) -> None:
+    global _execution_owner, _execution_mode, _last_observer_publish
+    extra = {"run_id": msg["run_id"]} if "run_id" in msg else {}
+    if _execution_owner is not None and _execution_owner is not websocket:
+        await websocket.send_json({"type": "error", "errors": [OWNERSHIP_ERROR]})
+        return
+    if _pdm_ready() and _pdm.done:
+        if _execution_owner is not None:
+            _stop_execution()           # the run is over; nothing more to compute
+        await websocket.send_json(_pdm_status_message(extra))
+        return
+    if not _pdm_ready():
+        await _pdm_error(websocket, PDM_NOT_SET_UP)
+        return
+    if _execution_owner is None:
+        _execution_owner = websocket
+        _last_observer_publish = float('-inf')      # a new run's first chunk always publishes
+        _execution_mode = "pdm"
+        for connection in _connections - {websocket}:
+            connection.publish(_execution_state(connection))
+    _execution_mode = "pdm"
+    try:
+        result = _pdm.run_chunk()
+    except Exception as exc:
+        # RunAheadRefused (wiring changed since setup), a ring overrun or a
+        # core that stopped: report it and end the run. History stays as it is.
+        _stop_execution()
+        _flush_skipped_publish()
+        if isinstance(exc, RunAheadRefused):
+            await websocket.send_json({"type": "pdm_notice",
+                                       "text": f"Run-ahead stopped mid-run: {'; '.join(exc.reasons)}"})
+        elif not isinstance(exc, RuntimeError):
+            raise
+        await _pdm_error(websocket, str(exc))
+        await websocket.send_json(_pdm_status_message(extra))
+        return
+    for ch, (start, samples) in result["new"].items():
+        if samples:
+            await websocket.send_json({"type": "pdm_pcm", "ch": ch, "start": start,
+                                       "samples": samples})
+    stopped_at = _pdm.breakpoint
+    finished = result["status"]["done"]
+    if stopped_at or finished:
+        _stop_execution()
+    for core in PDM_CORES:
+        if core in sim.cores:
+            await _send_state(websocket, core, at_breakpoint=core == stopped_at)
+    await websocket.send_json(_pdm_status_message(extra))
+    _publish_updates(websocket, breakpoint_cores={stopped_at} if stopped_at else (),
+                     throttle=_pdm_running())
+
+
+async def _handle_pdm(websocket, action: str, msg: dict) -> None:
+    """The pdm_* websocket actions (see the PDM section of the design spec)."""
+    global _pdm
+    if action in {"pdm_setup", "pdm_reset"} and _execution_owner not in (None, websocket):
+        await websocket.send_json({"type": "error", "errors": [OWNERSHIP_ERROR]})
+    elif action == "pdm_setup":
+        swap = msg.get("swap", False)
+        if not isinstance(swap, bool):
+            await _pdm_error(websocket, "swap must be true or false")
+        elif await _pdm_setup(websocket, msg.get("clip_left"), msg.get("clip_right"), swap):
+            await _pdm_send_core_states(websocket)
+            _publish_updates(websocket)
+            await websocket.send_json(_pdm_status_message())
+    elif action == "pdm_reset":
+        if _pdm_clips is None or not _pdm_ready():
+            await _pdm_error(websocket, PDM_NOT_SET_UP)
+        elif await _pdm_setup(websocket, _pdm_clips["left"], _pdm_clips["right"],
+                              _pdm_clips["swap"]):
+            await _pdm_send_core_states(websocket)
+            _publish_updates(websocket)
+            await websocket.send_json(_pdm_status_message())
+    elif action == "pdm_run":
+        await _pdm_run(websocket, msg)
+    elif action == "pdm_stop":
+        if _pdm_running():
+            _stop_execution()
+            _flush_skipped_publish()
+        if _pdm_ready():
+            await websocket.send_json(_pdm_status_message())
+    elif action == "pdm_history":
+        if not _pdm_ready():
+            await _pdm_error(websocket, PDM_NOT_SET_UP)
+        else:
+            await _pdm_send_history(websocket)
+            await websocket.send_json(_pdm_status_message())
+    else:
+        await _pdm_error(websocket, f"unknown action {action!r}")
 
 
 @app.websocket("/ws")
@@ -561,6 +813,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 _flush_skipped_publish()
                 continue
 
+            if isinstance(action, str) and action.startswith("pdm_"):
+                await _handle_pdm(websocket, action, msg)
+                continue
+
             if msg.get("managed") and action in {"step", "run", "run_multicore", "step_multicore"}:
                 selected = _selected_execution_cores()
                 core = selected[0]
@@ -586,6 +842,10 @@ async def websocket_endpoint(websocket: WebSocket):
             elif action in {"load", "load_elf", "reset", "hard_reset", "step_back", "scenario_load"}:
                 if _execution_owner is not None:
                     _stop_execution()
+                if action != "step_back":
+                    # These replace programs or restart cores: the Simulator
+                    # view takes the simulator back from the PDM demo.
+                    _pdm_teardown()
 
             if action == "subscribe_capture":
                 websocket.capture = bool(msg.get("enabled", False))
@@ -634,7 +894,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     pru = sim.cores[core]
                     if pru.pc in pru.breakpoints:
                         at_breakpoint = True
-                except ValueError as ve:
+                except (ValueError, RuntimeError) as ve:
+                    # RuntimeError: e.g. PdmLinkError from a core still wired
+                    # to the PDM demo. Reported; the socket stays open.
                     await websocket.send_json({"type": "error", "errors": [str(ve)]})
                 await _send_state(websocket, core, at_breakpoint=at_breakpoint,
                                   run_id=msg.get("run_id"))
@@ -827,6 +1089,14 @@ async def websocket_endpoint(websocket: WebSocket):
                                 pass
                 except Exception as e:
                     await websocket.send_json({"type": "error", "errors": [str(e)]})
+            elif action == "set_idle_skip":
+                enabled = msg.get("enabled")
+                if isinstance(enabled, bool):
+                    sim.idle_skip = enabled
+                else:
+                    await websocket.send_json({"type": "error", "tag": "idle_skip", "errors": [
+                        f"enabled must be true or false, got {enabled!r}"]})
+                await _send_state(websocket, core)
             elif action == "set_xfr_shift":
                 sim.xfr.xfr_shift_en = bool(msg.get("enabled", False))
                 await _send_state(websocket, core)
@@ -838,17 +1108,24 @@ async def websocket_endpoint(websocket: WebSocket):
                 at_breakpoint = False
                 samples = []
                 error = None
+                # The Signal Graph spaces samples by index, not by cycle, so a
+                # skipped span (one sample) would squeeze its time axis: no
+                # idle skip while anything is capturing.
+                idle_skip = sim.idle_skip and not capture
                 try:
                     steps = 0
                     while steps < max_steps and not pru.halted and pru.pc < len(pru.instructions):
-                        pru.step()
+                        if idle_skip:
+                            pru.step_run(IDLE_SKIP_MAX_CYCLES)
+                        else:
+                            pru.step()
                         steps += 1
                         if capture and _capture_due(pru, steps, stride):
                             samples.append(_capture_sample(pru))
                         if pru.pc in pru.breakpoints:
                             at_breakpoint = True
                             break
-                except ValueError as ve:
+                except (ValueError, RuntimeError) as ve:      # RuntimeError: PdmLinkError, ...
                     error = {"type": "error", "errors": [str(ve)]}
                 if samples:
                     await _send_capture(websocket, core, samples)
@@ -860,6 +1137,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 manual_step = action == "step_multicore"
                 max_steps = 1 if manual_step else int(msg.get("max_steps", 1000))
                 capture = bool(msg.get("capture", False)) or any(c.capture for c in _connections)
+                # Continuous run_multicore skips idle spans; step_multicore
+                # never, and neither while the Signal Graph is capturing (it
+                # spaces samples by index, so a skipped span would squeeze it).
+                idle_skip = sim.idle_skip and not manual_step and not capture
                 stride = _capture_stride(msg)
                 # "partners" runs three or four cores together; "partner" is the
                 # original single follower.
@@ -886,7 +1167,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         _record_step(core)
                     steps = 0
                     while steps < max_steps:
-                        pacing = sim.step_paced_many(core, partners, 1)
+                        pacing = sim.step_paced_many(core, partners, 1, idle_skip=idle_skip)
                         steps += pacing["lead_steps"]
                         progressed = pacing["lead_steps"] or any(
                             sim.cores[name].counters.instruction_count != before
@@ -907,7 +1188,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             break
                         if lead_pru.halted or lead_pru.pc >= len(lead_pru.instructions):
                             break
-                except ValueError as ve:
+                except (ValueError, RuntimeError) as ve:      # RuntimeError: PdmLinkError, ...
                     error = {"type": "error", "errors": [str(ve)]}
                 if samples:
                     await _send_capture(websocket, core, samples, partners)
@@ -1376,6 +1657,8 @@ def _state(core, at_breakpoint=False, captured=False):
         "stall_cycles": c.counters.stall_cycles,
         "instruction_count": c.counters.instruction_count,
         "ipc": round(c.counters.ipc, 3),
+        "idle_skip": sim.idle_skip,
+        "skipped_cycles": c.skipped_cycles,
         "io": io_section,
         "iep": {
             "clock_mhz": float(sim.iep.active_clock_mhz),

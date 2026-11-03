@@ -12,6 +12,7 @@ Dispatches each parsed instruction to the appropriate functional unit:
 from __future__ import annotations
 
 import logging
+import math
 import re
 import struct
 from typing import Callable
@@ -81,6 +82,25 @@ _UNINIT_SP_HINT = (
 _SP_WRAP_FLOOR = 0xFFFF0000
 
 
+def _perif_quiet(perif) -> bool:
+    """True when advancing a (mux-disabled) PERIF only moves its clock.
+
+    Its channel state machines then do nothing whose result depends on how
+    finely time is advanced, so one jump to the end of an idle span equals
+    stepping through it. An armed RX is allowed once its sample clock has
+    started (it then samples at fixed times) and while no loopback drives
+    its line (it then samples a constant 0). SD firmware arms one that way:
+    the PERIF decodes R30[25] (SD_EN) as an RX enable even when muxed off.
+    """
+    for ch in perif.channels:
+        if ch.fsm != "IDLE" or ch._rx_auto_arm_deadline_ns is not None:
+            return False
+        if ch.rx_en and (ch._rx_next_edge_ns is None
+                         or ch.rx_line_source is not None):
+            return False
+    return True
+
+
 def _stack_pointer_hint(core, base_op, addr) -> str:
     """Return a trailing hint if this fault is the uninitialised-R2 trap."""
     if not isinstance(base_op, Register) or base_op.index != 2:
@@ -115,6 +135,12 @@ class PRUCore:
         self.capabilities = get_device_capabilities(target)
         self.registers = RegisterFile()
         self.counters = CycleCounters()
+        # Cycle at which the executing instruction started. Output pin
+        # changes are stamped from it (PdmLink: retire = start + 1), so the
+        # stamp never depends on where an opcode counts its stalls. -1 while
+        # no instruction runs after a reset: the reset's own pin change then
+        # lands at cycle 0, the reset instant.
+        self.step_start_cycle: int = -1
         self.iep = None          # set by Simulator when an IEP is present
         self.cycle_observer = cycle_observer
         self.reset_observer = reset_observer
@@ -138,6 +164,17 @@ class PRUCore:
         self.instructions: list[Instruction] = []
         self.loop_state: LoopState | None = None
         self.breakpoints: set[int] = set()
+        # Cycles that step_run() advanced in bulk instead of stepping (idle
+        # skip; run modes only). Cumulative, cleared by reset(). For the UI.
+        self.skipped_cycles: int = 0
+        # Per-program cache for step_run(): (start, end) -> loop body length
+        # if every instruction in [start, end) is a NOP, else 0. Keyed to the
+        # instruction list it was built for, so a reload drops it.
+        self._nop_body_cache: dict[tuple[int, int], int] = {}
+        self._nop_body_cache_for: list | None = None
+        # pc -> "is an R31[28] self-spin" (static per program; see _spin_at).
+        self._spin_cache: dict[int, bool] = {}
+        self._spin_cache_for: list | None = None
         # Unsupported-XFR diagnostics. Reads from an unconnected broadside
         # device ID use a zero/no-op compatibility fallback, with a warning
         # and record. Strict mode rejects it before changing transfer state.
@@ -237,6 +274,8 @@ class PRUCore:
         self.loop_state = None
         for acc in self.accelerators.values():
             acc.reset()
+        self.step_start_cycle = -1
+        self.skipped_cycles = 0
         self.io_port.reset()
         self.unsupported_xfr.clear()
 
@@ -262,11 +301,17 @@ class PRUCore:
                 self._advance_idle_cycle()
             return
         cycles_before = self.counters.cycles
+        self.step_start_cycle = cycles_before
 
         # Pre-tick: advance UART frame generator before instruction reads R31
         if self.io_port.uart_generator is not None:
             self.io_port.uart_generator.tick(self.counters.cycles)
 
+        # Pre-tick: apply producer pin edges to pin-driven SD channels, so
+        # this instruction sees every edge stamped up to its start time.
+        sd = self.io_port.sd_filter
+        if sd is not None and sd.pin_link is not None and sd.pin_link.consumer is self:
+            sd.pin_link.advance_consumer(self.counters.cycles)
 
         # The MAC samples R28/R29 one instruction late (silicon, upstream #58).
         self.accelerators[MACAccelerator.DEVICE_ID].begin_step()
@@ -767,6 +812,295 @@ class PRUCore:
         self.task_ring.tick(1)
         if self.cycle_observer is not None:
             self.cycle_observer(1)
+
+    # ------------------------------------------------------------------
+    # Idle skip (run modes only)
+    # ------------------------------------------------------------------
+    #
+    # Two idle patterns are executed in bulk instead of one step() per
+    # instruction. Both consist of 1-cycle instructions that change no
+    # register, memory or pin, so the only effect of n of them is time:
+    #
+    # * Delay-loop collapse: a LOOP whose whole body is NOPs.
+    # * Poll fast-forward: a QBBC/QBBS-to-self spin on R31[28] (SD valid)
+    #   of a pin-driven SD channel; the next valid rise is known from the
+    #   PdmLink queue (PdmLink.next_valid_time).
+    #
+    # Whatever the patterns do not cover falls back to step(). Callers that
+    # must keep "one call = one instruction" (single-step, Simulator.step,
+    # the MCP step tool) simply never call step_run().
+
+    def step_run(self, max_cycles: int) -> int:
+        """Execute one ``step()`` or one skipped idle span of <= *max_cycles*.
+
+        Returns the instructions retired. With ``max_cycles < 2`` or no
+        applicable pattern this is exactly ``step()``. A skipped span leaves
+        the core, its peripherals and the PdmLink exactly where stepping the
+        same instructions would.
+        """
+        before = self.counters.instruction_count
+        # The cheap pattern test first, so busy code pays only for it: the
+        # cached "not a spin" answer of idle_candidate(), inlined (hot path).
+        plan = None
+        if max_cycles >= 2:
+            loop = self.loop_state
+            if ((loop is not None and loop.start_address == self.pc)
+                    or self._spin_cache_for is not self.instructions
+                    or self._spin_cache.get(self.pc) is not False):
+                if self.idle_candidate():
+                    plan = self._idle_plan_at_candidate(max_cycles)
+        if plan is None:
+            self.step()
+        else:
+            self._run_idle_plan(plan)
+        return self.counters.instruction_count - before
+
+    def idle_span(self, max_cycles: int, horizon: int | float | None = None) -> int:
+        """Cycles ``step_run(max_cycles)`` would skip now; 0 if it would step.
+
+        Executes nothing. *horizon* overrides the PdmLink horizon for the poll
+        pattern (Simulator pacing passes ``math.inf`` when the producer is the
+        lead core, whose span is decided before this core runs).
+        """
+        if max_cycles < 2:
+            return 0
+        plan = self._idle_plan(max_cycles, horizon)
+        return 0 if plan is None else plan[1]
+
+    def idle_candidate(self) -> bool:
+        """Cheap pre-check: could ``step_run`` skip at the current pc?
+
+        False guarantees ``step_run(n)`` is exactly ``step()`` for every n;
+        True means the full check (``_idle_plan``) has to decide. Looks only
+        at the pc and the loop state: an active LOOP at its start address,
+        or a QBBC/QBBS-to-self on R31 bit 28 (cached per pc).
+        """
+        if self.halted:
+            return False
+        pc = self.pc
+        loop = self.loop_state
+        if loop is not None and pc == loop.start_address and loop.count > 0:
+            return pc < len(self.instructions)
+        # Hot path (every run-mode step of busy code): one dict lookup.
+        if self._spin_cache_for is self.instructions:
+            hit = self._spin_cache.get(pc)
+            if hit is not None:
+                return hit
+        return self._spin_at(pc)
+
+    def _spin_at(self, pc: int) -> bool:
+        """True if instruction *pc* is ``QBBC/QBBS pc, r31, n`` with R31 bit
+        28 (SD valid) as the tested bit. Static, so cached per program
+        (a pc past the end caches False)."""
+        if self._spin_cache_for is not self.instructions:
+            self._spin_cache = {}
+            self._spin_cache_for = self.instructions
+        hit = self._spin_cache.get(pc)
+        if hit is None:
+            instructions = self.instructions
+            hit = pc < len(instructions) and self._is_valid_spin(instructions[pc], pc)
+            self._spin_cache[pc] = hit
+        return hit
+
+    @staticmethod
+    def _is_valid_spin(instr, pc: int) -> bool:
+        op = instr.opcode
+        if op != "QBBC" and op != "QBBS":
+            return False
+        if len(instr.operands) != 3:
+            return False
+        label, reg, bit = instr.operands
+        if isinstance(label, Label):
+            target = label.resolved_addr
+        elif isinstance(label, Immediate):
+            target = label.value
+        else:
+            return False
+        if target != pc:
+            return False
+        if not isinstance(reg, Register) or reg.index != 31:
+            return False
+        if not isinstance(bit, Immediate) or not 0 <= bit.value < reg.width:
+            return False
+        return reg.offset + bit.value == 28      # only the SD valid flag
+
+    def _idle_plan(self, max_cycles: int,
+                   horizon: int | float | None = None) -> tuple[str, int] | None:
+        """Return ``(kind, cycles)`` for a skippable span at pc, else None.
+
+        The static pattern test (``idle_candidate``) comes first, so busy
+        code pays only for that.
+        """
+        if not self.idle_candidate():
+            return None
+        return self._idle_plan_at_candidate(max_cycles, horizon)
+
+    def _idle_plan_at_candidate(self, max_cycles: int,
+                                horizon: int | float | None = None) -> tuple[str, int] | None:
+        """``_idle_plan`` for a core whose ``idle_candidate()`` is True."""
+        pc = self.pc
+        io_port = self.io_port
+        if io_port.uart_generator is not None or io_port.i2c_device is not None:
+            return None
+        perif = io_port.perif
+        if perif is not None and (perif.enabled or not _perif_quiet(perif)):
+            return None
+        if self.task_ring is not None and self.task_ring.busy:
+            return None
+        breakpoints = self.breakpoints
+        loop = self.loop_state
+        loop_active = loop is not None and not loop.is_done()
+
+        # ---- Delay-loop collapse ---------------------------------------
+        if loop_active and pc == loop.start_address:
+            body = self._nop_body_len(loop.start_address, loop.end_address)
+            if body and not any(a in breakpoints for a in range(loop.start_address,
+                                                                loop.end_address)):
+                budget = max_cycles
+                sd = io_port.sd_filter
+                link = sd.pin_link if sd is not None else None
+                if link is not None and link.consumer is self:
+                    # step() pre-ticks the link before every instruction, NOPs
+                    # included, and raises once a start passes the horizon.
+                    # Keep every start of the span within the horizon.
+                    starts = self._starts_within_horizon(link, horizon)
+                    if starts is not None:
+                        budget = min(budget, starts)
+                k = min(loop.count, budget // body)
+                if k >= 1:
+                    return ("loop", k * body)
+            return None
+
+        # ---- Poll fast-forward (pc holds an R31[28] self-spin) ----------
+        if pc in breakpoints:
+            return None
+        # A taken branch at the loop's end address would wrap the loop: that
+        # is no spin.
+        if loop_active and pc == loop.end_address:
+            return None
+        sd = io_port.sd_filter
+        if sd is None or not sd.sd_en:        # R31 must read SD status
+            return None
+        link = sd.pin_link
+        if link is None or link.consumer is not self:
+            return None
+        ch = sd.ch_sel if sd.ch_sel < len(sd.channels) else 0
+        if sd.sources[ch] != "pin":
+            return None
+        valid = sd.channels[ch].valid
+        if self.instructions[pc].opcode == "QBBC":
+            # Spins while valid is clear; exits at the first start >= te.
+            if valid:
+                return None
+            te = link.next_valid_time(ch)
+        else:
+            # Spins while valid is set. Clock edges never clear valid (only
+            # an R31 command does), so the spin is bounded by time alone.
+            if not valid:
+                return None
+            te = None
+        k = max_cycles
+        if te is not None:
+            # Iteration j starts at t0 + j*unit; count the starts before te.
+            t0, unit = self._link_clock(link)
+            k = min(k, max(0, -((t0 - te) // unit)))
+        starts = self._starts_within_horizon(link, horizon)
+        if starts is not None:
+            k = min(k, starts)
+        if k < 1:
+            return None
+        return ("poll", int(k))
+
+    def _link_clock(self, link) -> tuple[int, int]:
+        """(time of the current cycle, time units per cycle) on the link."""
+        cycles = self.counters.cycles
+        name = self.name.lower()
+        t0 = link.time_of(name, cycles)
+        return t0, link.time_of(name, cycles + 1) - t0
+
+    def _starts_within_horizon(self, link, horizon: int | float | None) -> int | None:
+        """How many consecutive 1-cycle instruction starts, from now, lie at
+        or before the producer horizon (the consumer may not start past it).
+        None = unbounded. *horizon* overrides ``link.horizon()``."""
+        h = link.horizon() if horizon is None else horizon
+        if h == math.inf:
+            return None
+        t0, unit = self._link_clock(link)
+        return 0 if h < t0 else int((h - t0) // unit + 1)
+
+    def _nop_body_len(self, start: int, end: int) -> int:
+        """Length of [start, end) if every instruction in it is a NOP, else 0."""
+        if self._nop_body_cache_for is not self.instructions:
+            self._nop_body_cache = {}
+            self._nop_body_cache_for = self.instructions
+        key = (start, end)
+        body = self._nop_body_cache.get(key)
+        if body is None:
+            instructions = self.instructions
+            body = end - start
+            if (body <= 0 or end > len(instructions)
+                    or any(instructions[a].opcode != "NOP" for a in range(start, end))):
+                body = 0
+            self._nop_body_cache[key] = body
+        return body
+
+    def _run_idle_plan(self, plan: tuple[str, int]) -> None:
+        kind, cycles = plan
+        last_start = self.counters.cycles + cycles - 1
+        if kind == "loop":
+            loop = self.loop_state
+            body = loop.end_address - loop.start_address
+            loop.count -= cycles // body
+            if loop.count <= 0:
+                # The last NOP retired at end_address and ended the loop.
+                self.pc = loop.end_address
+                self.loop_state = None
+            sd = self.io_port.sd_filter
+            link = sd.pin_link if sd is not None else None
+            if link is not None and link.consumer is self:
+                # As stepping: every edge up to the last NOP's start applied.
+                link.advance_consumer(last_start)
+        else:
+            # Each skipped iteration is one taken 1-cycle branch: pc stays.
+            # Stepping pre-ticks the link at every iteration start, the last
+            # one at last_start; applying up to there leaves the same edges
+            # applied (and stays within the producer's horizon).
+            self.io_port.sd_filter.pin_link.advance_consumer(last_start)
+        self.step_start_cycle = last_start
+        self._advance_bulk(cycles, cycles)
+
+    def _advance_bulk(self, cycles: int, instructions: int) -> None:
+        """Advance *cycles* cycles of *instructions* idle 1-cycle instructions.
+
+        Does, for the whole span, what the tail of ``step()`` does per
+        instruction: same subsystems, same order. Only valid for spans that
+        change no register, memory or pin (NOP spans, R31 poll spins).
+        """
+        mac = self.accelerators[MACAccelerator.DEVICE_ID]
+        # R28/R29 do not change in the span: two begin_step() calls leave the
+        # one-instruction-late latch exactly as n stepped instructions would.
+        for _ in range(min(instructions, 2)):
+            mac.begin_step()
+        io_port = self.io_port
+        if io_port.sd_filter is not None:
+            io_port.sd_filter.tick_n(instructions)
+        if io_port.perif is not None:
+            # step() advances PERIF to the instruction's start cycle; the
+            # span's last instruction starts one cycle before its end.
+            io_port.perif.advance_cycles(self.counters.cycles + cycles - 1)
+        for acc in self._timed_accelerators:
+            acc.advance(cycles)
+        self.counters.cycles += cycles
+        self.counters.instruction_count += instructions
+        if io_port.device_bus.devices:
+            io_port.advance_devices(cycles)
+        else:
+            io_port._device_cycle += cycles
+        if self.task_ring is not None:
+            self.task_ring.tick(cycles)
+        if self.cycle_observer is not None:
+            self.cycle_observer(cycles)
+        self.skipped_cycles += cycles
 
     def run(self, max_steps: int = 100_000) -> int:
         """Run until halted or max_steps reached. Returns steps executed."""

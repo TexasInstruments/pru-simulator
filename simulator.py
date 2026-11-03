@@ -12,17 +12,20 @@ import logging
 import re
 from fractions import Fraction
 
+from core.operands import Immediate, Label, Register
 from core.pru_core import PRUCore
 from core.device_capabilities import get_device_capabilities
 from mem.icssm_absent import icssg_only_regions, MODES as _ICSSG_ONLY_MODES, READ_ZERO
 from mem.memory_bus import MemoryBus
 from mem.regions import MemoryRegion
-from perif.iep import IepTimer, IEP_SIZE, IEP_DEFAULT_CLOCK_MHZ
+from perif.iep import IepTimer, IEP_SIZE, IEP_DEFAULT_CLOCK_MHZ, NUM_CAPTURE
 from mem.constant_table import (
     ConstantTable, CTRL_REG_COUNT, CTRL_REG_OFFSET, PROGRAMMABLE_FIRST)
-from xfr.xfr_bus import XFRBus
+from xfr.xfr_bus import IPC_SPAD, SPAD_BANK0, SPAD_BANK1, SPAD_BANK2, XFRBus
+from xfr.xfr2vbus_accelerator import RD_ID0, RD_ID1, WR_ID0, WR_ID1
 from pru_io.device_model import DeviceBus, DeviceModel
 from pru_io.io_port import IOPort
+from pru_io.pdm_link import PdmLink
 from pru_io.sd_filter import SigmaDeltaFilter
 from pru_io.sd_registers import SDRegisters
 from pru_io.tca9538 import TCA9538Device
@@ -33,6 +36,98 @@ from perif.loopback import Loopback
 
 _GPCFG_INDEX = {"pru0": 0, "pru1": 1}   # rtu0 has no GPCFG GP-mux (TRM)
 _MAX_CATCHUP_STEPS = 1000
+#: Longest idle span one PRUCore.step_run() call may skip in a run mode.
+IDLE_SKIP_MAX_CYCLES = 1 << 16
+
+#: Shared-map windows whose contents follow the IEP's global time, which is
+#: the furthest core's time: (start, end, name). Any core's access counts.
+_IEP_WINDOWS = ((0x0002E000, 0x0002F000, "the IEP (IEP0 registers)"),
+                (0x00026030, 0x00026034, "the IEP (ICSS CFG IEPCLK)"))
+_IEP_CONSTANT = 26                       # c26 = IEP0
+_SCRATCHPAD_IDS = frozenset((SPAD_BANK0, SPAD_BANK1, SPAD_BANK2, IPC_SPAD))
+_XFR2VBUS_IDS = frozenset((RD_ID0, RD_ID1, WR_ID0, WR_ID1))
+#: Per-core register blocks (the ranges Simulator registers on its bus), as
+#: (start, end, name, owning cores). Another core's access to one changes
+#: or reads the owner's hardware at the accessor's own time.
+_SD_CFG_BASE, _SD_CFG_SIZE = 0x00026044, 0x20
+_GPCFG_REGS = {"pru0": 0x00026008, "pru1": 0x0002600C}
+_PERIF_BASES = {"pru0": 0x000260E0, "pru1": 0x00026100}
+_PERIF_CFG_SIZE = 0x20
+#: A core's CTRL block: 0x22000/0x24000 (CTBIR/CTPPR at +0x20).
+_CTRL_BLOCK_SIZE = 0x100
+
+
+class RunAheadRefused(RuntimeError):
+    """run_ahead() would not match lockstep; ``reasons`` says why."""
+
+    def __init__(self, reasons: list[str]):
+        self.reasons = list(reasons)
+        super().__init__("run-ahead refused: " + "; ".join(self.reasons))
+
+
+def _window_hit(windows, start: int, end: int) -> str | None:
+    """Name of the first window overlapping [start, end), else None."""
+    for lo, hi, name in windows:
+        if start < hi and lo < end:
+            return name
+    return None
+
+
+def _scan_shared_access(pru: PRUCore, windows) -> dict[str, list]:
+    """Statically find program accesses to cross-core, shared-time state.
+
+    *windows* are ``(start, end, name)`` shared-map ranges the program must
+    not touch. Returns ``{"windows": [(name, where), ...], "scratchpad":
+    [where, ...], "vbus": [where, ...]}`` with ``where`` = ``pc N `source```.
+    Best effort: an address computed at run time (other than an LDI/LDI32
+    constant) is not seen; ``run_ahead`` guards the bus for those.
+    """
+    found: dict[str, list] = {"windows": [], "scratchpad": [], "vbus": []}
+    known: dict[int, int] = {}      # register -> value its LDIs built
+    for instr in pru.instructions:
+        op = instr.opcode
+        ops = instr.operands
+        where = f"pc {instr.address} `{instr.source_text.strip()}`"
+        hits = [_window_hit(windows, o.value, o.value + 1)
+                for o in ops if isinstance(o, Immediate)]
+        if op == "LDI" and len(ops) == 2 and isinstance(ops[0], Register) \
+                and isinstance(ops[1], Immediate):
+            dst = ops[0]
+            mask = ((1 << dst.width) - 1) << dst.offset
+            value = ((known.get(dst.index, 0) & ~mask)
+                     | ((ops[1].value << dst.offset) & mask)) & 0xFFFF_FFFF
+            known[dst.index] = value
+            hits.append(_window_hit(windows, value, value + 1))
+        elif op in ("LBCO", "SBCO") and len(ops) >= 3:
+            const = ops[1]
+            index = None
+            if isinstance(const, Label):
+                m = re.match(r"^c(\d+)$", const.name, re.IGNORECASE)
+                index = int(m.group(1)) if m else None
+            elif isinstance(const, Immediate):
+                index = const.value
+            if index == _IEP_CONSTANT:
+                hits.append("the IEP (c26)")
+            elif index is not None and 0 <= index <= 31:
+                base = pru.constant_table.resolve(index)
+                offset, length = ops[2], ops[3] if len(ops) > 3 else None
+                if isinstance(offset, Immediate):
+                    size = length.value if isinstance(length, Immediate) else 124
+                    start = base + offset.value
+                    hits.append(_window_hit(windows, start, start + max(1, size)))
+                else:
+                    hits.append(_window_hit(windows, base, base + 1))
+        elif op in ("XIN", "XOUT", "XCHG") and ops:
+            device = ops[0]
+            if not isinstance(device, Immediate):
+                found["scratchpad"].append(f"{where} (XFR device ID is not a constant)")
+            elif device.value in _SCRATCHPAD_IDS:
+                found["scratchpad"].append(where)
+            elif device.value in _XFR2VBUS_IDS:
+                found["vbus"].append(where)
+        for name in dict.fromkeys(h for h in hits if h is not None):
+            found["windows"].append((name, where))
+    return found
 
 
 logger = logging.getLogger(__name__)
@@ -47,7 +142,7 @@ class SDRegisterRegion(MemoryRegion):
     """
 
     def __init__(self, sd_registers: SDRegisters):
-        super().__init__("ICSS_SD_CFG", 0x00026044, 0x20, 2, 1, 0)
+        super().__init__("ICSS_SD_CFG", _SD_CFG_BASE, _SD_CFG_SIZE, 2, 1, 0)
         self._sd_regs = sd_registers
 
     def read(self, addr: int, length: int) -> bytes:
@@ -63,7 +158,7 @@ class PerifRegisterRegion(MemoryRegion):
     """Memory region backed by a per-core Peripheral Interface register block."""
 
     def __init__(self, perif_registers: PerifRegisters, base_addr: int):
-        super().__init__("ICSS_PERIF_CFG", base_addr, 0x20, 2, 1, 0)
+        super().__init__("ICSS_PERIF_CFG", base_addr, _PERIF_CFG_SIZE, 2, 1, 0)
         self._regs = perif_registers
 
     def read(self, addr: int, length: int) -> bytes:
@@ -268,7 +363,7 @@ class Simulator:
         # TRM: GPCFG1_REG (0x2600C) and block 0x26100 belong to PRU1, not RTU0.
         uart_clock_mhz = float(dev.get("uart_clock_mhz", "192"))
         core_order = ["pru0", "pru1"]
-        perif_bases = {"pru0": 0x260E0, "pru1": 0x26100}
+        perif_bases = dict(_PERIF_BASES)
         self._perif = {}
         for name in core_order:
             core = self.cores[name]
@@ -326,6 +421,14 @@ class Simulator:
 
         # Loopback: PRU0 TX channel-N -> PRU1 RX channel-N.
         self._loopback = Loopback(self._perif["pru0"], self._perif["pru1"])
+
+        # Producer GPO -> consumer SD pin link (attach_pdm_link); None = off.
+        self._pdm_link: PdmLink | None = None
+
+        # Idle skip (NOP delay loops, R31 poll spins) for the run modes: the
+        # dashboard's continuous Run / run_multicore and MCP run_until. They
+        # read this switch; single-step paths never skip.
+        self.idle_skip: bool = True
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -485,7 +588,7 @@ class Simulator:
         return self.step_paced_many(lead, [follow], count=count, guard_ns=guard_ns)
 
     def step_paced_many(self, lead: str, followers: list[str], count: int = 1,
-                        guard_ns: float = 20.0) -> dict:
+                        guard_ns: float = 20.0, idle_skip: bool = False) -> dict:
         """Step a lead core and catch each follower up by exact elapsed time.
 
         When both cores have enabled PERIF blocks, *guard_ns* keeps the follower
@@ -496,6 +599,13 @@ class Simulator:
         Each follower catch-up is limited to 1000 instructions per lead step.
         The result records the selected targets, actual lead_steps and incomplete work;
         subsequent calls finish those targets before executing another lead step.
+
+        With *idle_skip* the lead and the follower catch-up use
+        ``PRUCore.step_run``; a lead step may then be a whole idle span. The
+        result stays identical to lockstep stepping: a follower's budget is
+        the cycles it would start before its target, and the lead skips only
+        as far as no follower would run a non-idle instruction in the
+        meantime (see ``_lead_skip_budget``).
         """
         if isinstance(guard_ns, bool) or not isinstance(guard_ns, (int, float)):
             raise ValueError("guard_ns must be a number")
@@ -528,7 +638,13 @@ class Simulator:
                                 "follower": follower, "targets": dict(targets),
                                 "lead_steps": lead_steps}
                     previous_cycles = follow_pru.counters.cycles
-                    follow_pru.step()
+                    # idle_candidate() False means step_run would step():
+                    # busy code skips the budget arithmetic.
+                    if idle_skip and follow_pru.idle_candidate():
+                        follow_pru.step_run(
+                            self._cycles_before(follower, follow_pru, target))
+                    else:
+                        follow_pru.step()
                     steps += 1
                     if (follow_pru.counters.cycles == previous_cycles
                             and not follow_pru.halted
@@ -550,7 +666,12 @@ class Simulator:
             del self._paced_pending[pacing_key]
         for _ in range(count):
             if not lead_pru.halted and lead_pru.pc < len(lead_pru.instructions):
-                lead_pru.step()
+                # idle_candidate() False: step_run would step() whatever the
+                # budget, so busy code skips the budget computation.
+                if idle_skip and lead_pru.idle_candidate():
+                    lead_pru.step_run(self._lead_skip_budget(lead, lead_pru, follower_states))
+                else:
+                    lead_pru.step()
                 lead_steps += 1
             lead_time = self.iep.core_time_units(lead, lead_pru.counters.cycles)
             targets = {}
@@ -565,6 +686,381 @@ class Simulator:
                 self._paced_pending[pacing_key] = targets
                 return incomplete
         return {"complete": True, "targets": dict(targets), "lead_steps": lead_steps}
+
+    def _cycles_before(self, name: str, pru: PRUCore, target) -> int:
+        """Cycle starts of *pru* before time *target*: what lockstep runs."""
+        iep = self.iep
+        cycles = pru.counters.cycles
+        now = iep.core_time_units(name, cycles)
+        unit = iep.core_time_units(name, cycles + 1) - now
+        return max(1, int(-((now - target) // unit)))
+
+    def _lead_skip_budget(self, lead: str, lead_pru: PRUCore,
+                          follower_states: list) -> int:
+        """Cycles the lead may skip without changing the lockstep result.
+
+        Lockstep runs lead cycle j, then catches every follower up to the
+        lead time L_j. If the lead skips B 1-cycle instructions instead, the
+        followers catch up to L_B in one go. That is identical as long as
+        every follower instruction starting before L_B is itself idle (a NOP
+        span or SD-valid spin: it reads nothing another core changes and
+        changes nothing another core reads). So B is bounded by the earliest
+        time any follower leaves its idle span. The span's last instruction
+        is excluded, because it may move the follower's pc onto a breakpoint
+        that lockstep would report one lead round earlier.
+
+        Cheapest checks first, none of which changes the result: a lead or
+        follower whose ``idle_candidate()`` is False has no idle span, and a
+        plan that is None for the largest budget is None for every smaller
+        one. So: (1) the lead's pattern test, (2) any follower with no idle
+        pattern bounds the skip at its current time (returns 1 when it has
+        caught up to the lead), (3) the lead's own full plan, (4) the
+        followers' full spans.
+        """
+        if not lead_pru.idle_candidate():
+            return 1
+        iep = self.iep
+        cycles = lead_pru.counters.cycles
+        lead_now = iep.core_time_units(lead, cycles)
+        bound = math.inf
+        idle_followers = []
+        for follower, pru, _ in follower_states:
+            if pru.halted or pru.pc >= len(pru.instructions):
+                continue
+            if pru.idle_candidate():
+                idle_followers.append((follower, pru))
+                continue
+            bound = min(bound, iep.core_time_units(follower, pru.counters.cycles))
+            if bound <= lead_now:
+                return 1
+        if not lead_pru.idle_span(IDLE_SKIP_MAX_CYCLES):
+            return 1
+        for follower, pru in idle_followers:
+            f_cycles = pru.counters.cycles
+            f_now = iep.core_time_units(follower, f_cycles)
+            f_unit = iep.core_time_units(follower, f_cycles + 1) - f_now
+            sd = pru.io_port.sd_filter
+            link = sd.pin_link if sd is not None else None
+            # The lead's own span writes no pin, so with the lead as producer
+            # the follower's queued edges are final for the whole span.
+            horizon = (math.inf if link is not None and link.consumer is pru
+                       and link.producer is lead_pru else None)
+            span = pru.idle_span(IDLE_SKIP_MAX_CYCLES, horizon=horizon)
+            idle_until = f_now + (span - 1) * f_unit if span else f_now
+            bound = min(bound, idle_until)
+            if bound <= lead_now:
+                return 1
+        if bound == math.inf:
+            return IDLE_SKIP_MAX_CYCLES
+        lead_unit = iep.core_time_units(lead, cycles + 1) - lead_now
+        return max(1, min(IDLE_SKIP_MAX_CYCLES, int((bound - lead_now) // lead_unit)))
+
+    # ------------------------------------------------------------------
+    # Run-ahead scheduling (one-way producer -> consumer)
+    # ------------------------------------------------------------------
+
+    def _run_ahead_windows(self, accessor: str, other: str) -> list[tuple[int, int, str]]:
+        """Shared-map ranges *accessor* must not touch while *other* runs apart.
+
+        The IEP windows (their contents follow the furthest core's time), and
+        the per-core register blocks of *other* that *accessor* does not own
+        itself: SD config, GPCFG, PERIF and the CTRL block (CTBIR/CTPPR).
+        """
+        blocks = [(_SD_CFG_BASE, _SD_CFG_BASE + _SD_CFG_SIZE, "SD config",
+                   ("pru0", "rtu0"))]
+        for name, base in _GPCFG_REGS.items():
+            blocks.append((base, base + 4, "GPCFG", (name,)))
+        for name, base in _PERIF_BASES.items():
+            blocks.append((base, base + _PERIF_CFG_SIZE, "PERIF registers", (name,)))
+        for name, base in self._ctrl_bases.items():
+            blocks.append((base, base + _CTRL_BLOCK_SIZE, "CTRL block", (name,)))
+        windows = list(_IEP_WINDOWS)
+        for lo, hi, what, owners in blocks:
+            if other in owners and accessor not in owners:
+                windows.append((lo, hi, f"{other}'s {what} (0x{lo:X}..0x{hi - 1:X})"))
+        return windows
+
+    def one_way_violations(self, producer: str, consumer: str,
+                           producer_reads: list[tuple[int, int]],
+                           consumer_writes: list[tuple[int, int]], *,
+                           producer_writes: list[tuple[int, int]],
+                           consumer_reads: list[tuple[int, int]]) -> list[str]:
+        """Reasons why ``run_ahead(producer, consumer)`` could differ from lockstep.
+
+        Empty = safe. Run-ahead lets *producer* run up to a slice ahead of
+        *consumer*, so anything either core sees of the other's time must be
+        absent: data may only flow producer -> consumer through the PdmLink,
+        whose edges are time-stamped. Checks:
+
+        * a GPIO wire with an end on either core;
+        * PERIF enabled on either core, or a PERIF loopback channel enabled;
+        * a PdmLink between the two cores in the other direction;
+        * an XIN/XOUT/XCHG to a scratchpad (IDs 10-12, 15) or with a device ID
+          that is not a constant, in either program; XFR2VBUS in both programs
+          (they share one VBUS memory);
+        * IEP access in either program (``c26``, an address in
+          0x2E000..0x2EFFF, or IEPCLK at 0x26030): the IEP count follows the
+          furthest core, which run-ahead moves; IEP compare or capture events
+          enabled;
+        * either program accessing the other core's register blocks: SD
+          config (0x26044..0x26063, PRU0/RTU0), GPCFG (0x26008 PRU0, 0x2600C
+          PRU1), PERIF (0x260E0 / 0x26100, 0x20 each) or CTRL block
+          (0x22000 / 0x24000, 0x100 each, CTBIR/CTPPR at +0x20);
+        * overlap of a *producer_reads* range with a *consumer_writes* range,
+          or of a *producer_writes* range with a *consumer_reads* range
+          (the consumer would see the producer's writes up to a slice early).
+
+        All four range lists are required: ``(addr, length)`` pairs, declared
+        by the caller, of the memory each core reads / writes during the run.
+        Addresses are physical shared-map addresses (the ICSS-local map as
+        PRU0 sees it). There is no DRAM-swap translation: give PRU1-local
+        DRAM addresses as their physical (PRU0-view) addresses, so PRU1's
+        local 0x0000 (its DRAM1) is 0x2000.
+
+        The program scan is static: an address computed at run time (other
+        than an LDI/LDI32 constant) is not seen. ``run_ahead`` therefore also
+        guards the bus at run time for the IEP and register-block windows.
+        """
+        p = self._get_core(producer)
+        c = self._get_core(consumer)
+        if p is c:
+            raise ValueError("run-ahead producer and consumer must differ")
+        reasons: list[str] = []
+
+        for wire in self.list_gpio_wires():
+            ends = {wire["core_a"], wire["core_b"]}
+            if ends & {producer, consumer}:
+                reasons.append(
+                    f"GPIO wire {wire['core_a']}.{wire['pin_a']} <-> "
+                    f"{wire['core_b']}.{wire['pin_b']} couples the cores' pins")
+
+        for name in (producer, consumer):
+            perif = self._perif.get(name)
+            if perif is not None and perif.enabled:
+                reasons.append(f"PERIF is enabled on {name}")
+        for ch, enabled in enumerate(self._loopback.enabled):
+            if enabled:
+                reasons.append(f"PERIF loopback channel {ch} (PRU0 TX -> PRU1 RX) is enabled")
+
+        link = self._pdm_link
+        if link is not None and link.producer is c and link.consumer is p:
+            reasons.append(f"PDM link runs {consumer} -> {producer}, against run-ahead")
+
+        scans = {
+            producer: _scan_shared_access(p, self._run_ahead_windows(producer, consumer)),
+            consumer: _scan_shared_access(c, self._run_ahead_windows(consumer, producer)),
+        }
+        for name, scan in scans.items():
+            for where in scan["scratchpad"]:
+                reasons.append(f"{name} program uses a shared XFR scratchpad: {where}")
+            for what, where in scan["windows"]:
+                reasons.append(f"{name} program accesses {what}: {where}")
+        if scans[producer]["vbus"] and scans[consumer]["vbus"]:
+            reasons.append(
+                f"both programs use XFR2VBUS (shared VBUS memory): "
+                f"{producer} {scans[producer]['vbus'][0]}, "
+                f"{consumer} {scans[consumer]['vbus'][0]}")
+
+        iep = self.iep
+        if iep.cmp_cfg & 0x1FFFF:
+            reasons.append(f"IEP compare events are enabled (CMP_CFG=0x{iep.cmp_cfg:X})")
+        if iep.cap_cfg & ((1 << NUM_CAPTURE) - 1):
+            reasons.append(f"IEP capture events are enabled (CAP_CFG=0x{iep.cap_cfg:X})")
+
+        def overlaps(reads, writes, reader, writer):
+            for r_addr, r_len in reads:
+                for w_addr, w_len in writes:
+                    if r_len > 0 and w_len > 0 and r_addr < w_addr + w_len \
+                            and w_addr < r_addr + r_len:
+                        reasons.append(
+                            f"{reader} reads 0x{r_addr:X}+0x{r_len:X}, which {writer} "
+                            f"writes at 0x{w_addr:X}+0x{w_len:X}")
+
+        overlaps(producer_reads, consumer_writes, producer, consumer)
+        overlaps(consumer_reads, producer_writes, consumer, producer)
+        return reasons
+
+    def run_ahead(self, producer: str, consumer: str, cycles: int, *,
+                  producer_reads: list[tuple[int, int]],
+                  consumer_writes: list[tuple[int, int]],
+                  producer_writes: list[tuple[int, int]],
+                  consumer_reads: list[tuple[int, int]],
+                  slice_cycles: int = 4096) -> dict:
+        """Advance *consumer* by *cycles*, letting *producer* run a slice ahead.
+
+        Identical to lockstep ``step_paced_many(producer, [consumer], ...)``
+        at the same consumer cycle count, provided ``one_way_violations`` is
+        empty (else raises :class:`RunAheadRefused` and runs nothing; see
+        there for the four required range lists). The producer then never
+        reads anything the consumer changes, and the consumer sees the
+        producer only through the PdmLink's time-stamped edges.
+
+        Each round runs the producer (``step_run`` with ``self.idle_skip``,
+        else ``step``) until its time is >= the consumer's time plus
+        *slice_cycles* producer cycles, or the consumer's end time; then the
+        consumer while its instruction start time is <= the producer's time
+        (every edge up to there is decided). The producer is left up to a
+        slice ahead.
+
+        Run-time guard: while this runs, a memory-bus access by either core
+        to the IEP/IEPCLK or to the other core's register blocks (the
+        windows ``one_way_violations`` scans for, reached through an address
+        the static scan could not see) raises :class:`RunAheadRefused`
+        naming the core, pc and address, before the access happens. Core
+        state after such a mid-run refusal is not guaranteed to be
+        lockstep-consistent (the run was already partly done, and the
+        faulting instruction is cut short). The guard exists only inside
+        this call.
+
+        Breakpoints are checked after every step, so the run stops at the
+        first one either core reaches; the instruction at a breakpoint the
+        core already sits on runs (resume).
+
+        * Consumer breakpoint: the consumer stops with ``pc`` on it, its
+          state and memory as lockstep's at that point. The producer, the
+          IEP's global time and the link queue may be up to one slice
+          further on than lockstep leaves them: ``producer_ahead_cycles``.
+          Where lockstep runs the consumer several instructions per lead
+          step (faster consumer clock), lockstep only checks breakpoints
+          between lead steps and can step over a consumer breakpoint;
+          run-ahead stops on it. That stop is the intended behaviour.
+        * Producer breakpoint: the consumer first catches up to the
+          producer's time as a lockstep follower does (starts before it),
+          and stops on its own breakpoint if it reaches one first. Both
+          cores then stand where lockstep stops them.
+
+        Returns:
+
+        * ``producer_cycles`` / ``consumer_cycles``: cycles advanced in this
+          call;
+        * ``skipped``: ``{core: idle-skipped cycles}`` in this call;
+        * ``breakpoint``: the core stopped at one, or None;
+        * ``producer_ahead_cycles``: an upper bound on how many cycles the
+          producer is past where lockstep's lead would be. Lockstep's lead
+          stands at the first lead step whose time passes the consumer's
+          last instruction start; this counts from the first producer
+          *cycle* past that time (exact when the producer retires 1-cycle
+          instructions there). 0 after a producer breakpoint, where the
+          state equals lockstep's.
+        """
+        if isinstance(cycles, bool) or not isinstance(cycles, int) or cycles < 0:
+            raise ValueError("cycles must be a non-negative integer")
+        if isinstance(slice_cycles, bool) or not isinstance(slice_cycles, int) \
+                or slice_cycles < 1:
+            raise ValueError("slice_cycles must be a positive integer")
+        reasons = self.one_way_violations(
+            producer, consumer, producer_reads, consumer_writes,
+            producer_writes=producer_writes, consumer_reads=consumer_reads)
+        if reasons:
+            raise RunAheadRefused(reasons)
+        p = self._get_core(producer)
+        c = self._get_core(consumer)
+        time_of = self.iep.core_time_units
+        skip = self.idle_skip
+        p_start, c_start = p.counters.cycles, c.counters.cycles
+        p_skip0, c_skip0 = p.skipped_cycles, c.skipped_cycles
+        c_end = c_start + cycles
+        end_time = time_of(consumer, c_end)
+        hit: str | None = None
+
+        def running(core: PRUCore) -> bool:
+            return not core.halted and core.pc < len(core.instructions)
+
+        # ---- Run-time bus guard (removed in the finally below) ----------
+        guarded = {producer: self._run_ahead_windows(producer, consumer),
+                   consumer: self._run_ahead_windows(consumer, producer)}
+        current: list[str | None] = [None]
+        bus = self.memory
+        plain_read, plain_write = bus.read, bus.write
+        shadowed = {name: bus.__dict__[name] for name in ("read", "write")
+                    if name in bus.__dict__}
+
+        def check(addr: int, length: int) -> None:
+            name = current[0]
+            if name is None:
+                return
+            what = _window_hit(guarded[name], addr, addr + max(1, length))
+            if what is not None:
+                raise RunAheadRefused([
+                    f"{name} pc {self.cores[name].pc} accessed {what} at 0x{addr:X} "
+                    f"during run-ahead (not seen by the static scan); core state "
+                    f"is not lockstep-consistent now"])
+
+        def guarded_read(addr, length, *, requester=None):
+            check(addr, length)
+            return plain_read(addr, length, requester=requester)
+
+        def guarded_write(addr, data):
+            check(addr, len(data))
+            return plain_write(addr, data)
+
+        def advance(core: PRUCore, name: str, budget: int) -> None:
+            current[0] = name
+            if skip:
+                core.step_run(min(budget, IDLE_SKIP_MAX_CYCLES))
+            else:
+                core.step()
+            current[0] = None
+
+        bus.read, bus.write = guarded_read, guarded_write
+        try:
+            while c.counters.cycles < c_end and running(c):
+                c_cycles = c.counters.cycles
+                c_now = time_of(consumer, c_cycles)
+                c_unit = time_of(consumer, c_cycles + 1) - c_now
+                # ---- Producer: one slice ahead (or to the consumer's end) --
+                if running(p):
+                    p_cycles = p.counters.cycles
+                    p_now = time_of(producer, p_cycles)
+                    p_unit = time_of(producer, p_cycles + 1) - p_now
+                    goal = min(c_now + slice_cycles * p_unit, end_time)
+                    goal_cycles = p_cycles + max(0, -((p_now - goal) // p_unit))
+                    while p.counters.cycles < goal_cycles and running(p):
+                        advance(p, producer, goal_cycles - p.counters.cycles)
+                        if p.pc in p.breakpoints:
+                            hit = producer
+                            break
+                # ---- Consumer: every start the producer has decided -------
+                limit = c_end
+                if running(p):
+                    p_time = time_of(producer, p.counters.cycles)
+                    if hit is None:
+                        # Starts at or before the producer's time.
+                        limit = min(c_end, c_cycles + (p_time - c_now) // c_unit + 1)
+                    else:
+                        # Lockstep catch-up to the lead's time: starts before it.
+                        limit = min(c_end, c_cycles + max(0, -((c_now - p_time) // c_unit)))
+                while c.counters.cycles < limit and running(c):
+                    advance(c, consumer, limit - c.counters.cycles)
+                    if c.pc in c.breakpoints:
+                        hit = consumer
+                        break
+                if hit is not None:
+                    break
+                if c.counters.cycles == c_cycles and not running(p):
+                    break                       # nothing can move any more
+        finally:
+            for name in ("read", "write"):
+                if name in shadowed:
+                    setattr(bus, name, shadowed[name])
+                else:
+                    bus.__dict__.pop(name, None)
+
+        if hit == producer:
+            ahead = 0
+        else:
+            last_start = time_of(consumer, max(c.step_start_cycle, 0))
+            p_now = time_of(producer, p.counters.cycles)
+            p_unit = time_of(producer, p.counters.cycles + 1) - p_now
+            ahead = max(0, -((last_start - p_now) // p_unit + 1))
+        return {
+            "producer_cycles": p.counters.cycles - p_start,
+            "consumer_cycles": c.counters.cycles - c_start,
+            "skipped": {producer: p.skipped_cycles - p_skip0,
+                        consumer: c.skipped_cycles - c_skip0},
+            "breakpoint": hit,
+            "producer_ahead_cycles": ahead,
+        }
 
     def registers(self, core: str) -> list[int]:
         """Return the 32 general-purpose register values for *core*."""
@@ -701,6 +1197,43 @@ class Simulator:
             if hasattr(mod, key):
                 setattr(mod, key, val)
 
+    def set_sd_source(self, core: str, ch: int, mode: str) -> None:
+        """Select SD channel *ch*'s bit source on *core*: "modulator", "pin" or "off"."""
+        self._get_core(core).io_port.sd_filter.set_source(ch, mode)
+
+    def attach_pdm_link(self, producer: str = "pru1", consumer: str = "pru0",
+                        clock_pin: int = 0, data_pins: dict[int, int] = {0: 1, 1: 1},
+                        keep_history: bool = False) -> PdmLink:
+        """Drive *consumer*'s SD clock net 0 and data inputs from *producer*'s GPO.
+
+        *clock_pin* is the producer GPO pin carrying the clock (SD0_CLK);
+        *data_pins* maps consumer SD channel -> producer GPO data pin. Only
+        channels set to "pin" (set_sd_source) sample the link, on the edge
+        their CLK_SEL/CLK_INV select. Replaces any link already attached.
+        *keep_history* records edges and sampled bits (tests only: unbounded).
+        """
+        producer_core = self._get_core(producer)
+        consumer_core = self._get_core(consumer)
+        if producer_core is consumer_core:
+            raise ValueError("PDM link producer and consumer must differ")
+        self.detach_pdm_link()
+        link = PdmLink(producer_core, consumer_core, self.iep.core_time_units,
+                       clock_pin=clock_pin, data_pins=dict(data_pins),
+                       keep_history=keep_history)
+        producer_core.io_port.gpo_listeners.append(link.on_producer_gpo)
+        consumer_core.io_port.sd_filter.pin_link = link
+        self._pdm_link = link
+        return link
+
+    def detach_pdm_link(self) -> None:
+        """Remove the PDM link, if any. Pin-mode channels then get no clock."""
+        link = self._pdm_link
+        if link is None:
+            return
+        link.producer.io_port.gpo_listeners.remove(link.on_producer_gpo)
+        link.consumer.io_port.sd_filter.pin_link = None
+        self._pdm_link = None
+
     def set_iep_clock_mhz(self, mhz: float) -> None:
         """Set the IEP0 clock (ICSSG_IEP_CLK) independently of the PRU clocks.
 
@@ -710,8 +1243,18 @@ class Simulator:
         self.iep.set_clock_mhz(mhz)
 
     def reset(self, core: str) -> None:
-        """Reset *core* to its initial state (registers, counters, PC, halted flag)."""
-        self._get_core(core).reset()
+        """Reset *core* to its initial state (registers, counters, PC, halted flag).
+
+        With a PDM link attached and *core* its consumer, the edges stamped
+        before the consumer's new (rebased) start are dropped
+        (``PdmLink.resync_consumer``) instead of reaching its first
+        instruction as one burst.
+        """
+        pru = self._get_core(core)
+        pru.reset()
+        link = self._pdm_link
+        if link is not None and link.consumer is pru:
+            link.resync_consumer()
 
     def set_strict_unsupported_xfr(self, enabled: bool) -> None:
         """Choose what happens when firmware drives an unmodelled XFR device ID.
@@ -767,6 +1310,8 @@ class Simulator:
             core.reset()
             core.constant_table.reset_ctrl()
         self.xfr.reset()
+        if self._pdm_link is not None:
+            self._pdm_link.reset()
 
     def uart_inject(
         self,
