@@ -26,7 +26,7 @@ below, e.g. §10.2, refer to it).
 - No new Python dependencies (no numpy/scipy). No new JS/dev dependencies (no Playwright).
 - Run pytest as `env -u PYTHONPATH python3 -m pytest ...` (ROS is on PYTHONPATH on this PC). JS tests: `node --test --test-isolation=none tests/ui_*.test.js`.
 - Never stage `memory.cfg`. Cycle-timed tests pin clocks with the `nominal_config` fixture from `tests/conftest.py` (`Simulator(config_path=nominal_config)`).
-- Simulator assembler: a `.set` whose value refers to another `.set` is not expanded — keep build options as plain literals and guard derived literals with `.if … .emsg`. The parser does not accept clpru `NAME .macro`.
+- Simulator assembler: a `.set` whose value refers to another `.set` is not expanded — keep build options as plain literals and guard derived literals with `.if … .emsg`. The parser does not accept clpru `NAME .macro` (later found accepted — see pdm_rx.asm).
 - Existing behaviour is unchanged unless a task says otherwise: SD internal-modulator mode stays the default; `Simulator.step()`, `PRUCore.step()`, MCP step tools, single-step and step-multicore never skip.
 - Idle skip and run-ahead must be bit- and cycle-identical to plain stepping / lockstep. Equivalence tests are merge blockers.
 - Shared RAM is `0x00010000`, 64 KB, in both PRU0 and PRU1 local maps. PRU0 DRAM0 is `0x0000` (8 KB).
@@ -205,7 +205,7 @@ Expected: all PASS (same count as on `main` plus the new tests)
 | `HDR_BLOCK` | `+0x06` u16 = 128 | host |
 | `HDR_PCM_RATE` | `+0x08` u32 = 16000 | host |
 | `HDR_CLIP_LEN` | `+0x0C` u32 frames | host |
-| `HDR_GEN_POS` | `+0x10` u32 frames consumed | PRU1 |
+| `HDR_GEN_POS` | `+0x10` u32 frames fetched | PRU1 |
 | `HDR_GEN_DONE` | `+0x14` u32 (0/1) | PRU1 |
 | `HDR_PCM_COUNT` | `+0x20` u32[8] | PRU0, per channel, written after the sample |
 | `RING_BASE` | `+0x100`, stride `0x400` | ring k: 256 × int32 (24-bit signed), sample n at `RING_BASE + k*0x400 + 4*(n % 256)` |

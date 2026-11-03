@@ -186,8 +186,10 @@ Prerequisites: Python 3.10 or newer, and from the repository root
 3. Pick **Gen L** `speech_librivox.wav` and **Gen R** `chirp_lin_100_7000.wav`
    (or tick **Swap L<->R**). The first setup forces both PRU clocks to 200 MHz and
    shows a notice.
-4. **Run**. After a few seconds the first 8 ms columns appear; the progress bar and
-   "ms audio / s" show how fast the simulation is. Left shows speech formants,
+4. **Run**. The first spectrogram column needs 256 samples (16 ms of audio), so at
+   about 1.5 ms of audio per second it appears after about 11 s; after that a new
+   8 ms column follows about every 5 s. The progress bar and "ms audio / s" show how
+   fast the simulation is. Left shows speech formants,
    right shows the chirp ridge climbing from 100 Hz to 7 kHz.
 5. **Booth** shows only the pickers, Run/Stop and the two spectrograms at large
    size; **Exit booth** or Esc leaves it.

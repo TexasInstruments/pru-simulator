@@ -320,9 +320,14 @@ class PRUSimulatorMCP:
 
         # Idle skip (Simulator.idle_skip): a NOP delay loop or SD-valid spin
         # runs as one step. Such a span changes no register, memory or pin,
-        # so only conditions on time need a budget; GPI conditions never skip
-        # (attached devices may move a pin inside the span).
-        skip = getattr(self.sim, "idle_skip", False) and not condition.startswith(("pin:", "gpi:"))
+        # so only conditions on time need a budget. GPI conditions never skip
+        # (attached devices may move a pin inside the span), and neither does
+        # reg:r31: R31 reads the GPI pins and the SD status, which move inside
+        # a span.
+        reads_inputs = condition.startswith(("pin:", "gpi:")) or (
+            condition.startswith("reg:")
+            and condition[4:].split("==", 1)[0].strip().lower() == "r31")
+        skip = getattr(self.sim, "idle_skip", False) and not reads_inputs
         cycles_goal = None
         if skip and condition.startswith("cycles>"):
             cycles_goal = int(condition[7:], 0) + 1   # first count that meets it

@@ -47,7 +47,10 @@ and a re-run with `--audio-ms 5` after the last code change:
 
 The target of 0.1 s of audio per minute is **missed by about 10 %** (spec
 estimate was 0.15). Further optimisation is deferred (see the profile). Before
-this work both cores ran paced at 0.61 ms/s, so run-ahead + skip is about 2.4x faster. In the browser
+this work the pair ran at 0.61 ms/s: that is the pre-branch measurement (pdm_rx and
+pdm_clk, paced lockstep, headless). The bench's own lockstep / skip-off figure on the
+final firmware is 0.551 ms/s (table above). Run-ahead + skip is about 2.4x the
+pre-branch figure and about 2.7x the bench's lockstep figure. In the browser
 the Audio view showed 1.4-1.5 ms audio/s, i.e. about 5 minutes for the 450 ms
 speech clip.
 

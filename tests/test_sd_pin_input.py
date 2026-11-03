@@ -9,6 +9,7 @@ be imported by later PDM tests.
 """
 
 import os
+import time
 
 import pytest
 
@@ -186,7 +187,11 @@ def test_tick_n_skips_non_modulator_channels():
     for ch in range(3):
         sd.set_source(ch, "pin" if ch < 2 else "off")
     before = sd.snapshot()
-    sd.tick_n(10**12)          # O(1): would never finish if it looped
+    # O(1) without a modulator channel. A regression that loops would take
+    # seconds for 10**7 (not hang CI), and the time bound catches it.
+    t0 = time.perf_counter()
+    sd.tick_n(10**7)
+    assert time.perf_counter() - t0 < 0.1
     assert sd.snapshot()["channels"] == before["channels"]
 
 

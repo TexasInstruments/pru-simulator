@@ -544,6 +544,24 @@ def test_set_idle_skip_turns_run_skip_off(server_sim):
     assert state["skipped_cycles"] == 0
 
 
+@pytest.mark.parametrize("bad", ["false", "true", 0, 1, None, [], {}])
+def test_set_idle_skip_accepts_only_a_json_bool(server_sim, bad):
+    from ui.server import app
+    client = TestClient(app)
+    with client.websocket_connect("/ws") as ws:
+        msg = {"action": "set_idle_skip", "core": "pru1", "enabled": bad}
+        if bad is None:
+            del msg["enabled"]                    # missing counts as not a bool
+        ws.send_json(msg)
+        msgs = _receive_until_state(ws)
+        errors = [m for m in msgs if m["type"] == "error"]
+        assert errors and errors[0]["tag"] == "idle_skip"
+        assert "true or false" in errors[0]["errors"][0]
+        assert server_sim.idle_skip is True and msgs[-1]["idle_skip"] is True
+        ws.send_json({"action": "set_idle_skip", "core": "pru1", "enabled": False})
+        assert _receive_until_state(ws)[-1]["idle_skip"] is False
+
+
 def test_run_multicore_uses_skip_but_step_multicore_does_not(server_sim):
     from ui.server import app
     assert server_sim.load("pru1", PDM_DELAY_PRODUCER_ASM.read_text()) == []
@@ -697,3 +715,15 @@ def test_run_until_max_steps_stop_matches_stepping(nominal_config):
     assert on[:4] == off[:4]
     assert on[0]["reason"] == "max_steps" and on[2] == 200
     assert on[4] > 0 and off[4] == 0
+
+
+@pytest.mark.parametrize("condition", ["pin:0==1", "gpi:0==1", "reg:r31==1", "reg:R31==1"])
+def test_run_until_on_inputs_never_skips(nominal_config, condition):
+    """GPI pins and R31 can move inside a skipped span: no skip for them."""
+    api = _mcp(nominal_config)
+    assert api.sim.idle_skip
+    assert api.sim.load("pru1", _pdm_clk()) == []
+    out = api.pru_run_until("pru1", condition, max_steps=3000)
+    core = api.sim.cores["pru1"]
+    assert out["reason"] == "max_steps" and core.counters.instruction_count == 3000
+    assert core.skipped_cycles == 0

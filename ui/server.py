@@ -1075,7 +1075,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 except Exception as e:
                     await websocket.send_json({"type": "error", "errors": [str(e)]})
             elif action == "set_idle_skip":
-                sim.idle_skip = bool(msg.get("enabled", True))
+                enabled = msg.get("enabled")
+                if isinstance(enabled, bool):
+                    sim.idle_skip = enabled
+                else:
+                    await websocket.send_json({"type": "error", "tag": "idle_skip", "errors": [
+                        f"enabled must be true or false, got {enabled!r}"]})
                 await _send_state(websocket, core)
             elif action == "set_xfr_shift":
                 sim.xfr.xfr_shift_en = bool(msg.get("enabled", False))
