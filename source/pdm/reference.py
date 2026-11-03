@@ -156,10 +156,21 @@ def pcm_chain(bits: list[int], osr: int = 96, dc_block: bool = True,
     CIC3 (comb mod 2^28, *warmup* outputs dropped) -> FIR /2 (Q27 table
     from fir_coefs.inc) -> DC blocker (if *dc_block*) -> sat24. *bits*
     start with the first bit sampled after the channel's SD reinit. The
-    firmware drops WARMUP_SAMPLES + 1 outputs on odd channels (FIR stagger),
-    so pass ``warmup=WARMUP + 1`` for those.
+    firmware drops WARMUP_SAMPLES + 1 outputs on odd channels (FIR stagger):
+    use ``pcm_chain_for_channel``, which applies that rule.
     """
     ys = fir_decimate(cic3(bits, osr, warmup))
     if dc_block:
         ys = _dc_block(ys)
     return [sat24(y) for y in ys]
+
+
+def pcm_chain_for_channel(bits: list[int], ch: int, osr: int = 96,
+                          dc_block: bool = True, warmup: int = WARMUP) -> list[int]:
+    """``pcm_chain`` for receiver channel *ch*, with the FIR stagger applied.
+
+    The firmware runs the FIR of odd channels one comb output later than
+    even ones, so an odd channel drops one more warm-up output:
+    ``warmup + ch % 2``.
+    """
+    return pcm_chain(bits, osr=osr, dc_block=dc_block, warmup=warmup + ch % 2)

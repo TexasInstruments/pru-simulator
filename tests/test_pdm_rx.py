@@ -3,9 +3,10 @@
 PRU1 runs pdm_gen.asm (Task 5) with the tone clips and drives the PDM clock
 and one data line; PRU0 runs pdm_rx.asm on its SD channels in "pin" mode
 (PdmLink, keep_history=True). The two cores run in lockstep with PRU1 as
-lead. The reference of channel k is ``reference.pcm_chain`` of the bits the
-channel actually sampled after its SD reinit (``link.sampled_bits[k]``), so
-the whole chain PRU1 modulator -> pins -> SD hardware -> PRU0 is covered.
+lead. The reference of channel k is ``reference.pcm_chain_for_channel`` of
+the bits the channel actually sampled after its SD reinit
+(``link.sampled_bits[k]``), so the whole chain PRU1 modulator -> pins -> SD
+hardware -> PRU0 is covered.
 Rings are read with ``pdm_layout.read_ring`` while the cores run, in
 chunks of at most 128 samples (ring = 256).
 
@@ -26,6 +27,7 @@ sys.path.insert(0, str(REPO / "source"))
 from pdm import pdm_layout as L          # noqa: E402
 from pdm import reference as R           # noqa: E402
 from simulator import Simulator          # noqa: E402
+from tests.pdm_helpers import link_reference, record_reinits  # noqa: E402
 from tests.test_pdm_gen import CLK_PIN, DAT_PIN, GEN_ASM, PDM_DIR, _tones  # noqa: E402
 
 RX_ASM = PDM_DIR / "pdm_rx.asm"
@@ -86,12 +88,10 @@ class Rig:
                                         keep_history=True)
         core = self.core = sim.cores["pru0"]
         self.wait = core._parser.labels["PDM_WAIT"]
-        self.reinits = {ch: [] for ch in range(n_ch)}
+        self.reinits = record_reinits(sim, self.link, range(n_ch))
         self.events = []
         self.marks = []                      # (kind, ch, cycle)
         self.pcm = {ch: [] for ch in range(n_ch)}
-        for ch in range(n_ch):
-            self._wrap_reinit(ch)
         write_r31 = core.io_port.write_r31
 
         def recording_write_r31(value):
@@ -115,16 +115,6 @@ class Rig:
 
         core.step_run = recording_step_run
 
-    def _wrap_reinit(self, ch):
-        chan = self.core.io_port.sd_filter.channels[ch]
-        reinit = chan.reinit
-
-        def recording_reinit():
-            self.reinits[ch].append(len(self.link.sampled_bits[ch]))
-            reinit()
-
-        chan.reinit = recording_reinit
-
     def counts(self) -> list[int]:
         return L.read_header(self.sim.memory)["pcm_count"][:self.n_ch]
 
@@ -146,10 +136,7 @@ class Rig:
         self._drain()
 
     def reference(self, ch: int) -> list[int]:
-        assert len(self.reinits[ch]) == 1, self.reinits
-        bits = self.link.sampled_bits[ch][self.reinits[ch][0]:]
-        # Odd channels drop one more warm-up output (FIR stagger).
-        return R.pcm_chain(bits, warmup=R.WARMUP + ch % 2)
+        return link_reference(self.link, self.reinits, ch)
 
     def step_costs(self):
         """[(ch, cycles from spin exit of ch to the next spin entry)]."""
@@ -192,6 +179,14 @@ def test_fir_coefs_regenerate_identically(tmp_path):
     subprocess.run([sys.executable, str(GEN_TOOL), "--out", str(out)], check=True)
     assert out.read_bytes() == COEFS.read_bytes()
     assert len(R.fir_table()) == 64
+
+
+def test_pcm_chain_for_channel_applies_fir_stagger():
+    bits = R.sigma_delta2([4000] * 40, 192)
+    assert R.pcm_chain_for_channel(bits, 0) == R.pcm_chain(bits)
+    for ch in (1, 3):
+        assert R.pcm_chain_for_channel(bits, ch) == R.pcm_chain(bits, warmup=R.WARMUP + 1)
+    assert R.pcm_chain_for_channel(bits, 2, dc_block=False) == R.pcm_chain(bits, dc_block=False)
 
 
 # ---------------------------------------------------------------------------
