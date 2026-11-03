@@ -395,6 +395,7 @@ function connect() {
     sendAction({ action: "device_discover" });
     sendAction({ action: "scenario_list" });
     sendAction({ action: "subscribe_capture", enabled: signalGraph.recording });
+    globalThis.PruAudio?.connected();
     refreshMemory();
     refreshMemory2();
     loadRegions();
@@ -408,6 +409,7 @@ function connect() {
     executionReady = false;
     sharedExecution = {running:false,owner:false,mode:null};
     stopRun(false); stopSim(false);
+    globalThis.PruAudio?.disconnected();
     updateCoresControl();
     // Check HTTP availability before another handshake. Failed WebSocket
     // attempts can add a browser-level delay shared by other tabs.
@@ -422,6 +424,10 @@ function connect() {
   ws.onmessage = (event) => {
     try {
       const msg = JSON.parse(event.data);
+      // The Audio view owns the pdm_* messages and its own errors. Everything
+      // else, including the state messages a clock change sends, flows on.
+      if ((msg.type === "error" || (typeof msg.type === "string" && msg.type.startsWith("pdm_")))
+          && globalThis.PruAudio?.handleMessage(msg)) return;
       if (msg.type === "state") {
         maybeRefreshCtable();
         if (msg.available_cores) showAvailableCores(msg.available_cores);
@@ -1620,9 +1626,11 @@ function graphSample(state) {
 
 /**
  * Called when a "capture" message arrives — the per-instruction samples the
- * server took inside a run loop. Run executes up to `max_steps` instructions
- * per round-trip, so sampling only its closing state push gives one sample per
- * 100+ instructions: far too coarse for a perif bit (2 core cycles at the
+ * server took inside a run loop. Run executes up to `max_steps` steps per
+ * round-trip. A step is one instruction, except that since the idle skip a
+ * skipped idle span counts as a single step, so a chunk can cover many more
+ * cycles than `max_steps`. Sampling only its closing state push gives one
+ * sample per 100+ steps: far too coarse for a perif bit (2 core cycles at the
  * channel-0 N=2 divider), which is why a Run-mode capture looked empty while
  * the same firmware traced fine under SIM (one instruction per push).
  *

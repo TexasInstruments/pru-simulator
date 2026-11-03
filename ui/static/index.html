@@ -1515,6 +1515,67 @@
       font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6;
     }
 
+    /* ---- Audio view (PDM microphones): patch bay left, two spectrograms right ------------------------ */
+    .audio-layout { display: grid; grid-template-columns: minmax(280px, 38%) minmax(0, 1fr); gap: 16px; align-items: start; }
+    .audio-patch { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+    .audio-card { margin: 0; }
+    .audio-card > .runtime-device-heading span { color: var(--text-dim); font-size: 10px; }
+    .audio-swap { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; color: var(--text); font-size: 11px; font-weight: 700; }
+    #audio-routing { margin: 0; font: 11px/1.55 var(--font-mono); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .audio-progress { height: 8px; border-radius: 4px; background: var(--panel-inset); border: 1px solid var(--border); overflow: hidden; }
+    #audio-progress-fill { height: 100%; width: 0; background: var(--brand-red); transition: width .3s linear; }
+    .audio-speed-wrap { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+    .audio-speed-label { color: var(--text-dim); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+    #audio-speed { color: var(--text); font: 700 18px var(--font-mono); font-variant-numeric: tabular-nums; }
+    .audio-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+    .audio-chip {
+      padding: 2px 9px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--panel-inset);
+      color: var(--text); font: 700 11px var(--font-mono); font-variant-numeric: tabular-nums;
+    }
+    #audio-overrun, #audio-error { color: var(--halted); font-size: 11px; font-weight: 700; margin: 0; }
+    #audio-notice, #audio-observer { color: var(--text-dim); font-size: 11px; line-height: 1.45; margin: 0; }
+    #audio-observer { color: var(--text); padding: 6px 8px; border: 1px dashed var(--border-strong); border-radius: 6px; }
+    #audio-overrun[hidden], #audio-error[hidden], #audio-notice[hidden], #audio-observer[hidden] { display: none; }
+    .audio-stage { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+    .audio-channel { margin: 0; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+    .audio-channel figcaption { display: flex; align-items: baseline; gap: 8px; color: var(--text); font-size: 12px; }
+    .audio-channel figcaption strong { font-size: 13px; letter-spacing: .04em; text-transform: uppercase; }
+    .audio-channel figcaption span { color: var(--text-dim); font-family: var(--font-mono); font-size: 11px; }
+    .audio-canvas-wrap {
+      position: relative; height: clamp(200px, 30vh, 400px); background: var(--graph-bg);
+      border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
+    }
+    .audio-canvas-wrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+    .audio-caption { display: none; margin: 0; text-align: center; color: var(--text); }
+    @media (max-width: 900px) { .audio-layout { grid-template-columns: minmax(0, 1fr); } }
+    /* Booth mode: the view covers the screen. The strip keeps the clip pickers, Run and the speed counter. */
+    .audio-booth:not([hidden]) {
+      position: fixed; inset: 0; z-index: 2000; display: flex; flex-direction: column; gap: 14px;
+      padding: 14px 24px 18px; overflow: hidden; background: var(--bg);
+    }
+    .audio-booth .workspace-header, .audio-booth .audio-routing-card, .audio-booth .audio-progress-card,
+    .audio-booth .audio-card .runtime-device-heading, .audio-booth #audio-reset { display: none; }
+    .audio-booth .audio-layout { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 14px; }
+    .audio-booth .audio-patch { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 12px 24px; }
+    .audio-booth .audio-card { padding: 6px 12px; box-shadow: none; }
+    .audio-booth .audio-card .runtime-device-fields { display: flex; gap: 16px; }
+    .audio-booth .runtime-device-field { flex-direction: row; align-items: center; gap: 8px; font-size: 20px; color: var(--text); }
+    .audio-booth .runtime-device-field select { width: auto; max-width: 22vw; font-size: 20px; padding: 6px 8px; }
+    .audio-booth .audio-swap { margin: 0 0 0 16px; font-size: 18px; }
+    .audio-booth .audio-actions { margin: 0; }
+    .audio-booth .runtime-device-button { min-height: 48px; padding: 8px 24px; font-size: 20px; }
+    .audio-booth .audio-speed-wrap { margin-left: auto; }
+    .audio-booth .audio-speed-label { font-size: 16px; }
+    .audio-booth #audio-speed { font-size: 36px; }
+    .audio-booth #audio-overrun, .audio-booth #audio-error, .audio-booth #audio-notice, .audio-booth #audio-observer { font-size: 16px; }
+    .audio-booth .audio-stage { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: minmax(0, 1fr) auto; gap: 14px 24px; }
+    .audio-booth .audio-channel { min-height: 0; }
+    .audio-booth .audio-channel figcaption { font-size: 26px; }
+    .audio-booth .audio-channel figcaption strong { font-size: 34px; }
+    .audio-booth .audio-channel figcaption span { font-size: 22px; }
+    .audio-booth .audio-canvas-wrap { flex: 1; height: auto; min-height: 0; }
+    .audio-booth .audio-caption { display: block; grid-column: 1 / -1; font-size: clamp(18px, 2vw, 30px); font-weight: 700; }
+
     /* ---- Text buttons: quiet hover ----------------------------------------------
        .btn-17 buttons keep their label in .text-container > .text (write it with
        setButtonLabel(), never button.textContent). Hover is a plain fill and border
@@ -1674,6 +1735,7 @@
       <nav class="view-switch" aria-label="Workspace views">
         <button type="button" data-workspace-view="simulator" aria-controls="main" aria-pressed="true">Simulator</button>
         <button type="button" data-workspace-view="io" aria-controls="io-view" aria-pressed="false" id="io-nav-button">I/O &amp; Devices<span class="tab-badge" id="io-fault-badge" hidden><span aria-hidden="true"></span><span class="visually-hidden"></span></span></button>
+        <button type="button" data-workspace-view="audio" aria-controls="audio-view" aria-pressed="false" id="audio-nav-button">Audio</button>
         <span class="view-glider" aria-hidden="true"></span>
       </nav>
       <div id="workspace-secondary">
@@ -2351,10 +2413,75 @@ Example:
       <pre id="device-event-log" aria-label="Current device events">No device events. Attach a model and execute firmware to inspect its activity.</pre>
     </section>
   </section>
+  <section id="audio-view" class="workspace-view" aria-labelledby="audio-view-title" hidden>
+    <header class="workspace-header">
+      <div>
+        <p class="workspace-kicker">PDM microphones</p>
+        <h1 id="audio-view-title">Audio</h1>
+        <p>PRU1 synthesises two PDM microphones from audio clips; PRU0 decodes them through the sigma-delta filter into 16 kHz PCM. Each spectrogram column is 8 ms of audio, and a new one appears every few seconds because every cycle is simulated.</p>
+      </div>
+    </header>
+    <div class="audio-layout">
+      <div class="audio-patch" role="group" aria-label="PDM demo controls">
+        <section class="runtime-device audio-card audio-sources" aria-labelledby="audio-sources-title">
+          <div class="runtime-device-heading"><strong id="audio-sources-title">Sources</strong><span>PRU1 PDM generators</span></div>
+          <div class="runtime-device-fields">
+            <label class="runtime-device-field" for="audio-left-clip">Gen L
+              <select id="audio-left-clip" aria-label="Clip for Gen L"></select>
+            </label>
+            <label class="runtime-device-field" for="audio-right-clip">Gen R
+              <select id="audio-right-clip" aria-label="Clip for Gen R"></select>
+            </label>
+          </div>
+          <label class="audio-swap"><input type="checkbox" id="audio-swap"> Swap L↔R</label>
+        </section>
+        <section class="runtime-device audio-card audio-routing-card" aria-labelledby="audio-routing-title">
+          <div class="runtime-device-heading"><strong id="audio-routing-title">Routing</strong><span>read-only</span></div>
+          <pre id="audio-routing" aria-label="Routing from the generators to the PRU0 sigma-delta channels">Gen L → PRU0 SD ch0 · rising edge · PRU1 GPO1 → SD0_D/SD1_D, clock GPO0 → SD0_CLK
+Gen R → PRU0 SD ch1 · falling edge · same data line</pre>
+        </section>
+        <section class="runtime-device audio-card audio-progress-card" aria-labelledby="audio-progress-title">
+          <div class="runtime-device-heading"><strong id="audio-progress-title">Progress</strong><span id="audio-progress-text">No run yet</span></div>
+          <div class="audio-progress" role="presentation"><div id="audio-progress-fill"></div></div>
+          <div class="audio-chips" aria-label="PRU load and run mode">
+            <span class="audio-chip" id="audio-load-pru0">PRU0 –</span>
+            <span class="audio-chip" id="audio-load-pru1">PRU1 –</span>
+            <span class="audio-chip" id="audio-mode">–</span>
+          </div>
+        </section>
+        <div class="audio-speed-wrap">
+          <span class="audio-speed-label">Simulation speed</span>
+          <strong id="audio-speed">– ms audio / s</strong>
+        </div>
+        <div class="runtime-device-actions audio-actions">
+          <button class="runtime-device-button primary btn-17" type="button" id="audio-run"><span class="text-container"><span class="text">Run</span></span></button>
+          <button class="runtime-device-button btn-17" type="button" id="audio-stop" disabled><span class="text-container"><span class="text">Stop</span></span></button>
+          <button class="runtime-device-button btn-17" type="button" id="audio-reset"><span class="text-container"><span class="text">Reset</span></span></button>
+          <button class="runtime-device-button" type="button" id="audio-booth" aria-pressed="false" title="Full-screen display for a booth; Esc leaves">Booth</button>
+        </div>
+        <p id="audio-overrun" role="alert" hidden></p>
+        <p id="audio-error" role="alert" hidden></p>
+        <p id="audio-notice" role="status" hidden></p>
+        <p id="audio-observer" role="status" hidden></p>
+      </div>
+      <div class="audio-stage">
+        <figure class="audio-channel">
+          <figcaption><strong>Left mic</strong> <span id="audio-title-left">ch0</span></figcaption>
+          <div class="audio-canvas-wrap"><canvas id="audio-canvas-left" width="720" height="300" role="img" aria-label="Spectrogram of the left microphone, 0 to 8 kHz"></canvas></div>
+        </figure>
+        <figure class="audio-channel">
+          <figcaption><strong>Right mic</strong> <span id="audio-title-right">ch1</span></figcaption>
+          <div class="audio-canvas-wrap"><canvas id="audio-canvas-right" width="720" height="300" role="img" aria-label="Spectrogram of the right microphone, 0 to 8 kHz"></canvas></div>
+        </figure>
+        <p class="audio-caption">PRU1 firmware synthesises 2 PDM microphones · PRU0 firmware decodes them · every cycle simulated</p>
+      </div>
+    </div>
+  </section>
   <script src="/static/chrome.js"></script>
   <script src="/static/layout.js"></script>
   <script src="/static/cores.js"></script>
   <script src="/static/cores-deck.js"></script>
+  <script src="/static/audio.js?v=20261103-audio"></script>
   <script src="/static/app.js?v=20261015-cores"></script>
   <script src="/static/workspace.js"></script>
 </body>
