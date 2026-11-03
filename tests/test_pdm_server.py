@@ -484,3 +484,20 @@ def test_simulator_view_run_and_step_on_a_wired_core_report_errors(server):
         # The socket is still open and answers.
         state = _ws_do(ws, {"action": "get_state", "core": "rtu0"})[-1]
         assert state["type"] == "state" and state["core"] == "rtu0"
+
+
+def test_producer_running_alone_hits_the_queue_cap_cleanly(server):
+    client = server()
+    with client.websocket_connect("/ws") as ws:
+        _setup(ws)
+        _run(ws)
+        srv.sim._pdm_link.max_queue = 50
+        msgs = _ws_do(ws, {"action": "run", "core": "pru1", "max_steps": 100_000})
+        errors = [m for m in msgs if m["type"] == "error"]
+        assert errors and "consumer pru0 is not advancing (queue > 50 edges)" in errors[0]["errors"][0]
+        ws.send_json({"action": "run_multicore", "core": "pru1", "partners": ["rtu1"],
+                      "max_steps": 1000})
+        msgs = _until_state(ws, "rtu1")
+        assert [m for m in msgs if m["type"] == "error"]
+        state = _ws_do(ws, {"action": "get_state", "core": "rtu0"})[-1]
+        assert state["type"] == "state" and state["core"] == "rtu0"

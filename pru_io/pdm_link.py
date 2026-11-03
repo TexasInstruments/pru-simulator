@@ -20,6 +20,16 @@ Timing convention:
 * The consumer must not get ahead of what the producer has already decided.
   ``advance_consumer`` raises :class:`PdmLinkError` when
   ``time_of(consumer, d) > horizon()``.
+* The producer must not get unboundedly ahead of the consumer either: once
+  more than ``max_queue`` edges wait (``MAX_QUEUE`` = 1,000,000 by default,
+  roughly 100 MB of queue), ``on_producer_gpo`` raises :class:`PdmLinkError`
+  from the producer's R30 write. The edge is queued first, so none is lost.
+  That happens when the producer runs on its own (for example "Run PRU1" in
+  the Simulator view with the link still attached); a run-ahead or lockstep
+  pair keeps the queue at about one slice.
+* A consumer reset (``Simulator.reset`` of the consumer) rebases the consumer
+  to the shared time; ``resync_consumer`` then drops the edges stamped before
+  its new start, so they are not applied as one stale burst.
 """
 
 from __future__ import annotations
@@ -33,16 +43,20 @@ if TYPE_CHECKING:
 
 
 class PdmLinkError(RuntimeError):
-    """The consumer tried to run past the producer's decided edges."""
+    """The consumer tried to run past the producer's decided edges, or the
+    producer queued more than ``max_queue`` edges the consumer never took."""
 
 
 class PdmLink:
     """Wire producer GPO pins to the consumer's SD clock net and data inputs."""
 
+    #: Default bound on queued edges (see the module docstring).
+    MAX_QUEUE = 1_000_000
+
     def __init__(self, producer_core: PRUCore, consumer_core: PRUCore,
                  time_of: Callable[[str, int], int], clock_pin: int,
                  data_pins: dict[int, int], clock_net: int = 0,
-                 keep_history: bool = False):
+                 keep_history: bool = False, max_queue: int | None = None):
         self.producer = producer_core
         self.consumer = consumer_core
         self.time_of = time_of
@@ -50,6 +64,7 @@ class PdmLink:
         self.data_pins = dict(data_pins)   # SD channel -> producer GPO pin
         self.clock_net = clock_net
         self.keep_history = keep_history
+        self.max_queue = self.MAX_QUEUE if max_queue is None else max_queue
         self._producer_name = producer_core.name.lower()
         self._consumer_name = consumer_core.name.lower()
         self._clock_mask = 1 << clock_pin
@@ -73,13 +88,22 @@ class PdmLink:
         ``step_start_cycle``: the writing instruction's start cycle, whatever
         stalls it counts. A producer reset (``c = -1``) stamps its pin drop at
         the reset instant.
+
+        Raises :class:`PdmLinkError` once more than ``max_queue`` edges wait,
+        after queuing this one (a reset's pin drop never raises, so a reset
+        always completes).
         """
         if not (old ^ new) & self._watch_mask:
             return
-        stamp = self.time_of(self._producer_name, self.producer.step_start_cycle + 1)
+        start = self.producer.step_start_cycle
+        stamp = self.time_of(self._producer_name, start + 1)
         self._queue.append((stamp, new))
         if self.keep_history:
             self.edge_history.append((stamp, new))
+        if len(self._queue) > self.max_queue and start >= 0:
+            raise PdmLinkError(
+                f"PDM link: consumer {self._consumer_name} is not advancing "
+                f"(queue > {self.max_queue} edges)")
 
     def horizon(self) -> int | float:
         """Latest time up to which the producer's edges are all queued."""
@@ -158,6 +182,19 @@ class PdmLink:
         self._last_word = snap["last_word"]
         self.edge_history = list(snap["edge_history"])
         self.sampled_bits = {ch: list(bits) for ch, bits in snap["sampled_bits"].items()}
+
+    def resync_consumer(self) -> None:
+        """Drop the queued edges stamped before the consumer's current start.
+
+        For a consumer that was just reset: its timeline was rebased to the
+        shared time, so edges stamped before that are history it never saw.
+        The pin levels they set still hold, so the last dropped word becomes
+        the word the consumer has seen.
+        """
+        now = self.time_of(self._consumer_name, self.consumer.counters.cycles)
+        queue = self._queue
+        while queue and queue[0][0] < now:
+            self._last_word = queue.popleft()[1]
 
     def reset(self) -> None:
         """Drop queued edges and history; resync to the producer's GPO now."""

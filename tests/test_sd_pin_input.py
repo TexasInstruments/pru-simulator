@@ -347,3 +347,56 @@ def test_stamp_for_stalling_lbbo_into_r30(nominal_config):
     sim.step("pru1", 2)
     assert p.counters.stall_cycles > 0             # the LBBO really stalled
     assert link.edge_history == [(sim.iep.core_time_units("pru1", 1 + 1), 3)]
+
+
+def test_queue_cap_raises_from_the_producer_without_losing_edges(nominal_config):
+    """PRU1 running alone (PRU0 never steps) must not grow the queue forever."""
+    sim, link = make_linked_sim(nominal_config, keep_history=False)
+    link.max_queue = 20
+    with pytest.raises(PdmLinkError,
+                       match=r"PDM link: consumer pru0 is not advancing \(queue > 20 edges\)"):
+        sim.step("pru1", 10_000)
+    assert len(link._queue) == 21          # the edge that crossed the cap is queued
+    # Every further producer edge raises again; none is dropped.
+    with pytest.raises(PdmLinkError):
+        sim.step("pru1", 10_000)
+    assert len(link._queue) == 22
+
+
+def test_queue_cap_default_and_constructor_kwarg(nominal_config):
+    sim = Simulator(config_path=nominal_config)
+    p, c = sim.cores["pru1"], sim.cores["pru0"]
+    assert PdmLink.MAX_QUEUE == 1_000_000
+    assert PdmLink(p, c, sim.iep.core_time_units, 0, {0: 1}).max_queue == 1_000_000
+    assert PdmLink(p, c, sim.iep.core_time_units, 0, {0: 1}, max_queue=7).max_queue == 7
+
+
+def test_producer_reset_at_the_cap_still_completes(nominal_config):
+    sim, link = make_linked_sim(nominal_config, keep_history=False)
+    link.max_queue = 1
+    with pytest.raises(PdmLinkError):
+        sim.step("pru1", 10_000)
+    sim.reset("pru1")                       # its pin drop is queued, no raise
+    assert sim.cores["pru1"].pc == 0 and sim.cores["pru1"].io_port.gpo == 0
+
+
+def test_consumer_reset_drops_the_stale_edges(nominal_config):
+    """A reset of the consumer rebases it onto the shared time; the edges
+    stamped before its new start must not reach it as one burst."""
+    sim, link = make_linked_sim(nominal_config)
+    configure_channel(sim, 0, clk_sel=1, osr=96)
+    sim.set_sd_source("pru0", 0, "pin")
+    sim.step("pru1", PDM_PREAMBLE_INSTRUCTIONS + 40 * PDM_PERIOD_CYCLES)
+    assert len(link._queue) > 40                       # PRU0 never ran
+    gpo = sim.cores["pru1"].io_port.gpo
+    sim.reset("pru0")
+    start = sim.iep.core_time_units("pru0", 0)
+    assert start == sim.iep.core_time_units("pru1", sim.cores["pru1"].counters.cycles)
+    assert all(stamp >= start for stamp, _ in link._queue)
+    assert link._last_word == gpo                      # the pin levels as they stand
+    channel = sim.cores["pru0"].io_port.sd_filter.channels[0]
+    sim.step("pru0", 1)                                # no burst of 40 clock edges
+    assert channel._sample_count == 0 and link.sampled_bits[0] == []
+    # The pair then runs on normally: the next producer edges are sampled.
+    run_periods(sim, 5)
+    assert len(link.sampled_bits[0]) == 5

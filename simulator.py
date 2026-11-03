@@ -1219,8 +1219,18 @@ class Simulator:
         self.iep.set_clock_mhz(mhz)
 
     def reset(self, core: str) -> None:
-        """Reset *core* to its initial state (registers, counters, PC, halted flag)."""
-        self._get_core(core).reset()
+        """Reset *core* to its initial state (registers, counters, PC, halted flag).
+
+        With a PDM link attached and *core* its consumer, the edges stamped
+        before the consumer's new (rebased) start are dropped
+        (``PdmLink.resync_consumer``) instead of reaching its first
+        instruction as one burst.
+        """
+        pru = self._get_core(core)
+        pru.reset()
+        link = self._pdm_link
+        if link is not None and link.consumer is pru:
+            link.resync_consumer()
 
     def set_strict_unsupported_xfr(self, enabled: bool) -> None:
         """Choose what happens when firmware drives an unmodelled XFR device ID.
