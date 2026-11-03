@@ -463,33 +463,68 @@ def _receive_until_state(ws):
             return messages
 
 
-def test_capture_over_skipped_span(server_sim, nominal_config):
+def _ws_samples(monkeypatch, config, load, msg, idle_skip=True):
+    """Fresh server sim, one websocket request; return (samples, sim)."""
+    import ui.server as srv
     from ui.server import app
-    assert server_sim.load("pru1", _pdm_clk()) == []
-
-    # Stepped reference: R30 pins after every retired instruction.
-    ref = Simulator(config_path=nominal_config)
-    assert ref.load("pru1", _pdm_clk()) == []
-    ref_core = ref.cores["pru1"]
-    pins_at = {0: 0}
-    while ref_core.counters.instruction_count < 20_000:
-        ref_core.step()
-        pins_at[ref_core.counters.instruction_count] = ref_core.registers.read_full(30) & 0xFFFFF
-
-    client = TestClient(app)
-    with client.websocket_connect("/ws") as ws:
-        ws.send_json({"action": "run", "core": "pru1", "max_steps": 400,
-                      "capture": True, "stride": 1})
+    fresh = Simulator(config_path=config)
+    fresh.idle_skip = idle_skip
+    monkeypatch.setattr(srv, "sim", fresh)
+    srv._clear_history()
+    load(fresh)
+    with TestClient(app).websocket_connect("/ws") as ws:
+        ws.send_json(msg)
         messages = _receive_until_state(ws)
-    captures = [m for m in messages if m.get("type") == "capture"]
-    assert captures, messages
-    samples = [s for m in captures for s in m["samples"]]
-    pru1 = server_sim.cores["pru1"]
-    assert pru1.skipped_cycles > 0, "Run did not use the idle skip"
-    assert pru1.counters.instruction_count > 400
-    assert len(samples) == 400
-    for sample in samples:
-        assert sample[1] == pins_at[sample[0]], sample
+        if msg["action"] == "run_multicore":
+            messages += _receive_until_state(ws)
+    samples = [s for m in messages if m.get("type") == "capture" for s in m["samples"]]
+    return samples, fresh
+
+
+def _load_pdm_clk(sim):
+    assert sim.load("pru1", _pdm_clk()) == []
+
+
+def _load_paced_pair(sim):
+    assert sim.load("pru1", PDM_DELAY_PRODUCER_ASM.read_text()) == []
+    assert sim.load("pru0", SD_CONSUMER) == []
+    _link_consumer(sim)
+
+
+def test_capture_over_skipped_span(monkeypatch, nominal_config):
+    """Run with the Signal Graph capturing never skips (samples are spaced by
+    index): same samples as with idle skip off; without capture it skips."""
+    msg = {"action": "run", "core": "pru1", "max_steps": 400,
+           "capture": True, "stride": 1}
+    on, on_sim = _ws_samples(monkeypatch, nominal_config, _load_pdm_clk, msg)
+    off, off_sim = _ws_samples(monkeypatch, nominal_config, _load_pdm_clk, msg,
+                               idle_skip=False)
+    assert len(on) == 400 and on == off
+    assert on_sim.cores["pru1"].skipped_cycles == 0
+    assert on_sim.cores["pru1"].counters.instruction_count == 400
+
+    _, plain = _ws_samples(monkeypatch, nominal_config, _load_pdm_clk,
+                           {"action": "run", "core": "pru1", "max_steps": 400})
+    assert plain.cores["pru1"].skipped_cycles > 0
+    assert plain.cores["pru1"].counters.instruction_count > 400
+
+
+def test_run_multicore_capture_never_skips(monkeypatch, nominal_config):
+    msg = {"action": "run_multicore", "core": "pru1", "partners": ["pru0"],
+           "max_steps": 300, "capture": True, "stride": 1}
+    on, on_sim = _ws_samples(monkeypatch, nominal_config, _load_paced_pair, msg)
+    off, off_sim = _ws_samples(monkeypatch, nominal_config, _load_paced_pair, msg,
+                               idle_skip=False)
+    assert len(on) == len(off) == 300
+    assert on == off                          # same stamps and pin words
+    assert all(c.skipped_cycles == 0 for c in on_sim.cores.values())
+    for name in ("pru0", "pru1"):
+        assert _state(on_sim)[name] == _state(off_sim)[name]
+
+    no_capture = dict(msg, capture=False)
+    _, plain = _ws_samples(monkeypatch, nominal_config, _load_paced_pair, no_capture)
+    assert plain.cores["pru1"].skipped_cycles > 0
+    assert plain.cores["pru0"].skipped_cycles > 0
 
 
 def test_set_idle_skip_turns_run_skip_off(server_sim):

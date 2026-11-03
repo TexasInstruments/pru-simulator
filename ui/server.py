@@ -1050,12 +1050,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 at_breakpoint = False
                 samples = []
                 error = None
-                idle_skip = sim.idle_skip
+                # The Signal Graph spaces samples by index, not by cycle, so a
+                # skipped span (one sample) would squeeze its time axis: no
+                # idle skip while anything is capturing.
+                idle_skip = sim.idle_skip and not capture
                 try:
                     steps = 0
                     while steps < max_steps and not pru.halted and pru.pc < len(pru.instructions):
-                        # A skipped idle span counts as one step: its pins do
-                        # not change, so one capture sample stamps it.
                         if idle_skip:
                             pru.step_run(IDLE_SKIP_MAX_CYCLES)
                         else:
@@ -1076,10 +1077,12 @@ async def websocket_endpoint(websocket: WebSocket):
                                   captured=capture, run_id=msg.get("run_id"))
             elif action in {"run_multicore", "step_multicore"}:
                 manual_step = action == "step_multicore"
-                # Continuous run_multicore skips idle spans; step_multicore never.
-                idle_skip = sim.idle_skip and not manual_step
                 max_steps = 1 if manual_step else int(msg.get("max_steps", 1000))
                 capture = bool(msg.get("capture", False)) or any(c.capture for c in _connections)
+                # Continuous run_multicore skips idle spans; step_multicore
+                # never, and neither while the Signal Graph is capturing (it
+                # spaces samples by index, so a skipped span would squeeze it).
+                idle_skip = sim.idle_skip and not manual_step and not capture
                 stride = _capture_stride(msg)
                 # "partners" runs three or four cores together; "partner" is the
                 # original single follower.
