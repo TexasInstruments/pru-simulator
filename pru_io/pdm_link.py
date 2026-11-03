@@ -11,7 +11,10 @@ Timing convention:
 
 * An edge caused by a producer R30 write in an instruction that starts at
   producer cycle ``c`` is stamped ``time_of(producer, c + 1)``: the output is
-  valid when the instruction retires.
+  valid when the instruction retires. ``c`` is ``PRUCore.step_start_cycle``.
+* A producer reset drives its GPO low at the reset instant
+  (``time_of(producer, 0)`` on the rebased timeline). That is a real edge:
+  a falling-edge sampler samples it, with the reset data level 0.
 * A consumer instruction that starts at consumer cycle ``d`` sees exactly the
   edges stamped ``<= time_of(consumer, d)``.
 * The consumer must not get ahead of what the producer has already decided.
@@ -66,14 +69,14 @@ class PdmLink:
     def on_producer_gpo(self, old: int, new: int) -> None:
         """IOPort GPO listener: queue a change on any watched pin.
 
-        Stamped at the producer's current cycle + 1. Inside ``step()`` that
-        is the retire time of the writing instruction: its start cycle + 1
-        for single-cycle R30 writes, later if memory stalls were already
-        counted before the write.
+        Stamped ``time_of(producer, c + 1)`` with ``c`` the producer's
+        ``step_start_cycle``: the writing instruction's start cycle, whatever
+        stalls it counts. A producer reset (``c = -1``) stamps its pin drop at
+        the reset instant.
         """
         if not (old ^ new) & self._watch_mask:
             return
-        stamp = self.time_of(self._producer_name, self.producer.counters.cycles + 1)
+        stamp = self.time_of(self._producer_name, self.producer.step_start_cycle + 1)
         self._queue.append((stamp, new))
         if self.keep_history:
             self.edge_history.append((stamp, new))

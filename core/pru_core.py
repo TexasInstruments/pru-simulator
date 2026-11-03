@@ -115,6 +115,12 @@ class PRUCore:
         self.capabilities = get_device_capabilities(target)
         self.registers = RegisterFile()
         self.counters = CycleCounters()
+        # Cycle at which the executing instruction started. Output pin
+        # changes are stamped from it (PdmLink: retire = start + 1), so the
+        # stamp never depends on where an opcode counts its stalls. -1 while
+        # no instruction runs after a reset: the reset's own pin change then
+        # lands at cycle 0, the reset instant.
+        self.step_start_cycle: int = -1
         self.iep = None          # set by Simulator when an IEP is present
         self.cycle_observer = cycle_observer
         self.reset_observer = reset_observer
@@ -237,6 +243,7 @@ class PRUCore:
         self.loop_state = None
         for acc in self.accelerators.values():
             acc.reset()
+        self.step_start_cycle = -1
         self.io_port.reset()
         self.unsupported_xfr.clear()
 
@@ -262,6 +269,7 @@ class PRUCore:
                 self._advance_idle_cycle()
             return
         cycles_before = self.counters.cycles
+        self.step_start_cycle = cycles_before
 
         # Pre-tick: advance UART frame generator before instruction reads R31
         if self.io_port.uart_generator is not None:

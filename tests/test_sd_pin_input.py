@@ -286,3 +286,64 @@ def test_pdm_link_standalone_construction(nominal_config):
     assert link.producer is sim.cores["pru1"]
     assert link.consumer is sim.cores["pru0"]
     assert link.edge_history == []
+
+
+def _catch_up_consumer(sim: Simulator) -> None:
+    p, c = sim.cores["pru1"], sim.cores["pru0"]
+    target = sim.iep.core_time_units("pru1", p.counters.cycles)
+    while sim.iep.core_time_units("pru0", c.counters.cycles) <= target:
+        c.step()
+
+
+def test_producer_reset_is_a_real_falling_edge(nominal_config):
+    """A reset drives the clock low at the reset instant: one real falling
+    edge, sampled with the reset data level (0). The first write after the
+    reset must not be decoded against the stale pre-reset word."""
+    sim, link = make_linked_sim(nominal_config)
+    configure_channel(sim, 0, clk_sel=1, clk_inv=0)
+    configure_channel(sim, 1, clk_sel=2, clk_inv=1)
+    sim.set_sd_source("pru0", 0, "pin")
+    sim.set_sd_source("pru0", 1, "pin")
+    # 3 full periods, then LOOP+0..+5: stopped just after a rising edge.
+    sim.step("pru1", PDM_PREAMBLE_INSTRUCTIONS + 3 * PDM_PERIOD_CYCLES + 6)
+    assert sim.cores["pru1"].io_port.gpo & 1 == 1          # clock high
+    _catch_up_consumer(sim)
+    assert link.sampled_bits[0] == rising_bits(4)
+    assert link.sampled_bits[1] == falling_bits(3)
+
+    sim.reset("pru1")
+    reset_time = sim.iep.core_time_units("pru1", 0)
+    assert link.edge_history[-1] == (reset_time, 0)
+    periods = 5
+    sim.step("pru1", PDM_PREAMBLE_INSTRUCTIONS + periods * PDM_PERIOD_CYCLES)
+    _catch_up_consumer(sim)
+    assert link.sampled_bits[0] == rising_bits(4) + rising_bits(periods)
+    assert link.sampled_bits[1] == falling_bits(3) + [0] + falling_bits(periods)
+
+
+def test_stamp_uses_instruction_start_even_if_stall_precedes_write(nominal_config):
+    """The stamp rule must not depend on where an opcode counts its stalls."""
+    sim = Simulator(config_path=nominal_config)
+    assert sim.load("pru1", "ldi r1, 1\nmov r30, r1\nhalt\n") == []
+    link = sim.attach_pdm_link(keep_history=True)
+    p = sim.cores["pru1"]
+    real_write = p.io_port.write_r30
+
+    def stalled_write(value, wstrb=0xF):
+        p.counters.stall(5)           # stall counted before the writeback
+        real_write(value, wstrb)
+
+    p.io_port.write_r30 = stalled_write
+    sim.step("pru1", 2)
+    assert link.edge_history == [(sim.iep.core_time_units("pru1", 1 + 1), 1)]
+
+
+def test_stamp_for_stalling_lbbo_into_r30(nominal_config):
+    sim = Simulator(config_path=nominal_config)
+    p = sim.cores["pru1"]
+    sim.memory.write(p._map_data_addr(0x100), (0x3).to_bytes(4, "little"))
+    assert sim.load("pru1", "ldi r1, 0x100\nlbbo &r30, r1, 0, 4\nhalt\n") == []
+    link = sim.attach_pdm_link(keep_history=True)
+    sim.step("pru1", 2)
+    assert p.counters.stall_cycles > 0             # the LBBO really stalled
+    assert link.edge_history == [(sim.iep.core_time_units("pru1", 1 + 1), 3)]
