@@ -160,16 +160,19 @@ class SigmaDeltaFilter:
         True = rising, False = falling, None = the channel does not sample
         *net* (not in "pin" mode, or CLK_SEL picks another clock).
 
-        CLK_SEL (TRM SD_CLK_SEL_REGn[1:0]): 0 = GPI R31[16] (not a link
-        net), 1 = the channel's own SDn_CLK (net n), 2 = the group clock
-        SD0/3/6_CLK (net 3*(n//3)), 3 = reserved. CLK_INV (bit 2) inverts
+        CLK_SEL (TRM SD_CLK_SEL_REGn[1:0]): 0 = the sd8_clk pin (GPI16 =
+        SD8_CLK, TRM Table 6-418; net 8) for any channel, 1 = the channel's
+        own SDn_CLK (net n), 2 = the group clock SD0/3/6_CLK (net
+        3*(n//3)), 3 = reserved. CLK_INV (bit 2) inverts
         the selected clock, so the channel then samples on the falling edge.
         Without wired registers every field reads as its reset value 0.
         """
         if self.sources[ch] != "pin" or self.registers is None:
             return None
         clk_sel = self.registers.get_clk_sel(ch)
-        if clk_sel == 1:
+        if clk_sel == 0:
+            selected = 8
+        elif clk_sel == 1:
             selected = ch
         elif clk_sel == 2:
             selected = 3 * (ch // 3)

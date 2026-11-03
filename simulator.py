@@ -1203,10 +1203,13 @@ class Simulator:
 
     def attach_pdm_link(self, producer: str = "pru1", consumer: str = "pru0",
                         clock_pin: int = 0, data_pins: dict[int, int] = {0: 1, 1: 1},
-                        keep_history: bool = False) -> PdmLink:
-        """Drive *consumer*'s SD clock net 0 and data inputs from *producer*'s GPO.
+                        keep_history: bool = False,
+                        clock_net: int = 0) -> PdmLink:
+        """Drive *consumer*'s SD clock net and data inputs from *producer*'s GPO.
 
-        *clock_pin* is the producer GPO pin carrying the clock (SD0_CLK);
+        *clock_pin* is the producer GPO pin carrying the clock; *clock_net*
+        is the SD clock net it drives (0 = SD0_CLK, 8 = sd8_clk, which every
+        channel with CLK_SEL = 0 samples);
         *data_pins* maps consumer SD channel -> producer GPO data pin. Only
         channels set to "pin" (set_sd_source) sample the link, on the edge
         their CLK_SEL/CLK_INV select. Replaces any link already attached.
@@ -1219,7 +1222,7 @@ class Simulator:
         self.detach_pdm_link()
         link = PdmLink(producer_core, consumer_core, self.iep.core_time_units,
                        clock_pin=clock_pin, data_pins=dict(data_pins),
-                       keep_history=keep_history)
+                       clock_net=clock_net, keep_history=keep_history)
         producer_core.io_port.gpo_listeners.append(link.on_producer_gpo)
         consumer_core.io_port.sd_filter.pin_link = link
         self._pdm_link = link

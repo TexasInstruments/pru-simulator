@@ -153,10 +153,46 @@ def test_unselected_clock_gets_no_ticks(nominal_config):
 
 def test_clk_sel_zero_gets_no_ticks(nominal_config):
     sim, _ = make_linked_sim(nominal_config)
-    configure_channel(sim, 0, clk_sel=0)     # GPI R31[16]: not driven by the link
+    configure_channel(sim, 0, clk_sel=0)     # sd8_clk (net 8): the link drives net 0
     sim.set_sd_source("pru0", 0, "pin")
     run_periods(sim, 50)
     assert sim.cores["pru0"].io_port.sd_filter.channels[0].acc1 == 0
+
+
+def test_clk_sel_0_follows_the_sd8_clock_net(nominal_config):
+    """CLK_SEL 0 selects sd8_clk (GPI16 = SD8_CLK) for any channel."""
+    sim = Simulator(config_path=nominal_config)
+    load_pattern_producer(sim)
+    assert sim.load("pru0", _IDLE_LOOP) == []
+    link = sim.attach_pdm_link(data_pins={0: 1, 1: 1, 2: 1}, clock_net=8,
+                               keep_history=True)
+    configure_channel(sim, 0, clk_sel=0)
+    configure_channel(sim, 1, clk_sel=0, clk_inv=1)
+    configure_channel(sim, 2, clk_sel=0)
+    for ch in range(3):
+        sim.set_sd_source("pru0", ch, "pin")
+    periods = 120
+    run_periods(sim, periods)
+    sd = sim.cores["pru0"].io_port.sd_filter
+    for ch, bits in ((0, rising_bits(periods)), (1, falling_bits(periods)),
+                     (2, rising_bits(periods))):
+        c = sd.channels[ch]
+        assert link.sampled_bits[ch] == bits
+        assert (c.acc1, c.acc2, c.acc3) == cic3(bits)
+    assert sd.channels[0].acc3 != sd.channels[1].acc3
+    assert sd.channels[0].valid
+
+
+def test_clk_sel_0_ignores_other_nets(nominal_config):
+    """A link on net 0 (SD0_CLK) gives CLK_SEL 0 channels no ticks."""
+    sim, link = make_linked_sim(nominal_config)   # clock_net=0
+    for ch in range(3):
+        configure_channel(sim, ch, clk_sel=0)
+        sim.set_sd_source("pru0", ch, "pin")
+    run_periods(sim, 50)
+    sd = sim.cores["pru0"].io_port.sd_filter
+    assert [sd.channels[ch].acc1 for ch in range(3)] == [0, 0, 0]
+    assert link.sampled_bits[0] == []
 
 
 def test_off_mode_never_ticks(nominal_config):
