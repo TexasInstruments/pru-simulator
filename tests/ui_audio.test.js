@@ -165,6 +165,24 @@ test('spectrogram draws, and its text scales with canvas height', () => {
   assert.ok(px(big) >= 2 * px(small), `font ${px(small)}px -> ${px(big)}px`);
 });
 
+test('spectrogram text is capped by canvas width as well as height', () => {
+  const { audio } = page();
+  const draw = (width, height) => {
+    const canvas = new Canvas('c', width, height);
+    const spec = new audio.Spectrogram(canvas, {});
+    spec.append(0, sine(1024));
+    spec.draw();
+    return Math.max(...canvas.fonts.map(font => parseFloat(font)));
+  };
+  // Tall and narrow: the height alone would give 48 px; the width cap (3.5 %) gives 25 px.
+  const narrow = draw(700, 1000);
+  assert.ok(narrow <= 25, `700x1000 font ${narrow}px, expected <= 25`);
+  assert.ok(narrow >= 24, `700x1000 font ${narrow}px, expected the cap to bind at about 24.5`);
+  // Wide enough that the height governs again: unchanged from before the cap.
+  assert.equal(draw(1800, 800), 48);
+  assert.equal(draw(1000, 270), 19);
+});
+
 test('booth button toggles class and Esc leaves', () => {
   const { elements, document } = page();
   const view = elements.get('audio-view');
