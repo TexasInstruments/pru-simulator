@@ -78,11 +78,14 @@
 ;   at once (next left step = bit 192k); the right sample is staged in
 ;   xr_next and committed in every high half after its right step, so
 ;   right bit 192k is the first to use it. Frame 0 is fetched by the init.
-;   HDR_GEN_POS = frames fetched, stored after each fetch. A fetch slot
+;   HDR_GEN_POS = frames fetched (k+1 while frame k plays, 1 after init),
+;   stored after each fetch. A fetch slot
 ;   with frame >= CLIP_LEN sets x = 0 and stores HDR_GEN_DONE = 1 (again
-;   every 192 periods); the first such slot runs in low half 192*LEN-2,
-;   so GEN_DONE rises 1.5 PDM periods (< 0.5 us) before the last frame's
-;   last bit is sampled. CLIP_LEN is clamped to CLIP_MAX_FRAMES.
+;   every 192 periods). The first such slot runs in the low half that
+;   drives the last left bit (192*LEN-1): the SBBO starts 17 cycles before
+;   the rising edge that samples it and 49 (50 in a long period) cycles,
+;   about 0.75 PDM period, before the falling edge that samples the last
+;   right bit. CLIP_LEN is clamped to CLIP_MAX_FRAMES.
 ;
 ; Registers:
 ;   r0  shared RAM base            r10 xl      left input (sign-extended)

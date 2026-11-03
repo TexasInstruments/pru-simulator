@@ -17,8 +17,11 @@ PDM_HDR_N_CH        .set    0x04        ; u8  channels in the clip (2), host
 PDM_HDR_BLOCK       .set    0x06        ; u16 PCM samples per block (128), host
 PDM_HDR_PCM_RATE    .set    0x08        ; u32 PCM sample rate (16000), host
 PDM_HDR_CLIP_LEN    .set    0x0C        ; u32 clip length in frames, host
-PDM_HDR_GEN_POS     .set    0x10        ; u32 frames consumed, PRU1
-PDM_HDR_GEN_DONE    .set    0x14        ; u32 0/1 clip fully played, PRU1
+PDM_HDR_GEN_POS     .set    0x10        ; u32 frames fetched, PRU1 (k+1 while
+                                        ; frame k plays; LEN at clip end)
+PDM_HDR_GEN_DONE    .set    0x14        ; u32 0/1 clip end reached, PRU1; rises
+                                        ; shortly (< 1 PDM period) before the
+                                        ; last frame's last bits are sampled
 PDM_HDR_PCM_COUNT   .set    0x20        ; u32[8] samples written per ring, PRU0
                                         ; (stored after the sample itself)
 PDM_RING_BASE       .set    0x100       ; ring k at +k*PDM_RING_STRIDE

@@ -163,13 +163,26 @@ def test_clock_edges_follow_fractional_schedule(nominal_config, frames):
 
 def test_data_bits_match_reference(nominal_config):
     left, right = _tones()
-    n = 2 * PERIODS + 10
+    n = 10 * PERIODS + 10          # frames 0..10: both tones go negative
+    assert min(right[:10]) < 0 and min(left[:10]) < 0
     _, clk, _ = _run_decode(nominal_config, left, right, n)
     rising = [d for _, r, d in clk if r]
     falling = [d for _, r, d in clk if not r]
     assert rising == R.sigma_delta2(left, PERIODS, n_periods=n)
     assert falling == R.sigma_delta2(right, PERIODS, n_periods=n)
     assert 0 < sum(rising) < n and 0 < sum(falling) < n
+
+
+def test_negative_samples_bit_exact(nominal_config):
+    """Sign extension of both int16 halves: negative samples, -1 and the
+    normalised extremes +-16384, bit-exact with the clock on schedule."""
+    left = [-6270, -16384, -6270, 6270, 16384, -1, 0]
+    right = [-16384, -1, -16384, 16383, -12345, 16384, -2]
+    n = len(left) * PERIODS + 10
+    _, clk, _ = _run_decode(nominal_config, left, right, n)
+    _assert_schedule(clk, n)
+    assert [d for _, r, d in clk if r] == R.sigma_delta2(left, PERIODS, n_periods=n)
+    assert [d for _, r, d in clk if not r] == R.sigma_delta2(right, PERIODS, n_periods=n)
 
 
 @pytest.mark.parametrize("frames", [None, 3], ids=["tone_clip", "len3"])
