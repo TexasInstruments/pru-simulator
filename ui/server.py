@@ -211,6 +211,7 @@ def _snapshot(core: str) -> dict:
         "loopback": sim._loopback.snapshot(),
         "mem": [bytes(r._data) for r in sim.memory.regions],
         "iep": sim.iep.snapshot(),
+        "pwm": sim.pwm.snapshot() if hasattr(sim, "pwm") else None,
         "paced_pending": copy.deepcopy(sim._paced_pending),
     }
 
@@ -259,6 +260,8 @@ def _restore(core: str, snap: dict) -> None:
     if snap.get("iep") is not None:
         sim.iep.restore(snap["iep"])
         _apply_iep_override()
+    if snap.get("pwm") is not None and hasattr(sim, "pwm"):
+        sim.pwm.restore(snap["pwm"])
     if snap.get("device_bus") is not None:
         sim.device_bus.restore(snap["device_bus"])
     if snap.get("xfr") is not None:
@@ -1342,6 +1345,8 @@ def _state(core, at_breakpoint=False, captured=False):
         "gpo_drive_mask": c.io_port.gpo_drive_mask,
         "gpio_loopback_mask": c.io_port.loopback_mask,
     }
+    if hasattr(sim, "pwm"):
+        io_section["pwm_pins"] = list(sim.pwm.levels)    # pads PWMm_k POS/NEG, None = Z
     demo = ssi_demo_state(sim)
     if demo is not None:
         io_section["ssi_demo"] = demo

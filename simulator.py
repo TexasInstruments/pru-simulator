@@ -14,6 +14,7 @@ from fractions import Fraction
 
 from core.pru_core import PRUCore
 from core.device_capabilities import get_device_capabilities
+from perif.pwm import IcssgPwm
 from mem.icssm_absent import icssg_only_regions, MODES as _ICSSG_ONLY_MODES, READ_ZERO
 from mem.memory_bus import MemoryBus
 from mem.regions import MemoryRegion
@@ -129,6 +130,48 @@ class IepClockRegisterRegion(MemoryRegion):
         self._iep.write_iepclk(int.from_bytes(value, "little"))
 
 
+class IepSaMxRegisterRegion(MemoryRegion):
+    """ICSSG_SA_MX_REG at ICSS CFG + 0x40 (SPRUIM2J Table 14-10186).
+
+    Bit 16 PWM_EFC_EN makes the IEP clear CMP_STATUS on the next IEP clock. The
+    word is owned by the IEP model so that it follows IEP hardware reset and
+    step-back snapshots. ICSSG only: the register does not exist on the ICSSM
+    targets, so it is not mapped there.
+    """
+
+    BASE_ADDR = 0x00026040
+
+    def __init__(self, iep: IepTimer):
+        super().__init__("ICSS_SA_MX", self.BASE_ADDR, 4, 2, 1, 0)
+        self._iep = iep
+
+    def read(self, addr: int, length: int) -> bytes:
+        self._check_bounds(addr, length)
+        local = addr - self.base_addr
+        return self._iep.sa_mx.to_bytes(4, "little")[local : local + length]
+
+    def write(self, addr: int, data: bytes) -> None:
+        self._check_bounds(addr, length=len(data))
+        local = addr - self.base_addr
+        value = bytearray(self._iep.sa_mx.to_bytes(4, "little"))
+        value[local : local + len(data)] = data
+        self._iep.write_sa_mx(int.from_bytes(value, "little"))
+
+
+class PwmRegisterRegion(MemoryRegion):
+    """ICSSG PWM configuration and state words at CFG + 0x130."""
+    BASE_ADDR = 0x00026130
+    def __init__(self, pwm: IcssgPwm):
+        super().__init__("ICSS_PWM", self.BASE_ADDR, 0x40, 2, 1, 0)
+        self._pwm = pwm
+    def read(self, addr: int, length: int) -> bytes:
+        self._check_bounds(addr, length)
+        return self._pwm.read(addr - self.base_addr + 0x130, length)
+    def write(self, addr: int, data: bytes) -> None:
+        self._check_bounds(addr, length=len(data))
+        self._pwm.write(addr - self.base_addr + 0x130, data)
+
+
 class ConstantTableRegisterRegion(MemoryRegion):
     """CTBIR0, CTBIR1, CTPPR0, CTPPR1 of one core's CTRL block (+0x20..+0x2F).
 
@@ -183,6 +226,7 @@ class Simulator:
                           vbus_memory=self.vbus_memory, target=target)
             for name in core_names
         }
+
         # The ICSSG-only blocks are absent on ICSS-M; silicon reads them as 0
         # (see mem/icssm_absent.py).  ``strict`` makes an access raise instead.
         icssg_only = dev.get("icssg_only_blocks", READ_ZERO).split("#", 1)[0].strip().lower()
@@ -306,6 +350,10 @@ class Simulator:
         )
         self.memory.add_region(IepRegisterRegion(self.iep))
         self.memory.add_region(IepClockRegisterRegion(self.iep))
+        if self.capabilities.icssg_pwm:
+            self.memory.add_region(IepSaMxRegisterRegion(self.iep))
+            self.pwm = IcssgPwm(self.iep)
+            self.memory.add_region(PwmRegisterRegion(self.pwm))
         self._paced_pending: dict[tuple[str, frozenset[str]], dict[str, int | Fraction]] = {}
         for name, core in self.cores.items():
             core.iep = self.iep
@@ -588,11 +636,24 @@ class Simulator:
             "gpo_pins": pru.io_port.get_gpo_pins(),
             "gpi_pins": pru.io_port.get_gpi_pins(),
             "gpo_drive_mask": pru.io_port.gpo_drive_mask,
+            # Dedicated PWM pads are distinct from GPIO/R31.  None is the
+            # TRM's Z state, intentionally not coerced into an input level.
+            "pwm_pins": list(self.pwm.levels) if hasattr(self, "pwm") else [],
         }
 
     def set_input(self, core: str, pin: int, value: bool) -> None:
         """Set a single GPI pin on *core*'s I/O port."""
         self._get_core(core).io_port.set_gpi_pin(pin, value)
+
+    def set_pwm_trip_input(self, setno: int, source: int, value: bool) -> None:
+        """Drive a PWM trip source pin (TRIP_VEC encoding 0..8; 5 = PWMn_TZ_IN).
+
+        ICSSG targets only.  This is the external-pad stimulus; it is not a GPI
+        pin and never appears in R31.
+        """
+        if not hasattr(self, "pwm"):
+            raise ValueError("this device has no ICSSG PWM module")
+        self.pwm.set_trip_input(setno, source, value)
 
     def set_gpio_drive_mask(self, core: str, mask: int) -> None:
         """Set the GPIO output-enable bits for one core without changing R30."""
@@ -763,6 +824,8 @@ class Simulator:
         perif config registers, GPCFG mux, loopback parameters -- is kept.
         """
         self.iep.hardware_reset()
+        if hasattr(self, "pwm"):
+            self.pwm.reset()
         for core in self.cores.values():
             core.reset()
             core.constant_table.reset_ctrl()
