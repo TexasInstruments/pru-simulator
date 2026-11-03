@@ -324,3 +324,33 @@ def test_one_way_violation_falls_back_to_lockstep(nominal_config):
     assert plain.setup(CLIPS / "tone_1000.wav", CLIPS / "tone_3000.wav") == []
     assert plain.status()["mode"] == "lockstep"
     assert math.isclose(plain.status()["clip_ms"], 250.0)
+
+
+def test_teardown_restores_the_wiring_setup_changed(nominal_config):
+    """teardown undoes setup's wiring: link, SD sources and state, GPCFG mux
+    (to the values before the first setup, also after a second setup)."""
+    sim = Simulator(config_path=nominal_config)
+    sim.gpcfg_write("pru0", 1)                          # the user's PERIF mux
+    sim.gpcfg_write("pru1", 3)
+    sim.set_sd_modulator("pru0", 2, signal="sine", amplitude=0.25, sd_clock_mhz=10.0)
+    sim.memory.write(0x26048 + 16, (2).to_bytes(4, "little"))   # ch2 CLK_SEL = 2
+    before = {name: c.io_port.sd_filter.snapshot() for name, c in sim.cores.items()
+              if c.io_port.sd_filter is not None}
+    demo = PdmDemo(sim, chunk_cycles=20_000)
+    demo.setup(CLIPS / "tone_1000.wav", CLIPS / "tone_3000.wav")
+    demo.run_chunk()
+    demo.setup(CLIPS / "tone_3000.wav", CLIPS / "tone_1000.wav")   # setup again
+    demo.run_chunk()
+    assert sim._pdm_link is not None and sim.gpcfg_state("pru0")["mux_sel"] == 3
+    demo.teardown()
+    assert sim._pdm_link is None
+    assert sim.cores["pru0"].io_port.sd_filter.pin_link is None
+    assert sim.cores["pru1"].io_port.gpo_listeners == []
+    assert sim.gpcfg_state("pru0")["mux_sel"] == 1 and sim.gpcfg_state("pru1")["mux_sel"] == 3
+    for name, snap in before.items():
+        assert sim.cores[name].io_port.sd_filter.snapshot() == snap, name
+    with pytest.raises(RuntimeError, match="torn down"):
+        demo.run_chunk()
+    demo.teardown()                                      # idempotent
+    assert demo.setup(CLIPS / "tone_1000.wav", CLIPS / "tone_3000.wav") == []
+    assert demo.run_chunk()["status"]["audio_ms"] > 0    # set up again, runs again

@@ -381,6 +381,20 @@ test('overrun and a mid-run notice are shown, a missed chunk triggers a history 
   assert.deepEqual(sent, [{ action: 'pdm_history' }]);
 });
 
+test('the notices of one setup are all shown, a later one replaces them', async () => {
+  const { audio, elements } = runSetup();
+  await flush();
+  elements.get('audio-run').fire('click');
+  const clock = 'PRU clocks set to 200 MHz for the PDM demo';
+  const programs = 'Audio Run loaded pdm_gen.asm on PRU1 and pdm_rx.asm on PRU0 (Simulator-view programs replaced)';
+  audio.handleMessage({ type: 'pdm_notice', text: clock });
+  audio.handleMessage({ type: 'pdm_notice', text: programs });
+  assert.equal(elements.get('audio-notice').textContent, `${clock} · ${programs}`);
+  audio.handleMessage(status({ audio_ms: 0 }));                // setup reply: loop starts
+  audio.handleMessage({ type: 'pdm_notice', text: 'Run-ahead stopped mid-run: x' });
+  assert.equal(elements.get('audio-notice').textContent, 'Run-ahead stopped mid-run: x');
+});
+
 const NOT_SET_UP = { type: 'error', tag: 'pdm', errors: ['PDM demo is not set up; send pdm_setup first'] };
 
 test('pdm_history before any setup shows no error and keeps Run enabled', async () => {

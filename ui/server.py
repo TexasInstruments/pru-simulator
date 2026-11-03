@@ -386,6 +386,7 @@ async def put_config(request: Request):
     text = (await request.body()).decode("utf-8")
     async with _config_lock:
         try:
+            _pdm_teardown()
             sim = _replace_config(text)
             _iep_clock_override = None   # a saved config speaks for itself
             _clear_history()
@@ -489,6 +490,7 @@ def _apply_clock_speed(mhz, group=None) -> None:
         text = _set_ini_value(text, "device", "pru_clock_mhz", str(mhz))
     if group is None or group == 1:
         text = _set_ini_value(text, "device", "pru1_clock_mhz", str(mhz))
+    _pdm_teardown()
     sim = _replace_config(text)
     _apply_iep_override()
     _clear_history()
@@ -534,6 +536,8 @@ PDM_CHUNK_CYCLES = 400_000          # PRU0 cycles per pdm_run (tests lower it)
 PDM_CLOCK_MHZ = 200
 PDM_CLOCK_NOTICE = "PRU clocks set to 200 MHz for the PDM demo"
 PDM_NOT_SET_UP = "PDM demo is not set up; send pdm_setup first"
+PDM_PROGRAMS_NOTICE = ("Audio Run loaded pdm_gen.asm on PRU1 and pdm_rx.asm on PRU0 "
+                       "(Simulator-view programs replaced)")
 OWNERSHIP_ERROR = "Execution stopped or controlled by another tab"
 _pdm = None            # PdmDemo of the current simulator, or None
 _pdm_clips = None      # {"left", "right", "swap"} of the last good setup
@@ -591,6 +595,16 @@ def _pdm_ready() -> bool:
     return _pdm is not None and _pdm.sim is sim
 
 
+def _pdm_teardown() -> None:
+    """Leave the PDM demo: undo its wiring on the current simulator (PdmDemo.
+    teardown) and forget it, so the Audio view sets up again on its next Run.
+    Called by every action that replaces programs or configuration."""
+    global _pdm, _pdm_clips
+    if _pdm is not None and _pdm.sim is sim:
+        _pdm.teardown()
+    _pdm, _pdm_clips = None, None
+
+
 async def _pdm_setup(websocket, left, right, swap) -> bool:
     """Force 200 MHz, build a fresh PdmDemo and set it up. Replies with errors
     and notices itself; True when the demo is ready."""
@@ -605,6 +619,9 @@ async def _pdm_setup(websocket, left, right, swap) -> bool:
     if _execution_owner is not None:
         _stop_execution()
         _flush_skipped_publish()
+    # The previous demo first restores what it changed, so this setup saves
+    # the user's wiring, not the demo's own.
+    _pdm_teardown()
     if not all(math.isclose(sim.cores[name].clock_mhz, PDM_CLOCK_MHZ)
                for name in ("pru0", "pru1")):
         try:
@@ -618,9 +635,11 @@ async def _pdm_setup(websocket, left, right, swap) -> bool:
     try:
         demo.setup(*paths, swap=swap)
     except (ValueError, RuntimeError) as exc:
+        demo.teardown()                 # a half-done setup leaves no wiring behind
         await _pdm_error(websocket, str(exc))
         return False
     _pdm, _pdm_clips = demo, {"left": left, "right": right, "swap": swap}
+    await websocket.send_json({"type": "pdm_notice", "text": PDM_PROGRAMS_NOTICE})
     return True
 
 
@@ -795,6 +814,10 @@ async def websocket_endpoint(websocket: WebSocket):
             elif action in {"load", "load_elf", "reset", "hard_reset", "step_back", "scenario_load"}:
                 if _execution_owner is not None:
                     _stop_execution()
+                if action != "step_back":
+                    # These replace programs or restart cores: the Simulator
+                    # view takes the simulator back from the PDM demo.
+                    _pdm_teardown()
 
             if action == "subscribe_capture":
                 websocket.capture = bool(msg.get("enabled", False))
@@ -843,7 +866,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     pru = sim.cores[core]
                     if pru.pc in pru.breakpoints:
                         at_breakpoint = True
-                except ValueError as ve:
+                except (ValueError, RuntimeError) as ve:
+                    # RuntimeError: e.g. PdmLinkError from a core still wired
+                    # to the PDM demo. Reported; the socket stays open.
                     await websocket.send_json({"type": "error", "errors": [str(ve)]})
                 await _send_state(websocket, core, at_breakpoint=at_breakpoint,
                                   run_id=msg.get("run_id"))
@@ -1067,7 +1092,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         if pru.pc in pru.breakpoints:
                             at_breakpoint = True
                             break
-                except ValueError as ve:
+                except (ValueError, RuntimeError) as ve:      # RuntimeError: PdmLinkError, ...
                     error = {"type": "error", "errors": [str(ve)]}
                 if samples:
                     await _send_capture(websocket, core, samples)
@@ -1130,7 +1155,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             break
                         if lead_pru.halted or lead_pru.pc >= len(lead_pru.instructions):
                             break
-                except ValueError as ve:
+                except (ValueError, RuntimeError) as ve:      # RuntimeError: PdmLinkError, ...
                     error = {"type": "error", "errors": [str(ve)]}
                 if samples:
                     await _send_capture(websocket, core, samples, partners)

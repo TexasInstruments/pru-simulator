@@ -115,3 +115,27 @@ class TestStdioServer:
         assert payload["type"] == "array"
         include_paths = tools["pru_load"].input_schema["properties"]["include_paths"]
         assert {"type": "array", "items": {"type": "string"}} in include_paths["anyOf"]
+
+
+def test_pdm_link_error_is_a_tool_error_result(sim_config):
+    """A PdmLinkError inside a tool reaches the MCP client as an error result
+    with its message (not a crash, not a generic text). The stdio server
+    builds its own simulator and has no tool that attaches a link; this
+    covers a wrapper given a simulator that has one."""
+    pytest.importorskip("mcp.server")
+    import asyncio
+    from mcp.server.mcpserver.exceptions import ToolError
+    from mcp_server.server import build_server
+    from simulator import Simulator
+
+    sim = Simulator(config_path=sim_config(pru_clock_mhz=200, pru1_clock_mhz=200))
+    assert sim.load("pru1", "loop:\n    qba loop\n") == []
+    assert sim.load("pru0", "loop:\n    qba loop\n") == []
+    sim.attach_pdm_link()
+    server = build_server(PRUSimulatorMCP(simulator=sim))
+    # A ToolError (not UnexpectedToolError) is what the SDK reports to the
+    # client as an is_error result carrying the text.
+    with pytest.raises(ToolError, match="consumer pru0 is ahead of producer pru1") as info:
+        asyncio.run(server.call_tool("pru_step", {"core": "pru0", "count": 5}))
+    assert type(info.value) is ToolError
+    assert asyncio.run(server.call_tool("pru_status", {})) is not None   # still serving

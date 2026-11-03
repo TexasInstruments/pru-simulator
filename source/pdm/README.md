@@ -201,6 +201,12 @@ Prerequisites: Python 3.10 or newer, and from the repository root
    (Run and Reset are disabled; the server answers a second tab's setup/run/reset
    with an ownership error). Its **Stop** button is enabled and does stop the
    owner's run, because the server's `pdm_stop` is not owner-restricted.
+8. Run loads `pdm_gen.asm` on PRU1 and `pdm_rx.asm` on PRU0 and zeroes their RAM
+   (the notice says so). A Simulator-view Load, Load ELF, scenario, Reset or Hard
+   reset, or a clock/config change, hands the simulator back: the PDM wiring is
+   removed (link detached, every SD channel back on its internal modulator, SD
+   filter state and GPCFG mux as before the first setup), and the next Audio Run
+   sets the demo up again from 0.
 
 How long it takes: the simulator does about 1.5 ms of audio per wall second. A run
 ends when the longer clip and a 4 ms flush have played, so the 450 ms speech clip

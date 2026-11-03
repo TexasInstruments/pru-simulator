@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from simulator import IDLE_SKIP_MAX_CYCLES, Simulator
 from pru_io.device_profiles import create_device, discover_device_profiles
 from pru_io.device_model import PUSH_PULL
+from pru_io.pdm_link import PdmLinkError
 from mcp_server.vcd_export import export_pin_waveform
 
 
@@ -570,22 +571,40 @@ class PRUSimulatorMCP:
         return {"cores": self.sim.status()}
 
 
-def build_server():
+def build_server(mcp_wrapper: PRUSimulatorMCP | None = None):
     """Build an MCP server with every public PRUSimulatorMCP method registered as a tool.
 
-    Requires the 'mcp' SDK (>= 2.0) to be installed.
+    *mcp_wrapper* defaults to a new ``PRUSimulatorMCP()``. Requires the 'mcp'
+    SDK (>= 2.0) to be installed.
     """
+    import functools
     import inspect
     from mcp.server import MCPServer
+    from mcp.server.mcpserver.exceptions import ToolError
 
     server = MCPServer("pru-simulator")
-    mcp_wrapper = PRUSimulatorMCP()
+    if mcp_wrapper is None:
+        mcp_wrapper = PRUSimulatorMCP()
 
-    # The input schema of each tool is derived from the method signature.
+    def reported(method):
+        # The SDK turns any exception into an error result but keeps the text
+        # of anything but a ToolError on the server. A PdmLinkError (a core
+        # wired to the PDM demo ran past its partner, or the link's queue is
+        # full) is the caller's to read, so it goes out as a ToolError.
+        @functools.wraps(method)
+        def call(*args, **kwargs):
+            try:
+                return method(*args, **kwargs)
+            except PdmLinkError as exc:
+                raise ToolError(str(exc)) from exc
+        return call
+
+    # The input schema of each tool is derived from the method signature
+    # (functools.wraps keeps it visible through __wrapped__).
     for name, method in inspect.getmembers(mcp_wrapper, predicate=inspect.ismethod):
         if name.startswith("_"):
             continue
-        server.add_tool(method, name=name, description=method.__doc__ or name)
+        server.add_tool(reported(method), name=name, description=method.__doc__ or name)
     return server
 
 

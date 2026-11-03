@@ -570,7 +570,14 @@
       if (!msg || typeof msg.type !== 'string') return false;
       if (msg.type === 'pdm_pcm') { onPcm(msg); return true; }
       if (msg.type === 'pdm_status') { onStatus(msg); return true; }
-      if (msg.type === 'pdm_notice') { localNotice = msg.text || ''; render(); return true; }
+      if (msg.type === 'pdm_notice') {
+        // Our own setup can send several (clock change, programs replaced): keep them all.
+        const text = msg.text || '';
+        localNotice = selfChange && localNotice && text && !localNotice.includes(text)
+          ? `${localNotice} · ${text}` : text;
+        render();
+        return true;
+      }
       if (msg.type === 'error') {
         if (msg.tag === 'pdm') {
           if ((msg.errors || []).some(e => NOT_SET_UP.test(e))) onNotSetUp(msg.errors);

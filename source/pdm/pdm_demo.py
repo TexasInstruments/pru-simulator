@@ -14,6 +14,13 @@ Clean state: ``setup`` does a hard reset, zeroes the data RAMs, the shared
 RAM and the SD filter state, reloads both firmwares and attaches a fresh
 link, so a second setup on a used simulator equals a fresh one. It never
 relies on a single-core reset (that drives a real GPO edge into the link).
+
+Teardown: ``teardown`` undoes the wiring ``setup`` made, so other users of
+the same simulator (the dashboard's Simulator view, ``source/sdfm_sinc3_demo``)
+see the SD hardware as it was before: the link detached, every SD channel of
+every core back on its internal modulator, each core's SD filter state
+(config registers, channels, modulators) and the GPCFG mux restored to their
+values before the first ``setup``. Programs and RAM stay as the demo left them.
 """
 from __future__ import annotations
 
@@ -85,6 +92,11 @@ class PdmDemo:
         self.breakpoint: str | None = None   # core the last chunk stopped at, else None
         self.clip_len = 0
         self._speed: deque[tuple[float, float]] = deque(maxlen=SPEED_WINDOW)
+        # What setup changes and teardown restores, saved by the first setup
+        # (a second setup must not save the demo's own wiring); None = nothing
+        # to restore.
+        self._saved: dict | None = None
+        self._torn_down = False
 
     # ------------------------------------------------------------------
     # Setup
@@ -108,6 +120,14 @@ class PdmDemo:
         if swap:
             left, right = right, left
 
+        if self._saved is None:
+            self._saved = {
+                "mux": {name: sim.gpcfg_state(name)["mux_sel"] for name in ("pru0", "pru1")},
+                "sd": {name: core.io_port.sd_filter.snapshot()
+                       for name, core in sim.cores.items()
+                       if core.io_port.sd_filter is not None},
+            }
+        self._torn_down = False
         sim.detach_pdm_link()
         sim.hard_reset()
         for base, size in DRAM:
@@ -150,6 +170,30 @@ class PdmDemo:
                     f"Run-ahead not possible ({'; '.join(reasons)}); running lockstep")
         return list(self.notices)
 
+    def teardown(self) -> None:
+        """Undo the wiring of ``setup`` (see the module docstring); idempotent.
+
+        Detaches the link, restores each core's SD filter state and the GPCFG
+        mux saved by the first ``setup``, and puts every SD channel of every
+        core back on "modulator". ``run_chunk`` then refuses to run until the
+        next ``setup``.
+        """
+        sim = self.sim
+        sim.detach_pdm_link()
+        saved = self._saved or {"mux": {}, "sd": {}}
+        for name, core in sim.cores.items():
+            sd = core.io_port.sd_filter
+            if sd is None:
+                continue
+            if name in saved["sd"]:
+                sd.restore(saved["sd"][name])
+            for ch in range(len(sd.channels)):
+                sd.set_source(ch, "modulator")
+        for name, mux in saved["mux"].items():
+            sim.gpcfg_write(name, mux)
+        self._saved = None
+        self._torn_down = True
+
     # ------------------------------------------------------------------
     # Running
     # ------------------------------------------------------------------
@@ -169,8 +213,11 @@ class PdmDemo:
         else None; the next chunk resumes past it.
         Raises RuntimeError on a ring overrun (also kept in
         ``status()["overrun"]``, and raised again on every later call until
-        the next ``setup``) or when a core faults or stops.
+        the next ``setup``), when a core faults or stops, or after
+        ``teardown`` (until the next ``setup``).
         """
+        if self._torn_down:
+            raise RuntimeError("PDM demo was torn down; set it up again")
         if self.overrun is not None:
             raise RuntimeError(self.overrun)
         self.breakpoint = None

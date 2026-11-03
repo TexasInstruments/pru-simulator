@@ -117,7 +117,21 @@ def test_setup_at_200mhz_has_no_clock_notice(server):
     client = server()
     with client.websocket_connect("/ws") as ws:
         msgs = _setup(ws)
-    assert not [m for m in msgs if m["type"] == "pdm_notice"]
+    notices = [m["text"] for m in msgs if m["type"] == "pdm_notice"]
+    assert notices == [srv.PDM_PROGRAMS_NOTICE]        # only the programs notice
+
+
+def test_setup_says_once_that_it_replaced_the_programs(server):
+    client = server()
+    with client.websocket_connect("/ws") as ws:
+        msgs = _setup(ws)
+        msgs += _run(ws)
+        ws.send_json({"action": "pdm_reset"})
+        again = _until(ws, "pdm_status")
+    text = ("Audio Run loaded pdm_gen.asm on PRU1 and pdm_rx.asm on PRU0 "
+            "(Simulator-view programs replaced)")
+    assert [m["text"] for m in msgs if m["type"] == "pdm_notice"] == [text]
+    assert [m["text"] for m in again if m["type"] == "pdm_notice"] == [text]
 
 
 def test_run_chunks_stream_pcm(server):
@@ -350,3 +364,123 @@ def test_ring_overrun_is_reported_not_fatal(server, monkeypatch):
         assert any(m["type"] == "error" and "overrun" in m["errors"][0] for m in msgs)
         assert msgs[-1]["running"] is False and "overrun" in msgs[-1]["overrun"]
         assert srv._execution_owner is None
+
+
+# ---------------------------------------------------------------------------
+# Leaving the demo: teardown, error surfacing, step-back (final review C1/I1/I2)
+# ---------------------------------------------------------------------------
+
+SD_DEMO = srv.SOURCE_DIR / "sdfm_sinc3_demo" / "sdfm_sinc3_demo.asm"
+
+
+def _until_state(ws, core):
+    out = []
+    while True:
+        out += _until(ws, "state")
+        if out[-1]["core"] == core:
+            return out
+
+
+def _ws_do(ws, msg, kind="state"):
+    ws.send_json(msg)
+    return _until(ws, kind)
+
+
+def _sd_demo_run(ws):
+    """Simulator-view flow of source/sdfm_sinc3_demo on PRU0 (its README):
+    load, reset, a sine on SD ch2, Run. Returns what the run produced."""
+    _ws_do(ws, {"action": "load", "core": "pru0", "source": SD_DEMO.read_text(),
+                "filename": "sdfm_sinc3_demo/sdfm_sinc3_demo.asm"})
+    _ws_do(ws, {"action": "reset", "core": "pru0"})
+    _ws_do(ws, {"action": "set_sd_modulator", "core": "pru0", "channel": 2,
+                "params": {"signal": "sine", "amplitude": 0.5, "dc_level": 0.0,
+                           "period": 1024, "phase_deg": 0.0, "sd_clock_mhz": 20.0}})
+    for _ in range(4):
+        msgs = _ws_do(ws, {"action": "run", "core": "pru0", "max_steps": 60_000})
+        assert not [m for m in msgs if m["type"] == "error"], msgs
+    sim = srv.sim
+    c = sim.cores["pru0"]
+    sd = c.io_port.sd_filter
+    return {
+        "regs": list(c.registers.regs), "pc": c.pc,
+        "counters": (c.counters.cycles, c.counters.instruction_count),
+        "sd": sd.snapshot(), "sources": list(sd.sources),
+        "samples": sim.memory_read(0, 0x400),
+        "mux": sim.gpcfg_state("pru0"), "link": sim._pdm_link,
+    }
+
+
+def test_sd_demo_after_the_audio_demo_equals_a_fresh_server(server):
+    client = server()
+    with client.websocket_connect("/ws") as ws:
+        fresh = _sd_demo_run(ws)
+    assert any(fresh["samples"]) and fresh["link"] is None
+
+    client = server()
+    with client.websocket_connect("/ws") as ws:
+        _setup(ws)
+        _run(ws)
+        assert srv.sim._pdm_link is not None
+        assert srv.sim.cores["pru0"].io_port.sd_filter.sources == ["pin", "pin", "off"]
+        after = _sd_demo_run(ws)
+    assert srv._pdm is None and srv._pdm_clips is None
+    assert after["sources"] == ["modulator"] * 3
+    assert all(c.io_port.sd_filter.sources == ["modulator"] * 3
+               for c in srv.sim.cores.values() if c.io_port.sd_filter is not None)
+    assert after == fresh
+
+
+@pytest.mark.parametrize("action", [
+    {"action": "load", "core": "pru1", "source": "halt\n"},
+    {"action": "reset", "core": "pru0"},
+    {"action": "reset", "core": "pru1"},
+    {"action": "hard_reset", "core": "pru0"},
+])
+def test_simulator_view_actions_tear_the_demo_down(server, action):
+    client = server()
+    with client.websocket_connect("/ws") as ws:
+        _setup(ws)
+        _run(ws)
+        demo = srv._pdm
+        _ws_do(ws, dict(action))
+        assert srv._pdm is None and srv.sim._pdm_link is None
+        assert demo._torn_down
+        for name in ("pru0", "pru1"):
+            assert srv.sim.cores[name].io_port.sd_filter.sources == ["modulator"] * 3
+        assert srv.sim.gpcfg_state("pru0")["mux_sel"] == 0      # as before the setup
+        # The Audio view's next Run: not set up, so it sets up again.
+        ws.send_json({"action": "pdm_run", "run_id": 1})
+        msg = _until(ws, "error")[-1]
+        assert msg["tag"] == "pdm" and srv.PDM_NOT_SET_UP in msg["errors"]
+        _setup(ws)
+        status = _run(ws)[-1]
+        assert status["running"] is True and status["audio_ms"] > 0
+
+
+def test_clock_change_tears_the_demo_down(server):
+    client = server()
+    with client.websocket_connect("/ws") as ws:
+        _setup(ws)
+        demo, old_sim = srv._pdm, srv.sim
+    assert client.put("/config/clock_speed", json={"mhz": 250}).json() == {"ok": True}
+    assert srv._pdm is None and demo._torn_down and old_sim._pdm_link is None
+
+
+def test_simulator_view_run_and_step_on_a_wired_core_report_errors(server):
+    """With the demo still wired (no teardown action), PRU0 run alone soon
+    passes PRU1's decided edges: PdmLinkError is reported, the socket stays."""
+    client = server()
+    with client.websocket_connect("/ws") as ws:
+        _setup(ws)
+        _run(ws)
+        msgs = _ws_do(ws, {"action": "run", "core": "pru0", "max_steps": 200_000})
+        errors = [m for m in msgs if m["type"] == "error"]
+        assert errors and "ahead of producer" in errors[0]["errors"][0]
+        msgs = _ws_do(ws, {"action": "step", "core": "pru0", "count": 5})
+        assert "ahead of producer" in [m for m in msgs if m["type"] == "error"][0]["errors"][0]
+        ws.send_json({"action": "step_multicore", "core": "pru0", "partners": ["pru1"]})
+        msgs = _until_state(ws, "pru1")
+        assert [m for m in msgs if m["type"] == "error"]
+        # The socket is still open and answers.
+        state = _ws_do(ws, {"action": "get_state", "core": "rtu0"})[-1]
+        assert state["type"] == "state" and state["core"] == "rtu0"
