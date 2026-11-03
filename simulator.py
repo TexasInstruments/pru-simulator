@@ -638,7 +638,9 @@ class Simulator:
                                 "follower": follower, "targets": dict(targets),
                                 "lead_steps": lead_steps}
                     previous_cycles = follow_pru.counters.cycles
-                    if idle_skip:
+                    # idle_candidate() False means step_run would step():
+                    # busy code skips the budget arithmetic.
+                    if idle_skip and follow_pru.idle_candidate():
                         follow_pru.step_run(
                             self._cycles_before(follower, follow_pru, target))
                     else:
@@ -664,7 +666,9 @@ class Simulator:
             del self._paced_pending[pacing_key]
         for _ in range(count):
             if not lead_pru.halted and lead_pru.pc < len(lead_pru.instructions):
-                if idle_skip:
+                # idle_candidate() False: step_run would step() whatever the
+                # budget, so busy code skips the budget computation.
+                if idle_skip and lead_pru.idle_candidate():
                     lead_pru.step_run(self._lead_skip_budget(lead, lead_pru, follower_states))
                 else:
                     lead_pru.step()
@@ -704,15 +708,34 @@ class Simulator:
         time any follower leaves its idle span. The span's last instruction
         is excluded, because it may move the follower's pc onto a breakpoint
         that lockstep would report one lead round earlier.
+
+        Cheapest checks first, none of which changes the result: a lead or
+        follower whose ``idle_candidate()`` is False has no idle span, and a
+        plan that is None for the largest budget is None for every smaller
+        one. So: (1) the lead's pattern test, (2) any follower with no idle
+        pattern bounds the skip at its current time (returns 1 when it has
+        caught up to the lead), (3) the lead's own full plan, (4) the
+        followers' full spans.
         """
+        if not lead_pru.idle_candidate():
+            return 1
         iep = self.iep
         cycles = lead_pru.counters.cycles
         lead_now = iep.core_time_units(lead, cycles)
-        lead_unit = iep.core_time_units(lead, cycles + 1) - lead_now
         bound = math.inf
+        idle_followers = []
         for follower, pru, _ in follower_states:
             if pru.halted or pru.pc >= len(pru.instructions):
                 continue
+            if pru.idle_candidate():
+                idle_followers.append((follower, pru))
+                continue
+            bound = min(bound, iep.core_time_units(follower, pru.counters.cycles))
+            if bound <= lead_now:
+                return 1
+        if not lead_pru.idle_span(IDLE_SKIP_MAX_CYCLES):
+            return 1
+        for follower, pru in idle_followers:
             f_cycles = pru.counters.cycles
             f_now = iep.core_time_units(follower, f_cycles)
             f_unit = iep.core_time_units(follower, f_cycles + 1) - f_now
@@ -729,6 +752,7 @@ class Simulator:
                 return 1
         if bound == math.inf:
             return IDLE_SKIP_MAX_CYCLES
+        lead_unit = iep.core_time_units(lead, cycles + 1) - lead_now
         return max(1, min(IDLE_SKIP_MAX_CYCLES, int((bound - lead_now) // lead_unit)))
 
     # ------------------------------------------------------------------

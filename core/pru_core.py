@@ -172,6 +172,9 @@ class PRUCore:
         # instruction list it was built for, so a reload drops it.
         self._nop_body_cache: dict[tuple[int, int], int] = {}
         self._nop_body_cache_for: list | None = None
+        # pc -> "is an R31[28] self-spin" (static per program; see _spin_at).
+        self._spin_cache: dict[int, bool] = {}
+        self._spin_cache_for: list | None = None
         # Unsupported-XFR diagnostics. Reads from an unconnected broadside
         # device ID use a zero/no-op compatibility fallback, with a warning
         # and record. Strict mode rejects it before changing transfer state.
@@ -836,7 +839,16 @@ class PRUCore:
         same instructions would.
         """
         before = self.counters.instruction_count
-        plan = self._idle_plan(max_cycles) if max_cycles >= 2 else None
+        # The cheap pattern test first, so busy code pays only for it: the
+        # cached "not a spin" answer of idle_candidate(), inlined (hot path).
+        plan = None
+        if max_cycles >= 2:
+            loop = self.loop_state
+            if ((loop is not None and loop.start_address == self.pc)
+                    or self._spin_cache_for is not self.instructions
+                    or self._spin_cache.get(self.pc) is not False):
+                if self.idle_candidate():
+                    plan = self._idle_plan_at_candidate(max_cycles)
         if plan is None:
             self.step()
         else:
@@ -855,15 +867,78 @@ class PRUCore:
         plan = self._idle_plan(max_cycles, horizon)
         return 0 if plan is None else plan[1]
 
+    def idle_candidate(self) -> bool:
+        """Cheap pre-check: could ``step_run`` skip at the current pc?
+
+        False guarantees ``step_run(n)`` is exactly ``step()`` for every n;
+        True means the full check (``_idle_plan``) has to decide. Looks only
+        at the pc and the loop state: an active LOOP at its start address,
+        or a QBBC/QBBS-to-self on R31 bit 28 (cached per pc).
+        """
+        if self.halted:
+            return False
+        pc = self.pc
+        loop = self.loop_state
+        if loop is not None and pc == loop.start_address and loop.count > 0:
+            return pc < len(self.instructions)
+        # Hot path (every run-mode step of busy code): one dict lookup.
+        if self._spin_cache_for is self.instructions:
+            hit = self._spin_cache.get(pc)
+            if hit is not None:
+                return hit
+        return self._spin_at(pc)
+
+    def _spin_at(self, pc: int) -> bool:
+        """True if instruction *pc* is ``QBBC/QBBS pc, r31, n`` with R31 bit
+        28 (SD valid) as the tested bit. Static, so cached per program
+        (a pc past the end caches False)."""
+        if self._spin_cache_for is not self.instructions:
+            self._spin_cache = {}
+            self._spin_cache_for = self.instructions
+        hit = self._spin_cache.get(pc)
+        if hit is None:
+            instructions = self.instructions
+            hit = pc < len(instructions) and self._is_valid_spin(instructions[pc], pc)
+            self._spin_cache[pc] = hit
+        return hit
+
+    @staticmethod
+    def _is_valid_spin(instr, pc: int) -> bool:
+        op = instr.opcode
+        if op != "QBBC" and op != "QBBS":
+            return False
+        if len(instr.operands) != 3:
+            return False
+        label, reg, bit = instr.operands
+        if isinstance(label, Label):
+            target = label.resolved_addr
+        elif isinstance(label, Immediate):
+            target = label.value
+        else:
+            return False
+        if target != pc:
+            return False
+        if not isinstance(reg, Register) or reg.index != 31:
+            return False
+        if not isinstance(bit, Immediate) or not 0 <= bit.value < reg.width:
+            return False
+        return reg.offset + bit.value == 28      # only the SD valid flag
+
     def _idle_plan(self, max_cycles: int,
                    horizon: int | float | None = None) -> tuple[str, int] | None:
-        """Return ``(kind, cycles)`` for a skippable span at pc, else None."""
-        if self.halted:
+        """Return ``(kind, cycles)`` for a skippable span at pc, else None.
+
+        The static pattern test (``idle_candidate``) comes first, so busy
+        code pays only for that.
+        """
+        if not self.idle_candidate():
             return None
+        return self._idle_plan_at_candidate(max_cycles, horizon)
+
+    def _idle_plan_at_candidate(self, max_cycles: int,
+                                horizon: int | float | None = None) -> tuple[str, int] | None:
+        """``_idle_plan`` for a core whose ``idle_candidate()`` is True."""
         pc = self.pc
-        instructions = self.instructions
-        if pc >= len(instructions):
-            return None
         io_port = self.io_port
         if io_port.uart_generator is not None or io_port.i2c_device is not None:
             return None
@@ -896,33 +971,12 @@ class PRUCore:
                     return ("loop", k * body)
             return None
 
-        # ---- Poll fast-forward -----------------------------------------
-        instr = instructions[pc]
-        op = instr.opcode
-        if op != "QBBC" and op != "QBBS":
-            return None
+        # ---- Poll fast-forward (pc holds an R31[28] self-spin) ----------
         if pc in breakpoints:
             return None
         # A taken branch at the loop's end address would wrap the loop: that
         # is no spin.
         if loop_active and pc == loop.end_address:
-            return None
-        if len(instr.operands) != 3:
-            return None
-        label, reg, bit = instr.operands
-        if isinstance(label, Label):
-            target = label.resolved_addr
-        elif isinstance(label, Immediate):
-            target = label.value
-        else:
-            return None
-        if target != pc:
-            return None
-        if not isinstance(reg, Register) or reg.index != 31:
-            return None
-        if not isinstance(bit, Immediate) or not 0 <= bit.value < reg.width:
-            return None
-        if reg.offset + bit.value != 28:      # only the SD valid flag
             return None
         sd = io_port.sd_filter
         if sd is None or not sd.sd_en:        # R31 must read SD status
@@ -934,7 +988,7 @@ class PRUCore:
         if sd.sources[ch] != "pin":
             return None
         valid = sd.channels[ch].valid
-        if op == "QBBC":
+        if self.instructions[pc].opcode == "QBBC":
             # Spins while valid is clear; exits at the first start >= te.
             if valid:
                 return None

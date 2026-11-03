@@ -100,20 +100,22 @@ class Rig:
             write_r31(value)
 
         core.io_port.write_r31 = recording_write_r31
-        step_run = core.step_run
+        # Spin entries and exits are single step()s (a skipped span keeps pc
+        # at PDM_WAIT), and step_run() steps through self.step, so wrapping
+        # step() sees every one, whether the pacing calls step() or step_run().
+        step = core.step
         regs = core.registers.regs
 
-        def recording_step_run(max_cycles):
+        def recording_step():
             pc0 = core.pc
-            n = step_run(max_cycles)
+            step()
             pc1 = core.pc
             if pc0 == self.wait and pc1 != self.wait:
                 self.marks.append(("exit", regs[21], core.counters.cycles))
             elif pc1 == self.wait and pc0 != self.wait:
                 self.marks.append(("entry", regs[21], core.counters.cycles))
-            return n
 
-        core.step_run = recording_step_run
+        core.step = recording_step
 
     def counts(self) -> list[int]:
         return L.read_header(self.sim.memory)["pcm_count"][:self.n_ch]
