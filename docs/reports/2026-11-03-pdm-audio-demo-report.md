@@ -36,7 +36,7 @@ run modes, and run-ahead scheduling for one-way producer/consumer pairs.
 ### Speed
 
 `env -u PYTHONPATH .venv/bin/python source/pdm/tools/bench.py --audio-ms 20`
-(Task 7) and a re-run with `--audio-ms 5` at the end of the project:
+and a re-run with `--audio-ms 5` after the last code change:
 
 | mode | skip | 20 ms run: ms audio / s | s audio / min | 5 ms run: ms audio / s | s audio / min |
 |---|---|---:|---:|---:|---:|
@@ -46,22 +46,23 @@ run modes, and run-ahead scheduling for one-way producer/consumer pairs.
 | run-ahead | on | **1.494** | **0.0896** | **1.514** | **0.0908** |
 
 The target of 0.1 s of audio per minute is **missed by about 10 %** (spec
-estimate was 0.15). The user decided not to optimise further. The pre-project
-baseline was 0.61 ms/s, so run-ahead + skip is about 2.4x faster. In the browser
+estimate was 0.15). Further optimisation is deferred (see the profile). Before
+this work both cores ran paced at 0.61 ms/s, so run-ahead + skip is about 2.4x faster. In the browser
 the Audio view showed 1.4-1.5 ms audio/s, i.e. about 5 minutes for the 450 ms
 speech clip.
 
-Profile (cProfile, 5 ms, run-ahead + skip): `step_run` 14.2 s cumulative, of
-which `PeripheralInterface.advance_cycles` 7.6 s (`perif_channel.advance`,
-`set_busy`, `rx_sample_edge`, `_read_u32`). The PERIF model advances its three
-channels on every PRU step while the PERIF mux is disabled. Skipping or batching
-that would roughly double the speed (about 0.18 s/min). Future work, in
-core/PERIF.
+Profile: run under cProfile (which inflates the time; about 6 ms of audio ran),
+`PeripheralInterface.advance_cycles` took 7.6 s of the 14.2 s that `step_run`
+took in the run-ahead + skip case, about 54 % (`perif_channel.advance`,
+`set_busy`, `rx_sample_edge`, `_read_u32`). Without the profiler 5 ms of audio
+takes about 3.3 s (1.514 ms/s). The PERIF model advances its three channels on
+every PRU step while the PERIF mux is disabled. Skipping or batching that would
+roughly double the speed (about 0.18 s/min). Future work, in core/PERIF.
 
 ### clpru (TI CGT 2.3.3) assembly check
 
 Both firmwares assemble with 0 errors and 0 warnings. clpru prints nothing on
-success. Objects were written to the session scratchpad, not the repo.
+success. The objects were written outside the repository.
 
 ```
 CL=~/ti/ti-cgt-pru_2.3.3/bin/clpru; INC=~/ti/ti-cgt-pru_2.3.3/include
@@ -87,92 +88,100 @@ rejected no syntax the simulator accepts, so no firmware change was needed.
 
 ### Real-browser check (headless Chromium 156, light theme)
 
-Headless Chromium (`/snap/bin/chromium --headless=new --remote-debugging-port`)
-was driven through the DevTools protocol with a short stdlib/`websockets` Python
-script (no new dependency). This is a real browser: the page's own `audio.js`,
-websocket and canvas ran, and the script only clicked buttons and read the DOM.
-The server ran from a **copy of the working tree** in the session scratchpad with
-its own `memory.cfg` (the server resolves `memory.cfg` from the project root, not
-the working directory), on port 18765. The repo's `memory.cfg` stayed
-byte-identical (md5 `e10f2ca6...` before and after) and the server and browser
-were stopped afterwards.
+`source/pdm/tools/ui_check.py` (stdlib and the `websockets` package, both in
+`requirements.txt`) reproduces this check. `ui_check.py browser` drives headless
+Chromium over the DevTools protocol; the page's own `audio.js`, websocket and
+canvas run and the tool only clicks buttons and reads the DOM. `ui_check.py ws`
+runs the websocket part alone. `ui/server.py` resolves `memory.cfg` from the project
+root and rewrites it, so the tool starts the server from a temporary copy of the
+tree on a free port and stops it afterwards. The repository's `memory.cfg` stayed
+byte-identical in every run (the tool reports it, and
+`tests/test_pdm_ui_check.py` asserts it).
 
-Observed:
+Observed with `ui_check.py browser`:
 
 1. **Audio tab opens** with the clip lists filled (5 clips), progress "0 ms of
    450 ms audio", mode `run-ahead`. Screenshot `01-audio-idle-light.png`.
-2. **Pick `speech_librivox.wav` / `chirp_lin_100_7000.wav` and Run**: the
-   progress went 6, 14, 22, ... 60 ms over 40 s; "ms audio / s" read **1.5**;
-   load PRU0 16 %, PRU1 45 %; no error, notice or overrun. Spectrogram columns
-   appeared on both channels. Right channel shows the chirp ridge rising to
-   about 2 kHz in 60 ms. Screenshot `03-audio-running-later-light.png`. The first
-   few columns of the speech channel are empty because the clip starts with silence.
-3. **Booth in/out** works (class `audio-booth`, button text `Exit booth`, then
-   back to `Booth`); the run continued while in booth. Screenshot
+2. **Pick `speech_librivox.wav` / `chirp_lin_100_7000.wav` and Run**: the progress
+   advanced by about 8 ms per 5 s; "ms audio / s" read **1.5**; load PRU0 16 %,
+   PRU1 45 %; no error, notice or overrun. Spectrogram columns appeared on both
+   channels; the right channel shows the chirp ridge rising (about 2 kHz at 60 ms).
+   Screenshot `03-audio-running-later-light.png`. The first columns of the speech
+   channel are empty because the clip starts with silence.
+3. **Booth in/out** works (class `audio-booth`, button text `Exit booth`, then back
+   to `Booth`); the run continued while in booth. Screenshot
    `07-audio-booth-1920.png` (1920x1080, after the fix below).
-4. **Reload mid-run**: the run pauses (the owner tab is gone), progress was 72 ms,
-   both spectrograms were rebuilt from the server history (screenshot
-   `05-audio-after-reload.png`), the Run button is enabled again. Pressing **Run**
-   continued at 78, 84, 92, 100 ms, with no reset to zero. **Stop** released the run
-   (102 ms).
-5. The browser log shows one warning, `requestFullscreen ... user gesture`,
-   because the script clicks via JavaScript; the code catches it. No other console
+4. **Second tab as observer** (checked): the second tab showed "Running in another
+   tab. This is a snapshot that refreshes every 5 s; it is not the running tab.",
+   with Run and Reset disabled and Stop enabled. Clicking Stop in the observer
+   stopped the owner tab's run (progress stopped at 50 ms and the owner's Run button
+   became enabled), because `pdm_stop` is not owner-restricted. A second tab cannot
+   start or reset the run (the server answers with an ownership error).
+5. **Reload mid-run**: the run pauses (the owner tab is gone), both spectrograms
+   are rebuilt from the server history (screenshot `05-audio-after-reload.png`)
+   and Run is enabled again. Pressing **Run** continued at 50, then 68 ms in the
+   last run of the tool, and in the first manual run 72 -> 78, 84, 92, 100 ms,
+   with no reset to zero. **Stop** released the run.
+6. The browser log shows one warning, `requestFullscreen ... user gesture`,
+   because the tool clicks via JavaScript; the code catches it. No other console
    errors.
 
 Defect found and fixed: in booth mode the canvas text scaled with the height
-only, so on 1440x900 and 1920x1080 the time-axis labels ("100 ms", "200 ms",
-...) overprinted each other and the "dBFS" label. Fix in `audio.js`: the font is
-also capped at 3.5 % of the canvas width (`ui/static/audio.js`, one line;
-`tests/ui_audio.test.js` passes). Left over, cosmetic: at 1920x1080 the booth
-stage uses about 1555 px of the width, a blank band remains at the right.
+only, so on 1440x900 and 1920x1080 the time-axis labels ("100 ms", "200 ms", ...)
+overprinted each other and the "dBFS" label. The font is now also capped at 3.5 %
+of the canvas width (`ui/static/audio.js`), with a regression test
+(`tests/ui_audio.test.js`, "spectrogram text is capped by canvas width as well as
+height": 700x1000 gives 25 px, and the test fails without the cap). Left over,
+cosmetic: at 1920x1080 the booth stage uses about 1555 px of the width and leaves
+a blank band at the right.
 
-Websocket flow (Python `websockets` client, same server), `ws_flow` result:
+`ui_check.py ws` result:
 
 ```
-setup: pdm_status mode run-ahead, clips speech_librivox.wav / chirp_lin_100_7000.wav
-chunk 0..3: audio_ms 2,4,6,8; ~1.3 s wall per 2 ms chunk; speed 1.54-1.56 ms/s; counts [30,29] ... [126,125]
-DISCONNECT
-pdm_history on a new connection: {0: 126, 1: 125}, audio_ms 8.0, running False
-  rebuilt history == what the first connection received: OK
-chunk 4..6 (new connection): counts [158,157] [190,189] [222,221], no gap, no duplicate
-third connection: history == live concatenation, [222, 221]: OK
-pdm_reset: audio_ms 0.0
+setup ok, mode run-ahead
+chunk 0..3: audio 2, 4, 6, 8 ms; 1.31 s wall per 2 ms chunk; 1.53 ms audio/s; samples [30,29] ... [126,125]
+disconnected
+history after reconnect equals the streamed one: {0: 126, 1: 125}
+run continued, samples {0: 190, 1: 189}
+reset ok; history contiguous
+repo memory.cfg unchanged: True
 ```
 
-What was **not** checked in a real browser: fullscreen (needs a real user
-gesture; the code path was only exercised without a gesture), a second tab as
-observer, touch and hi-dpi screens, the dark and contrast themes, and a run to
-the end of the clip (about 5 minutes; the end of a run is covered by
-`test_run_ends_at_done_and_releases_execution`).
+What was **not** checked in a real browser: real fullscreen (needs a user
+gesture; the code path was only exercised without one), touch and hi-dpi screens,
+the dark and contrast themes, and a run to the end of the clip (about 5 minutes;
+the end of a run is covered by `test_run_ends_at_done_and_releases_execution`).
 
 ### Full verification
 
 `env -u PYTHONPATH .venv/bin/python -m pytest tests -q`: **3 failed, 3455
-passed, 3 skipped, 2 xfailed** (373 s). `node --test tests/ui_*.test.js`: 97
-pass, 9 fail.
+passed, 3 skipped, 2 xfailed in 373.30 s (0:06:13)** (the time is from that run's
+summary line). `node --test tests/ui_*.test.js`: 97 pass, 9 fail. After the last
+code change `tests/test_pdm_ui_check.py` (1 test) and `tests/ui_audio.test.js`
+(25 tests) were run again and pass.
 
-Compared with `baseline-failures.txt` (25 pytest, 9 node failures, taken with
-memory.cfg at 200/300 MHz):
+Compared with the failures recorded before the first code change of this branch
+(commit `c39d5e8`: 25 pytest and 9 node failures, with PRU clocks 200/300 MHz in
+the local `memory.cfg`):
 
-- **New failures: none**, in pytest or node.
-- Still failing, as in the baseline (clock and AM263x config):
+- **No new failures**, in pytest or node.
+- Still failing as before (clock and AM263x config):
   `test_clock_speed_endpoint.py::test_clock_readout_reports_actual_groups_and_presets[AM263x ...]`,
   `test_clock_speed_endpoint.py::test_group_one_edit_does_not_materialize_default_group_zero`,
   `test_server.py::test_am263x_state_advertises_only_supported_cores`.
-- 22 baseline failures now pass, because the local `memory.cfg` is 200/200 MHz
-  (the user chose to keep it): the perif loopback and drift tests, two
-  `test_server.py` multicore catch-up tests, `test_multicore_ws`,
-  `test_dashboard_tabs` (2), `test_ssi_runtime` (2), `test_mcp_stdio_device_sdk`,
-  `test_perif_server` (2) and `test_pru1_core`. They depend on that file, not on
-  this branch.
-- Node: the same 9 baseline failures (`ui_chrome.test.js` and the shared-execution
-  membership tests), unchanged.
-- `memory.cfg` was not staged.
+- 22 earlier failures now pass. They depend on the PRU clock values in the local
+  `memory.cfg` (the perif loopback and drift tests, two `test_server.py` multicore
+  catch-up tests, `test_multicore_ws`, `test_dashboard_tabs` (2), `test_ssi_runtime`
+  (2), `test_mcp_stdio_device_sdk`, `test_perif_server` (2), `test_pru1_core`) and
+  pass with both clocks at 200 MHz, not because of this branch.
+- Node: the same 9 failures as before (`ui_chrome.test.js` and the
+  shared-execution membership tests), unchanged.
+- `memory.cfg` is local state and is not part of the commits.
 
 ## Concerns and follow-ups
 
 - Speed misses the 0.1 s/min target by about 10 %. The fix is in the PERIF model
-  (see profile), not in the PDM code.
+  (see profile), not in the PDM code; deferred.
 - Real-hardware behaviour is untested; see the porting notes in the README:
   GPCFG SD mux, pinmux, IM73D122 edge assignment, CTBIR, SD `ch_sel` latency,
   shared-RAM `LBBO` arbitration on PRU1's clock.
@@ -185,6 +194,8 @@ memory.cfg at 200/300 MHz):
   the full-length tones are opt-in (`PDM_SLOW=1`, about 3.3 minutes each).
 - Booth mode: leftover blank band at the right of the stage on wide screens;
   Esc closes booth while a `<select>` is open.
+- The observer tab's Stop button stops the owner's run (server `pdm_stop` is not
+  owner-restricted).
 - A `pdm` top-level package name (under `source/`) could clash with the PyPI
   package `pdm` if both are on the path.
 - `docs/electronica2026-demo-howto.md` is on branch `docs/electronica2026-howto`
@@ -195,4 +206,5 @@ memory.cfg at 200/300 MHz):
 
 In `docs/reports/2026-11-03-pdm-audio-demo/`: `01-audio-idle-light.png`,
 `03-audio-running-later-light.png`, `05-audio-after-reload.png` (1440x900, light
-theme) and `07-audio-booth-1920.png` (booth, 1920x1080).
+theme) and `07-audio-booth-1920.png` (booth, 1920x1080). Run
+`ui_check.py browser --shots <dir>` to produce a new set.
