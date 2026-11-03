@@ -34,6 +34,8 @@ from perif.loopback import Loopback
 
 _GPCFG_INDEX = {"pru0": 0, "pru1": 1}   # rtu0 has no GPCFG GP-mux (TRM)
 _MAX_CATCHUP_STEPS = 1000
+#: Longest idle span one PRUCore.step_run() call may skip in a run mode.
+IDLE_SKIP_MAX_CYCLES = 1 << 16
 
 
 logger = logging.getLogger(__name__)
@@ -331,6 +333,11 @@ class Simulator:
         # Producer GPO -> consumer SD pin link (attach_pdm_link); None = off.
         self._pdm_link: PdmLink | None = None
 
+        # Idle skip (NOP delay loops, R31 poll spins) for the run modes: the
+        # dashboard's continuous Run / run_multicore and MCP run_until. They
+        # read this switch; single-step paths never skip.
+        self.idle_skip: bool = True
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -489,7 +496,7 @@ class Simulator:
         return self.step_paced_many(lead, [follow], count=count, guard_ns=guard_ns)
 
     def step_paced_many(self, lead: str, followers: list[str], count: int = 1,
-                        guard_ns: float = 20.0) -> dict:
+                        guard_ns: float = 20.0, idle_skip: bool = False) -> dict:
         """Step a lead core and catch each follower up by exact elapsed time.
 
         When both cores have enabled PERIF blocks, *guard_ns* keeps the follower
@@ -500,6 +507,13 @@ class Simulator:
         Each follower catch-up is limited to 1000 instructions per lead step.
         The result records the selected targets, actual lead_steps and incomplete work;
         subsequent calls finish those targets before executing another lead step.
+
+        With *idle_skip* the lead and the follower catch-up use
+        ``PRUCore.step_run``; a lead step may then be a whole idle span. The
+        result stays identical to lockstep stepping: a follower's budget is
+        the cycles it would start before its target, and the lead skips only
+        as far as no follower would run a non-idle instruction in the
+        meantime (see ``_lead_skip_budget``).
         """
         if isinstance(guard_ns, bool) or not isinstance(guard_ns, (int, float)):
             raise ValueError("guard_ns must be a number")
@@ -532,7 +546,11 @@ class Simulator:
                                 "follower": follower, "targets": dict(targets),
                                 "lead_steps": lead_steps}
                     previous_cycles = follow_pru.counters.cycles
-                    follow_pru.step()
+                    if idle_skip:
+                        follow_pru.step_run(
+                            self._cycles_before(follower, follow_pru, target))
+                    else:
+                        follow_pru.step()
                     steps += 1
                     if (follow_pru.counters.cycles == previous_cycles
                             and not follow_pru.halted
@@ -554,7 +572,10 @@ class Simulator:
             del self._paced_pending[pacing_key]
         for _ in range(count):
             if not lead_pru.halted and lead_pru.pc < len(lead_pru.instructions):
-                lead_pru.step()
+                if idle_skip:
+                    lead_pru.step_run(self._lead_skip_budget(lead, lead_pru, follower_states))
+                else:
+                    lead_pru.step()
                 lead_steps += 1
             lead_time = self.iep.core_time_units(lead, lead_pru.counters.cycles)
             targets = {}
@@ -569,6 +590,54 @@ class Simulator:
                 self._paced_pending[pacing_key] = targets
                 return incomplete
         return {"complete": True, "targets": dict(targets), "lead_steps": lead_steps}
+
+    def _cycles_before(self, name: str, pru: PRUCore, target) -> int:
+        """Cycle starts of *pru* before time *target*: what lockstep runs."""
+        iep = self.iep
+        cycles = pru.counters.cycles
+        now = iep.core_time_units(name, cycles)
+        unit = iep.core_time_units(name, cycles + 1) - now
+        return max(1, int(-((now - target) // unit)))
+
+    def _lead_skip_budget(self, lead: str, lead_pru: PRUCore,
+                          follower_states: list) -> int:
+        """Cycles the lead may skip without changing the lockstep result.
+
+        Lockstep runs lead cycle j, then catches every follower up to the
+        lead time L_j. If the lead skips B 1-cycle instructions instead, the
+        followers catch up to L_B in one go. That is identical as long as
+        every follower instruction starting before L_B is itself idle (a NOP
+        span or SD-valid spin: it reads nothing another core changes and
+        changes nothing another core reads). So B is bounded by the earliest
+        time any follower leaves its idle span. The span's last instruction
+        is excluded, because it may move the follower's pc onto a breakpoint
+        that lockstep would report one lead round earlier.
+        """
+        iep = self.iep
+        cycles = lead_pru.counters.cycles
+        lead_now = iep.core_time_units(lead, cycles)
+        lead_unit = iep.core_time_units(lead, cycles + 1) - lead_now
+        bound = math.inf
+        for follower, pru, _ in follower_states:
+            if pru.halted or pru.pc >= len(pru.instructions):
+                continue
+            f_cycles = pru.counters.cycles
+            f_now = iep.core_time_units(follower, f_cycles)
+            f_unit = iep.core_time_units(follower, f_cycles + 1) - f_now
+            sd = pru.io_port.sd_filter
+            link = sd.pin_link if sd is not None else None
+            # The lead's own span writes no pin, so with the lead as producer
+            # the follower's queued edges are final for the whole span.
+            horizon = (math.inf if link is not None and link.consumer is pru
+                       and link.producer is lead_pru else None)
+            span = pru.idle_span(IDLE_SKIP_MAX_CYCLES, horizon=horizon)
+            idle_until = f_now + (span - 1) * f_unit if span else f_now
+            bound = min(bound, idle_until)
+            if bound <= lead_now:
+                return 1
+        if bound == math.inf:
+            return IDLE_SKIP_MAX_CYCLES
+        return max(1, min(IDLE_SKIP_MAX_CYCLES, int((bound - lead_now) // lead_unit)))
 
     def registers(self, core: str) -> list[int]:
         """Return the 32 general-purpose register values for *core*."""

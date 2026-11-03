@@ -21,7 +21,7 @@ import base64
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from simulator import Simulator
+from simulator import IDLE_SKIP_MAX_CYCLES, Simulator
 from mcp_server.server import PRUSimulatorMCP
 from core.branch import LoopState
 from perif.gpcfg import MUX_SD
@@ -827,6 +827,9 @@ async def websocket_endpoint(websocket: WebSocket):
                                 pass
                 except Exception as e:
                     await websocket.send_json({"type": "error", "errors": [str(e)]})
+            elif action == "set_idle_skip":
+                sim.idle_skip = bool(msg.get("enabled", True))
+                await _send_state(websocket, core)
             elif action == "set_xfr_shift":
                 sim.xfr.xfr_shift_en = bool(msg.get("enabled", False))
                 await _send_state(websocket, core)
@@ -838,10 +841,16 @@ async def websocket_endpoint(websocket: WebSocket):
                 at_breakpoint = False
                 samples = []
                 error = None
+                idle_skip = sim.idle_skip
                 try:
                     steps = 0
                     while steps < max_steps and not pru.halted and pru.pc < len(pru.instructions):
-                        pru.step()
+                        # A skipped idle span counts as one step: its pins do
+                        # not change, so one capture sample stamps it.
+                        if idle_skip:
+                            pru.step_run(IDLE_SKIP_MAX_CYCLES)
+                        else:
+                            pru.step()
                         steps += 1
                         if capture and _capture_due(pru, steps, stride):
                             samples.append(_capture_sample(pru))
@@ -858,6 +867,8 @@ async def websocket_endpoint(websocket: WebSocket):
                                   captured=capture, run_id=msg.get("run_id"))
             elif action in {"run_multicore", "step_multicore"}:
                 manual_step = action == "step_multicore"
+                # Continuous run_multicore skips idle spans; step_multicore never.
+                idle_skip = sim.idle_skip and not manual_step
                 max_steps = 1 if manual_step else int(msg.get("max_steps", 1000))
                 capture = bool(msg.get("capture", False)) or any(c.capture for c in _connections)
                 stride = _capture_stride(msg)
@@ -886,7 +897,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         _record_step(core)
                     steps = 0
                     while steps < max_steps:
-                        pacing = sim.step_paced_many(core, partners, 1)
+                        pacing = sim.step_paced_many(core, partners, 1, idle_skip=idle_skip)
                         steps += pacing["lead_steps"]
                         progressed = pacing["lead_steps"] or any(
                             sim.cores[name].counters.instruction_count != before
@@ -1376,6 +1387,8 @@ def _state(core, at_breakpoint=False, captured=False):
         "stall_cycles": c.counters.stall_cycles,
         "instruction_count": c.counters.instruction_count,
         "ipc": round(c.counters.ipc, 3),
+        "idle_skip": sim.idle_skip,
+        "skipped_cycles": c.skipped_cycles,
         "io": io_section,
         "iep": {
             "clock_mhz": float(sim.iep.active_clock_mhz),

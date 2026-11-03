@@ -12,7 +12,7 @@ import random
 # Allow imports from parent directory when run directly
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from simulator import Simulator
+from simulator import IDLE_SKIP_MAX_CYCLES, Simulator
 from pru_io.device_profiles import create_device, discover_device_profiles
 from pru_io.device_model import PUSH_PULL
 from mcp_server.vcd_export import export_pin_waveform
@@ -317,6 +317,15 @@ class PRUSimulatorMCP:
                 return io_state[f"{kind}_pins"][index] == target
             raise ValueError(f"Unsupported run condition: {condition}")
 
+        # Idle skip (Simulator.idle_skip): a NOP delay loop or SD-valid spin
+        # runs as one step. Such a span changes no register, memory or pin,
+        # so only conditions on time need a budget; GPI conditions never skip
+        # (attached devices may move a pin inside the span).
+        skip = getattr(self.sim, "idle_skip", False) and not condition.startswith(("pin:", "gpi:"))
+        cycles_goal = None
+        if skip and condition.startswith("cycles>"):
+            cycles_goal = int(condition[7:], 0) + 1   # first count that meets it
+
         reason = None
         for _ in range(max_steps):
             if condition_met():
@@ -325,6 +334,15 @@ class PRUSimulatorMCP:
             if c.pc in c.breakpoints:
                 reason = "breakpoint"
                 break
+            if skip:
+                budget = IDLE_SKIP_MAX_CYCLES
+                if max_cycles:
+                    budget = min(budget, max_cycles - (c.counters.cycles - start_cycles))
+                if cycles_goal is not None:
+                    budget = min(budget, cycles_goal - c.counters.cycles)
+                if c.idle_span(budget):
+                    c.step_run(budget)
+                    continue
             if max_cycles:
                 # An instruction may add memory stall cycles.  Predict it on a
                 # private copy, and do not mutate the live simulator unless the
