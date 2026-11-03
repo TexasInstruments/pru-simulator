@@ -18,9 +18,10 @@ Produced by `python3 source/pdm/tools/make_clips.py chirps` (stdlib `wave` and
 
 ## speech_librivox.wav
 
-- Book: *Letters of Two Brides* by Honore de Balzac (LibriVox, English)
-- Section: 1 (read by a single reader for the whole section)
-- Reader: Kara Shallenberg (1969-2023)
+- Book: *Letters of Two Brides* by Honoré de Balzac, translated by R. S. Scott (LibriVox, English)
+- Section: 01, "Letter 1" (29:24), as listed on the book page below
+- Reader: Kara Shallenberg (1969-2023), exactly as the book page lists the
+  reader of section 01 (https://librivox.org/reader/19), retrieved 2026-11-03
 - Book page: https://librivox.org/letters-of-two-brides-by-honore-de-balzac/
 - File URL: https://www.archive.org/download/letters_brides_0709_librivox/letters_of_two_brides_01_debalzac_64kb.mp3
 - Start time: 115.5 s into the section file
@@ -34,5 +35,6 @@ Produced by `python3 source/pdm/tools/make_clips.py chirps` (stdlib `wave` and
   ffmpeg -y -ss 115.5 -t 0.45 -i letters_of_two_brides_01_debalzac_64kb.mp3 -ac 1 -ar 16000 -sample_fmt s16 speech_librivox.wav
   ```
 
-- Licence: LibriVox recordings are in the public domain. The downloaded MP3
+- Licence: LibriVox recordings are in the public domain (the book page says
+  "LibriVox recordings are Public Domain in the USA"). The downloaded MP3
   is kept outside the repository; only this converted excerpt is committed.
