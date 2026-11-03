@@ -65,6 +65,7 @@ function page({ clips = [{ name: 'hello.wav', ms: 250 }, { name: 'chirp.wav', ms
   const listeners = {};
   const sent = [];
   const timers = new Map();
+  const net = { open: true };
   let nextTimer = 1;
   const document = {
     fullscreenElement: null,
@@ -76,7 +77,8 @@ function page({ clips = [{ name: 'hello.wav', ms: 250 }, { name: 'chirp.wav', ms
   const context = vm.createContext({
     document, console, Float64Array, Math, Number, Array, JSON, Object, Error,
     window: { addEventListener() {} },
-    sendAction: obj => { sent.push(JSON.parse(JSON.stringify(obj))); },   // outer-realm copy, comparable with deepEqual
+    // Outer-realm copy, comparable with deepEqual. Like the real one it drops a message and returns false when closed.
+    sendAction: obj => { if (!net.open) return false; sent.push(JSON.parse(JSON.stringify(obj))); return true; },
     fetch: async () => ({ ok: true, json: async () => ({ clips }) }),
     requestAnimationFrame: fn => fn(),
     setInterval: (fn, ms) => { timers.set(nextTimer, { fn, ms }); return nextTimer++; },
@@ -84,7 +86,7 @@ function page({ clips = [{ name: 'hello.wav', ms: 250 }, { name: 'chirp.wav', ms
     getComputedStyle: () => ({ getPropertyValue: () => '' }),
   });
   vm.runInContext(source, context);
-  return { context, elements, document, sent, timers, audio: context.PruAudio,
+  return { context, elements, document, sent, timers, net, audio: context.PruAudio,
     el: id => elements.get(id) };
 }
 
@@ -359,6 +361,104 @@ test('overrun and a mid-run notice are shown, a missed chunk triggers a history 
   sent.length = 0;
   audio.handleMessage({ type: 'pdm_pcm', ch: 0, start: 5000, samples: sine(256) });   // gap
   assert.deepEqual(sent, [{ action: 'pdm_history' }]);
+});
+
+const NOT_SET_UP = { type: 'error', tag: 'pdm', errors: ['PDM demo is not set up; send pdm_setup first'] };
+
+test('pdm_history before any setup shows no error and keeps Run enabled', async () => {
+  const { audio, elements } = runSetup();
+  await flush();
+  assert.equal(audio.handleMessage(NOT_SET_UP), true, 'the view consumes the reply');
+  assert.equal(elements.get('audio-error').textContent, '', 'a passive history reply is not an error');
+  assert.ok(elements.get('audio-error').hidden);
+  assert.ok(!elements.get('audio-run').disabled);
+});
+
+test('a Run clicked before the history reply arrives still starts the loop', async () => {
+  const { audio, elements, sent } = runSetup();
+  await flush();
+  assert.deepEqual(sent, [{ action: 'pdm_history' }]);
+  elements.get('audio-run').fire('click');                   // before the history reply
+  assert.equal(sent.at(-1).action, 'pdm_setup');
+  audio.handleMessage(NOT_SET_UP);                            // reply to the history, in order
+  assert.ok(elements.get('audio-error').hidden, 'no error line');
+  assert.ok(elements.get('audio-run').disabled, 'the setup is still pending');
+  audio.handleMessage(status({ audio_ms: 0 }));               // reply to the setup
+  assert.equal(sent.at(-1).action, 'pdm_run', 'the loop starts');
+  assert.ok(!elements.get('audio-stop').disabled);
+});
+
+test('an orphaned demo makes the next Run set up again', async () => {
+  const { audio, elements, sent } = runSetup();
+  await flush();
+  audio.handleMessage(status({ done: false, audio_ms: 40 }));          // a demo existed
+  audio.handleMessage({ type: 'pdm_pcm', ch: 0, start: 0, samples: sine(512) });
+  audio.handleMessage(NOT_SET_UP);                                     // a clock change orphaned it
+  assert.ok(elements.get('audio-error').hidden);
+  sent.length = 0;
+  elements.get('audio-run').fire('click');
+  assert.equal(sent[0].action, 'pdm_setup', 'a stale status no longer skips the setup');
+  // The same when the not-set-up error answers a Run: it is shown, and the Run after it sets up.
+  audio.handleMessage(status({ audio_ms: 0 }));
+  audio.handleMessage(NOT_SET_UP);                                     // answers the pdm_run just sent
+  assert.match(elements.get('audio-error').textContent, /not set up/);
+  assert.ok(!elements.get('audio-run').disabled);
+  sent.length = 0;
+  elements.get('audio-run').fire('click');
+  assert.equal(sent[0].action, 'pdm_setup');
+});
+
+test('Run and Reset while the socket is closed set no pending state', async () => {
+  const { audio, elements, sent, net } = runSetup();
+  await flush();
+  net.open = false;
+  elements.get('audio-run').fire('click');
+  assert.deepEqual(sent, [{ action: 'pdm_history' }], 'nothing was sent');
+  assert.match(elements.get('audio-error').textContent, /Not connected/);
+  assert.ok(!elements.get('audio-run').disabled, 'Run is not stuck disabled');
+  audio.handleMessage(status({ done: false }));
+  elements.get('audio-error').textContent = '';
+  elements.get('audio-run').fire('click');                  // set up, so this goes straight to pdm_run
+  assert.ok(!elements.get('audio-run').disabled);
+  elements.get('audio-reset').fire('click');
+  assert.ok(!elements.get('audio-reset').disabled);
+  net.open = true;
+  elements.get('audio-run').fire('click');
+  assert.equal(sent.at(-1).action, 'pdm_run', 'Run works again once the socket is back');
+});
+
+test('a reconnect forgets requests of the old socket', async () => {
+  const { audio, elements, sent } = runSetup();
+  await flush();
+  elements.get('audio-run').fire('click');                  // setup pending
+  assert.ok(elements.get('audio-run').disabled);
+  audio.disconnected();
+  assert.ok(!elements.get('audio-run').disabled);
+  elements.get('audio-run').fire('click');
+  audio.connected();                                        // the reply never came
+  assert.ok(!elements.get('audio-run').disabled);
+  assert.equal(sent.at(-1).action, 'pdm_history', 'the picture is requested again');
+});
+
+test('any error answering a pending request ends it and stops the loop', async () => {
+  const { audio, elements, sent } = runSetup();
+  await flush();
+  elements.get('audio-run').fire('click');
+  audio.handleMessage(status({ audio_ms: 0 }));
+  audio.handleMessage(status({ running: true, run_id: sent.at(-1).run_id }));   // loop is going
+  assert.ok(elements.get('audio-run').disabled);
+  const before = sent.length;
+  assert.equal(audio.handleMessage({ type: 'error', errors: ['core must be one of [pru0]'] }), true);
+  assert.equal(elements.get('audio-error').textContent, 'core must be one of [pru0]');
+  assert.ok(!elements.get('audio-run').disabled && elements.get('audio-stop').disabled, 'loop ended');
+  audio.handleMessage(status({ running: true, run_id: sent.at(-1).run_id }));   // late chunk reply
+  assert.equal(sent.length, before, 'no further pdm_run');
+  // A pending reset is answered by an untagged error too.
+  audio.handleMessage(status({ done: false }));
+  elements.get('audio-reset').fire('click');
+  assert.equal(sent.at(-1).action, 'pdm_reset');
+  assert.equal(audio.handleMessage({ type: 'error', errors: ['Execution stopped or controlled by another tab'] }), true);
+  assert.ok(!elements.get('audio-reset').disabled);
 });
 
 test('wiring: nav button, section, script and message routing exist', () => {

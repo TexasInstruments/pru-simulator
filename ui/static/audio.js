@@ -268,7 +268,7 @@
 
   // ---- View controller -------------------------------------------------------
 
-  const OWNERSHIP = /controlled by another tab/i;
+  const NOT_SET_UP = /not set up/i;   // the server has no demo for the current simulator
   const OBSERVER_POLL_MS = 5000;
 
   function initView() {
@@ -286,13 +286,15 @@
       titles: [$('audio-title-left'), $('audio-title-right')],
     };
     const spectrograms = canvases.map(canvas => new Spectrogram(canvas, {}));
-    const send = obj => globalThis.sendAction?.(obj);
+    // sendAction drops a message while the socket is closed and returns false then.
+    const send = obj => globalThis.sendAction?.(obj) !== false;
 
     let clips = [];
     let status = null;          // last pdm_status
     let running = false;        // this tab drives the run loop
     let pendingStart = false;   // pdm_setup sent, waiting for its status
     let selfChange = false;     // our own setup/reset is in flight
+    let pendingReset = false;   // pdm_reset sent, waiting for its status
     let pendingRun = null;      // run_id of the chunk we wait for
     let runSeq = 0;
     let otherRunning = false;   // another tab owns the run
@@ -415,14 +417,19 @@
 
     function dropPicture() { spectrograms.forEach(spec => spec.reset()); }
 
+    const NOT_CONNECTED = 'Not connected to the server. Try again once it is back.';
+
     function sendRun() {
-      pendingRun = ++runSeq;
-      send({ action: 'pdm_run', run_id: pendingRun });
+      const id = runSeq + 1;
+      if (!send({ action: 'pdm_run', run_id: id })) return false;
+      runSeq = id;
+      pendingRun = id;
+      return true;
     }
 
     function startLoop() {
       running = true;
-      sendRun();
+      if (!sendRun()) { running = false; errorText = NOT_CONNECTED; }
       render();
     }
 
@@ -436,12 +443,16 @@
       errorText = '';
       if (!el.left.value || !el.right.value) { errorText = 'Pick a clip for Gen L and Gen R first.'; render(); return; }
       if (needsSetup()) {
+        if (!send({ action: 'pdm_setup', clip_left: el.left.value, clip_right: el.right.value, swap: el.swap.checked })) {
+          errorText = NOT_CONNECTED;       // nothing was sent, so nothing is pending
+          render();
+          return;
+        }
         dropPicture();
         localNotice = '';
         pendingStart = true;
         selfChange = true;
         dirty = false;
-        send({ action: 'pdm_setup', clip_left: el.left.value, clip_right: el.right.value, swap: el.swap.checked });
         render();
         scheduleDraw();
       } else {
@@ -464,9 +475,13 @@
       dropPicture();
       localNotice = '';
       if (status) {
-        selfChange = true;
-        dirty = false;
-        send({ action: 'pdm_reset' });
+        if (send({ action: 'pdm_reset' })) {
+          selfChange = true;
+          pendingReset = true;
+          dirty = false;
+        } else {
+          errorText = NOT_CONNECTED;
+        }
       }
       render();
       scheduleDraw();
@@ -495,7 +510,7 @@
         startLoop();
         return;
       }
-      if (!own) selfChange = false;
+      if (!own) { selfChange = false; pendingReset = false; }
       if (own && msg.run_id === pendingRun) {
         pendingRun = null;
         if (running) {
@@ -532,7 +547,21 @@
       pendingStart = false;
       pendingRun = null;
       selfChange = false;
+      pendingReset = false;
       errorText = (errors || []).join('; ');
+      render();
+    }
+
+    // pdm_history is also sent passively (on open, on reconnect, by the observer poll). On a
+    // server with no demo it is answered with the not-set-up error, which is no failure of
+    // ours: it only tells us there is nothing to show. It must not cancel a Run clicked
+    // meanwhile (that setup is answered later, in order), and it must forget any stale
+    // status so the next Run sets the demo up again.
+    function onNotSetUp(errors) {
+      status = null;
+      otherRunning = false;
+      setPolling(false);
+      if (pendingRun !== null || pendingReset) { onError(errors); return; }   // it answers a Run or Reset
       render();
     }
 
@@ -542,9 +571,14 @@
       if (msg.type === 'pdm_status') { onStatus(msg); return true; }
       if (msg.type === 'pdm_notice') { localNotice = msg.text || ''; render(); return true; }
       if (msg.type === 'error') {
-        if (msg.tag === 'pdm') { onError(msg.errors); return true; }
-        // Another tab owns execution: the server answers with the plain ownership error.
-        if ((pendingStart || pendingRun !== null) && (msg.errors || []).some(e => OWNERSHIP.test(e))) {
+        if (msg.tag === 'pdm') {
+          if ((msg.errors || []).some(e => NOT_SET_UP.test(e))) onNotSetUp(msg.errors);
+          else onError(msg.errors);
+          return true;
+        }
+        // The server answers a refused request (another tab owns execution, ...) with an
+        // untagged error. While one of our requests is pending it is the answer to that.
+        if (running || pendingStart || pendingRun !== null || pendingReset) {
           onError(msg.errors);
           return true;
         }
@@ -608,11 +642,14 @@
     return {
       spectrograms, handleMessage,
       connected() {
-        // The server keeps the demo across a reconnect; this tab only pauses.
+        // The server keeps the demo across a reconnect; this tab only pauses. Replies to
+        // requests of the old socket will never arrive.
+        running = false; pendingStart = false; pendingRun = null; selfChange = false; pendingReset = false;
         if (opened) openView();
+        else render();
       },
       disconnected() {
-        running = false; pendingStart = false; pendingRun = null; selfChange = false;
+        running = false; pendingStart = false; pendingRun = null; selfChange = false; pendingReset = false;
         setPolling(false);
         otherRunning = false;
         render();

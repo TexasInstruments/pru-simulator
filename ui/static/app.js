@@ -514,10 +514,13 @@ async function reconnectWhenReady() {
   setTimeout(reconnectWhenReady, 2000);
 }
 
+// Returns false when the socket is not open and the message was dropped.
 function sendAction(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(obj));
+    return true;
   }
+  return false;
 }
 
 function receiveExecution(state) {
