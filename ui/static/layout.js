@@ -17,7 +17,7 @@ const SC_DEFAULT_TREE = {
       ]
     },
     {
-      type: 'split', dir: 'v', sizes: [40, 15, 45],
+      type: 'split', dir: 'v', sizes: [30, 45, 25],
       children: [
         { type: 'leaf', panelId: 'registers' },
         { type: 'leaf', panelId: 'io' },
@@ -35,52 +35,13 @@ const SC_DEFAULT_TREE = {
   ]
 };
 
-const MC_DEFAULT_TREE = {
-  type: 'split', dir: 'h', sizes: [55, 20, 25],
-  children: [
-    {
-      type: 'split', dir: 'v', sizes: [50, 50],
-      children: [
-        {
-          type: 'split', dir: 'h', sizes: [67, 33],
-          children: [
-            { type: 'leaf', panelId: 'mc-pru0-source' },
-            { type: 'leaf', panelId: 'mc-pru0-registers' },
-          ]
-        },
-        {
-          type: 'split', dir: 'h', sizes: [67, 33],
-          children: [
-            { type: 'leaf', panelId: 'mc-rtu0-source' },
-            { type: 'leaf', panelId: 'mc-rtu0-registers' },
-          ]
-        }
-      ]
-    },
-    {
-      type: 'split', dir: 'v', sizes: [25, 15, 30, 30],
-      children: [
-        { type: 'leaf', panelId: 'editor' },
-        { type: 'leaf', panelId: 'io' },
-        { type: 'leaf', panelId: 'signal-graph' },
-        { type: 'leaf', panelId: 'mem-graph' },
-      ]
-    },
-    {
-      type: 'split', dir: 'v', sizes: [50, 50],
-      children: [
-        { type: 'leaf', panelId: 'memory1' },
-        { type: 'leaf', panelId: 'memory2' },
-      ]
-    }
-  ]
-};
-
-// ---- Live state ------------------------------------------------------------
-let currentMode = 'sc';   // 'sc' | 'mc'
+let currentMode = 'sc';   // Core panes share this one tiling layout.
 let currentTree = null;
 let tileRoot    = null;
 let panelPool   = null;
+let hiddenPanelIds = new Set();
+const modePanelIds = { sc: [] };
+const PANEL_VISIBILITY_KEY = "pru-panel-visibility-";
 
 // ---- localStorage helpers --------------------------------------------------
 
@@ -93,21 +54,108 @@ function saveLayout(mode, tree) {
 function loadLayout(mode) {
   try {
     const raw = localStorage.getItem(`pru-layout-${mode}`);
-    return raw ? JSON.parse(raw) : null;
+    if (!raw) return null;
+    const tree = JSON.parse(raw);
+    if (validLayout(mode, tree)) return tree;
+    const fallback = defaultTree(mode);
+    saveLayout(mode, fallback);
+    return fallback;
   } catch (e) {
     return null;
   }
 }
 
+function validLayout(mode, tree) {
+  const allowed = new Set(getLeafIds(defaultTree(mode)));
+  const seen = new Set();
+  function visit(node) {
+    if (!node || typeof node !== 'object') return false;
+    if (node.type === 'leaf') {
+      if (!allowed.has(node.panelId) || seen.has(node.panelId)) return false;
+      seen.add(node.panelId);
+      return true;
+    }
+    if (node.type !== 'split' || !['h', 'v'].includes(node.dir) ||
+        !Array.isArray(node.children) || node.children.length === 0 ||
+        !Array.isArray(node.sizes) || node.sizes.length !== node.children.length ||
+        !node.sizes.every(size => Number.isFinite(size) && size > 0)) return false;
+    return node.children.every(visit);
+  }
+  return visit(tree) && seen.size === allowed.size;
+}
+
+function loadHiddenPanels(mode) {
+  try {
+    const raw = localStorage.getItem(`${PANEL_VISIBILITY_KEY}${mode}`);
+    const ids = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(ids) ? ids.filter(id => typeof id === 'string') : []);
+  } catch (e) {
+    return new Set();
+  }
+}
+
+function saveHiddenPanels(mode) {
+  try {
+    localStorage.setItem(
+      `${PANEL_VISIBILITY_KEY}${mode}`,
+      JSON.stringify(Array.from(hiddenPanelIds)),
+    );
+  } catch (e) { /* quota exceeded — ignore */ }
+}
+
+function sanitizeHiddenPanels(mode) {
+  const allowed = new Set(modePanelIds[mode] || []);
+  hiddenPanelIds = new Set(Array.from(hiddenPanelIds).filter(id => allowed.has(id)));
+  const visibleIds = (modePanelIds[mode] || []).filter(id => !hiddenPanelIds.has(id));
+  if (visibleIds.length === 0 && modePanelIds[mode]?.length > 0) {
+    hiddenPanelIds.delete(modePanelIds[mode][0]);
+  }
+}
+
+function notifyLayoutChanged() {
+  document.dispatchEvent(new CustomEvent('pru-layout-changed', {
+    detail: { mode: currentMode },
+  }));
+}
+
+function getPanelVisibility(panelId) {
+  return !hiddenPanelIds.has(panelId);
+}
+
+function setPanelsVisibility(panelIds, visible) {
+  const activeIds = new Set(modePanelIds[currentMode] || []);
+  const validIds = Array.from(new Set(panelIds || []))
+    .filter(id => activeIds.has(id) && PANEL_REGISTRY[id]);
+  if (validIds.length === 0) return false;
+
+  if (!visible) {
+    const remaining = Array.from(activeIds).filter(
+      id => !hiddenPanelIds.has(id) && !validIds.includes(id),
+    );
+    if (remaining.length === 0) return false;
+  }
+
+  validIds.forEach(id => {
+    if (visible) hiddenPanelIds.delete(id);
+    else hiddenPanelIds.add(id);
+  });
+  saveHiddenPanels(currentMode);
+  render(currentTree);
+  notifyLayoutChanged();
+  return true;
+}
+
 function defaultTree(mode) {
   // Deep-clone so mutations don't corrupt the default
-  return JSON.parse(JSON.stringify(mode === 'mc' ? MC_DEFAULT_TREE : SC_DEFAULT_TREE));
+  return JSON.parse(JSON.stringify(SC_DEFAULT_TREE));
 }
 
 // ---- Tree rendering --------------------------------------------------------
 
 function renderNode(node) {
   if (node.type === 'leaf') {
+    if (hiddenPanelIds.has(node.panelId)) return null;
+
     const leaf = document.createElement('div');
     leaf.className = 'tile-leaf';
     leaf.dataset.panelId = node.panelId;
@@ -119,8 +167,7 @@ function renderNode(node) {
         titleEl.dataset.dragBound = '1';
         titleEl.style.cursor = 'grab';
         titleEl.addEventListener('mousedown', (e) => {
-          if (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT' ||
-              e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
+          if (e.target.closest('button, input, select, textarea, a, [role="button"], [contenteditable]')) return;
           e.preventDefault();
           startDrag(node.panelId, e);
         });
@@ -149,18 +196,31 @@ function renderNode(node) {
     return leaf;
   }
 
-  // Split node
+  // Split node. Hidden leaves are omitted and their sibling dividers are
+  // rebuilt so the remaining panels reclaim the available space.
+  const renderedChildren = [];
+  node.children.forEach((child, i) => {
+    const rendered = renderNode(child);
+    if (rendered) renderedChildren.push({ rendered, size: node.sizes[i] });
+  });
+  if (renderedChildren.length === 0) return null;
+
   const split = document.createElement('div');
   split.className = `tile-split tile-split-${node.dir}`;
 
-  node.children.forEach((child, i) => {
+  renderedChildren.forEach(({ rendered, size }, i) => {
     const wrapper = document.createElement('div');
     wrapper.className = 'tile-child';
-    wrapper.style.flex = node.sizes[i];
-    wrapper.appendChild(renderNode(child));
+    wrapper.style.flex = size;
+    wrapper.appendChild(rendered);
+    if (rendered.classList.contains('tile-leaf') &&
+        PANEL_REGISTRY[rendered.dataset.panelId]?.classList.contains('panel-collapsed')) {
+      wrapper.dataset.prevFlex = String(size);
+      wrapper.style.flex = `0 0 ${COLLAPSED_TITLE_HEIGHT}px`;
+    }
     split.appendChild(wrapper);
 
-    if (i < node.children.length - 1) {
+    if (i < renderedChildren.length - 1) {
       const div = document.createElement('div');
       div.className = `tile-divider${node.dir === 'v' ? ' tile-divider-v' : ''}`;
       div.dataset.splitDir = node.dir;
@@ -180,7 +240,8 @@ function render(tree) {
   // Clear tile root
   while (tileRoot.firstChild) tileRoot.removeChild(tileRoot.firstChild);
   // Render tree
-  tileRoot.appendChild(renderNode(tree));
+  const renderedTree = renderNode(tree);
+  if (renderedTree) tileRoot.appendChild(renderedTree);
 }
 
 // ---- Divider resize --------------------------------------------------------
@@ -258,16 +319,22 @@ function onDividerMouseup(e) {
 // Walk the tree and update sizes for the split node whose children match prev/next.
 function updateSizesInTree(node, prevEl, nextEl, prevPct, nextPct) {
   if (node.type === 'leaf') return;
-  for (let i = 0; i < node.children.length - 1; i++) {
-    const prevIds = getLeafIds(node.children[i]);
-    const nextIds = getLeafIds(node.children[i + 1]);
+  const visibleChildren = node.children.map((child, index) => ({
+    index,
+    ids: getVisibleLeafIds(child),
+  })).filter(child => child.ids.length > 0);
+  for (let i = 0; i < visibleChildren.length - 1; i++) {
+    const prevChild = visibleChildren[i];
+    const nextChild = visibleChildren[i + 1];
+    const prevIds = prevChild.ids;
+    const nextIds = nextChild.ids;
     const prevElIds = getRenderedLeafIds(prevEl);
     const nextElIds = getRenderedLeafIds(nextEl);
     if (arraysEqual(prevIds.sort(), prevElIds.sort()) &&
         arraysEqual(nextIds.sort(), nextElIds.sort())) {
-      const pairSum = node.sizes[i] + node.sizes[i + 1];
-      node.sizes[i]     = (prevPct / 100) * pairSum;
-      node.sizes[i + 1] = (nextPct / 100) * pairSum;
+      const pairSum = node.sizes[prevChild.index] + node.sizes[nextChild.index];
+      node.sizes[prevChild.index] = (prevPct / 100) * pairSum;
+      node.sizes[nextChild.index] = (nextPct / 100) * pairSum;
       return;
     }
   }
@@ -277,6 +344,10 @@ function updateSizesInTree(node, prevEl, nextEl, prevPct, nextPct) {
 function getLeafIds(node) {
   if (node.type === 'leaf') return [node.panelId];
   return node.children.flatMap(getLeafIds);
+}
+
+function getVisibleLeafIds(node) {
+  return getLeafIds(node).filter(id => !hiddenPanelIds.has(id));
 }
 
 function getRenderedLeafIds(el) {
@@ -421,7 +492,7 @@ function executeDrop(draggedId, targetId, side) {
 // ---- Public API ------------------------------------------------------------
 
 function initLayout(mode) {
-  currentMode = mode || 'sc';
+  currentMode = 'sc';
 
   tileRoot  = document.getElementById('tile-root');
   panelPool = document.getElementById('panel-pool');
@@ -437,39 +508,42 @@ function initLayout(mode) {
     'signal-graph': document.getElementById('signal-graph-panel'),
     'mem-graph':    document.getElementById('mem-graph-panel'),
   };
-  const MC_PANELS = {
-    'mc-pru0-source':    document.getElementById('mc-pru0-source-panel'),
-    'mc-pru0-registers': document.getElementById('mc-pru0-reg-panel'),
-    'mc-rtu0-source':    document.getElementById('mc-rtu0-source-panel'),
-    'mc-rtu0-registers': document.getElementById('mc-rtu0-reg-panel'),
-  };
-  Object.assign(PANEL_REGISTRY, SC_PANELS, MC_PANELS);
+  Object.assign(PANEL_REGISTRY, SC_PANELS);
+  modePanelIds.sc = getLeafIds(defaultTree('sc'));
 
   // Invalidate saved layouts when panel set changes
-  const LAYOUT_VERSION = 3;
+  const LAYOUT_VERSION = 4;
   const storedVer = parseInt(localStorage.getItem('pru-layout-ver') || '0', 10);
   if (storedVer < LAYOUT_VERSION) {
     localStorage.removeItem('pru-layout-sc');
     localStorage.removeItem('pru-layout-mc');
+    localStorage.removeItem('pru-layout-mc3');
+    localStorage.removeItem('pru-layout-mc4');
     localStorage.setItem('pru-layout-ver', String(LAYOUT_VERSION));
   }
 
   currentTree = loadLayout(currentMode) || defaultTree(currentMode);
+  hiddenPanelIds = loadHiddenPanels(currentMode);
+  sanitizeHiddenPanels(currentMode);
   render(currentTree);
+  notifyLayoutChanged();
 }
 
-function switchLayoutMode(newMode) {
-  // Save current layout
-  saveLayout(currentMode, currentTree);
-  currentMode = newMode;
-  currentTree = loadLayout(newMode) || defaultTree(newMode);
-  render(currentTree);
-}
 
 function resetLayout() {
+  document.dispatchEvent(new CustomEvent('pru-cores-reset'));
+  for (const panel of Object.values(PANEL_REGISTRY)) {
+    if (!panel) continue;
+    panel.classList.remove('panel-collapsed');
+    const button = panel.querySelector('.panel-collapse-btn');
+    if (button) button.textContent = '−';
+  }
   localStorage.removeItem(`pru-layout-${currentMode}`);
   currentTree = defaultTree(currentMode);
+  hiddenPanelIds.clear();
+  saveHiddenPanels(currentMode);
   render(currentTree);
+  notifyLayoutChanged();
 }
 
 // ---- Panel collapse/expand ---------------------------------------------------

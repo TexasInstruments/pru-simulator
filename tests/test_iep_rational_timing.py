@@ -120,8 +120,8 @@ def test_rational_core_clock_preserves_exact_iep_cadence(tmp_path):
     assert sim.iep.count == 2500
 
 
-def test_repeated_global_cfg_firmware_writes_preserve_rational_tick_phase():
-    sim = Simulator("memory.cfg")
+def test_repeated_global_cfg_firmware_writes_preserve_rational_tick_phase(tmp_path):
+    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
     sim.iep.set_clock_mhz("200")
     sim.iep.global_cfg = 0x11
     assert sim.load(
@@ -203,8 +203,8 @@ def test_iep_clock_source_and_rate_transitions_reset_tick_phase():
     assert iep._tick_remainder == 2
 
 
-def test_repeated_iepclk_firmware_writes_preserve_tick_phase():
-    sim = Simulator("memory.cfg")
+def test_repeated_iepclk_firmware_writes_preserve_tick_phase(tmp_path):
+    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
     sim.iep.set_clock_mhz("200")
     sim.iep.global_cfg = 0x11
     assert sim.load("pru0", "ldi32 r0, 0x26030\nldi r1, 0\n"
@@ -237,8 +237,8 @@ def test_inactive_external_clock_change_preserves_ocp_phase():
     assert iep.count == 1
 
 
-def test_lbbo_and_wait_stalls_reach_the_cycle_observer():
-    sim = Simulator()
+def test_lbbo_and_wait_stalls_reach_the_cycle_observer(tmp_path):
+    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
     assert sim.load(
         "pru0",
         "ldi r0, 0\n"
@@ -352,8 +352,8 @@ def test_step_paced_many_counts_follower_wbs_stalls_as_elapsed_time(tmp_path):
     assert lead <= follow <= lead + Fraction(5)
 
 
-def test_single_core_reset_rejoins_global_time_and_hardware_reset_restarts_it():
-    sim = Simulator()
+def test_single_core_reset_rejoins_global_time_and_hardware_reset_restarts_it(tmp_path):
+    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
     _load_loop(sim, "pru0")
     _write32(sim, IEP_BASE + GLOBAL_CFG, 0x11)
     sim.step("pru0", 10)
@@ -451,8 +451,8 @@ def test_simulator_rejects_nonfinite_guards_before_execution(guard):
     assert sim.cores["pru0"].counters.cycles == 0
 
 
-def test_direct_core_reset_notifies_shared_timeline():
-    sim = Simulator()
+def test_direct_core_reset_notifies_shared_timeline(tmp_path):
+    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
     _load_loop(sim, "pru0")
     sim.step("pru0")
     assert sim.iep.now_ns == 4
@@ -461,8 +461,8 @@ def test_direct_core_reset_notifies_shared_timeline():
     assert sim.iep.now_ns == 8
 
 
-def test_backward_cycle_jump_is_absorbed_not_added_to_shared_time():
-    sim = Simulator()
+def test_backward_cycle_jump_is_absorbed_not_added_to_shared_time(tmp_path):
+    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
     _load_loop(sim, "pru0")
     sim.step("pru0", 20)
     assert sim.iep.now_ns == 80
@@ -518,8 +518,8 @@ def test_omitted_external_clock_defaults_to_the_trm_200_mhz_for_any_core_rate(tm
     assert Simulator("missing.cfg").iep.external_clock_hz == 200_000_000
 
 
-def test_reset_default_inc_counts_nanoseconds_at_the_default_iep_clock():
-    sim = Simulator()
+def test_reset_default_inc_counts_nanoseconds_at_250mhz_core_200mhz_iep(tmp_path):
+    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
     _load_loop(sim, "pru0")
     # Read-modify-write of the 0x550 reset value, as firmware does: DEFAULT_INC stays 5.
     _write32(sim, IEP_BASE + GLOBAL_CFG, _read32(sim, IEP_BASE + GLOBAL_CFG) | 1)
@@ -612,14 +612,14 @@ def test_bulk_compare_reset_every_tick_is_bounded(monkeypatch):
     assert iep.cmp_status == 3
 
 
-def test_default_clocks_stalled_firmware_and_cmp0():
-    sim = Simulator()
+def test_250mhz_core_200mhz_iep_stalled_firmware_and_cmp0(tmp_path):
+    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
     sim.iep.global_cfg = 0x11
     assert sim.load("pru0", "ldi32 r0, 0x2E000\nldi r1, 0x11\nloop: sbbo &r1, r0, 0, 4\nqba loop\n") == []
     assert sim.step("pru0", 302)["cycles"] == 452
     # 452 cycles at 250 MHz are 1808 ns, which is 361 ticks of the 200 MHz IEP.
     assert sim.iep.count == 361
-    sim = Simulator()
+    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
     _load_loop(sim, "pru0")
     sim.iep.global_cfg = 0x11
     sim.iep.compare[0] = 50
