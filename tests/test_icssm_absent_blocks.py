@@ -251,9 +251,13 @@ def test_am243x_unchanged(mode, tmp_path):
     # IEP0 still reaches its model; ICSSG-only blocks are not faked as zero.
     data, _ = sim.memory.read(0x0002E000, 4)
     assert len(data) == 4
-    for addr in (0x0002F000, 0x00023000, 0x00026130):
+    for addr in (0x0002F000, 0x00026130):
         with pytest.raises(ValueError, match="No memory region mapped"):
             sim.memory.read(addr, 4)
+    # RTU_PRU0 CTRL is a real block here: CYCLE follows RTU0 (test_pru_ctrl_timing).
+    sim.cores["rtu0"].counters.cycles = 7
+    data, _ = sim.memory.read(0x0002300C, 4)
+    assert int.from_bytes(data, "little") == 7
 
 
 # ---------------------------------------------------------------------------

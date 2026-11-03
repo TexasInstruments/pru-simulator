@@ -14,7 +14,9 @@ from fractions import Fraction
 
 from core.pru_core import PRUCore
 from core.device_capabilities import get_device_capabilities
-from mem.icssm_absent import icssg_only_regions, MODES as _ICSSG_ONLY_MODES, READ_ZERO
+from mem.icssm_absent import (
+    ICSSG_ONLY_BLOCKS, IcssgOnlyBlockRegion, icssg_only_regions,
+    MODES as _ICSSG_ONLY_MODES, READ_ZERO)
 from mem.memory_bus import MemoryBus
 from mem.regions import MemoryRegion
 from perif.iep import IepTimer, IEP_SIZE, IEP_DEFAULT_CLOCK_MHZ
@@ -32,6 +34,9 @@ from perif.gpcfg import GpcfgRegisters, MUX_PERIF
 from perif.loopback import Loopback
 
 _GPCFG_INDEX = {"pru0": 0, "pru1": 1}   # rtu0 has no GPCFG GP-mux (TRM)
+# RTU_PRU0/1 and TX_PRU0/1 CTRL bases, absent on ICSS-M.
+_ICSSG_ONLY_CTRL_BASES = frozenset(
+    base for name, base, _, _ in ICSSG_ONLY_BLOCKS if name.endswith(" Control"))
 _MAX_CATCHUP_STEPS = 1000
 
 
@@ -129,6 +134,61 @@ class IepClockRegisterRegion(MemoryRegion):
         self._iep.write_iepclk(int.from_bytes(value, "little"))
 
 
+class PruControlRegion(MemoryRegion):
+    """CTRL window with a CYCLE register tracking the addressed simulator core.
+
+    CYCLE is at 0x0c (TI PRU Software Support Package, pru_ctrl.h). Per
+    SPRUIM2J (ICSSG_PRU_CYCLE) it is writable and does not wrap: a write
+    rebases the count (so clear-then-read measures a delta) and a count past
+    FFFFFFFFh reads back saturated. The CONTROL ENABLE/COUNTER_ENABLE gating,
+    the STALL register clearing and the other CTRL side effects are not
+    modelled: the counter follows the simulator core's cycles whenever read.
+    The rebase offset lives in a hidden tail of the storage buffer so that
+    snapshot/restore of the region carries it.
+    """
+
+    _CYCLE = 0x0C
+    _OFFSET_BYTES = 8
+
+    def __init__(self, core: PRUCore, backing: MemoryRegion, read_latency: int):
+        super().__init__(backing.name, backing.base_addr, backing.size,
+                         read_latency, backing.write_latency, backing.jitter,
+                         backing.misaligned_write_penalty, backing.per_word_latency)
+        self._core = core
+        # Keep ordinary CTRL storage in the standard snapshot/restore buffer.
+        self._data = backing._data
+        self._data.extend(bytes(self._OFFSET_BYTES))
+
+    def _offset(self) -> int:
+        return int.from_bytes(self._data[self.size:self.size + self._OFFSET_BYTES],
+                              "little", signed=True)
+
+    def clear_cycle_offset(self) -> None:
+        """Drop the CYCLE rebase; called when the addressed core's counter resets."""
+        self._data[self.size:self.size + self._OFFSET_BYTES] = bytes(self._OFFSET_BYTES)
+
+    def _cycle_value(self) -> int:
+        return min(max(self._core.counters.cycles - self._offset(), 0), 0xFFFFFFFF)
+
+    def read(self, addr: int, length: int) -> bytes:
+        data = bytearray(super().read(addr, length))
+        cycle_addr = self.base_addr + self._CYCLE
+        start, end = max(addr, cycle_addr), min(addr + length, cycle_addr + 4)
+        if start < end:
+            cycle = self._cycle_value().to_bytes(4, "little")
+            data[start - addr:end - addr] = cycle[start - cycle_addr:end - cycle_addr]
+        return bytes(data)
+
+    def write(self, addr: int, data: bytes) -> None:
+        super().write(addr, data)
+        cycle_addr = self.base_addr + self._CYCLE
+        start, end = max(addr, cycle_addr), min(addr + len(data), cycle_addr + 4)
+        if start < end:
+            word = bytearray(self._cycle_value().to_bytes(4, "little"))
+            word[start - cycle_addr:end - cycle_addr] = data[start - addr:end - addr]
+            offset = self._core.counters.cycles - int.from_bytes(word, "little")
+            self._data[self.size:self.size + self._OFFSET_BYTES] = offset.to_bytes(
+                self._OFFSET_BYTES, "little", signed=True)
 class ConstantTableRegisterRegion(MemoryRegion):
     """CTBIR0, CTBIR1, CTPPR0, CTPPR1 of one core's CTRL block (+0x20..+0x2F).
 
@@ -161,6 +221,8 @@ class Simulator:
 
     def __init__(self, config_path: str = "memory.cfg"):
         self.xfr = XFRBus()
+        self._explicit_read_latency: set[str] = set()
+        self._ctrl_regions: dict[str, PruControlRegion] = {}
         self.memory = self._load_memory(config_path)
         self.constant_table = self._load_constants(config_path)
         # XFR2VBUS reaches SoC CBASS0/MSMC memory, a single external bus
@@ -217,6 +279,43 @@ class Simulator:
         for name, entries in core_constants.items():
             self.cores[name].constant_table.load_from_dict(entries)
 
+        # CTRL banks, one per core (SPRUIM2J Table 6-63). The root config's
+        # legacy ICSS_CFG region at 0x22000 is actually PRU0 CTRL; a declared
+        # window's storage is wrapped rather than shadowed by a second region.
+        if self.capabilities.rtu:
+            ctrl_windows = (("pru0", 0x22000), ("rtu0", 0x23000), ("rtu1", 0x23800),
+                            ("pru1", 0x24000), ("tx_pru0", 0x25000), ("tx_pru1", 0x25800))
+        else:
+            ctrl_windows = (("pru0", 0x22000), ("pru1", 0x24000))
+            # ICSS-M has no RTU_PRU or TX_PRU CTRL. A config written for the
+            # ICSSG may declare them; the absent-block model must still win.
+            for region in [r for r in self.memory.regions
+                           if r.base_addr in _ICSSG_ONLY_CTRL_BASES
+                           and not isinstance(r, IcssgOnlyBlockRegion)]:
+                self.memory.regions.remove(region)
+        for name, base in ctrl_windows:
+            backing = next((r for r in self.memory.regions if r.base_addr == base), None)
+            declared = backing is not None
+            if backing is None:
+                backing = MemoryRegion(f"{name.upper()}_CTRL", base, 0x30, 2, 1)
+            else:
+                self.memory.regions.remove(backing)
+            # Only the PRU0/PRU1 CYCLE read was measured (#70). Treat each CTRL
+            # window uniformly. Precedence: a window the config itself
+            # declares keeps its own read_latency; otherwise the device key
+            # pru_ctrl_read_latency; otherwise the legacy 2 stalls.
+            # A declared window that omits read_latency gets the loader's 0
+            # default, which is not an override; an explicit 0 still is.
+            explicit = declared and backing.name in self._explicit_read_latency
+            latency = backing.read_latency if explicit else int(
+                dev.get("pru_ctrl_read_latency", 2 if declared else backing.read_latency))
+            if name in self.cores:
+                self._ctrl_regions[name] = PruControlRegion(self.cores[name], backing, latency)
+                self.memory.add_region(self._ctrl_regions[name])
+            else:
+                # TX_PRU cores are not simulated: plain storage, CYCLE does not count.
+                backing.read_latency = latency
+                self.memory.add_region(backing)
         # CTBIR0/1 and CTPPR0/1 sit at +0x20 of each core's CTRL block and
         # drive C24-C31 of that core. TX_PRU cores are not simulated.
         if target.lower() in ("am243x", "am64x"):
@@ -318,6 +417,8 @@ class Simulator:
             def reset_timeline(*, _name=name) -> None:
                 self._paced_pending.clear()
                 self.iep.rebase_core(_name)
+                if _name in self._ctrl_regions:
+                    self._ctrl_regions[_name].clear_cycle_offset()
 
             core.reset_observer = reset_timeline
             if name in self._perif:
@@ -354,6 +455,8 @@ class Simulator:
             if section == "device":
                 continue
             if "base" in cfg[section]:
+                if "read_latency" in cfg[section]:
+                    self._explicit_read_latency.add(section)
                 bus.add_region(MemoryRegion(
                     name=section,
                     base_addr=int(cfg[section]["base"], 16),
