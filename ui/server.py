@@ -198,6 +198,7 @@ def _snapshot_core(c) -> dict:
         },
         "unsupported_xfr": copy.deepcopy(c.unsupported_xfr),
         "ct_ctrl": c.constant_table.snapshot(),
+        "gpi_delay": c.io_port.gpi_delay_snapshot(),
     }
 
 
@@ -245,6 +246,8 @@ def _restore_core(c, snap: dict) -> None:
     c.unsupported_xfr = copy.deepcopy(snap.get("unsupported_xfr", {}))
     if "ct_ctrl" in snap:
         c.constant_table.restore(snap["ct_ctrl"])
+    if "gpi_delay" in snap:
+        c.io_port.gpi_delay_restore(snap["gpi_delay"])
 
 
 def _restore(core: str, snap: dict) -> None:

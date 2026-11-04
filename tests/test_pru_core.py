@@ -807,7 +807,7 @@ class TestR31SubRegisterSelection:
 
     def test_read_honours_byte_selection(self):
         core = self._core()
-        core.io_port.read_r31 = lambda: 0xAABBCCDD
+        core.io_port.read_r31 = lambda cycle=None: 0xAABBCCDD
         b3, b0, full = self._reg(24, 8), self._reg(0, 8), self._reg(0, 32)
         assert core._read_operand(b3) == 0xAA
         assert core._read_operand(b0) == 0xDD
