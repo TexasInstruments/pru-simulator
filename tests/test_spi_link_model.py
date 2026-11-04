@@ -171,7 +171,7 @@ def test_measure_timing_synthetic(mode):
     assert sum(1 for r in rows if r["worst"]) == 1
     for r in rows:
         assert set(r) == {"param", "symbol", "design_ns", "cycles", "sim_ns",
-                          "am243_min", "am243_max", "source", "margin_ns", "worst"}
+                          "am243_min", "am243_max", "source", "margin_ns", "worst", "derived"}
     # setup budget: 20 - 2 skew - 5 ns polling = 13
     assert by["tSU,MOSI"]["margin_ns"] == 13.0
 
@@ -186,4 +186,54 @@ def test_measure_timing_tcsh_needs_two_frames():
 
 def test_measure_timing_no_frames():
     rows = measure_timing([], SpiConfig(1, 200, 4))
-    assert all(r["sim_ns"] is None for r in rows if r["symbol"] not in ("HOP", "MISO_DELAY"))
+    assert all(r["sim_ns"] is None for r in rows if not r["derived"] and r["symbol"] not in ("HOP", "MISO_DELAY"))
+
+
+def _mode1_miso_frame(lag, half=4, nbytes=3):
+    """Mode-1 frame, 25 MHz at 200 MHz; MISO alternates 1,0,1,0.. changing
+    `lag` cycles after each launch edge."""
+    t = 100
+    seq = [(t, _word(1, 0, 0, 0)), (t + 10, _word(0, 0, 0, 0))]
+    t += 10 + 2 * half
+    miso = 0
+    for i in range(nbytes * 8):
+        seq.append((t, _word(0, 1, 0, miso)))
+        miso ^= 1
+        if lag:
+            seq.append((t + lag, _word(0, 1, 0, miso)))
+        else:
+            seq[-1] = (t, _word(0, 1, 0, miso))
+        seq.append((t + half, _word(0, 0, 0, miso)))
+        t += 2 * half
+    seq.append((t + half, _word(1, 0, 0, 0)))
+    return seq
+
+
+@pytest.mark.parametrize("delay,su,hd", [(3, 5.0, 35.0), (0, None, None), (6, 20.0, 20.0)])
+def test_measure_timing_miso_rows_use_sample_point(delay, su, hd):
+    cfg = SpiConfig(1, 200, 4, delay)
+    rows = measure_timing(_mode1_miso_frame(lag=2), cfg)
+    by = {r["symbol"]: r for r in rows}
+    assert by["tV,MISO"]["sim_ns"] == 10.0
+    assert by["MISO_DELAY"]["cycles"] == delay
+    assert by["MISO_DELAY"]["sim_ns"] == delay * 5.0
+    assert by["HOP"]["cycles"] == sl.HOP_DELAY_CYCLES
+    assert by["HOP"]["sim_ns"] == 25.0
+    if su is None:
+        # delay 0: sample point precedes every change, so no bit has a change before it
+        assert by["tSU,MISO"]["sim_ns"] is None
+    else:
+        # pipelined (delay 6 > half period 4): sample lands after next launch
+        assert by["tSU,MISO"]["sim_ns"] == su
+        assert by["tH,MISO"]["sim_ns"] == hd
+
+
+def test_derived_rows_never_worst():
+    rows = measure_timing(_waveform(1, FRAME)[0], SpiConfig(1, 200, 4))
+    der = {r["symbol"] for r in rows if r["derived"]}
+    assert der == {"tsk(GPO-GPO)", "tIDLE"}
+    assert not any(r["worst"] for r in rows if r["derived"])
+    assert sum(r["worst"] for r in rows) == 1
+    by = {r["symbol"]: r for r in rows}
+    assert by["tsk(GPO-GPO)"]["sim_ns"] == 0.0
+    assert by["tIDLE"]["sim_ns"] == by["tIDLE"]["design_ns"] == 320.0

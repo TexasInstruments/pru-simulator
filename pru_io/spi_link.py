@@ -122,7 +122,7 @@ def _split_frames(edges, mode):
         if prev is not None:
             if _cs(prev) == 1 and _cs(w) == 0:
                 cur = {"start": cyc, "end": None, "bits": 0, "mosi": [], "miso": [],
-                       "recs": [(cyc, w)], "pre": prev}
+                       "recs": [(cyc, w)]}
             elif cur is not None:
                 cur["recs"].append((cyc, w))
                 if _cs(w) == 1:
@@ -247,7 +247,6 @@ def measure_timing(edges, cfg: SpiConfig, frame_index: int = -1) -> list[dict]:
         if hi and lo:
             sim["tH"] = statistics.median(hi) * ns
             sim["tL"] = statistics.median(lo) * ns
-        sim["tsk"] = 0.0          # simultaneous changes share one record (cycle resolution)
         if rise:
             sim["tLEAD"] = (rise[0] - f["start"]) * ns
         if fall:
@@ -278,25 +277,34 @@ def measure_timing(edges, cfg: SpiConfig, frame_index: int = -1) -> list[dict]:
         v = [c - max(x for x in launch if x <= c) for c in ic if any(x <= c for x in launch)]
         if v:
             sim["tV,MISO"] = max(v) * ns
-        su, hd = around(ic, capture)
+        # PRU0 samples each bit at its MISO launch edge + miso_delay cycles
+        # (Ruling R7), which may fall after the next launch edge when pipelined.
+        su, hd = [], []
+        for sp in (lc + cfg.miso_delay for lc in launch):
+            lc = sp - cfg.miso_delay
+            before = [x for x in ic if lc <= x <= sp]    # change belonging to this bit
+            after = [x for x in ic if x > sp]
+            if before:
+                su.append(sp - max(before))
+                if after:
+                    hd.append(min(after) - sp)
         if su:
             sim["tSU,MISO"] = min(su) * ns
         if hd:
             sim["tH,MISO"] = min(hd) * ns
-        if len(capture) >= 17 * 8 and len(rise) >= 2:
-            sim["tIDLE"] = 8 * sim["tCLK"]
 
     th = sim.get("tH")
     tl = sim.get("tL")
     rows: list[dict] = []
 
-    def row(param, symbol, design_ns, sim_ns, lo, hi, source, margin, cycles=None):
+    def row(param, symbol, design_ns, sim_ns, lo, hi, source, margin, cycles=None,
+            derived=False):
         if cycles is None and sim_ns is not None:
             cycles = round(sim_ns / ns)
         rows.append({"param": param, "symbol": symbol,
                      "design_ns": design_ns, "cycles": cycles, "sim_ns": sim_ns,
                      "am243_min": lo, "am243_max": hi, "source": source,
-                     "margin_ns": margin, "worst": False})
+                     "margin_ns": margin, "worst": False, "derived": derived})
 
     def budget(s):
         return None if s is None else s - SKEW_NS - poll
@@ -305,12 +313,11 @@ def measure_timing(edges, cfg: SpiConfig, frame_index: int = -1) -> list[dict]:
     row("SPI clock period", "tCLK", tclk_d, s("tCLK"), None, None,
         "no direct-mode limit", None, cycles=2 * cfg.half_k)
     row("CLK high / low time", "tH/tL", half_d,
-        th if th is not None else None, None, None, "PRDO1 skew",
+        th, None, None, "PRDO1 skew",
         None if th is None else min(th, tl) - SKEW_NS, cycles=cfg.half_k)
-    rows[-1]["sim_ns"] = th
-    row("Output skew CLK / MOSI / CS (PRU0 pins)", "tsk(GPO-GPO)", 0.0, s("tsk"),
-        None, SKEW_NS, "Table 6-113 PRDO1",
-        None if s("tsk") is None else SKEW_NS - s("tsk"), cycles=0)
+    row("Output skew CLK / MOSI / CS (PRU0 pins)", "tsk(GPO-GPO)", 0.0, 0.0,
+        None, SKEW_NS, "Table 6-113 PRDO1", SKEW_NS, cycles=0,
+        derived=True)   # the simulator models no pad skew
     row("/CS low to first CLK edge", "tLEAD", tclk_d, s("tLEAD"), -SKEW_NS, SKEW_NS,
         "PRDO1", None if s("tLEAD") is None else s("tLEAD") - SKEW_NS,
         cycles=2 * cfg.half_k)
@@ -339,10 +346,11 @@ def measure_timing(edges, cfg: SpiConfig, frame_index: int = -1) -> list[dict]:
         None, cycles=None)
     row("Output load capacitance", "CL", None, None, 2.0, 30.0, "Table 6-112",
         None, cycles=None)
-    row("Idle byte budget for PRU1 data fetch", "tIDLE", 8 * tclk_d, s("tIDLE"),
-        None, None, "firmware only", None, cycles=16 * cfg.half_k)
+    row("Idle byte budget for PRU1 data fetch", "tIDLE", 8 * tclk_d, 8 * tclk_d,
+        None, None, "firmware only", None, cycles=16 * cfg.half_k,
+        derived=True)   # design value; replaced by PRU1's measured fetch time
 
-    cand = [r for r in rows if r["margin_ns"] is not None]
+    cand = [r for r in rows if r["margin_ns"] is not None and not r["derived"]]
     if cand:
         min(cand, key=lambda r: r["margin_ns"])["worst"] = True
     else:
