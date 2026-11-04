@@ -1250,12 +1250,16 @@ def rx_run(sim_config) -> RxRig:
 def test_fir_coefs_regenerate_identically(tmp_path):
     """open-pru tools/gen_fir_coefs.py (default paths) regenerates
     firmware/fir_coefs.inc byte for byte, and it equals the pru-simulator
-    copy that reference.fir_table reads."""
+    copy that reference.fir_table reads, apart from the SPDX line that the
+    open-pru tool puts first (open-pru convention; the pru-simulator copy
+    has none). That one line is the only difference allowed."""
     out = tmp_path / "fir_coefs.inc"
     subprocess.run([sys.executable, str(OPEN_PRU_TOOL), "--out", str(out)], check=True)
     shipped = (FW / "fir_coefs.inc").read_bytes()
     assert out.read_bytes() == shipped
-    assert shipped == (PDM_DIR / "fir_coefs.inc").read_bytes()
+    spdx = b"; SPDX-License-Identifier: BSD-3-Clause\n"
+    assert shipped.startswith(spdx)
+    assert shipped[len(spdx):] == (PDM_DIR / "fir_coefs.inc").read_bytes()
     assert (FW / "decimation_fir.h").read_bytes() == (PDM_DIR / "decimation_fir.h").read_bytes()
     assert R.fir_table(FW / "fir_coefs.inc") == R.fir_table()
 
