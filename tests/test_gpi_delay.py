@@ -3,7 +3,8 @@
 Silicon (AM243, 333 MHz) shows 18 ns from an input edge to the output edge of
 a `wbs` + `set` pair; the simulator without a delay answers in 1-2 cycles.
 `set_gpi_delay(core, N)` makes R31 reads at core cycle c return the GPI word
-as it was at cycle c - N, so a delay of 4 reproduces the silicon latency.
+as it was at cycle c - N. The native PRU0 -> wire -> PRU1 `wbs`/`set` latency
+is 1 cycle, so a delay of 5 reproduces the silicon 6 cycles (18 ns).
 
 Edge cycles below are each core's `counters.cycles` right after the step
 in which the pin changed, i.e. the first cycle at which the new level is
@@ -171,8 +172,8 @@ def _calibration_edges(sim_config, delay):
 
 def test_calibration_matches_silicon_18ns_at_333mhz(sim_config):
     undelayed = _calibration_edges(sim_config, 0)
-    delayed = _calibration_edges(sim_config, 4)
+    delayed = _calibration_edges(sim_config, 5)
     print(f"PRU0 GPO16 -> PRU1 GPO11 edge-to-edge: delay0={undelayed} cycles, "
-          f"delay4={delayed} cycles ({delayed * 1000 / 333:.1f} ns at 333 MHz)")
-    assert delayed - undelayed == 4
-    assert 5 <= delayed <= 7          # 18 ns +- 3 ns at 333 MHz
+          f"delay5={delayed} cycles ({delayed * 1000 / 333:.1f} ns at 333 MHz)")
+    assert undelayed == 1             # native simulator wire -> wbs -> set
+    assert delayed == 6               # 18 ns at 333 MHz (AM243 silicon)

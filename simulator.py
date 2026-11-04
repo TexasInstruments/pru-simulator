@@ -604,10 +604,10 @@ class Simulator:
         R31 reads at core cycle c return the GPI word as it was at c - N, for
         every GPI source (wires, devices, set_input). SD / PERIF status reads
         are not delayed. Silicon calibration: AM243 at 333 MHz measures 18 ns
-        (6 cycles) from input edge to the output edge of `wbs` + `set`. With
-        4 cycles a PRU0 GPO -> wire -> PRU1 `wbs`/`set` edge-to-edge steps to
-        5 cycles (15 ns; 1 cycle at delay 0), inside the 18 +- 3 ns band
-        (tests/test_gpi_delay.py). Kept across hard_reset(); default 0.
+        (6 cycles) from input edge to the output edge of `wbs` + `set`. The
+        simulator's native PRU0 GPO -> wire -> PRU1 `wbs`/`set` edge-to-edge
+        is 1 cycle, so the calibrated delay is 5 cycles (6 cycles = 18 ns,
+        tests/test_gpi_delay.py). Kept across hard_reset(); default 0.
         """
         self._get_core(core).io_port.gpi_delay_cycles = cycles
 
