@@ -122,6 +122,7 @@ def write_header(memory, clip_frames: int, clip_addr: int = MSRAM) -> None:
     struct.pack_into("<I", hdr, s["PDM8_HDR_PCM_RATE"], s["PDM8_PCM_RATE"])
     struct.pack_into("<I", hdr, s["PDM8_HDR_CLIP_ADDR"], clip_addr)
     struct.pack_into("<I", hdr, s["PDM8_HDR_CLIP_FRAMES"], clip_frames)
+    struct.pack_into("<I", hdr, s["PDM8_HDR_VERSION"], s["PDM8_VERSION"])
     memory.write(s["PDM8_SHARED_BASE"], bytes(hdr))
 
 
@@ -845,7 +846,6 @@ def test_seq_wraps_at_16_bits(sim_config):
 
 
 # ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
 # Final review fix I1: a lost IPC scratchpad write must not hang the pair
 # ---------------------------------------------------------------------------
 #
@@ -1005,6 +1005,7 @@ def test_lost_spad_write_on_underrun_recovers(sim_config, lost):
     assert len(silent) == 1, silent
 
 
+# ---------------------------------------------------------------------------
 # Task 4: PRU0 receiver (pru0_rx.asm), RTU1 + PRU1 + PRU0 in lockstep
 # ---------------------------------------------------------------------------
 #
@@ -1066,6 +1067,38 @@ class _RxMemory:
         return getattr(self._inner, name)
 
 
+def trm_shadow_ovf(sd_filter) -> None:
+    """Make R31[29] of *sd_filter*'s channels the TRM's shadow overflow.
+
+    AM64x/AM243x TRM (SPRUIM2H) Table 6-419: R31[29] is
+    shadow_update_flag_ovf, "set when over sample count equals over sample
+    size and shadow_update_flag is still set"; R31[24] clears it. The
+    simulator's ``SDChannel.ovf`` is a 28-bit accumulator overflow instead,
+    which is set in every normal run once acc3 passes 2^28 (the comb works
+    mod 2^28), so PRU0's SD_OVF_COUNT would count without a lost sample.
+    This shim keeps the simulator's accumulators and shadows and only
+    replaces the flag: set when a shadow latches while valid is still set,
+    cleared by the R31[24] command.
+    """
+    for ch in sd_filter.channels:
+        state = [False]
+        tick, clear = ch.tick, ch.clear_valid_and_ovf
+
+        def trm_tick(bit, ch=ch, tick=tick, state=state):
+            was_valid = ch.valid
+            tick(bit)
+            if ch._sample_count == 0 and was_valid:      # latched over a valid shadow
+                state[0] = True
+            ch.ovf = state[0]
+
+        def trm_clear(clear=clear, state=state):
+            clear()
+            state[0] = False
+
+        ch.tick = trm_tick
+        ch.clear_valid_and_ovf = trm_clear
+
+
 class RxRig:
     """RTU1 rtu1_mod + PRU1 pru1_pdm + PRU0 pru0_rx (3 channels), instrumented.
 
@@ -1078,6 +1111,7 @@ class RxRig:
       (``drain``, by PCM_COUNT[c]).
     With *attach* False the PdmLink is not attached yet (``attach``), so
     PRU0 can run alone (the link refuses a consumer ahead of its producer).
+    PRU0's R31[29] follows the TRM (``trm_shadow_ovf``).
     """
 
     def __init__(self, sim_config, clips, *, attach: bool = True,
@@ -1089,6 +1123,7 @@ class RxRig:
         sim.memory.write(self.half_a, struct.pack("<I", SENTINEL) * (2 * HALF_FRAMES * 8))
         if stale_header:                          # an earlier run's counters
             sim.memory.write(self.base + s["PDM8_HDR_HALF_SEQ"], struct.pack("<I", 0x1234))
+            sim.memory.write(self.base + s["PDM8_HDR_SD_OVF_COUNT"], struct.pack("<I", 55))
             sim.memory.write(self.base + s["PDM8_HDR_PCM_COUNT"],
                              struct.pack("<8I", *range(1000, 1008)))
         for ch in range(RX_N_CH):
@@ -1097,6 +1132,7 @@ class RxRig:
         sim.gpcfg_write("pru0", 3)                # PRU0 GPI mux: SD
         load_fw(sim, "pru0", "pru0_rx", RX_OVERRIDES)
         core = self.core = sim.cores["pru0"]
+        trm_shadow_ovf(core.io_port.sd_filter)
         self.wait = core._parser.labels["PDM_WAIT"]
         self.pubs: list[tuple[int, int, int, list[int], bytes]] = []
         self.clears: list[int] = []
@@ -1296,24 +1332,28 @@ def test_half_seq_rate(sim_config):
 
 
 def test_rx_writes_only_its_memory(sim_config):
-    """PRU0 reads only its DRAM0 state (0x7F8..0x1A00); it writes that, the
-    SD configuration, HALF_SEQ, PCM_COUNT[0..7] and the two halves. It never
-    touches DRAM1 (the 0x2000 window, RTU1's scratch at 0x3700..0x37FF), the
-    rest of the header or the clip buffer."""
+    """PRU0 reads only its DRAM0 state (0x7F8..0x1A00) and SD_OVF_COUNT (on
+    an SD overflow only: none here, so the count stays 0); it writes that, the
+    SD configuration, HALF_SEQ, SD_OVF_COUNT, PCM_COUNT[0..7] and the two
+    halves. It never touches DRAM1 (the 0x2000 window, RTU1's scratch at
+    0x3700..0x37FF), the rest of the header or the clip buffer."""
     rig = rx_run(sim_config)
     s = rig.s
     base = rig.base
     dram0 = (0x7F8, 0x1A00)
     sd_cfg = (0x26048, 0x26048 + 9 * 8)
-    allowed_w = [dram0, sd_cfg,
+    ovf = (base + s["PDM8_HDR_SD_OVF_COUNT"], base + s["PDM8_HDR_SD_OVF_COUNT"] + 4)
+    allowed_w = [dram0, sd_cfg, ovf,
                  (base + s["PDM8_HDR_HALF_SEQ"], base + s["PDM8_HDR_HALF_SEQ"] + 4),
                  (base + s["PDM8_HDR_PCM_COUNT"], base + s["PDM8_HDR_PCM_COUNT"] + 32),
                  (rig.half_a, rig.half_a + 2 * HALF_FRAMES * FRAME_BYTES)]
     assert rig.mem.accesses
     for kind, addr, length in rig.mem.accesses:
-        ranges = allowed_w if kind == "w" else [dram0]
+        ranges = allowed_w if kind == "w" else [dram0, ovf]
         assert any(lo <= addr and addr + length <= hi for lo, hi in ranges), \
             (kind, hex(addr), length)
+    assert ("r", ovf[0], 4) not in rig.mem.accesses       # no overflow
+    assert read_header(rig.sim.memory)["sd_ovf_count"] == 0
     scratch = rig.sim.cores["rtu1"]._map_data_addr(s["PDM8_RTU1_SCRATCH"])
     assert scratch == 0x3700
     assert not any(addr < 0x4000 and addr + length > 0x2000
@@ -1329,8 +1369,10 @@ def test_rx_idles_without_clock(sim_config):
     hdr = read_header(rig.sim.memory)
     assert hdr["pcm_count"] == [0] * 8
     assert hdr["half_seq"] == 0
+    assert hdr["sd_ovf_count"] == 0
     assert rig.pubs == [] and len(rig.clears) == 1       # only the init clear
     assert hdr["magic"] == shared()["PDM8_MAGIC"]   # the R5F's fields stay
+    assert hdr["version"] == shared()["PDM8_VERSION"]
     sim = rig.sim
     sim.reset("rtu1")
     sim.reset("pru1")
@@ -1339,6 +1381,22 @@ def test_rx_idles_without_clock(sim_config):
     for c in range(RX_N_CH):
         got = rig.pcm[c]
         assert got == rig.reference(c)[:len(got)], c
+
+
+def test_sd_overflow_is_counted(sim_config):
+    """PRU0 stalled for 2 SD windows (as if it fell behind): every channel's
+    shadow latches again before PRU0 read it, R31[29] is set, and PRU0
+    counts each one in SD_OVF_COUNT at that channel's next spin exit, then
+    clears it. While PRU0 keeps up, the count stays 0."""
+    rig = RxRig(sim_config, tone_clips(160))
+    rig.run_until(lambda: min(rig.counts()) >= 16)
+    assert read_header(rig.sim.memory)["sd_ovf_count"] == 0
+    rig.core.counters.stall(2 * WINDOW_CYC)
+    resume = min(rig.counts())
+    rig.run_until(lambda: min(rig.counts()) >= resume + 8)
+    assert read_header(rig.sim.memory)["sd_ovf_count"] == RX_N_CH
+    rig.run_until(lambda: min(rig.counts()) >= resume + 16)
+    assert read_header(rig.sim.memory)["sd_ovf_count"] == RX_N_CH     # sticky, no more
 
 
 def test_worst_window_budget_8ch(sim_config):
