@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import statistics
 from dataclasses import dataclass
+from pathlib import Path
 
-from pru_io.device_model import DeviceModel
+from pru_io.device_model import PUSH_PULL, DeviceModel
 
 # R30/R31 bit numbers
 C_CLK, C_MOSI, C_MISO, C_CS = 16, 13, 14, 17
@@ -27,6 +28,10 @@ C_RX_HDR = 0x0120
 P_STATUS = 0x2000
 P_TX = 0x2800
 P_RX = 0x3000
+
+# CTRL block field offsets and status values
+CTRL_GO, CTRL_CMD, CTRL_ADDR, CTRL_STATUS, CTRL_FRAMES, CTRL_ABORT = 0, 1, 2, 3, 4, 8
+ST_IDLE, ST_BUSY, ST_DONE = 0, 1, 2
 
 CMD_WRITE, CMD_READ, CMD_RW = 1, 2, 3
 ADDR_MAX = 0x7F
@@ -358,3 +363,231 @@ def measure_timing(edges, cfg: SpiConfig, frame_index: int = -1) -> list[dict]:
     else:
         rows[0]["worst"] = True
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Controller firmware runtime
+# ---------------------------------------------------------------------------
+
+CONTROLLER_SOURCE = (Path(__file__).resolve().parents[1]
+                     / "source" / "spi" / "spi_controller.asm")
+#: Deepest MISO pipelining the controller unrolls (MISO_DELAY // (2*HALF_K)).
+MISO_Q_MAX = 6
+_C_MASK = (1 << C_CLK) | (1 << C_MOSI) | (1 << C_CS)
+_FRAME_BITS = FRAME_BYTES * 8
+
+
+def controller_delay_ok(half_k: int, miso_delay: int) -> bool:
+    """Can spi_controller.asm sample MISO ``miso_delay`` cycles after launch?
+
+    The sample is an R31 read in its own cycle, so it cannot fall on the
+    cycle of a CLK write (offset 0 or ``half_k`` within a bit), and the
+    firmware unrolls at most ``MISO_Q_MAX`` bits of pipelining.
+    """
+    if isinstance(miso_delay, bool) or not isinstance(miso_delay, int) or miso_delay < 0:
+        return False
+    s = miso_delay % (2 * half_k)
+    return s not in (0, half_k) and miso_delay // (2 * half_k) <= MISO_Q_MAX
+
+
+class IdealSpiPeripheral(DeviceModel):
+    """Test-only ideal SPI peripheral on PRU0's pins (attach on ``"pru0"``).
+
+    Drives MISO (pin 14, push-pull) with ``response`` (19 bytes, MSB first),
+    each bit ``reaction_cycles`` after its launch edge as seen on PRU0's pins:
+    mode 1 after each CLK rising edge, mode 0 bit 0 after /CS falling and bit
+    n after the n-th falling edge. MISO returns to 0 ``reaction_cycles``
+    after /CS rises. Model the PRU1 input hop by including it in
+    ``reaction_cycles``; PRU0's own GPI delay adds the return hop.
+    """
+
+    name = "ideal_spi_peripheral"
+    time_driven = True
+
+    def __init__(self, mode: int, response: bytes, reaction_cycles: int,
+                 name: str = "ideal_spi_peripheral"):
+        if mode not in (0, 1):
+            raise ValueError("mode must be 0 or 1")
+        response = bytes(response)
+        if len(response) != FRAME_BYTES:
+            raise ValueError(f"response must be {FRAME_BYTES} bytes")
+        if (isinstance(reaction_cycles, bool) or not isinstance(reaction_cycles, int)
+                or reaction_cycles < 0):
+            raise ValueError("reaction_cycles must be a non-negative integer")
+        self.mode = mode
+        self.response = response
+        self.reaction_cycles = reaction_cycles
+        self.name = name
+        self.nets = {C_MISO: PUSH_PULL}
+        self.reset()
+
+    def _bit(self, n: int) -> int:
+        if n >= _FRAME_BITS:
+            return 0
+        return (self.response[n // 8] >> (7 - n % 8)) & 1
+
+    def _schedule(self, cycle: int, level: int) -> None:
+        self._pending.append((cycle + self.reaction_cycles, level))
+
+    def tick(self, cycle: int, bus: int) -> tuple[int, int]:
+        cs = (bus >> C_CS) & 1
+        clk = (bus >> C_CLK) & 1
+        if cs != self._cs:
+            if cs == 0:
+                self._n = 0
+                if self.mode == 0:
+                    self._schedule(cycle, self._bit(0))
+            else:
+                self._frames += 1
+                self._schedule(cycle, 0)
+        elif cs == 0 and clk != self._clk:
+            if self.mode == 1 and clk == 1:
+                self._schedule(cycle, self._bit(self._n))
+                self._n += 1
+            elif self.mode == 0 and clk == 0:
+                self._n += 1
+                self._schedule(cycle, self._bit(self._n))
+        self._cs, self._clk = cs, clk
+        while self._pending and self._pending[0][0] <= cycle:
+            self._level = self._pending.pop(0)[1]
+        return 1 << C_MISO, self._level << C_MISO
+
+    def reset(self) -> None:
+        self._cs, self._clk, self._n, self._level = 1, 0, 0, 0
+        self._pending: list[tuple[int, int]] = []
+        self._frames = 0
+
+    def snapshot(self) -> dict:
+        return {"cs": self._cs, "clk": self._clk, "n": self._n,
+                "level": self._level, "pending": list(self._pending),
+                "frames": self._frames}
+
+    def restore(self, snap: dict) -> None:
+        self._cs, self._clk, self._n = snap["cs"], snap["clk"], snap["n"]
+        self._level, self._frames = snap["level"], snap["frames"]
+        self._pending = list(snap["pending"])
+
+    def get_state(self) -> dict:
+        return {"name": self.name, "mode": self.mode, "frames": self._frames,
+                "bit": self._n, "miso": self._level}
+
+
+class SpiLinkRuntime:
+    """Load, wire and drive the PRU0 controller (and later the PRU1 peripheral).
+
+    ``load_controller`` can be called again (for a new ``cfg``) without
+    touching the wiring; the monitor stays attached and follows ``cfg.mode``.
+    """
+
+    def __init__(self, sim, cfg: SpiConfig, hop_delay: int = HOP_DELAY_CYCLES):
+        self.sim = sim
+        self.cfg = cfg
+        self.hop_delay = hop_delay
+        self.monitor: SpiBusMonitor | None = None
+        self._masks = {core: sim.io(core)["gpo_drive_mask"] for core in ("pru0", "pru1")}
+        self._wires: list[tuple[str, int, str, int]] = []
+        self._controller_loaded = False
+        self._peripheral_loaded = False
+
+    # -- setup -----------------------------------------------------------------
+
+    def _set_delay(self, core: str) -> None:
+        # Setting the delay restarts its history: only touch it on a change.
+        if self.sim.get_gpi_delay(core) != self.hop_delay:
+            self.sim.set_gpi_delay(core, self.hop_delay)
+
+    def load_controller(self) -> None:
+        cfg = self.cfg
+        if not controller_delay_ok(cfg.half_k, cfg.miso_delay):
+            raise ValueError(
+                f"miso_delay {cfg.miso_delay} not realisable at half_k {cfg.half_k}: "
+                f"miso_delay mod {2 * cfg.half_k} must not be 0 or {cfg.half_k} "
+                f"and miso_delay // {2 * cfg.half_k} must be <= {MISO_Q_MAX}")
+        source = render_header(cfg) + CONTROLLER_SOURCE.read_text(encoding="utf-8")
+        errors = self.sim.load("pru0", source,
+                               include_paths=[str(CONTROLLER_SOURCE.parent)])
+        if errors:
+            raise ValueError("SPI controller assembly failed: " + "; ".join(errors))
+        self.sim.reset("pru0")
+        self.sim.memory.write(CTRL, bytes(16))
+        self.sim.set_gpio_drive_mask("pru0", _C_MASK)
+        self._set_delay("pru0")
+        if self.monitor is None:
+            self.monitor = SpiBusMonitor(cfg.mode)
+            self.sim.attach_device("pru0", self.monitor)
+        else:
+            self.monitor.mode = cfg.mode
+        self._controller_loaded = True
+
+    def load_peripheral(self) -> None:
+        raise NotImplementedError("PRU1 peripheral firmware arrives in Task 4")
+
+    def wire(self) -> None:
+        """Spec 5.3 nets; each has exactly one driver."""
+        if self._wires:
+            return
+        wires = [("pru0", C_CLK, "pru1", P_CLK), ("pru0", C_MOSI, "pru1", P_MOSI),
+                 ("pru0", C_CS, "pru1", P_CS), ("pru1", P_MISO, "pru0", C_MISO)]
+        for w in wires:
+            self.sim.add_gpio_wire(*w)
+            self._wires.append(w)
+        self.sim.set_gpio_drive_mask("pru1", 1 << P_MISO)
+
+    # -- transfers -------------------------------------------------------------
+
+    def _step(self) -> None:
+        if self._peripheral_loaded:
+            self.sim.step_paced_many("pru0", ["pru1"], 1)
+        else:
+            self.sim.step("pru0")
+
+    def transfer(self, cmd: int, addr: int, data: bytes = bytes(16),
+                 max_cycles: int = 20000,
+                 abort_after_bits: int | None = None) -> dict:
+        if not self._controller_loaded:
+            raise RuntimeError("load_controller() first")
+        data = bytes(data)
+        if len(data) != 16:
+            raise ValueError("data must be 16 bytes")
+        for name, v in (("cmd", cmd), ("addr", addr)):
+            if isinstance(v, bool) or not isinstance(v, int) or not 0 <= v <= 0xFF:
+                raise ValueError(f"{name} must be a byte")
+        abort = 0 if abort_after_bits is None else abort_after_bits
+        if (isinstance(abort, bool) or not isinstance(abort, int)
+                or not 0 <= abort < _FRAME_BITS):
+            raise ValueError(f"abort_after_bits must be None or 1..{_FRAME_BITS - 1}")
+        mem = self.sim.memory
+        mem.write(C_TX, data)
+        mem.write(CTRL + CTRL_CMD, bytes([cmd, addr, ST_IDLE]))
+        mem.write(CTRL + CTRL_ABORT, abort.to_bytes(2, "little"))
+        n_frames = len(self.monitor.frames(self.cfg.mode))
+        pru0 = self.sim.cores["pru0"]
+        start = pru0.counters.cycles
+        mem.write(CTRL + CTRL_GO, b"\x01")
+        status = CTRL + CTRL_STATUS
+        while self.sim.memory_read(status, 1)[0] != ST_DONE:
+            if pru0.counters.cycles - start > max_cycles:
+                raise TimeoutError(f"SPI transfer not done after {max_cycles} cycles")
+            if pru0.halted or pru0.fault is not None:
+                raise RuntimeError(f"PRU0 stopped: fault={pru0.fault}")
+            self._step()
+        cycles = pru0.counters.cycles - start
+        frames = self.monitor.frames(self.cfg.mode)
+        rx_hdr = self.sim.memory_read(C_RX_HDR, 3)
+        c_rx = self.sim.memory_read(C_RX, 16)
+        return {"miso": rx_hdr + c_rx, "c_rx": c_rx, "cycles": cycles,
+                "frame": frames[-1] if len(frames) > n_frames else None}
+
+    def close(self) -> None:
+        for w in self._wires:
+            self.sim.remove_gpio_wire(*w)
+        self._wires = []
+        if self.monitor is not None:
+            if self.monitor in self.sim.device_bus.devices:
+                self.sim.detach_device(self.monitor)
+        for core, mask in self._masks.items():
+            self.sim.set_gpio_drive_mask(core, mask)
+        for core in ("pru0", "pru1"):
+            self.sim.set_gpi_delay(core, 0)
+        self._controller_loaded = False
+        self._peripheral_loaded = False
