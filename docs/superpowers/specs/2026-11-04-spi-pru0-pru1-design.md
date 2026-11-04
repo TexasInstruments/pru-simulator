@@ -121,7 +121,7 @@ write it. The builder adds a non-persisting rebuild path, like the IEP selector'
 
 **Supported means proven:** a (rate, core, mode) combination is enabled in the UI only if
 the automated test suite runs every command with every pattern at that combination, **with
-the calibrated 4-cycle hop delay (§5.4)**, and gets zero byte errors. Combinations that fail are shown greyed out, with the measured limit
+the calibrated 5-cycle hop delay (§5.4)**, and gets zero byte errors. Combinations that fail are shown greyed out, with the measured limit
 (PRU1 cycles needed per bit). Early estimate, which must not be trusted: an edge-polling
 PRU1 needs about 8 cycles/bit, so the ceiling is around 37 MHz at 300 MHz. Whether 41.7 MHz
 or 50 MHz pass is an open result, and the report states the outcome either way.
@@ -146,7 +146,7 @@ style (see `source/i2c_tca9538_running_led.asm` and the SSI firmware). Use the
   cycles by which PRU0 samples MISO after its nominal capture edge. It may exceed one bit
   time, in which case PRU0 samples bit n during bit n+1 (pipelined), and it keeps sampling
   after the last CLK edge, with no extra clocks. It compensates the round trip CLK →
-  PRU1 → MISO → PRU0 (about 2 hops × 4 cycles plus PRU1 reaction time). This is standard on
+  PRU1 → MISO → PRU0 (about 2 hops × 5 cycles plus PRU1 reaction time). This is standard on
   real controllers, like the read-data-capture delay on TI's OSPI. It does not change PRU1,
   which stays a real peripheral. The value per rate comes from the test sweep (the
   middle of the passing window), is shown in the timing table, and is selectable in the UI.
@@ -180,20 +180,21 @@ A real edge-polling peripheral. Required techniques, from the user and the brain
 ### 5.4 Calibrated pin-to-pin delay (simulator change, in scope)
 - Silicon reference (user, clarification 12): at 333 MHz, `wbs` on an async input followed
   by `set` on an output gives **18 ns = 6 core cycles** from input edge to output edge. The
-  simulator with zero delay gives about 1–2 cycles for the same code, so silicon adds about
-  **4 cycles (≈12 ns)** for input synchroniser, pads and output path combined.
+  simulator with zero delay gives **1 cycle** for the same code (measured by single-stepping in
+  Task 1; the brainstorm estimate was 1–2), so silicon adds **5 cycles (15 ns)** for input
+  synchroniser, pads and output path combined.
 - Add a configurable per-core **GPI input delay in core cycles** to the simulator, with a
   default of 0 so all existing tests and demos are unchanged. Applying the whole hop delay on
   the input side is equivalent for this design, because every SPI net is one output → one
   input.
-- The SPI scenario and the acceptance suite use **4 cycles at every core clock** (cautious
-  at lower clocks, where 4 cycles > 12 ns). Rates also pass at 0, which is reported, but
-  "supported" means passing at 4.
-- Calibration test: `wbs` + `set` at 333 MHz with delay 4 measures 18 ns ± 1 cycle, edge to
-  edge, from the pin trace.
+- The SPI scenario and the acceptance suite use **5 cycles at every core clock** (cautious
+  at lower clocks, where 5 cycles > 15 ns). Rates also pass at 0, which is reported, but
+  "supported" means passing at 5.
+- Calibration test: `wbs` + `set` at 333 MHz with delay 5 measures exactly 6 cycles = 18 ns,
+  edge to edge, from the pin trace.
 - The UI shows the delay in effect, so the waveform's visible skew is explained.
 - The report and the timing doc state that the split between input and output is unknown
-  and that the 4-cycle figure comes from one scope measurement at 333 MHz.
+  and that the 5-cycle figure comes from one scope measurement at 333 MHz.
 
 ## 6. Timing parameters
 
@@ -203,7 +204,7 @@ design value, PRU cycles, measured in sim, AM243 min, AM243 max, source, worst-c
 
 Rows: t<sub>CLK</sub>; t<sub>H</sub>/t<sub>L</sub>; t<sub>sk(GPO-GPO)</sub>; t<sub>LEAD</sub>; t<sub>LAG</sub>; t<sub>CSH</sub>; MOSI setup/hold to PRU1's
 capture edge; PRU1 launch edge → MISO valid (t<sub>V,MISO</sub>); MISO setup/hold to PRU0's capture
-edge; PRU0 MISO sample delay in effect; modelled hop delay (4 cycles); input slew;
+edge; PRU0 MISO sample delay in effect; modelled hop delay (5 cycles); input slew;
 output load; idle-byte budget against the measured PRU1 fetch time.
 
 **AM243 data, quoted from SPRSP65J (AM243x datasheet, rev. June 2026, §6.11.5.16.1):**
@@ -216,7 +217,7 @@ output load; idle-byte budget against the measured PRU1 fetch time.
   t<sub>su</sub> ≥ 4 ns and t<sub>h</sub> ≥ 0 ns.
 
 "Measured in sim" comes from the captured pin trace of the last frame, with the
-calibrated 4-cycle hop delay (§5.4). Board trace and jumper-wire delay for step 2 are not
+calibrated 5-cycle hop delay (§5.4). Board trace and jumper-wire delay for step 2 are not
 modelled; at a few cm of wire this is well under a nanosecond.
 
 ## 7. Pins (LP-AM243, SPRUJ12F rev. Jan 2024, Tables 4-11 to 4-14 and B-2)

@@ -26,7 +26,7 @@ FastAPI websocket server (`ui/server.py`), vanilla JS (`node --test`, vm-sandbox
 - PRU1 drives MISO 0x00 during cmd/addr/idle, and during data for WRITE, unknown commands and bad addresses.
 - Modes 0 and 1 only (CPOL = 0). Mode 1 = set on rising, capture on falling. Mode 0 = capture on rising, set on falling, first bit valid before the first rising edge.
 - Core clocks {200, 225, 250, 300, 333} MHz; both PRUs always the same clock. SPI CLK = core / (2·k), 10–50 MHz, never 50 MHz at 200 MHz.
-- "Supported" = zero byte errors over the full test sequence with **GPI delay 4 cycles** on both cores.
+- "Supported" = zero byte errors over the full test sequence with **GPI delay 5 cycles** (Ruling R6: simulator's native wire→wbs→set latency measured 1 cycle, so 6 − 1 = 5) on both cores.
 - PRU1 must stay an edge-polling peripheral: it never counts cycles from /CS to find bit positions. It may time a sample from the previous edge it observed.
 - No cycle claim from hand counting: every cycle budget quoted in code comments, docs or the report is confirmed by stepping in the simulator.
 - AM243 numbers only from SPRSP65J §6.11.5.16.1: SR<sub>I</sub> 1–3 V/ns, C<sub>L</sub> 2–30 pF (Table 6-112); t<sub>sk(GPO-GPO)</sub> max 2 ns (Table 6-113, PRDO1). There is no direct-input-mode table; input setup/hold rows are labelled "design budget".
@@ -97,7 +97,7 @@ Memory map (global ICSSG addresses; each PRU uses its own DMEM via `c24`):
   - `test_delay_is_per_core`: setting pru1 leaves pru0 at 0.
   - `test_rejects_bad_values`: −1, 17, 2.0, True → `ValueError`.
   - `test_gpi_delay_survives_snapshot_restore`: step 10 cycles past an input edge with delay 4, take a snapshot, step on, restore, step again → the same R31 sequence both times.
-  - `test_calibration_matches_silicon_18ns_at_333mhz`: `sim_config(pru_clock_mhz=333, pru1_clock_mhz=333)`. PRU0 toggles GPO16 at a known cycle; wire `add_gpio_wire("pru0",16,"pru1",1)`; PRU1 runs `wbs r31, 1` / `set r30, r30, 11`. With `set_gpi_delay("pru1", 4)`, the PRU1 GPO11 edge comes **6 ± 1 cycles** after the PRU0 GPO16 edge (18 ns ± 3 ns). Measure from per-cycle stepping with `step_paced_many("pru0", ["pru1"])` and each core's `counters.cycles`.
+  - `test_calibration_matches_silicon_18ns_at_333mhz`: `sim_config(pru_clock_mhz=333, pru1_clock_mhz=333)`. PRU0 toggles GPO16 at a known cycle; wire `add_gpio_wire("pru0",16,"pru1",1)`; PRU1 runs `wbs r31, 1` / `set r30, r30, 11`. With `set_gpi_delay("pru1", 5)`, the PRU1 GPO11 edge comes **exactly 6 cycles** after the PRU0 GPO16 edge (18 ns); with delay 0 it comes 1 cycle after (Ruling R6). Measure from per-cycle stepping with `step_paced_many("pru0", ["pru1"])` and each core's `counters.cycles`.
 - [ ] **Step 2:** Run `pytest tests/test_gpi_delay.py -v`. Expected: FAIL (`AttributeError: set_gpi_delay`).
 - [ ] **Step 3:** Implement. IOPort keeps a short history of (cycle, gpi) changes, bounded to N+1 entries, stamped with the owning core's `counters.cycles` at the time `gpi` changes. The core passes its current cycle to `read_r31` (all three call sites in `core/pru_core.py`: ~681, ~872, ~1056). Keep `read_r31()` callable with no argument for existing callers (it then means "now").
 - [ ] **Step 4:** Run `pytest tests/test_gpi_delay.py -v` (PASS), then the full suite with `pytest -q` (all previously passing tests still pass).
@@ -111,7 +111,7 @@ Memory map (global ICSSG addresses; each PRU uses its own DMEM via `c24`):
 
 **Interfaces:**
 - Produces (all in `pru_io/spi_link.py`):
-  - Pin constants `C_CLK=16, C_MOSI=13, C_MISO=14, C_CS=17, P_CLK=1, P_MOSI=2, P_CS=6, P_MISO=11`. Address constants from the memory map table (`CTRL, C_TX, C_RX, C_RX_HDR, P_STATUS, P_TX, P_RX`). `CMD_WRITE=1, CMD_READ=2, CMD_RW=3`, `ADDR_MAX=0x7F`, `FRAME_BYTES=19`, `HOP_DELAY_CYCLES=4`.
+  - Pin constants `C_CLK=16, C_MOSI=13, C_MISO=14, C_CS=17, P_CLK=1, P_MOSI=2, P_CS=6, P_MISO=11`. Address constants from the memory map table (`CTRL, C_TX, C_RX, C_RX_HDR, P_STATUS, P_TX, P_RX`). `CMD_WRITE=1, CMD_READ=2, CMD_RW=3`, `ADDR_MAX=0x7F`, `FRAME_BYTES=19`, `HOP_DELAY_CYCLES=5`.
   - `@dataclass(frozen=True) SpiConfig(mode: int, core_mhz: int, half_k: int, miso_delay: int = 0)`. Properties `spi_mhz -> float` (= core/(2k)) and `id -> str` (`f"m{mode}_c{core}_k{k}_d{d}"`). It validates mode ∈ {0,1}, core ∈ {200,225,250,300,333}, half_k ≥ 3, 10 ≤ spi_mhz ≤ 50, and not (spi_mhz == 50 and core == 200). Otherwise `ValueError`.
   - `rate_candidates() -> list[tuple[int, int]]` → all (core_mhz, half_k) with 10 ≤ rate ≤ 50 MHz under the rule above, sorted by rate then core.
   - `render_header(cfg: SpiConfig, role: str = "controller") -> str` → controller: `.set` lines `SPI_MODE`, `HALF_K`, `MISO_DELAY`; peripheral: `SPI_MODE` only. Both add a comment line with the config id and rate.
@@ -155,7 +155,7 @@ Memory map (global ICSSG addresses; each PRU uses its own DMEM via `c24`):
 - [ ] **Step 1: Write failing tests** (all use `sim_config` with an explicit clock):
   - `test_controller_mosi_bytes_mode1` and `_mode0`, at 200 MHz/k=10 and at 300 MHz/k=3: monitor frame `mosi == bytes([cmd, addr, 0]) + data` for every `PATTERNS` entry.
   - `test_controller_clock_exact`: `measure_timing` at 200/k=4 → t<sub>CLK</sub> 40.0 ns, t<sub>H</sub> = t<sub>L</sub> = 20.0, t<sub>LEAD</sub> ≥ 40, t<sub>LAG</sub> ≥ 40. At 300/k=3 → t<sub>CLK</sub> 20.0.
-  - `test_controller_reads_ideal_peripheral`: with `IdealSpiPeripheral(reaction_cycles=…)` plus hop delay 4, there is a `miso_delay` for which `c_rx == response[3:]`. Report the passing window in the test output.
+  - `test_controller_reads_ideal_peripheral`: with `IdealSpiPeripheral(reaction_cycles=…)` plus hop delay 5, there is a `miso_delay` for which `c_rx == response[3:]`. Report the passing window in the test output.
   - `test_back_to_back_gap`: two transfers → t<sub>CSH</sub> ≥ 2 t<sub>CLK</sub>.
 - [ ] **Step 2:** `pytest tests/test_spi_controller.py -v` → FAIL.
 - [ ] **Step 3:** Write `spi_controller.asm` using `.if SPI_MODE` / `HALF_K` / `MISO_DELAY` constants. Bit timing must be exact for every k ≥ 3 (unroll per byte; use the hardware `LOOP` over bytes where its zero overhead keeps the timing exact). Confirm cycle counts by single-stepping in the simulator and note the measured counts in comments.
@@ -172,7 +172,7 @@ Memory map (global ICSSG addresses; each PRU uses its own DMEM via `c24`):
 **Interfaces:**
 - Consumes: Task 3 `SpiLinkRuntime` and controller firmware.
 - Produces: the PRU1 firmware contract of spec §3/§5.2: `peripheral_status()` returns `{"frames", "errors", "aborts", "last_cmd", "last_addr"}` from P_STATUS. RX is committed only when the frame completes.
-- [ ] **Step 1: Write failing tests**, at 200 MHz/k=10 (10 MHz) mode 0 and mode 1, hop delay 4:
+- [ ] **Step 1: Write failing tests**, at 200 MHz/k=10 (10 MHz) mode 0 and mode 1, hop delay 5:
   - `test_write_lands_in_rx_block`: WRITE addr 0x05 with `walking1` → `read_peripheral_rx(5) == walking1`; P_TX unchanged.
   - `test_read_returns_tx_block`: preload P_TX block 0x7F, READ 0x7F → `c_rx == block`, MISO header bytes == 00 00 00.
   - `test_rw_full_duplex`: R/W addr 0x02 with `count` → `c_rx == PATTERNS["count"][1]` and RX block 2 == `PATTERNS["count"][0]`.
@@ -192,7 +192,7 @@ Memory map (global ICSSG addresses; each PRU uses its own DMEM via `c24`):
 
 **Interfaces:**
 - Consumes: Tasks 2–4.
-- Produces: `run_test_sequence(runtime: SpiLinkRuntime) -> dict` in `pru_io/spi_link.py`. It runs spec §9's sequence and returns `{"ok": bool, "byte_errors": int, "steps": [...]}`. Also `sweep(hop_delays=(0, 4)) -> list[dict]` in `tools/spi_sweep.py`, one row per (mode, core, k, hop_delay): `{"id", "mode", "core_mhz", "half_k", "spi_mhz", "hop_delay", "miso_delay_window": [lo, hi] | None, "miso_delay": int | None, "pass": bool, "p1_cycles_per_bit": int}`, where `miso_delay` is the middle of the window. CLI: `python tools/spi_sweep.py --write` writes the JSON and the Markdown. `pru_io/spi_rates.json` schema: `{"generated": iso8601, "hop_delay_supported": 4, "rows": [...]}`. `load_supported() -> dict[int, list[dict]]` in `spi_link.py` maps mode → the passing rows at hop delay 4, one per rate, at the lowest passing core clock.
+- Produces: `run_test_sequence(runtime: SpiLinkRuntime) -> dict` in `pru_io/spi_link.py`. It runs spec §9's sequence and returns `{"ok": bool, "byte_errors": int, "steps": [...]}`. Also `sweep(hop_delays=(0, 5)) -> list[dict]` in `tools/spi_sweep.py`, one row per (mode, core, k, hop_delay): `{"id", "mode", "core_mhz", "half_k", "spi_mhz", "hop_delay", "miso_delay_window": [lo, hi] | None, "miso_delay": int | None, "pass": bool, "p1_cycles_per_bit": int}`, where `miso_delay` is the middle of the window. CLI: `python tools/spi_sweep.py --write` writes the JSON and the Markdown. `pru_io/spi_rates.json` schema: `{"generated": iso8601, "hop_delay_supported": 5, "rows": [...]}`. `load_supported() -> dict[int, list[dict]]` in `spi_link.py` maps mode → the passing rows at hop delay 5, one per rate, at the lowest passing core clock.
 - [ ] **Step 1: Write failing tests:**
   - `test_supported_json_matches_fresh_sweep_subset`: re-run three rows from the JSON (the slowest rate, the fastest passing rate, and the fastest failing rate if there is one) and compare `pass` and `miso_delay`.
   - `test_supported_rows_pass_full_sequence`: for the fastest supported row per mode, `run_test_sequence` → `ok` and `byte_errors == 0`.
@@ -237,7 +237,7 @@ Memory map (global ICSSG addresses; each PRU uses its own DMEM via `c24`):
 **Interfaces:**
 - Consumes: Task 6 `spi_demo_state` payload and actions.
 - Produces: `window.SpiView = { render(state), decodeBoxes(edges, mode) -> [{lane, startCycle, endCycle, label, value}], rateOptions(supported, mode) -> [{spi_mhz, core_mhz, label, disabled, title}], timingRows(rows) -> rows with "worst" flag }`. These are pure functions, so they can be tested without a DOM.
-- Layout: the approved mockup A plus timing (`.superpowers/brainstorm/10947-1793824791/content/spi-view-layout-a-v2.html` and `-v3.html`). The controls bar has mode, SPI CLK (core clock shown, "session only" note), cmd, addr ("= byte N"), pattern, Send frame and Run test sequence. Then the 19-cell frame strip, the SVG scope from the real `edges` (with cycle → ns via `core_mhz`, byte boxes, capture-edge markers, cursor arrows), four memory panels with the compare badge (mismatches in red), the timing table (AM243 columns tinted, worst row flagged), and the "GPI delay 4 cycles (calibrated 18 ns @ 333 MHz)" label.
+- Layout: the approved mockup A plus timing (`.superpowers/brainstorm/10947-1793824791/content/spi-view-layout-a-v2.html` and `-v3.html`). The controls bar has mode, SPI CLK (core clock shown, "session only" note), cmd, addr ("= byte N"), pattern, Send frame and Run test sequence. Then the 19-cell frame strip, the SVG scope from the real `edges` (with cycle → ns via `core_mhz`, byte boxes, capture-edge markers, cursor arrows), four memory panels with the compare badge (mismatches in red), the timing table (AM243 columns tinted, worst row flagged), and the "GPI delay 5 cycles (calibrated 18 ns @ 333 MHz)" label.
 - [ ] **Step 1: Write failing tests:**
   - `rateOptions disables unsupported and 50 MHz@200` (fixture rows).
   - `decodeBoxes labels CMD ADR IDLE D0..D15 with hex` from a fixture edge list (generate it in Python once and paste a small 3-byte fixture).
