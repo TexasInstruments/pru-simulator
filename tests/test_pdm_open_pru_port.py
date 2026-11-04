@@ -1292,3 +1292,33 @@ def test_clip_buffer_header_matches_loader():
         bad = next((f for f in range(CLIP_FRAMES) if got[f] != expect[f]), None)
         assert bad is None, (f"ch{ch} {name}: frame {bad} is {got[bad]}, "
                              f"expected {expect[bad]}")
+
+
+# ---------------------------------------------------------------------------
+# Task 6: the R5F application's C mirror of the shared map
+# ---------------------------------------------------------------------------
+
+C_SHARED_H = PROJECT / "mcuplus" / "pdm8_shared.h"
+_DEFINE_RE = re.compile(r"^#define\s+(PDM8_\w+)\s+\(?\s*(0[xX][0-9a-fA-F]+|\d+)[uU]?\s*\)?"
+                        r"\s*(?:/\*.*\*/|//.*)?$")
+
+
+def test_c_header_matches_inc():
+    """``mcuplus/pdm8_shared.h`` defines exactly the ``PDM8_*`` names of
+    ``firmware/pdm8_shared.inc``, each with the same value, so the R5F and
+    the three PRU firmwares agree on the shared map."""
+    inc = shared()
+    c = {}
+    for line in C_SHARED_H.read_text().splitlines():
+        words = line.split()
+        # every "#define PDM8_<name> <value>"; the include guard has no value
+        if len(words) > 2 and words[0] == "#define" and words[1].startswith("PDM8_"):
+            m = _DEFINE_RE.match(line.strip())
+            assert m, f"pdm8_shared.h: not a plain PDM8_ literal define: {line!r}"
+            assert m.group(1) not in c, f"duplicate {m.group(1)}"
+            c[m.group(1)] = int(m.group(2), 0)
+    assert len(inc) >= 30
+    assert sorted(set(inc) - set(c)) == [], "missing in pdm8_shared.h"
+    assert sorted(set(c) - set(inc)) == [], "not in pdm8_shared.inc"
+    bad = {k: (inc[k], c[k]) for k in inc if inc[k] != c[k]}
+    assert bad == {}, f"values differ (inc, h): {bad}"
