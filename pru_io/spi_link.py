@@ -502,7 +502,8 @@ class SpiLinkRuntime:
             raise ValueError(
                 f"miso_delay {cfg.miso_delay} not realisable at half_k {cfg.half_k}: "
                 f"miso_delay mod {2 * cfg.half_k} must not be 0 or {cfg.half_k} "
-                f"and miso_delay // {2 * cfg.half_k} must be <= {MISO_Q_MAX}")
+                f"and miso_delay // {2 * cfg.half_k} must be <= {MISO_Q_MAX}; "
+                f"choose miso_delay with controller_delay_ok()")
         source = render_header(cfg) + CONTROLLER_SOURCE.read_text(encoding="utf-8")
         errors = self.sim.load("pru0", source,
                                include_paths=[str(CONTROLLER_SOURCE.parent)])
@@ -510,6 +511,12 @@ class SpiLinkRuntime:
             raise ValueError("SPI controller assembly failed: " + "; ".join(errors))
         self.sim.reset("pru0")
         self.sim.memory.write(CTRL, bytes(16))
+        # The reset zeroed R30 (/CS low). Put /CS idle high before the pins
+        # are driven so a (re)load never shows PRU1 a /CS pulse; the
+        # firmware's first instruction sets the same state.
+        pru0 = self.sim.cores["pru0"]
+        pru0.registers.write_full(30, 1 << C_CS)
+        pru0.io_port.write_r30(1 << C_CS)
         self.sim.set_gpio_drive_mask("pru0", _C_MASK)
         self._set_delay("pru0")
         if self.monitor is None:
@@ -555,7 +562,8 @@ class SpiLinkRuntime:
         abort = 0 if abort_after_bits is None else abort_after_bits
         if (isinstance(abort, bool) or not isinstance(abort, int)
                 or not 0 <= abort < _FRAME_BITS):
-            raise ValueError(f"abort_after_bits must be None or 1..{_FRAME_BITS - 1}")
+            raise ValueError("abort_after_bits must be None or 0 (full frame), "
+                             f"or 1..{_FRAME_BITS - 1} bits")
         mem = self.sim.memory
         mem.write(C_TX, data)
         mem.write(CTRL + CTRL_CMD, bytes([cmd, addr, ST_IDLE]))
@@ -585,6 +593,7 @@ class SpiLinkRuntime:
         if self.monitor is not None:
             if self.monitor in self.sim.device_bus.devices:
                 self.sim.detach_device(self.monitor)
+            self.monitor = None
         for core, mask in self._masks.items():
             self.sim.set_gpio_drive_mask(core, mask)
         for core in ("pru0", "pru1"):

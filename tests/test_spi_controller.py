@@ -283,3 +283,70 @@ def test_load_peripheral_not_yet(sim_config):
     sim, rt, _ = _runtime(sim_config, 1, 300, 3)
     with pytest.raises(NotImplementedError):
         rt.load_peripheral()
+
+
+# ---------------------------------------------------------------------------
+# Deep MISO pipelining (Q = 4..6): tail units 154+ and the realign shift
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("mode", [0, 1])
+@pytest.mark.parametrize("k", [3, 6])
+@pytest.mark.parametrize("q", [4, 5, 6])
+def test_miso_deep_pipeline(sim_config, capsys, mode, k, q):
+    """A slow peripheral puts the whole passing window at depth Q. Every
+    realisable delay of that window reads the data back, for both merge
+    orders (MP 0 and 1: sample before / after B, or before / after C)."""
+    reaction = 2 * k * q - 6           # window = [reaction + 6, reaction + 5 + 2k]
+    core = 300 if k == 3 else 200
+    lo, hi = reaction + 6, reaction + 5 + 2 * k
+    window = _sweep(sim_config, mode, core, k, reaction, range(lo - 2, hi + 3))
+    with capsys.disabled():
+        print(f"\n[spi] Q={q} mode {mode} k={k} reaction={reaction}: passing {window}")
+    expected = [d for d in range(lo, hi + 1) if controller_delay_ok(k, d)]
+    assert window == expected
+    assert {d // (2 * k) for d in window} == {q}
+    # both merge classes are inside the window
+    if k == 3:
+        assert any(d % 6 == 5 for d in window) and any(d % 6 in (1, 2, 4) for d in window)
+    else:
+        assert any(d % (2 * k) < k for d in window) and any(d % (2 * k) > k for d in window)
+
+
+# ---------------------------------------------------------------------------
+# Runtime life cycle
+# ---------------------------------------------------------------------------
+
+def test_close_then_reload_reattaches_monitor(sim_config):
+    sim, rt, _ = _runtime(sim_config, 1, 300, 3)
+    rt.transfer(CMD_RW, ADDR, PATTERNS["count"][0])
+    rt.close()
+    assert rt.monitor is None
+    rt.load_controller()
+    assert rt.monitor in sim.device_bus.devices
+    res = rt.transfer(CMD_RW, ADDR, PATTERNS["count"][0])
+    assert res["frame"] is not None and res["frame"]["bits"] == 152
+
+
+def _cs_levels(rt):
+    return [w & 1 for _, w in rt.monitor.edges]
+
+
+def test_no_cs_glitch_on_load_and_reload(sim_config):
+    sim, rt, _ = _runtime(sim_config, 1, 300, 3)
+    rt.wire()
+    assert sim.io("pru1")["gpi_pins"][6] == 1           # P_CS sees /CS high
+    sim.step("pru0", 3)
+    assert _cs_levels(rt) and set(_cs_levels(rt)) == {1}
+    rt.transfer(CMD_RW, ADDR, PATTERNS["count"][0])
+    rt.load_controller()                                # re-load, wires attached
+    assert sim.io("pru1")["gpi_pins"][6] == 1
+    sim.step("pru0", 3)
+    assert set(_cs_levels(rt)) == {1}
+
+
+def test_generated_blocks_match_generator():
+    import tools.gen_spi_controller_units as gen
+    text = gen.ASM.read_text(encoding="utf-8")
+    assert gen.render(text) == text, \
+        "spi_controller.asm generated blocks were edited; run tools/gen_spi_controller_units.py"
+    assert text.count("    m_unit ") == 152 + gen.TAIL_MAX

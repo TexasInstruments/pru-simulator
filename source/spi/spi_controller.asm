@@ -138,6 +138,7 @@ SG3 .set 2 * HALF_K - 1 - S_OFF
 ; P = "xop xdst, xsrc, xsh"; acc = chunk register of this unit.
 ; Inline variants (HALF_K 3..5): L at 0, C at HALF_K, S at S_OFF, then P, A, B
 ; in the first free slots, nops after. PEAK = 2*HALF_K cycles.
+; >>> generated: inline units (tools/gen_spi_controller_units.py --write)
 .if BODY_SEL == 49               ; k=3, s=1
 MP .set 0
 m_unit .macro xop, xdst, xsrc, xsh, acc
@@ -380,6 +381,7 @@ m_unit .macro xop, xdst, xsrc, xsh, acc
     and  r3, r31.b1, 0x40             ; S  sample MISO (GPI14 -> bit 6)
 .endm
 .endif
+; <<< generated: inline units
 
 ; Skeleton variant (HALF_K >= 6): 4 inline instructions + spi_skel.
 .if CLS >= 1
@@ -427,12 +429,14 @@ m_bswap .macro dst, src
 
 ; ===========================================================================
 start:
-    ldi  r30, 0
-    set  r30, r30, CS_BIT             ; idle: /CS high, CLK low, MOSI low
+    ; /CS high first (the host also presets it before enabling the drive
+    ; mask), then CLK and MOSI low: no /CS-low glitch after a (re)load.
+    ldi  r30.w2, 0x0002               ; /CS high, CLK low
+    ldi  r30.w0, 0                    ; MOSI low
     ldi  r2, 0x0320
     ldi  r0, 0
 
-idle:
+idle:                                 ; /CS high, CLK low, MOSI keeps the last bit sent
     lbbo &r19.b0, r0, CTRL_GO, 1
     qbeq idle, r19.b0, 0
     ldi  r19.b0, ST_BUSY
@@ -542,6 +546,7 @@ spi_lead_wait:
 ; n / 8 held in r(5 + byte / 4).b(byte % 4), bit b = 7 - n % 8, moved to bit 5
 ; by "lsr ..., b - 5" (b >= 5) or "lsl ..., 5 - b"; units 151, 152, 153+ load
 ; the tail control words V151, V152, V153 into r1.w1 instead. acc = r(10 + m / 24).
+; >>> generated: unit list (tools/gen_spi_controller_units.py --write)
 spi_unit0:
     m_unit lsr, r1.b0, r5.b0, 1, r10
 spi_unit1:
@@ -716,6 +721,7 @@ spi_unit1:
 .if Q >= 6
     m_unit or, r1.w1, r25.w0, 0, r16
 .endif
+; <<< generated: unit list
 
     ; ---- /CS is high: hold it >= 4*HALF_K cycles ---------------------------
     ldi  r17, HOLD_N
@@ -845,4 +851,3 @@ spi_sg3_wait:
 .endif
     m_ev3
     jmp  r18.w0
-    halt
