@@ -209,7 +209,7 @@ def _mode1_miso_frame(lag, half=4, nbytes=3):
     return seq
 
 
-@pytest.mark.parametrize("delay,su,hd", [(3, 5.0, 35.0), (0, None, None), (6, 20.0, 20.0)])
+@pytest.mark.parametrize("delay,su,hd", [(3, 5.0, 35.0), (0, -10.0, 10.0), (6, 20.0, 20.0)])
 def test_measure_timing_miso_rows_use_sample_point(delay, su, hd):
     cfg = SpiConfig(1, 200, 4, delay)
     rows = measure_timing(_mode1_miso_frame(lag=2), cfg)
@@ -219,13 +219,19 @@ def test_measure_timing_miso_rows_use_sample_point(delay, su, hd):
     assert by["MISO_DELAY"]["sim_ns"] == delay * 5.0
     assert by["HOP"]["cycles"] == sl.HOP_DELAY_CYCLES
     assert by["HOP"]["sim_ns"] == 25.0
-    if su is None:
-        # delay 0: sample point precedes every change, so no bit has a change before it
-        assert by["tSU,MISO"]["sim_ns"] is None
-    else:
-        # pipelined (delay 6 > half period 4): sample lands after next launch
-        assert by["tSU,MISO"]["sim_ns"] == su
-        assert by["tH,MISO"]["sim_ns"] == hd
+    # delay 6 > half period 4: pipelined, sample lands after the next launch
+    assert by["tSU,MISO"]["sim_ns"] == su
+    assert by["tH,MISO"]["sim_ns"] == hd
+    if delay == 0:
+        # sampled 2 cycles before the change: a violation, so negative margin and worst
+        assert by["tSU,MISO"]["margin_ns"] < 0 and by["tSU,MISO"]["worst"]
+        assert sum(r["worst"] for r in rows) == 1
+
+
+def test_miso_rows_none_when_miso_constant():
+    rows = measure_timing(_waveform(1, FRAME)[0], SpiConfig(1, 200, 4, 2))
+    by = {r["symbol"]: r for r in rows}
+    assert by["tSU,MISO"]["sim_ns"] is None and by["tH,MISO"]["sim_ns"] is None
 
 
 def test_derived_rows_never_worst():

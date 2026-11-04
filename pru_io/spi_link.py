@@ -280,14 +280,16 @@ def measure_timing(edges, cfg: SpiConfig, frame_index: int = -1) -> list[dict]:
         # PRU0 samples each bit at its MISO launch edge + miso_delay cycles
         # (Ruling R7), which may fall after the next launch edge when pipelined.
         su, hd = [], []
-        for sp in (lc + cfg.miso_delay for lc in launch):
-            lc = sp - cfg.miso_delay
-            before = [x for x in ic if lc <= x <= sp]    # change belonging to this bit
+        bounds = launch[1:] + [float("inf")]
+        for lc, nxt in zip(launch, bounds):
+            sp = lc + cfg.miso_delay
+            own = [x for x in ic if lc <= x < nxt]       # this bit's MISO change
+            if not own:
+                continue                                 # constant MISO: nothing to measure
+            su.append(sp - own[0])                       # negative: sampled before the change
             after = [x for x in ic if x > sp]
-            if before:
-                su.append(sp - max(before))
-                if after:
-                    hd.append(min(after) - sp)
+            if after:
+                hd.append(min(after) - sp)
         if su:
             sim["tSU,MISO"] = min(su) * ns
         if hd:
