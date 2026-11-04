@@ -30,6 +30,11 @@ its SD channels sample the PdmLink clock on sd8_clk (``CLK_SEL`` = 0,
 to 8 channels must fit 10 417 cycles. The unmodified 8-channel source is
 only assembled (simulator and clpru).
 
+Final review fixes: a lost IPC scratchpad XOUT of RTU1 or PRU1 (no SPAD
+arbitration on silicon) must not hang the pair (``lose_spad_write``), and
+PRU0 counts lost SD samples in SD_OVF_COUNT (R31[29] with the TRM meaning,
+``trm_shadow_ovf``).
+
 Shared helpers: ``load_fw``, ``write_header``, ``write_clip_buffer``,
 ``spad_batches``, ``ref_bits``, ``shared``, ``pair_sim``, ``run_pair``,
 ``GpoProbe``, ``RxRig``.
@@ -840,6 +845,166 @@ def test_seq_wraps_at_16_bits(sim_config):
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Final review fix I1: a lost IPC scratchpad write must not hang the pair
+# ---------------------------------------------------------------------------
+#
+# The IPC scratchpad has no hardware arbitration (design section 5), and
+# whether two cores' same-cycle XOUTs are byte-merged is not established. So
+# a write may be lost when RTU1 and PRU1 XOUT in the same cycle. The
+# simulator merges them, so the tests drop one chosen XOUT instead
+# (``lose_spad_write``) and check that the pair recovers: the clock starts
+# (or stays on schedule), BATCH_COUNT rises, the pins still carry the
+# reference bits, and UNDERRUN_COUNT equals the silence batches played.
+
+UNDERRUN_STALL = 2 * BATCH_CYC     # RTU1 stall at its 2nd fetch: one silence batch
+
+
+class _LossyXfr:
+    """One core's view of the XFR bus that loses one chosen IPC SPAD XOUT.
+
+    Every IPC scratchpad XOUT of the core is numbered: ``lose(index, pc,
+    offset, length)`` (index from 0, pc of the XOUT) selects the write that
+    does not reach the scratchpad. Only the first selected write is lost;
+    it is recorded in ``lost`` as ``(core cycle, offset, data)``.
+    """
+
+    def __init__(self, inner, core, lose):
+        self._inner, self._core, self._lose = inner, core, lose
+        self.count = 0
+        self.lost: list[tuple[int, int, bytes]] = []
+
+    def xout(self, device_id, offset, data):
+        if device_id == IPC_SPAD:
+            index = self.count
+            self.count += 1
+            if not self.lost and self._lose(index, self._core.pc, offset, len(data)):
+                self.lost.append((self._core.step_start_cycle, offset, bytes(data)))
+                return None
+        return self._inner.xout(device_id, offset, data)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def lose_spad_write(sim, name: str, lose) -> _LossyXfr:
+    """Install a ``_LossyXfr`` on core *name* (see there for *lose*)."""
+    core = sim.cores[name]
+    view = _LossyXfr(core.xfr, core, lose)
+    core.xfr = view
+    return view
+
+
+def first_xout(core, label: str) -> int:
+    """pc of the first XOUT at or after *label*."""
+    pc = core._parser.labels[label]
+    while core.instructions[pc].opcode != "XOUT":
+        pc += 1
+    return pc
+
+
+def assert_recovered(sim, probe, clips, *, silent_ok: bool):
+    """Clock on schedule, pins = reference (silence batches removed), the
+    stream running at the end, UNDERRUN_COUNT = silence batches played,
+    BATCH_COUNT rising."""
+    before = read_header(sim.memory)["batch_count"]
+    run_pair(sim, 3 * BATCH_CYC)
+    hdr = read_header(sim.memory)
+    assert hdr["batch_count"] >= before + 2, "BATCH_COUNT frozen"
+    clk = probe.clock()
+    assert clk and clk[0][1], "the clock never started"
+    n = len(clk) // 2 - 1
+    assert [(c, rising) for c, rising, _ in clk[:2 * n]] == pdm8_clock_edges(n, clk[0][0])
+    played = split_batches(probe.period_bytes())
+    silent = [i for i, b in enumerate(played) if b == SILENCE]
+    audio = [b for b in played if b != SILENCE]
+    assert silent_ok or silent == []
+    assert len(audio) >= 6
+    assert audio == ref_batches(clips, len(audio))
+    assert not silent or len(played) - silent[-1] > 4, "no audio after the gap"
+    assert hdr["underrun_count"] == len(silent)
+    return silent
+
+
+def test_pru1_start_writes_once_per_nonce(sim_config):
+    """PRU1's start loop XOUTs only when the scratchpad lacks its bytes:
+    alone on a fresh SPAD (seq 0, R2.b0 = 0 = its cleared ack) it writes
+    only its init clear; with RTU1 started, one echo of the nonce and the
+    ack of batch 0 follow before the first clock edge. (The earlier loop
+    echoed every 6 cycles, each a chance to collide with RTU1's XOUT.)"""
+    clips = tone_clips(4)
+    sim, probe = pair_sim(sim_config, clips)
+    view = lose_spad_write(sim, "pru1", lambda i, pc, off, n: False)
+    run_alone(sim, "pru1", 20_000)
+    assert view.count == 1                          # the init clear only
+    sim.reset("rtu1")
+    run_pair(sim, cycles_for(BATCH), until=lambda: bool(probe.clock()))
+    assert probe.clock(), "the clock never started"
+    assert view.count == 3                          # + echo, + ack of batch 0
+    assert view.lost == []
+
+
+@pytest.mark.parametrize("name, nth, stale", [
+    ("rtu1", 0, False),        # RTU1's start nonce {c, 0, ..., 0}, seq 0
+    ("rtu1", 1, False),        # RTU1's batch 0, seq 1
+    ("pru1", 1, False),        # PRU1's echo of the nonce
+    ("pru1", 0, True),         # PRU1's clear of R9.b2/b3, on a stale SPAD
+])
+def test_lost_spad_write_at_start_recovers(sim_config, name, nth, stale):
+    """One start-handshake XOUT is lost (as in a same-cycle collision):
+    RTU1 reads its own bytes back and writes again, PRU1 echoes and clears
+    until the scratchpad holds its bytes, so the clock starts and the
+    stream is the reference with no underrun."""
+    clips = tone_clips(4)
+    sim, probe = pair_sim(sim_config, clips)
+    if stale:
+        sim.xfr.xout(IPC_SPAD, 0, bytes([0x5A] * BATCH) + struct.pack("<H", 0x1234)
+                     + bytes([9, 0x33]))
+    view = lose_spad_write(sim, name, lambda i, pc, off, n: i == nth)
+    run_pair(sim, cycles_for(4 * BATCH))
+    assert len(view.lost) == 1
+    _, off, data = view.lost[0]
+    if name == "rtu1":
+        assert (off, len(data)) == (0, 30)
+        assert struct.unpack_from("<H", data, 28)[0] == nth      # seq 0 / seq 1
+    else:
+        assert off in (30, 31)
+    assert_recovered(sim, probe, clips, silent_ok=False)
+    assert sim.xfr.xin(IPC_SPAD, 30, 1)[0] == 0
+
+
+@pytest.mark.parametrize("lost", ["rtu1_publish", "pru1_underrun", "pru1_ack"])
+def test_lost_spad_write_on_underrun_recovers(sim_config, lost):
+    """RTU1 stalls so that PRU1 plays one silence batch; then one XOUT is lost:
+    - rtu1_publish: RTU1's late batch, which can land in the same cycle as
+      PRU1's R9.b2 XOUT of the underrun slot;
+    - pru1_underrun: PRU1's R9.b2 (underrun count) XOUT;
+    - pru1_ack: PRU1's first ack after the stall began.
+    The pair recovers: the clock stays on schedule, the stream continues
+    with the reference, BATCH_COUNT rises and UNDERRUN_COUNT equals the
+    silence batches. RTU1 reads its seq back and writes again; PRU1's
+    slot XOUTs carry both of its bytes (R9.b2 and the last ack), so the
+    next slot repairs a lost one: here the silence slot of the stall."""
+    clips = tone_clips(2)
+    sim, probe = pair_sim(sim_config, clips)
+    pru1 = sim.cores["pru1"]
+    armed = [False]
+    if lost == "rtu1_publish":
+        view = lose_spad_write(sim, "rtu1", lambda i, pc, off, n: armed[0] and n == 30)
+    elif lost == "pru1_underrun":
+        pc_under = first_xout(pru1, "SLOT_UNDER")
+        view = lose_spad_write(sim, "pru1", lambda i, pc, off, n: pc == pc_under)
+    else:
+        pc_ack = first_xout(pru1, "P27_LD")
+        view = lose_spad_write(sim, "pru1", lambda i, pc, off, n: armed[0] and pc == pc_ack)
+    _stall_rtu1_at_fetch(sim, 2, UNDERRUN_STALL)
+    armed[0] = True
+    run_pair(sim, 10 * BATCH_CYC)
+    assert len(view.lost) == 1
+    silent = assert_recovered(sim, probe, clips, silent_ok=True)
+    assert len(silent) == 1, silent
+
+
 # Task 4: PRU0 receiver (pru0_rx.asm), RTU1 + PRU1 + PRU0 in lockstep
 # ---------------------------------------------------------------------------
 #
