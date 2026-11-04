@@ -1254,3 +1254,41 @@ def test_rx_build_options_guarded(overrides, guard):
             if (m := re.match(r"line (\d+): unknown mnemonic or unsupported directive '\.emsg'", e))]
     assert hits, errors
     assert {lines[n - 1].strip() for n in hits} == {f'.emsg "{guard}"'}, errors
+
+
+# ---------------------------------------------------------------------------
+# Task 5: the clip buffer header made by tools/make_clip_buffer.py
+# ---------------------------------------------------------------------------
+
+CLIP_HEADER = PROJECT / "mcuplus" / "pdm_clips.h"
+CLIP_DIR = PROJECT / "clips"
+CLIP_FRAMES = 8000
+# Channel order of the buffer: ch0 speech, ch1 chirp_lin, ch2 chirp_log,
+# ch3 1 kHz, ch4 3 kHz, ch5 500 Hz, ch6 2 kHz, ch7 5 kHz.
+CLIP_FILES = ["speech_librivox.wav", "chirp_lin_100_7000.wav",
+              "chirp_log_100_7000.wav", "tone_1000.wav", "tone_3000.wav",
+              "tone_500.wav", "tone_2000.wav", "tone_5000.wav"]
+
+
+def test_clip_buffer_header_matches_loader():
+    """Every frame x channel of ``mcuplus/pdm_clips.h`` equals the clip of
+    that channel as ``pdm_layout.load_clip`` returns it (normalised to peak
+    16384), repeated from its start up to 8000 frames."""
+    from pdm import pdm_layout
+
+    text = CLIP_HEADER.read_text()
+    assert re.search(r"#define\s+PDM_CLIP_FRAMES\s+8000\b", text)
+    m = re.search(r"int16_t\s+pdm_clip_buffer\s*\[\s*8000\s*\*\s*8\s*\]"
+                  r"[^=]*=\s*\{(.*?)\}\s*;", text, re.S)
+    assert m, "pdm_clip_buffer definition not found"
+    values = [int(v) for v in re.findall(r"-?\d+", m.group(1))]
+    assert len(values) == CLIP_FRAMES * N_CH
+
+    for ch, name in enumerate(CLIP_FILES):
+        clip = pdm_layout.load_clip(CLIP_DIR / name)
+        assert 0 < len(clip), name
+        expect = [clip[f % len(clip)] for f in range(CLIP_FRAMES)]
+        got = values[ch::N_CH]
+        bad = next((f for f in range(CLIP_FRAMES) if got[f] != expect[f]), None)
+        assert bad is None, (f"ch{ch} {name}: frame {bad} is {got[bad]}, "
+                             f"expected {expect[bad]}")
