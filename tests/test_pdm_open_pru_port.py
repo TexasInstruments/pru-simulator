@@ -19,15 +19,29 @@ Task 3 (second part): PRU1 ``pru1_pdm.asm`` with RTU1 in lockstep
 start order and stale scratchpad, underrun, rerun, and that PRU1 touches
 no memory.
 
-Shared helpers for the later tasks (PRU0 receiver):
-``load_fw``, ``write_header``, ``write_clip_buffer``, ``spad_batches``,
-``ref_bits``, ``shared``, ``pair_sim``, ``run_pair``, ``GpoProbe``.
+Task 4 (third part): PRU0 ``pru0_rx.asm`` with RTU1 + PRU1, all three
+cores in lockstep (``RxRig``). PRU0 is loaded with the load-time overrides
+``N_CH`` = 3 and SD map {0, 1, 2} (the simulator models SD channels 0..2);
+its SD channels sample the PdmLink clock on sd8_clk (``CLK_SEL`` = 0,
+``clock_net=8``). The interleaved ping-pong PCM must equal
+``reference.pcm_chain_for_channel`` of the bits each channel sampled,
+``HALF_SEQ`` must be published only once every channel has written frame
+63 of the half, once per 64 samples, and the worst SD window extrapolated
+to 8 channels must fit 10 417 cycles. The unmodified 8-channel source is
+only assembled (simulator and clpru).
+
+Shared helpers: ``load_fw``, ``write_header``, ``write_clip_buffer``,
+``spad_batches``, ``ref_bits``, ``shared``, ``pair_sim``, ``run_pair``,
+``GpoProbe``, ``RxRig``.
 """
 import math
 import os
 import re
+import shutil
 import struct
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -37,6 +51,7 @@ sys.path.insert(0, str(REPO / "source"))
 
 from pdm import reference as R           # noqa: E402
 from simulator import Simulator          # noqa: E402
+from tests.pdm_helpers import link_reference, record_reinits  # noqa: E402
 
 OPEN_PRU = Path(os.environ.get("OPEN_PRU_PATH", "~/GitHub/open-pru")).expanduser()
 PROJECT = OPEN_PRU / "examples" / "electronica2026" / "pdm_audio" / "pdm_audio"
@@ -822,3 +837,420 @@ def test_seq_wraps_at_16_bits(sim_config):
     assert played == ref_batches(clips, len(played))
     assert sim.xfr.xin(IPC_SPAD, 30, 1)[0] == 0
     assert read_header(sim.memory)["underrun_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Task 4: PRU0 receiver (pru0_rx.asm), RTU1 + PRU1 + PRU0 in lockstep
+# ---------------------------------------------------------------------------
+#
+# All three cores run in lockstep at 333.333 MHz with PRU1 as the lead
+# (``step_paced_many("pru1", ["rtu1", "pru0"], ...)``): RTU1 <-> PRU1 has
+# feedback, so run-ahead does not apply. PRU1's clock (GPO0) drives the
+# SD clock net 8 (sd8_clk = GPI16) and its data pins GPO 1, 2, 6 drive PRU0
+# SD channels 0, 1, 2 (PdmLink, keep_history). PRU0 is pru0_rx.asm with the
+# load-time overrides RX_OVERRIDES. The reference of logical channel c is
+# ``pcm_chain_for_channel(link.sampled_bits[c][reinit:], c)``: the parity
+# of c selects the FIR stagger.
+#
+# One shared run (``rx_run``, 3 halves = 192 frames, about 12 ms of audio)
+# serves the PCM, HALF_SEQ, rate, budget and memory tests.
+
+RX_N_CH = 3                                      # SD channels the simulator models
+RX_OVERRIDES = {"N_CH": RX_N_CH, "SD_CH_0": 0, "SD_CH_1": 1, "SD_CH_2": 2}
+RX_DATA_PINS = {c: DATA_PINS[c] for c in range(RX_N_CH)}   # SD ch -> PRU1 GPO
+SD8_CLK_NET = 8
+SD_MAP_8CH = [0, 1, 2, 3, 5, 6, 7, 8]
+HALF_FRAMES = 64
+FRAME_BYTES = 32
+SENTINEL = 0x5A5A5A5A                            # not a 24-bit sample
+RX_HALVES = 3                                    # 192 frames
+WINDOW_CYC = 10417                               # SINC3 window: 96 x 108.507 = 10416.7
+HALF_CYC = 128 * 96 * (T_SH * FRAC_MAX + FRAC_ACC) / FRAC_MAX   # 64 PCM samples
+PDM_PERIOD_MAX = T_SH + 1                        # 109 cycles
+FIR_STEP_MIN = 500                               # a step above this ran the FIR
+CLPRU = Path("~/ti/ti-cgt-pru_2.3.3/bin/clpru").expanduser()
+PDM_DIR = REPO / "source" / "pdm"
+OPEN_PRU_TOOL = PROJECT / "tools" / "gen_fir_coefs.py"
+
+
+def _s32(v: int) -> int:
+    return v - (1 << 32) if v & 0x8000_0000 else v
+
+
+class _RxMemory:
+    """PRU0's view of the MemoryBus: logs (kind, addr, length) of every access
+    and calls *on_half_seq* just before a write to the header's HALF_SEQ."""
+
+    def __init__(self, inner, half_seq_addr, on_half_seq):
+        self._inner = inner
+        self._half_seq = half_seq_addr
+        self._on_half_seq = on_half_seq
+        self.accesses: set[tuple[str, int, int]] = set()
+
+    def read(self, addr, length, *, requester=None):
+        self.accesses.add(("r", addr, length))
+        return self._inner.read(addr, length, requester=requester)
+
+    def write(self, addr, data):
+        self.accesses.add(("w", addr, len(data)))
+        if addr == self._half_seq:
+            self._on_half_seq(struct.unpack("<I", bytes(data[:4]))[0])
+        return self._inner.write(addr, data)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+class RxRig:
+    """RTU1 rtu1_mod + PRU1 pru1_pdm + PRU0 pru0_rx (3 channels), instrumented.
+
+    - ``pubs``: one entry per HALF_SEQ store, taken just before it lands:
+      PRU0 cycle, value, PRU0 channel index r21, PCM_COUNT[0..2] and the
+      bytes of both halves (0x1000 from HALF_A) at that instant; the init
+      clear (value 0) goes to ``clears`` instead;
+    - ``marks``: PRU0 spin entries / exits at PDM_WAIT (kind, r21, cycle);
+    - ``pcm[c]``: samples of channel c read from the halves while running
+      (``drain``, by PCM_COUNT[c]).
+    With *attach* False the PdmLink is not attached yet (``attach``), so
+    PRU0 can run alone (the link refuses a consumer ahead of its producer).
+    """
+
+    def __init__(self, sim_config, clips, *, attach: bool = True,
+                 stale_header: bool = False):
+        self.sim, self.probe = sim, _ = pair_sim(sim_config, clips)
+        s = self.s = shared()
+        self.base = s["PDM8_SHARED_BASE"]
+        self.half_a = self.base + s["PDM8_HALF_A"]
+        sim.memory.write(self.half_a, struct.pack("<I", SENTINEL) * (2 * HALF_FRAMES * 8))
+        if stale_header:                          # an earlier run's counters
+            sim.memory.write(self.base + s["PDM8_HDR_HALF_SEQ"], struct.pack("<I", 0x1234))
+            sim.memory.write(self.base + s["PDM8_HDR_PCM_COUNT"],
+                             struct.pack("<8I", *range(1000, 1008)))
+        for ch in range(RX_N_CH):
+            sim.set_sd_source("pru0", ch, "pin")
+            sim.set_sd_source("pru1", ch, "off")
+        sim.gpcfg_write("pru0", 3)                # PRU0 GPI mux: SD
+        load_fw(sim, "pru0", "pru0_rx", RX_OVERRIDES)
+        core = self.core = sim.cores["pru0"]
+        self.wait = core._parser.labels["PDM_WAIT"]
+        self.pubs: list[tuple[int, int, int, list[int], bytes]] = []
+        self.clears: list[int] = []
+        self.marks: list[tuple[str, int, int]] = []
+        self.pcm: dict[int, list[int]] = {c: [] for c in range(RX_N_CH)}
+        self.link = None
+        self.reinits = None
+        regs = core.registers.regs
+
+        def on_half_seq(value):
+            if value == 0:                        # the init clear
+                self.clears.append(core.step_start_cycle)
+                return
+            halves = bytes(sim.memory.read(self.half_a, 2 * HALF_FRAMES * FRAME_BYTES)[0])
+            self.pubs.append((core.step_start_cycle, value, regs[21],
+                              self.counts(), halves))
+
+        self.mem = _RxMemory(core.memory, self.base + s["PDM8_HDR_HALF_SEQ"], on_half_seq)
+        core.memory = self.mem
+        # Spin entries and exits are single step()s (a skipped span keeps
+        # pc at PDM_WAIT), so wrapping step() sees every one.
+        step = core.step
+
+        def recording_step():
+            pc0 = core.pc
+            step()
+            pc1 = core.pc
+            if pc0 == self.wait and pc1 != self.wait:
+                self.marks.append(("exit", regs[21], core.counters.cycles))
+            elif pc1 == self.wait and pc0 != self.wait:
+                self.marks.append(("entry", regs[21], core.counters.cycles))
+
+        core.step = recording_step
+        if attach:
+            self.attach()
+
+    def attach(self):
+        self.link = self.sim.attach_pdm_link(
+            "pru1", "pru0", clock_pin=CLK_PIN, data_pins=RX_DATA_PINS,
+            keep_history=True, clock_net=SD8_CLK_NET)
+        self.reinits = record_reinits(self.sim, self.link, range(RX_N_CH))
+
+    def counts(self) -> list[int]:
+        return read_header(self.sim.memory)["pcm_count"][:RX_N_CH]
+
+    def sample(self, n: int, c: int, halves: bytes | None = None) -> int:
+        """Sample n of channel c: half (n // 64) & 1, frame n % 64."""
+        off = (n & (2 * HALF_FRAMES - 1)) * FRAME_BYTES + 4 * c
+        if halves is None:
+            raw = bytes(self.sim.memory.read(self.half_a + off, 4)[0])
+        else:
+            raw = halves[off:off + 4]
+        return _s32(struct.unpack("<I", raw)[0])
+
+    def drain(self):
+        for c, count in enumerate(self.counts()):
+            have = len(self.pcm[c])
+            assert 0 <= count - have <= HALF_FRAMES, (c, have, count)
+            self.pcm[c] += [self.sample(n, c) for n in range(have, count)]
+
+    def run_until(self, done, chunk: int = 5000):
+        sim = self.sim
+        while not done():
+            sim.step_paced_many("pru1", ["rtu1", "pru0"], chunk, idle_skip=True)
+            _check(sim, "pru1", "rtu1", "pru0")
+            self.drain()
+
+    def reference(self, c: int) -> list[int]:
+        if len(self.reinits[c]) == 0:            # linked after PRU0's reinit
+            return R.pcm_chain_for_channel(self.link.sampled_bits[c], c)
+        return link_reference(self.link, self.reinits, c)
+
+    def step_costs(self) -> list[tuple[int, int]]:
+        """[(ch, cycles from the spin exit of ch to the next spin entry)]."""
+        return [(a[1], b[2] - a[2]) for a, b in zip(self.marks, self.marks[1:])
+                if a[0] == "exit" and b[0] == "entry"]
+
+    def spins(self) -> list[tuple[int, int]]:
+        """[(ch, cycles from the spin entry of ch to its exit)]."""
+        return [(a[1], b[2] - a[2]) for a, b in zip(self.marks, self.marks[1:])
+                if a[0] == "entry" and b[0] == "exit"]
+
+    def windows(self) -> list[int]:
+        """Cycles from each spin exit of ch0 to the next spin entry of ch0."""
+        exits = [c for kind, ch, c in self.marks if kind == "exit" and ch == 0]
+        entries = [c for kind, ch, c in self.marks if kind == "entry" and ch == 0]
+        out, j = [], 0
+        for t in exits:
+            while j < len(entries) and entries[j] <= t:
+                j += 1
+            if j < len(entries):
+                out.append(entries[j] - t)
+        return out
+
+
+_RX_RUNS: dict[str, RxRig] = {}
+
+
+def rx_run(sim_config) -> RxRig:
+    """The shared 3-channel run: until HALF_SEQ = RX_HALVES (192 frames)."""
+    if "run" not in _RX_RUNS:
+        rig = RxRig(sim_config, tone_clips(160))
+        t0 = time.monotonic()
+        rig.run_until(lambda: len(rig.pubs) >= RX_HALVES)
+        rig.drain()
+        rig.seconds = time.monotonic() - t0
+        print(f"\nshared 3-core run: {RX_HALVES} halves, "
+              f"{rig.core.counters.cycles} PRU0 cycles "
+              f"({rig.core.counters.cycles / CLOCK_MHZ / 1000:.2f} ms), "
+              f"{rig.seconds:.1f} s wall")
+        _RX_RUNS["run"] = rig
+    return _RX_RUNS["run"]
+
+
+def test_fir_coefs_regenerate_identically(tmp_path):
+    """open-pru tools/gen_fir_coefs.py (default paths) regenerates
+    firmware/fir_coefs.inc byte for byte, and it equals the pru-simulator
+    copy that reference.fir_table reads."""
+    out = tmp_path / "fir_coefs.inc"
+    subprocess.run([sys.executable, str(OPEN_PRU_TOOL), "--out", str(out)], check=True)
+    shipped = (FW / "fir_coefs.inc").read_bytes()
+    assert out.read_bytes() == shipped
+    assert shipped == (PDM_DIR / "fir_coefs.inc").read_bytes()
+    assert (FW / "decimation_fir.h").read_bytes() == (PDM_DIR / "decimation_fir.h").read_bytes()
+    assert R.fir_table(FW / "fir_coefs.inc") == R.fir_table()
+
+
+def test_interleaved_pcm_matches_reference(sim_config):
+    rig = rx_run(sim_config)
+    assert rig.counts() == [RX_HALVES * HALF_FRAMES] * RX_N_CH
+    for c in range(RX_N_CH):
+        assert len(rig.reinits[c]) == 1
+        got = rig.pcm[c]
+        assert len(got) >= RX_HALVES * HALF_FRAMES
+        ref = rig.reference(c)
+        assert len(ref) >= len(got)
+        if got != ref[:len(got)]:
+            n = next(i for i, (a, b) in enumerate(zip(got, ref)) if a != b)
+            pytest.fail(f"ch{c}: sample {n} = {got[n]}, reference {ref[n]}")
+        # Not a trivial match: the tone reaches about 0.5 FS (+-2^22).
+        assert max(abs(v) for v in got[64:]) > 1 << 21, c
+    # The SD channels sample sd8_clk on the rising edge, ACC3, OSR 96.
+    regs = rig.core.io_port.sd_filter.registers
+    for ch in range(RX_N_CH):
+        assert (regs.get_clk_sel(ch), regs.get_clk_inv(ch)) == (0, False)
+
+
+def test_half_published_only_when_complete(sim_config):
+    """At each HALF_SEQ store: all channels' samples of the published half
+    (frame 63 included) equal the reference, every PCM_COUNT is exactly
+    64 * HALF_SEQ, and the other half still holds the half before (or its
+    initial contents): nothing of the next half is written yet."""
+    rig = rx_run(sim_config)
+    refs = [rig.reference(c) for c in range(RX_N_CH)]
+    assert [p[1] for p in rig.pubs] == list(range(1, RX_HALVES + 1))
+    assert len(rig.clears) == 1 and rig.clears[0] < rig.pubs[0][0]
+    for cycle, seq, ch, counts, halves in rig.pubs:
+        h = (seq - 1) & 1
+        assert counts == [HALF_FRAMES * seq] * RX_N_CH, (seq, counts)
+        # The last channel to finish is odd channel 1 (FIR stagger), not
+        # channel N_CH - 1 = 2.
+        assert ch == 1, (seq, ch)
+        for c in range(RX_N_CH):
+            first = HALF_FRAMES * (seq - 1)
+            col = [rig.sample(first + f, c, halves) for f in range(HALF_FRAMES)]
+            assert col == refs[c][first:first + HALF_FRAMES], (seq, c)
+            assert col[-1] == refs[c][first + HALF_FRAMES - 1]       # frame 63
+            other = [_s32(struct.unpack_from("<I", halves,
+                                             (1 - h) * HALF_FRAMES * FRAME_BYTES
+                                             + f * FRAME_BYTES + 4 * c)[0])
+                     for f in range(HALF_FRAMES)]
+            if seq == 1:
+                assert other == [_s32(SENTINEL)] * HALF_FRAMES, c
+            else:
+                prev = first - HALF_FRAMES
+                assert other == refs[c][prev:prev + HALF_FRAMES], (seq, c)
+        # Columns of channels 3..7 are untouched at N_CH = 3.
+        for f in range(2 * HALF_FRAMES):
+            row = halves[f * FRAME_BYTES:(f + 1) * FRAME_BYTES]
+            assert row[4 * RX_N_CH:] == struct.pack("<I", SENTINEL) * (8 - RX_N_CH)
+    assert read_header(rig.sim.memory)["half_seq"] == RX_HALVES
+
+
+def test_half_seq_rate(sim_config):
+    """HALF_SEQ steps by 1 every 64 PCM samples: every 128 SD windows =
+    1 333 333.3 cycles = 4 ms at 333.333 MHz (data-dependent FIR cost and
+    PDM-edge quantisation: a few cycles)."""
+    rig = rx_run(sim_config)
+    cycles = [p[0] for p in rig.pubs]
+    gaps = [b - a for a, b in zip(cycles, cycles[1:])]
+    assert len(gaps) == RX_HALVES - 1
+    for gap in gaps:
+        assert abs(gap - HALF_CYC) < 2 * 64 + PDM_PERIOD_MAX, gap
+        assert abs(gap / CLOCK_MHZ / 1000 - 4.0) < 0.001
+    print(f"\nHALF_SEQ gaps {gaps} cycles = "
+          f"{[round(g / CLOCK_MHZ / 1000, 5) for g in gaps]} ms (nominal {HALF_CYC:.1f})")
+
+
+def test_rx_writes_only_its_memory(sim_config):
+    """PRU0 reads only its DRAM0 state (0x7F8..0x1A00); it writes that, the
+    SD configuration, HALF_SEQ, PCM_COUNT[0..7] and the two halves. It never
+    touches DRAM1 (the 0x2000 window, RTU1's scratch at 0x3700..0x37FF), the
+    rest of the header or the clip buffer."""
+    rig = rx_run(sim_config)
+    s = rig.s
+    base = rig.base
+    dram0 = (0x7F8, 0x1A00)
+    sd_cfg = (0x26048, 0x26048 + 9 * 8)
+    allowed_w = [dram0, sd_cfg,
+                 (base + s["PDM8_HDR_HALF_SEQ"], base + s["PDM8_HDR_HALF_SEQ"] + 4),
+                 (base + s["PDM8_HDR_PCM_COUNT"], base + s["PDM8_HDR_PCM_COUNT"] + 32),
+                 (rig.half_a, rig.half_a + 2 * HALF_FRAMES * FRAME_BYTES)]
+    assert rig.mem.accesses
+    for kind, addr, length in rig.mem.accesses:
+        ranges = allowed_w if kind == "w" else [dram0]
+        assert any(lo <= addr and addr + length <= hi for lo, hi in ranges), \
+            (kind, hex(addr), length)
+    scratch = rig.sim.cores["rtu1"]._map_data_addr(s["PDM8_RTU1_SCRATCH"])
+    assert scratch == 0x3700
+    assert not any(addr < 0x4000 and addr + length > 0x2000
+                   for _, addr, length in rig.mem.accesses)
+
+
+def test_rx_idles_without_clock(sim_config):
+    """PRU0 alone (no clock) for 1 M cycles: PCM_COUNT all 0 and HALF_SEQ 0,
+    the stale values of an earlier run cleared, no fault. RTU1 and PRU1
+    started later: PRU0's PCM equals the reference from the first clock."""
+    rig = RxRig(sim_config, tone_clips(160), attach=False, stale_header=True)
+    run_alone(rig.sim, "pru0", 1_000_000)
+    hdr = read_header(rig.sim.memory)
+    assert hdr["pcm_count"] == [0] * 8
+    assert hdr["half_seq"] == 0
+    assert rig.pubs == [] and len(rig.clears) == 1       # only the init clear
+    assert hdr["magic"] == shared()["PDM8_MAGIC"]   # the R5F's fields stay
+    sim = rig.sim
+    sim.reset("rtu1")
+    sim.reset("pru1")
+    rig.attach()
+    rig.run_until(lambda: min(rig.counts()) >= 8)
+    for c in range(RX_N_CH):
+        got = rig.pcm[c]
+        assert got == rig.reference(c)[:len(got)], c
+
+
+def test_worst_window_budget_8ch(sim_config):
+    """Worst SD window extrapolated from the 3-channel run to 8 channels:
+    8 * w_comb + 4 * w_fir + 7 * spin + overhead <= 10 417 cycles.
+
+    Paths run from a channel's spin exit to its next spin entry. w_comb is
+    the worst comb-only step and w_fir the extra of the worst FIR step
+    (both over ch0 and ch1: ch1 is the last to finish a half at N_CH = 3,
+    so its steps include the HALF_SEQ store); overhead is what the last
+    channel adds (round wrap); spin is the worst wait of a channel whose
+    shadow already latched (ch1, ch2). At 8 channels a window runs 8
+    combs, 4 FIRs (FIR stagger) and 7 such spins (ch1..ch7)."""
+    rig = rx_run(sim_config)
+    worst3 = max(rig.windows()[8:])
+    worst_path = {}
+    for ch, cost in rig.step_costs()[8 * RX_N_CH:]:       # past the warm-up rounds
+        key = (ch, cost >= FIR_STEP_MIN)
+        worst_path[key] = max(worst_path.get(key, 0), cost)
+    assert len(worst_path) == 2 * RX_N_CH, worst_path
+    last = RX_N_CH - 1
+    w_comb = max(worst_path[(c, False)] for c in range(last))
+    w_fir = max(worst_path[(c, True)] for c in range(last)) - w_comb
+    overhead = max(worst_path[(last, False)] - w_comb,
+                   worst_path[(last, True)] - w_comb - w_fir, 0)
+    spin = max(cost for ch, cost in rig.spins()[RX_N_CH:] if ch != 0)
+    assert 3 * w_comb + 2 * w_fir + 2 * spin + overhead >= worst3
+    est8 = 8 * w_comb + 4 * w_fir + 7 * spin + overhead
+    # Pessimistic: every FIR input negative (+1 cycle per tap, +64 per FIR)
+    # and the 8 shadows latched one PDM period apart (one extra spin).
+    bound8 = 8 * w_comb + 4 * (w_fir + 64) + 7 * spin + overhead + PDM_PERIOD_MAX
+    print(f"\nN_CH=3: worst window {worst3} cycles; w_comb {w_comb}, w_fir {w_fir}, "
+          f"spin {spin}, overhead {overhead}; N_CH=8: 8*{w_comb} + 4*{w_fir} + "
+          f"7*{spin} + {overhead} = {est8} ({100 * est8 / WINDOW_CYC:.1f} % of "
+          f"{WINDOW_CYC}); pessimistic {bound8} ({100 * bound8 / WINDOW_CYC:.1f} %)")
+    assert est8 <= WINDOW_CYC
+    assert bound8 <= WINDOW_CYC
+
+
+def test_8ch_build_assembles(tmp_path):
+    """The shipped source is the 8-channel build, SD map {0,1,2,3,5,6,7,8}:
+    it loads in the simulator (it would spin on SD 3+ there, so it is not
+    run) and assembles with clpru without a diagnostic."""
+    src = (FW / "pru0_rx.asm").read_text()
+    assert re.search(r"^N_CH\s+\.set\s+8\b", src, re.M)
+    sd_map = [int(re.search(rf"^SD_CH_{k}\s+\.set\s+(\d+)", src, re.M).group(1))
+              for k in range(8)]
+    assert sd_map == SD_MAP_8CH
+    sim = Simulator()
+    assert sim.load("pru0", src, include_paths=[str(FW)]) == []
+    if not CLPRU.exists():
+        pytest.skip(f"clpru not found at {CLPRU}")
+    cgt_inc = CLPRU.parent.parent / "include"
+    res = subprocess.run([str(CLPRU), "-v4", f"-I{FW}", f"-I{cgt_inc}",
+                          f"--obj_directory={tmp_path}", str(FW / "pru0_rx.asm")],
+                         capture_output=True, text=True, cwd=tmp_path)
+    out = res.stdout + res.stderr
+    print(f"\nclpru -v4 pru0_rx.asm: exit {res.returncode}\n{out}")
+    assert res.returncode == 0, out
+    assert not re.search(r"error|warning", out, re.I), out
+    assert (tmp_path / "pru0_rx.obj").exists()
+
+
+@pytest.mark.parametrize("overrides, guard", [
+    ({"N_CH": 9}, "N_CH must be 1..8"),
+    ({"SD_CH_3": 9}, "SD_CH_k must be an SD channel 0..8"),
+    ({"SD_CH_2": 1}, "SD_CH_k must be distinct"),
+])
+def test_rx_build_options_guarded(overrides, guard):
+    """A bad build option fails the load at its .emsg guard (the simulator
+    assembler has no .emsg: the guard shows as an unknown directive)."""
+    src = (FW / "pru0_rx.asm").read_text()
+    for name, value in overrides.items():
+        src = set_option(src, name, value)
+    errors = Simulator().load("pru0", src, include_paths=[str(FW)])
+    lines = src.splitlines()
+    hits = [int(m.group(1)) for e in errors
+            if (m := re.match(r"line (\d+): unknown mnemonic or unsupported directive '\.emsg'", e))]
+    assert hits, errors
+    assert {lines[n - 1].strip() for n in hits} == {f'.emsg "{guard}"'}, errors
