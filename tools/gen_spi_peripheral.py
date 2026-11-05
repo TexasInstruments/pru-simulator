@@ -39,6 +39,7 @@ K_TARGET = 3            # design target: CLK half period in core cycles
 FRAME_BITS = 152
 FRAME_BYTES = 19
 FETCH_COST = 3          # lbbo 4 B from PRU1 DMEM: 1 + 2 stall (DRAM read_latency 2)
+STORE_COST = 2          # sbco <= 4 B to PRU1 DMEM: 1 + 1 stall (DRAM write_latency 1)
 
 # Snapshot slot of bit i (0 = MSB first) of a byte: (register a/b, byte field).
 # Chosen so that GATHER below yields the byte MSB first (verified by
@@ -210,7 +211,7 @@ def _ops(mode: int, hs: list[Half]) -> list[Op]:
             "    lsr  r7, r6, 4",
             "    xor  r6, r6, r7",
             f"    lsr  {dest}, r6, 2{'':<{17 - len(dest)}}; byte {m} done"]
-        if m < 2 and corr:
+        if corr:
             lines.append(f"    xor  {dest}, {dest}, 0x{corr:02X}{'':<{9 - len(dest)}}"
                          f"; mode 0: CLK=1 in the snapshot inverts the byte")
         last = None
@@ -218,12 +219,25 @@ def _ops(mode: int, hs: list[Half]) -> list[Op]:
             last = add(Op(f"g{m}.{j}", [ln], 1, release=rel, deadline=dl))
         return last
 
+    # Status store of the previous frame, redone here in case /CS fell before
+    # frame_idle finished it (idempotent: r20-r23 change only at frame end).
+    first24 = min(j for j, h in enumerate(hs) if h.bit == 24)
+    for j, (reg, off, n) in enumerate((("r20", 0, 4), ("r21", 4, 4), ("r22", 8, 4),
+                                       ("r23", 12, 2))):
+        add(Op(f"st{j}", [f"    sbco &{reg}, c24, {off}, {n}{'':<{16 - len(reg) - len(str(off))}}"
+                          f"; status of the previous frame ({j + 1}/4)"],
+               STORE_COST, deadline=first24 - 1), chain=j > 0)
     gather(0)
+    ops[-7 - (1 if corr else 0)].after = []
     for ln in ["    lsr  r25, r18.b0, 1                ; cmd >> 1: 1 for READ, R/W",
                "    xor  r25, r25, 1                   ; 0 iff the command reads",
                "    min  r25, r25, 1",
                "    sub  r24, r25, 1                   ; M = 0xFFFFFFFF (read) or 0"]:
         add(Op("dec", [ln], 1))
+    for ln in ["    sub  r29.b0, r18.b0, 1             ; cmd - 1 (8 bit): 0..2 for cmd 1..3",
+               "    add  r29, r29.b0, 1",
+               "    lsr  r29, r29, 2                   ; 0 iff cmd is 1..3"]:
+        add(Op("err", [ln], 1))
     g1_last = gather(1)
     for ln in ["    lsl  r19, r18.b1, 4                ; addr * 16",
                "    xor  r19, r19, r26                 ; ^0x800: addr<0x80 -> P_TX block, else <0x800",
@@ -239,6 +253,21 @@ def _ops(mode: int, hs: list[Half]) -> list[Op]:
             f"; TX bytes {4 * j}..{4 * j + 3} (fetch {j + 1}/4)"],
             FETCH_COST, deadline=dl), chain=False)
         ops[fetch_last].after.append(fetch_last - 1)
+    # error flag and RX pointer, for the commit at frame end
+    prev = fetch_last            # after the fetches: they need the 3-cycle gaps
+    for ln in ["    lsr  r25, r18.b1, 7                ; 1 iff addr > 0x7F",
+               "    or   r29, r29, r25",
+               "    min  r29, r29, 1                   ; e = 1: unknown cmd or bad addr",
+               "    xor  r25, r29, 1",
+               "    and  r25, r25, r18.b0              ; 1 iff valid and cmd has W (bit 0)",
+               "    sub  r25, r25, 1                   ; 0 (write) or 0xFFFFFFFF",
+               "    lsl  r28, r18.b1, 4",
+               "    set  r28, r28, 12                  ; P_RX (0x1000) + addr * 16",
+               "    or   r28, r28, r25",
+               "    min  r28, r28, r0                  ; no write -> RX_DUMMY (0x1800)"]:
+        o = add(Op("rxp", [ln], 1, deadline=len(hs) - 1), chain=False)
+        ops[o].after.append(prev)
+        prev = o
     # gathers of data bytes: chained to each other, not to the fetches
     prev_gather = None
     for m in range(3, FRAME_BYTES):

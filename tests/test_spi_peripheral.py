@@ -343,6 +343,10 @@ def test_per_bit_cycles(sim_config, capsys, mode):
             0: {"cmd/addr": {3}, "idle": {2, 3}, "data": {4}}}[mode]
     assert by_class == want
     per_byte = [sum(work[8 * m + i] for i in range(8)) for m in range(19)]
+    # quoted in spi_peripheral.asm: steady data byte, and no byte above
+    # 48 cycles (8 bits at k=3)
+    assert per_byte[4:18] == [{1: 47, 0: 40}[mode]] * 14
+    assert max(per_byte[:18]) <= 48
     with capsys.disabled():
         print(f"\n[spi] PRU1 mode {mode} work cycles per bit class {by_class}, "
               f"per byte incl. gap work {per_byte}")
@@ -358,15 +362,124 @@ def test_fetch_and_commit_cycles(sim_config, capsys, mode):
     lbbo = [dc for pc, c0, dc, nxt in trace if pru1.instructions[pc].opcode == "LBBO"]
     assert lbbo == [3, 3, 3, 3]          # 4 x 4 B from DMEM, 3 cycles each
     labels = _labels(sim)
-    # commit: from the R31 read that sees /CS high to the next frame_wait poll
+    # commit: from the R31 read that sees /CS high to the first /CS check
+    # in frame_idle (from there on PRU1 can start the next frame)
     fe = labels["frame_end"]
     idx = max(i for i, t in enumerate(trace) if t[0] == fe)
-    j = next(i for i in range(idx, len(trace)) if trace[i][0] == labels["frame_wait"])
+    j = next(i for i in range(idx, len(trace)) if trace[i][0] == labels["frame_idle"])
     commit = trace[j][1] - trace[idx][1]
     with capsys.disabled():
         print(f"\n[spi] PRU1 mode {mode}: idle-byte TX fetch 4 x lbbo = {sum(lbbo)} cycles; "
               f"commit after /CS high = {commit} cycles")
-    assert commit == {1: 22, 0: 26}[mode]     # quoted in spi_peripheral.asm
+    assert commit == 10                       # quoted in spi_peripheral.asm
+    rt.close()
+
+
+# ---------------------------------------------------------------------------
+# Direct GPI stimulus (no PRU0): spec-minimum /CS timing
+# ---------------------------------------------------------------------------
+
+def _stim_frame(mode, data19, t, k, abort_after=None):
+    """(cycle, cs, clk, mosi) events for one frame: tLEAD = tLAG = 2k
+    (1 tCLK), half periods of k, MSB first."""
+    bits = [(b >> (7 - i)) & 1 for b in data19 for i in range(8)]
+    if abort_after is not None:
+        bits = bits[:abort_after]
+    ev = [(t, 0, 0, bits[0] if mode == 0 else 0)]
+    t += 2 * k
+    for n, bit in enumerate(bits):
+        if mode == 1:
+            ev.append((t, 0, 1, bit))
+            ev.append((t + k, 0, 0, bit))
+        else:
+            ev.append((t, 0, 1, bit))
+            ev.append((t + k, 0, 0, bits[n + 1] if n + 1 < len(bits) else bit))
+        t += 2 * k
+    t += 2 * k - k                       # tLAG = 2k after the last CLK edge
+    ev.append((t, 1, 0, ev[-1][3]))
+    return ev, t
+
+
+def _run_stim(sim_config, mode, k, frames, gap, aborts=()):
+    """Drive PRU1's GPI cycle by cycle; /CS high for ``gap`` cycles between
+    frames. Returns the runtime after a long idle tail."""
+    sim = Simulator(sim_config(pru_clock_mhz=300, pru1_clock_mhz=300))
+    rt = SpiLinkRuntime(sim, SpiConfig(mode, 300, 3, 16))
+    pru1 = sim.cores["pru1"]
+    rt.load_peripheral()                 # hop delay 5 on PRU1's GPI
+    pru1.io_port.set_gpi_word(1 << 6)    # /CS idle high before the first frame
+    ev, t = [], 40
+    for j, f in enumerate(frames):
+        e, t = _stim_frame(mode, f, t, k, abort_after=50 if j in aborts else None)
+        ev += e
+        t += gap
+    gaps = [b[0] - a[0] for a, b in zip(ev, ev[1:]) if a[1] == 1 and b[1] == 0]
+    assert gaps == [gap] * (len(frames) - 1)
+    end, i = t + 300, 0
+    while pru1.counters.cycles < end:
+        c = pru1.counters.cycles
+        while i < len(ev) and ev[i][0] <= c:
+            stamp, cs, clk, mosi = ev[i]
+            _gpi_at(pru1.io_port, stamp, c, (cs << 6) | (clk << 1) | (mosi << 2))
+            i += 1
+        sim.step("pru1")
+    return rt
+
+
+def _gpi_at(io, stamp, now, word):
+    """Set PRU1's GPI word as changing at cycle ``stamp`` (<= now).
+
+    set_gpi_word between instructions would stamp the change at ``now``, the
+    end of the instruction that was running: a change during a multi-cycle
+    instruction (sbco 16 B = 5 cycles) would come late, and two CLK edges in
+    one stall would merge. Pins on silicon keep changing during a stall, so
+    the stimulus writes the true stamp into the delay history. That is exact
+    as long as no R31 read has looked at ``stamp`` yet (reads at cycle c see
+    c - delay).
+    """
+    delay = io.gpi_delay_cycles
+    assert delay and stamp > now - delay, "change already observed"
+    hist = io._gpi_history
+    while hist and hist[-1][0] >= stamp:
+        hist.pop()
+    hist.append((stamp, word & 0xFFFFF))
+    io._gpi = word & 0xFFFFF
+
+
+def _stim_data(seed):
+    return bytes((seed * 37 + 11 * i) & 0xFF for i in range(16))
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("k", [3, 6])
+def test_min_cs_gap_no_frame_lost(sim_config, mode, k):
+    """/CS high for exactly 2 tCLK (4k cycles) between frames, tLEAD = tLAG =
+    1 tCLK: all three frames land (WRITE, R/W, WRITE), frames == 3."""
+    frames = [bytes([CMD_WRITE, 0x21]) + bytes(1) + _stim_data(1),
+              bytes([CMD_RW, 0x22]) + bytes(1) + _stim_data(2),
+              bytes([CMD_WRITE, 0x23]) + bytes(1) + _stim_data(3)]
+    rt = _run_stim(sim_config, mode, k, frames, 4 * k)
+    for f in frames:
+        assert rt.read_peripheral_rx(f[1]) == f[3:], hex(f[1])
+    assert rt.peripheral_status() == _status(frames=3, last_cmd=CMD_WRITE, last_addr=0x23)
+    rt.close()
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("k", [3, 6])
+def test_min_cs_gap_after_error_and_abort(sim_config, mode, k):
+    """The minimum gap also holds after an unknown command and after an abort."""
+    frames = [bytes([0x04, 0x31]) + bytes(1) + _stim_data(4),
+              bytes([CMD_WRITE, 0x32]) + bytes(1) + _stim_data(5),
+              bytes([CMD_WRITE, 0x33]) + bytes(1) + _stim_data(6),
+              bytes([CMD_WRITE, 0x34]) + bytes(1) + _stim_data(7)]
+    rt = _run_stim(sim_config, mode, k, frames, 4 * k, aborts=(1,))
+    assert rt.read_peripheral_rx(0x31) == bytes(16)        # error: not written
+    assert rt.read_peripheral_rx(0x32) == bytes(16)        # aborted: not committed
+    assert rt.read_peripheral_rx(0x33) == frames[2][3:]
+    assert rt.read_peripheral_rx(0x34) == frames[3][3:]
+    assert rt.peripheral_status() == _status(frames=3, errors=1, aborts=1,
+                                             last_cmd=CMD_WRITE, last_addr=0x34)
     rt.close()
 
 

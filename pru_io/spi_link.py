@@ -28,6 +28,9 @@ C_RX_HDR = 0x0120
 P_STATUS = 0x2000
 P_TX = 0x2800
 P_RX = 0x3000
+# PRU1 firmware scratch blocks in DMEM1 (not host data; do not write):
+P_ZERO_BLK = 0x27F0   # 16 zero bytes: MISO data source for frames that do not read
+P_RX_DUMMY = 0x3800   # 16 B: commit target for frames that must not write
 
 # CTRL block field offsets and status values
 CTRL_GO, CTRL_CMD, CTRL_ADDR, CTRL_STATUS, CTRL_FRAMES, CTRL_ABORT = 0, 1, 2, 3, 4, 8

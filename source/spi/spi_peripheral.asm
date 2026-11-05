@@ -27,6 +27,8 @@
 ;   0x0800 P_TX: 128 blocks of 16 B, read source (READ, R/W)
 ;   0x1000 P_RX: 128 blocks of 16 B, write target (WRITE, R/W); written
 ;          only after /CS goes high at the end of a complete frame
+;   0x1800 RX_DUMMY: 16 B, where the commit store goes for frames that
+;          must not write (READ, unknown command, bad address)
 ;
 ; ---- How a bit is handled -------------------------------------------------
 ; Every bit has one launch-edge poll (MISO) and one capture-edge poll (MOSI),
@@ -44,8 +46,22 @@
 ;   bits; the pru1 drive mask (1 << 11) keeps them off the pins.
 ; - /CS is checked at every bit: the mode 1 launch poll and the mode 0
 ;   capture poll exit to frame_abort when /CS is high. Those are the polls
-;   that wait for CLK to rise; CLK idles low (CPOL = 0), so the falling-edge
-;   polls always end.
+;   that wait for CLK to rise. The polls that wait for CLK to fall (mode 1
+;   capture, mode 0 launch) do not look at /CS: a controller that raises /CS
+;   with CLK high is outside CPOL = 0, and PRU1 then sees the abort at the
+;   next rising-edge poll after CLK has gone low. If CLK stayed high for good,
+;   PRU1 would stay in that poll.
+; - Deviation from spec 5.2 "sample from the previous edge": PRU1 does not
+;   time its MOSI sample from the edge before; it samples at the capture
+;   edge itself, in the snapshot that shows that edge. That costs two polls
+;   per bit (launch and capture) instead of about one. Timing the sample
+;   from the launch edge would still need a poll of the other CLK level to
+;   re-arm for the next edge without counting cycles, so it saves no poll.
+;   It would also take MOSI a fixed number of cycles after an edge whose
+;   MOSI change may be skewed on silicon (up to 2 ns GPO-GPO, PRDO1), and
+;   that fixed number would have to fit the shortest half period of any
+;   controller. The capture-edge snapshot has neither problem: MOSI has been
+;   stable for half a period when the capture edge is seen.
 ; - The idle byte (byte 2) does not keep MOSI. Its polls are shorter and its
 ;   gaps hold the address gather, the TX pointer and the TX fetch (4 x lbbo
 ;   4 B, each needed before its first MISO bit).
@@ -63,8 +79,9 @@
 ;   mode 1: data 5 (2 + MISO 1 + 2), cmd/addr 4, idle 3
 ;   mode 0: data 4 (2 + 1 + MISO 1), cmd/addr 3, idle 2 (3 for bit 23,
 ;           which drives data bit 24)
-; With gap work, a data byte costs 47 cycles in mode 1 and 39 in mode 0
-; (8 bits at k=3 = 48). The idle-byte TX fetch is 4 x lbbo 4 B = 12 cycles
+; With gap work, a data byte costs 47 cycles in mode 1 and 40 in mode 0
+; (mode 0 adds one xor per byte: CLK=1 in its snapshot inverts the gather),
+; and no byte of either mode costs more than 48 (8 bits at k=3). The idle-byte TX fetch is 4 x lbbo 4 B = 12 cycles
 ; (3 each). The generator places the gap work so that a CLK half period of
 ; 3 core cycles still leaves every level seen (see its docstring);
 ; test_fastest_rate_all_patterns passes at 50 MHz (300 MHz core, k=3).
@@ -85,14 +102,16 @@
 ; r25      decode scratch                              frame
 ; r26      0x0800 (P_TX)                               everywhere
 ; r27      ZERO_BLK (0x07F0)                           everywhere
-; r28      commit scratch                              commit
+; r0       RX_DUMMY (0x1800)                           everywhere
+; r28      RX commit pointer (P_RX block or RX_DUMMY)  frame, commit
+; r29      error flag (1: unknown cmd or bad address)  frame, commit
 ; r30      GPO (MISO = bit 11)                         hardware
 ; r31      GPI                                         hardware
 
 ; ---- Constants -------------------------------------------------------------
 P_TX_LOC   .set 0x0800
 ZERO_BLK   .set 0x07F0
-STAT_ABORT .set 8
+RX_DUMMY   .set 0x1800
 CS_BIT     .set 6
 
 start:
@@ -109,13 +128,54 @@ start:
     ldi  r27, ZERO_BLK
     sbco &r10, c24, r27, 16            ; ZERO_BLK = 16 x 0x00
     ldi  r26, P_TX_LOC
+    ldi  r0, RX_DUMMY
+    jmp  frame_wait
 
-; Wait for /CS idle high first, so a /CS that is low at start-up is not taken
-; as a frame; then a /CS falling edge starts a frame.
+; ---- End of a complete frame (152 bits seen) -------------------------------
+; Waits for /CS high, then commits the RX block (to RX_DUMMY when the frame
+; must not write) and the counters. r28 (RX pointer) and r29 (error flag)
+; were computed during the frame. Single-stepped (test_fetch_and_commit_cycles):
+; 10 cycles from the R31 read that sees /CS high to the first /CS check in
+; frame_idle, in both modes.
+frame_end:
+    qbbc frame_end, r31, CS_BIT        ; wait /CS high
+    ldi  r30, 0                        ; MISO idle low
+    add  r20, r20, 1                   ; frames
+    add  r21, r21, r29                 ; errors
+    mov  r23.w0, r18.w0                ; last_cmd, last_addr
+    sbco &r14, c24, r28, 16            ; RX block (or RX_DUMMY)
+; Status store, one word at a time while /CS stays high. If /CS falls
+; first, the next frame starts at once (at most 3 cycles late) and repeats
+; the four stores in its first gaps (generated ops st0..st3), so no frame is
+; lost and the status still lands. r20-r23 only change here and in
+; frame_abort, so the repeat is idempotent.
+frame_idle:
+    qbbc frame_go, r31, CS_BIT
+    sbco &r20, c24, 0, 4               ; frames
+    qbbc frame_go, r31, CS_BIT
+    sbco &r21, c24, 4, 4               ; errors
+    qbbc frame_go, r31, CS_BIT
+    sbco &r22, c24, 8, 4               ; aborts
+    qbbc frame_go, r31, CS_BIT
+    sbco &r23, c24, 12, 2              ; last_cmd, last_addr
+    qba  frame_arm
+
+; ---- /CS high before the end of the frame ----------------------------------
+; Partial data is dropped (RX not committed), aborts + 1.
+frame_abort:
+    ldi  r30, 0                        ; MISO idle low
+    add  r22, r22, 1
+    qba  frame_idle
+
+; Wait for /CS idle high first (start-up only), so a /CS that is low at
+; start-up is not taken as a frame. After a frame or an abort /CS has been
+; seen high already, so those paths go to frame_arm (or straight to
+; frame_go when /CS fell during frame_idle).
 frame_wait:
     qbbc frame_wait, r31, CS_BIT
 frame_arm:
-    qbbs frame_arm, r31, CS_BIT
+    qbbs frame_arm, r31, CS_BIT        ; /CS falling edge: frame start
+frame_go:
 
 .if SPI_MODE == 1
 ; >>> generated: frame mode 1
@@ -128,6 +188,7 @@ m1_g0:
 m1_c0:
     and  r3.b3, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m1_c0, r3.b3, 1       ; CLK high: wait (capture = falling)
+    sbco &r20, c24, 0, 4            ; status of the previous frame (1/4)
 m1_l1:
     and  r1.b0, r31.b0, 0x42          ; CLK|/CS
     qbeq m1_g1, r1.b0, 2            ; CLK high, /CS low: launch edge
@@ -137,6 +198,7 @@ m1_g1:
 m1_c1:
     and  r2.b3, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m1_c1, r2.b3, 1       ; CLK high: wait (capture = falling)
+    sbco &r21, c24, 4, 4            ; status of the previous frame (2/4)
 m1_l2:
     and  r1.b0, r31.b0, 0x42          ; CLK|/CS
     qbeq m1_g2, r1.b0, 2            ; CLK high, /CS low: launch edge
@@ -146,6 +208,7 @@ m1_g2:
 m1_c2:
     and  r3.b1, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m1_c2, r3.b1, 1       ; CLK high: wait (capture = falling)
+    sbco &r22, c24, 8, 4            ; status of the previous frame (3/4)
 m1_l3:
     and  r1.b0, r31.b0, 0x42          ; CLK|/CS
     qbeq m1_g3, r1.b0, 2            ; CLK high, /CS low: launch edge
@@ -155,6 +218,7 @@ m1_g3:
 m1_c3:
     and  r2.b1, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m1_c3, r2.b1, 1       ; CLK high: wait (capture = falling)
+    sbco &r23, c24, 12, 2           ; status of the previous frame (4/4)
 m1_l4:
     and  r1.b0, r31.b0, 0x42          ; CLK|/CS
     qbeq m1_g4, r1.b0, 2            ; CLK high, /CS low: launch edge
@@ -247,15 +311,18 @@ m1_g12:
 m1_c12:
     and  r5.b2, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m1_c12, r5.b2, 1       ; CLK high: wait (capture = falling)
+    sub  r29.b0, r18.b0, 1             ; cmd - 1 (8 bit): 0..2 for cmd 1..3
 m1_l13:
     and  r1.b0, r31.b0, 0x42          ; CLK|/CS
     qbeq m1_g13, r1.b0, 2            ; CLK high, /CS low: launch edge
     qbeq m1_l13, r1.b0, 0            ; CLK low, /CS low: wait
     jmp  frame_abort                   ; /CS high
 m1_g13:
+    add  r29, r29.b0, 1
 m1_c13:
     and  r4.b2, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m1_c13, r4.b2, 1       ; CLK high: wait (capture = falling)
+    lsr  r29, r29, 2                   ; 0 iff cmd is 1..3
 m1_l14:
     and  r1.b0, r31.b0, 0x42          ; CLK|/CS
     qbeq m1_g14, r1.b0, 2            ; CLK high, /CS low: launch edge
@@ -351,8 +418,11 @@ m1_l23:
     qbeq m1_l23, r1.b0, 0            ; CLK low, /CS low: wait
     jmp  frame_abort                   ; /CS high
 m1_g23:
+    lsr  r25, r18.b1, 7                ; 1 iff addr > 0x7F
 m1_c23:
     qbbs m1_c23, r31, 1              ; idle byte: wait CLK low
+    or   r29, r29, r25
+    min  r29, r29, 1                   ; e = 1: unknown cmd or bad addr
 m1_l24:
     and  r1.b0, r31.b0, 0x42          ; CLK|/CS
     qbeq m1_g24, r1.b0, 2            ; CLK high, /CS low: launch edge
@@ -363,6 +433,7 @@ m1_g24:
 m1_c24:
     and  r5.b3, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m1_c24, r5.b3, 1       ; CLK high: wait (capture = falling)
+    xor  r25, r29, 1
 m1_l25:
     and  r1.b0, r31.b0, 0x42          ; CLK|/CS
     qbeq m1_g25, r1.b0, 2            ; CLK high, /CS low: launch edge
@@ -373,6 +444,7 @@ m1_g25:
 m1_c25:
     and  r4.b3, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m1_c25, r4.b3, 1       ; CLK high: wait (capture = falling)
+    and  r25, r25, r18.b0              ; 1 iff valid and cmd has W (bit 0)
 m1_l26:
     and  r1.b0, r31.b0, 0x42          ; CLK|/CS
     qbeq m1_g26, r1.b0, 2            ; CLK high, /CS low: launch edge
@@ -383,6 +455,7 @@ m1_g26:
 m1_c26:
     and  r5.b1, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m1_c26, r5.b1, 1       ; CLK high: wait (capture = falling)
+    sub  r25, r25, 1                   ; 0 (write) or 0xFFFFFFFF
 m1_l27:
     and  r1.b0, r31.b0, 0x42          ; CLK|/CS
     qbeq m1_g27, r1.b0, 2            ; CLK high, /CS low: launch edge
@@ -393,6 +466,7 @@ m1_g27:
 m1_c27:
     and  r4.b1, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m1_c27, r4.b1, 1       ; CLK high: wait (capture = falling)
+    lsl  r28, r18.b1, 4
 m1_l28:
     and  r1.b0, r31.b0, 0x42          ; CLK|/CS
     qbeq m1_g28, r1.b0, 2            ; CLK high, /CS low: launch edge
@@ -403,6 +477,7 @@ m1_g28:
 m1_c28:
     and  r5.b2, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m1_c28, r5.b2, 1       ; CLK high: wait (capture = falling)
+    set  r28, r28, 12                  ; P_RX (0x1000) + addr * 16
 m1_l29:
     and  r1.b0, r31.b0, 0x42          ; CLK|/CS
     qbeq m1_g29, r1.b0, 2            ; CLK high, /CS low: launch edge
@@ -413,6 +488,7 @@ m1_g29:
 m1_c29:
     and  r4.b2, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m1_c29, r4.b2, 1       ; CLK high: wait (capture = falling)
+    or   r28, r28, r25
 m1_l30:
     and  r1.b0, r31.b0, 0x42          ; CLK|/CS
     qbeq m1_g30, r1.b0, 2            ; CLK high, /CS low: launch edge
@@ -423,6 +499,7 @@ m1_g30:
 m1_c30:
     and  r5.b0, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m1_c30, r5.b0, 1       ; CLK high: wait (capture = falling)
+    min  r28, r28, r0                  ; no write -> RX_DUMMY (0x1800)
 m1_l31:
     and  r1.b0, r31.b0, 0x42          ; CLK|/CS
     qbeq m1_g31, r1.b0, 2            ; CLK high, /CS low: launch edge
@@ -1760,6 +1837,7 @@ m0_c0:
 m0_g0:
 m0_l0:
     qbbs m0_l0, r31, 1              ; wait CLK low (launch = falling)
+    sbco &r20, c24, 0, 4            ; status of the previous frame (1/4)
 m0_c1:
     and  r2.b3, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m0_g1, r2.b3, 1       ; CLK high: capture edge
@@ -1768,6 +1846,7 @@ m0_c1:
 m0_g1:
 m0_l1:
     qbbs m0_l1, r31, 1              ; wait CLK low (launch = falling)
+    sbco &r21, c24, 4, 4            ; status of the previous frame (2/4)
 m0_c2:
     and  r3.b1, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m0_g2, r3.b1, 1       ; CLK high: capture edge
@@ -1776,6 +1855,7 @@ m0_c2:
 m0_g2:
 m0_l2:
     qbbs m0_l2, r31, 1              ; wait CLK low (launch = falling)
+    sbco &r22, c24, 8, 4            ; status of the previous frame (3/4)
 m0_c3:
     and  r2.b1, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m0_g3, r2.b1, 1       ; CLK high: capture edge
@@ -1784,6 +1864,7 @@ m0_c3:
 m0_g3:
 m0_l3:
     qbbs m0_l3, r31, 1              ; wait CLK low (launch = falling)
+    sbco &r23, c24, 12, 2           ; status of the previous frame (4/4)
 m0_c4:
     and  r3.b2, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m0_g4, r3.b2, 1       ; CLK high: capture edge
@@ -1858,8 +1939,11 @@ m0_c11:
     qbbc m0_c11, r4.b1, 6       ; /CS low: wait
     jmp  frame_abort                   ; /CS high
 m0_g11:
+    sub  r29.b0, r18.b0, 1             ; cmd - 1 (8 bit): 0..2 for cmd 1..3
 m0_l11:
     qbbs m0_l11, r31, 1              ; wait CLK low (launch = falling)
+    add  r29, r29.b0, 1
+    lsr  r29, r29, 2                   ; 0 iff cmd is 1..3
 m0_c12:
     and  r5.b2, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m0_g12, r5.b2, 1       ; CLK high: capture edge
@@ -1950,27 +2034,37 @@ m0_g21:
     lbbo &r13, r19, 12, 4            ; TX bytes 12..15 (fetch 4/4)
 m0_l21:
     qbbs m0_l21, r31, 1              ; wait CLK low (launch = falling)
+    lsr  r25, r18.b1, 7                ; 1 iff addr > 0x7F
+    or   r29, r29, r25
 m0_c22:
     qbbs m0_g22, r31, 1              ; idle byte: CLK high = capture edge
     qbbc m0_c22, r31, 6              ; /CS low: wait
     jmp  frame_abort                   ; /CS high
 m0_g22:
+    min  r29, r29, 1                   ; e = 1: unknown cmd or bad addr
+    xor  r25, r29, 1
 m0_l22:
     qbbs m0_l22, r31, 1              ; wait CLK low (launch = falling)
+    and  r25, r25, r18.b0              ; 1 iff valid and cmd has W (bit 0)
+    sub  r25, r25, 1                   ; 0 (write) or 0xFFFFFFFF
 m0_c23:
     qbbs m0_g23, r31, 1              ; idle byte: CLK high = capture edge
     qbbc m0_c23, r31, 6              ; /CS low: wait
     jmp  frame_abort                   ; /CS high
 m0_g23:
+    lsl  r28, r18.b1, 4
+    set  r28, r28, 12                  ; P_RX (0x1000) + addr * 16
 m0_l23:
     qbbs m0_l23, r31, 1              ; wait CLK low (launch = falling)
     lsl  r30.w0, r10.b0, 4         ; MISO bit 24: data bit 7 -> GPO11 (one R30 write)
+    or   r28, r28, r25
 m0_c24:
     and  r5.b3, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m0_g24, r5.b3, 1       ; CLK high: capture edge
     qbbc m0_c24, r5.b3, 6       ; /CS low: wait
     jmp  frame_abort                   ; /CS high
 m0_g24:
+    min  r28, r28, r0                  ; no write -> RX_DUMMY (0x1800)
 m0_l24:
     qbbs m0_l24, r31, 1              ; wait CLK low (launch = falling)
     lsl  r30.w0, r10.b0, 5         ; MISO bit 25: data bit 6 -> GPO11 (one R30 write)
@@ -2071,6 +2165,7 @@ m0_g34:
 m0_l34:
     qbbs m0_l34, r31, 1              ; wait CLK low (launch = falling)
     lsl  r30.w0, r10.b1, 7         ; MISO bit 35: data bit 4 -> GPO11 (one R30 write)
+    xor  r14.b0, r14.b0, 0xFF   ; mode 0: CLK=1 in the snapshot inverts the byte
 m0_c35:
     and  r2.b1, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m0_g35, r2.b1, 1       ; CLK high: capture edge
@@ -2150,6 +2245,7 @@ m0_g42:
 m0_l42:
     qbbs m0_l42, r31, 1              ; wait CLK low (launch = falling)
     lsl  r30.w0, r10.b2, 7         ; MISO bit 43: data bit 4 -> GPO11 (one R30 write)
+    xor  r14.b1, r14.b1, 0xFF   ; mode 0: CLK=1 in the snapshot inverts the byte
 m0_c43:
     and  r4.b1, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m0_g43, r4.b1, 1       ; CLK high: capture edge
@@ -2229,6 +2325,7 @@ m0_g50:
 m0_l50:
     qbbs m0_l50, r31, 1              ; wait CLK low (launch = falling)
     lsl  r30.w0, r10.b3, 7         ; MISO bit 51: data bit 4 -> GPO11 (one R30 write)
+    xor  r14.b2, r14.b2, 0xFF   ; mode 0: CLK=1 in the snapshot inverts the byte
 m0_c51:
     and  r2.b1, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m0_g51, r2.b1, 1       ; CLK high: capture edge
@@ -2308,6 +2405,7 @@ m0_g58:
 m0_l58:
     qbbs m0_l58, r31, 1              ; wait CLK low (launch = falling)
     lsl  r30.w0, r11.b0, 7         ; MISO bit 59: data bit 4 -> GPO11 (one R30 write)
+    xor  r14.b3, r14.b3, 0xFF   ; mode 0: CLK=1 in the snapshot inverts the byte
 m0_c59:
     and  r4.b1, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m0_g59, r4.b1, 1       ; CLK high: capture edge
@@ -2387,6 +2485,7 @@ m0_g66:
 m0_l66:
     qbbs m0_l66, r31, 1              ; wait CLK low (launch = falling)
     lsl  r30.w0, r11.b1, 7         ; MISO bit 67: data bit 4 -> GPO11 (one R30 write)
+    xor  r15.b0, r15.b0, 0xFF   ; mode 0: CLK=1 in the snapshot inverts the byte
 m0_c67:
     and  r2.b1, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m0_g67, r2.b1, 1       ; CLK high: capture edge
@@ -2466,6 +2565,7 @@ m0_g74:
 m0_l74:
     qbbs m0_l74, r31, 1              ; wait CLK low (launch = falling)
     lsl  r30.w0, r11.b2, 7         ; MISO bit 75: data bit 4 -> GPO11 (one R30 write)
+    xor  r15.b1, r15.b1, 0xFF   ; mode 0: CLK=1 in the snapshot inverts the byte
 m0_c75:
     and  r4.b1, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m0_g75, r4.b1, 1       ; CLK high: capture edge
@@ -2545,6 +2645,7 @@ m0_g82:
 m0_l82:
     qbbs m0_l82, r31, 1              ; wait CLK low (launch = falling)
     lsl  r30.w0, r11.b3, 7         ; MISO bit 83: data bit 4 -> GPO11 (one R30 write)
+    xor  r15.b2, r15.b2, 0xFF   ; mode 0: CLK=1 in the snapshot inverts the byte
 m0_c83:
     and  r2.b1, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m0_g83, r2.b1, 1       ; CLK high: capture edge
@@ -2624,6 +2725,7 @@ m0_g90:
 m0_l90:
     qbbs m0_l90, r31, 1              ; wait CLK low (launch = falling)
     lsl  r30.w0, r12.b0, 7         ; MISO bit 91: data bit 4 -> GPO11 (one R30 write)
+    xor  r15.b3, r15.b3, 0xFF   ; mode 0: CLK=1 in the snapshot inverts the byte
 m0_c91:
     and  r4.b1, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m0_g91, r4.b1, 1       ; CLK high: capture edge
@@ -2703,6 +2805,7 @@ m0_g98:
 m0_l98:
     qbbs m0_l98, r31, 1              ; wait CLK low (launch = falling)
     lsl  r30.w0, r12.b1, 7         ; MISO bit 99: data bit 4 -> GPO11 (one R30 write)
+    xor  r16.b0, r16.b0, 0xFF   ; mode 0: CLK=1 in the snapshot inverts the byte
 m0_c99:
     and  r2.b1, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m0_g99, r2.b1, 1       ; CLK high: capture edge
@@ -2782,6 +2885,7 @@ m0_g106:
 m0_l106:
     qbbs m0_l106, r31, 1              ; wait CLK low (launch = falling)
     lsl  r30.w0, r12.b2, 7         ; MISO bit 107: data bit 4 -> GPO11 (one R30 write)
+    xor  r16.b1, r16.b1, 0xFF   ; mode 0: CLK=1 in the snapshot inverts the byte
 m0_c107:
     and  r4.b1, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m0_g107, r4.b1, 1       ; CLK high: capture edge
@@ -2861,6 +2965,7 @@ m0_g114:
 m0_l114:
     qbbs m0_l114, r31, 1              ; wait CLK low (launch = falling)
     lsl  r30.w0, r12.b3, 7         ; MISO bit 115: data bit 4 -> GPO11 (one R30 write)
+    xor  r16.b2, r16.b2, 0xFF   ; mode 0: CLK=1 in the snapshot inverts the byte
 m0_c115:
     and  r2.b1, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m0_g115, r2.b1, 1       ; CLK high: capture edge
@@ -2940,6 +3045,7 @@ m0_g122:
 m0_l122:
     qbbs m0_l122, r31, 1              ; wait CLK low (launch = falling)
     lsl  r30.w0, r13.b0, 7         ; MISO bit 123: data bit 4 -> GPO11 (one R30 write)
+    xor  r16.b3, r16.b3, 0xFF   ; mode 0: CLK=1 in the snapshot inverts the byte
 m0_c123:
     and  r4.b1, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m0_g123, r4.b1, 1       ; CLK high: capture edge
@@ -3019,6 +3125,7 @@ m0_g130:
 m0_l130:
     qbbs m0_l130, r31, 1              ; wait CLK low (launch = falling)
     lsl  r30.w0, r13.b1, 7         ; MISO bit 131: data bit 4 -> GPO11 (one R30 write)
+    xor  r17.b0, r17.b0, 0xFF   ; mode 0: CLK=1 in the snapshot inverts the byte
 m0_c131:
     and  r2.b1, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m0_g131, r2.b1, 1       ; CLK high: capture edge
@@ -3098,6 +3205,7 @@ m0_g138:
 m0_l138:
     qbbs m0_l138, r31, 1              ; wait CLK low (launch = falling)
     lsl  r30.w0, r13.b2, 7         ; MISO bit 139: data bit 4 -> GPO11 (one R30 write)
+    xor  r17.b1, r17.b1, 0xFF   ; mode 0: CLK=1 in the snapshot inverts the byte
 m0_c139:
     and  r4.b1, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m0_g139, r4.b1, 1       ; CLK high: capture edge
@@ -3177,6 +3285,7 @@ m0_g146:
 m0_l146:
     qbbs m0_l146, r31, 1              ; wait CLK low (launch = falling)
     lsl  r30.w0, r13.b3, 7         ; MISO bit 147: data bit 4 -> GPO11 (one R30 write)
+    xor  r17.b2, r17.b2, 0xFF   ; mode 0: CLK=1 in the snapshot inverts the byte
 m0_c147:
     and  r2.b1, r31.b0, 0x46      ; snapshot CLK|MOSI|/CS
     qbbs m0_g147, r2.b1, 1       ; CLK high: capture edge
@@ -3227,45 +3336,8 @@ m0_g151:
     lsr  r7, r6, 4
     xor  r6, r6, r7
     lsr  r17.b3, r6, 2           ; byte 18 done
+    xor  r17.b3, r17.b3, 0xFF   ; mode 0: CLK=1 in the snapshot inverts the byte
     jmp  frame_end
 ; <<< generated: frame mode 0
 .endif
 
-; ---- End of a complete frame (152 bits seen) -------------------------------
-; Waits for /CS high, then commits: RX block (WRITE, R/W with a valid
-; address) and the status block. From the R31 read that sees /CS high to
-; frame_wait: 22 cycles (mode 1) / 26 (mode 0) for an R/W frame, stepped in
-; tests/test_spi_peripheral.py::test_fetch_and_commit_cycles. PRU1 needs /CS
-; high at least that long (plus the hop delay) between frames.
-frame_end:
-    qbbc frame_end, r31, CS_BIT        ; wait /CS high
-    ldi  r30, 0                        ; MISO idle low
-.if SPI_MODE == 0
-    not  r14, r14                      ; mode 0 gathers invert (CLK=1 in snapshot)
-    not  r15, r15
-    not  r16, r16
-    not  r17, r17
-.endif
-    mov  r23.w0, r18.w0                ; last_cmd, last_addr
-    add  r20, r20, 1                   ; frames
-    qbbs fe_bad, r18.b1, 7             ; addr > 0x7F
-    qbeq fe_bad, r18.b0, 0             ; cmd 0
-    qble fe_bad, r18.b0, 4             ; cmd >= 4
-    qbbc fe_store, r18.b0, 0           ; READ: nothing to write
-    lsl  r28, r18.b1, 4
-    set  r28, r28, 12                  ; P_RX (0x1000) + addr * 16
-    sbco &r14, c24, r28, 16            ; commit RX block
-    qba  fe_store
-fe_bad:
-    add  r21, r21, 1                   ; errors
-fe_store:
-    sbco &r20, c24, 0, 14              ; frames, errors, aborts, last cmd/addr
-    jmp  frame_wait
-
-; ---- /CS high before the end of the frame ----------------------------------
-; Partial data is dropped (RX not committed), aborts + 1.
-frame_abort:
-    ldi  r30, 0                        ; MISO idle low
-    add  r22, r22, 1
-    sbco &r22, c24, STAT_ABORT, 4
-    jmp  frame_wait
