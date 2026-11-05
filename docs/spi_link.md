@@ -16,6 +16,7 @@ Open http://127.0.0.1:8080/ and go to **I/O & Devices → SPI**. Use `--port` to
 
 1. Click **Set up SPI demo**. This replaces the programs, devices and wiring with the scenario "SPI multi-core (controller + peripheral)".
 2. Pick **Mode** (0 or 1) and **SPI CLK**. The list offers only the rates that pass for that mode. Each rate uses the lowest PRU core clock that passes, and the view shows the core clock it picked. A core clock change applies to this session only: the simulator is rebuilt from a temporary copy of the config, and `memory.cfg` is not written. Leaving the SPI demo restores the clocks from `memory.cfg`.
+   **MISO sample delay** lists the realisable PRU0 sample points (core cycles from each MISO launch edge; values that land on a CLK write are left out). Values in the passing window found by the sweep are marked "passes", the others "fails"; the sweep's choice is marked "(default)". Picking a value outside the window shows PRU0 reading the wrong bit. Changing the mode or rate goes back to the default.
 3. Pick the **Command** (WRITE 01, READ 02, READ/WRITE 03, or Unknown 04), an **Address** (0 to 255, shown as "= byte N"; addresses above 0x7F take the error path), and a **Pattern**.
 4. **Send frame** runs one frame. **Run test sequence** runs the full test sequence described under Protocol and reports "passed" or "FAILED" with the byte error count.
 
@@ -24,25 +25,29 @@ What the view shows:
 - **Scope.** /CS, CLK, MOSI and MISO come from the simulator's real pin trace. Byte boxes over MOSI and MISO show each byte's hex value and field name. Triangles mark the capture edges for the selected mode. A cursor at one bit shows the tCLK, tLEAD, setup and hold arrows. Click the scope to move the cursor.
 - **Frame strip.** The 19 bytes (CMD, ADR, IDLE, D0 to D15), MOSI on top and MISO below, with the current byte outlined.
 - **Memory panels.** PRU0 TX (sent on MOSI), PRU1 RX at the addressed byte (written), PRU1 TX at the addressed byte (read), and PRU0 RX (got on MISO). The compare line reads "16/16 bytes match both ways" when the data agrees; mismatching bytes are marked in red.
-- **Timing table.** The parameters for the selected mode, rate and core clock. "Sim" values are measured from the pin trace of the last frame. The AM243 min, max and source columns are datasheet data. The input setup and hold rows are design budgets, not datasheet limits, because the datasheet has no direct-input timing table. The worst-margin row is flagged. The line above the table shows the GPI delay in use.
+- **Timing table.** The parameters for the selected mode, rate and core clock. "Sim" values are measured from the pin trace of the last frame. Shaded cells are AM243 datasheet data (SPRSP65J Tables 6-112 and 6-113: input slew, output load, PRDO1 output skew); every other row is a design value. The input setup and hold rows are design budgets, not datasheet limits, because the datasheet has no direct-input timing table. t<sub>LEAD</sub>, t<sub>LAG</sub> and t<sub>H</sub>/t<sub>L</sub> have no AM243 limit; their margin is the measured value minus the design minimum (1 t<sub>CLK</sub>, 1 t<sub>CLK</sub>, ½ t<sub>CLK</sub>) minus the 2 ns PRDO1 skew. The controller produces these exactly at the design minimum, so the margin is −2 ns at every rate: pad skew could shorten them by that much on silicon. The worst-margin row (the tightest margin at this rate) is flagged. The line above the table shows the GPI delay in use. The line above the table shows the GPI delay in use.
 
 MISO is decoded at PRU0's sample point (launch edge + `MISO_DELAY` − hop delay), not at the nominal capture edge. A scope that decodes MISO at the nominal capture edge shows it shifted by the round-trip delay. The frame strip and the MISO byte boxes use the sample point.
 
 ## Run from Python
 
-The API is in `pru_io/spi_link.py`. The simulator's core clock must equal the row's `core_mhz`. The repo's `memory.cfg` follows the dashboard clock selector, so the example uses a copy of it with `pru_clock_mhz` and `pru1_clock_mhz` both set to the row's value. Create that copy yourself (with its `config/` folder beside it); the example does not write anything.
+The API is in `pru_io/spi_link.py`. The simulator's core clock must equal the row's `core_mhz`. The repo's `memory.cfg` follows the dashboard clock selector, so the example builds a throw-away copy of it with both PRU clocks set to the row's value (`tools/spi_sweep.make_config`, which also copies the `config/` folder). Run it from the repository root; it does not change `memory.cfg`.
 
 ```python
+import tempfile
+
 from simulator import Simulator
 from pru_io.spi_link import (CMD_READ, CMD_WRITE, PATTERNS, SpiConfig,
                              SpiLinkRuntime, load_supported, run_test_sequence)
+from tools.spi_sweep import make_config
 
 # Mode 1 at 25 MHz. The row gives the core clock, half period and MISO delay.
 row = next(r for r in load_supported()[1] if abs(r["spi_mhz"] - 25.0) < 1e-3)
 cfg = SpiConfig(mode=row["mode"], core_mhz=row["core_mhz"],
                 half_k=row["half_k"], miso_delay=row["miso_delay"])
 
-sim = Simulator("spi_25mhz/memory.cfg")   # your copy, both PRU clocks = cfg.core_mhz
+workdir = tempfile.mkdtemp(prefix="spi-")
+sim = Simulator(make_config(cfg.core_mhz, workdir))   # both PRU clocks = cfg.core_mhz
 assert sim.cores["pru0"].clock_mhz == sim.cores["pru1"].clock_mhz == cfg.core_mhz
 
 rt = SpiLinkRuntime(sim, cfg)
@@ -62,7 +67,8 @@ finally:
 ```
 
 - `SpiConfig(mode, core_mhz, half_k, miso_delay)` checks its arguments. SPI CLK is `core_mhz / (2 × half_k)`. Core clocks are 200, 225, 250, 300 and 333 MHz.
-- `load_supported()` returns `{0: [...], 1: [...]}`: one row per supported rate, at the lowest passing core clock, sorted by rate. Each row has `mode`, `core_mhz`, `half_k`, `miso_delay` and `spi_mhz`. The `miso_delay` is the value the sweep chose for that rate.
+- `load_supported()` returns `{0: [...], 1: [...]}`: one row per supported rate, at the lowest passing core clock, sorted by rate. Each row has `mode`, `core_mhz`, `half_k`, `miso_delay` and `spi_mhz`. The `miso_delay` is the value the sweep chose for that rate; `miso_delay_pass` lists every passing value (`miso_delay_window` is its range). `p1_cycles_per_bit` is PRU1's cheapest data bit and `p1_bit_cycles_max` the limiting one (a data bit that also carries gap work); `p1_fetch_cycles` is the idle-byte TX fetch.
+- The firmware files `source/spi/spi_controller.asm` and `spi_peripheral.asm` hold a default-config block (mode 1, 25 MHz at a 200 MHz core) between `; >>> spi config` and `; <<< spi config`, so they assemble as the editor shows them. `render_source(cfg, role)` returns the file with that block replaced by `render_header(cfg, role)`; the runtime loads that.
 - `SpiLinkRuntime(sim, cfg)` uses the calibrated hop delay (5 cycles) by default. Call `load_controller()`, `load_peripheral()` and `wire()` in that order, as the dashboard does, before `transfer()`.
 - `transfer(cmd, addr, data=bytes(16))` runs one frame. It returns a dict with `miso` (19 bytes), `c_rx`, `cycles` and `frame` (the decoded frame from the bus monitor).
 - `preload_peripheral_tx(addr, data)` and `read_peripheral_rx(addr)` access PRU1's TX and RX blocks. `peripheral_status()` returns the PRU1 counters.
@@ -97,6 +103,8 @@ Timing rules:
 - The idle byte gives PRU1 time to load the read data before the first data bit is due. The fetch fits in one byte time at the fastest rate.
 - /CS must be high for at least 2 t<sub>CLK</sub> between frames. PRU1 resynchronises on every /CS falling edge.
 - /CS going high in the middle of a frame aborts it. PRU1 discards the partial data (RX is not committed) and counts an abort.
+
+PRU1 samples MOSI in the R31 read that shows the capture edge, not a fixed time after the previous edge as spec §5.2 suggested. What: each bit has two polls, one per CLK edge, and the capture poll's single masked R31 read holds CLK, MOSI and /CS together. Why: timing the sample from the launch edge would still need a poll of the other CLK level to re-arm without counting cycles, so it saves no poll; it would also sample a fixed number of cycles after an edge whose MOSI change may be skewed by up to 2 ns (PRDO1), and that number would have to suit the shortest half period of any controller. At the capture edge MOSI has been stable for half a period. Cost: two polls per bit (4–5 cycles per data bit, up to 6 with gap work, single-stepped), which still reaches 50 MHz at a 300 MHz core.
 
 PRU1 status counters: frames (completed, valid or not), errors (unknown command or bad address), aborts, and the last command and address.
 
@@ -157,4 +165,4 @@ python tools/spi_sweep.py --write    # rewrite pru_io/spi_rates.json and docs/sp
 python tools/spi_sweep.py --check    # confirm the doc's results table matches the JSON
 ```
 
-`--jobs N` sets the number of worker processes. The committed doc records a sweep wall time of 132 s.
+`--jobs N` sets the number of worker processes. The committed doc records its sweep wall time in its header (about two minutes).
