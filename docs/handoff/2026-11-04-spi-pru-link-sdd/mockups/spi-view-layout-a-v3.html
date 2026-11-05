@@ -1,0 +1,50 @@
+<h2>Layout A: timing table with AM243 pin limits</h2>
+<p class="subtitle">Only the timing section changed; the trace and memory panels are the same as the last screen. Example: mode 1, SPI CLK 25 MHz, core 200 MHz (5 ns per cycle). Sim values are placeholders until the firmware exists. AM243 values are quoted from datasheet SPRSP65J (rev. June 2026), section 6.11.5.16.1.</p>
+
+<style>
+  .spi-wrap{font-family:ui-monospace,Consolas,monospace;font-size:12px}
+  table.tp{border-collapse:collapse;font-size:11px;width:100%;margin-top:4px}
+  table.tp td,table.tp th{border:1px solid rgba(127,127,127,.3);padding:3px 6px;text-align:left;vertical-align:top}
+  table.tp th{background:rgba(127,127,127,.10)}
+  .ok{color:#1f9d6b;font-weight:600}.warn{color:#d68a00;font-weight:600}
+  .ds{background:rgba(47,127,214,.08)}
+  .na{opacity:.6;font-style:italic}
+  .sec{font-size:12px;font-weight:600;margin:10px 0 2px}
+  .note{opacity:.8;margin:4px 0}
+</style>
+
+<div class="mockup"><div class="mockup-header">I/O &amp; Devices → SPI → Timing</div><div class="mockup-body spi-wrap">
+
+  <div class="sec">Timing: mode 1, 25 MHz, core 200 MHz &nbsp;·&nbsp; pins: PRG0 (ICSSG0) direct GPO/GPI mode</div>
+  <table class="tp">
+    <tr><th>Parameter</th><th>Symbol</th><th>Design</th><th>Cycles</th><th>Sim</th><th class="ds">AM243 min</th><th class="ds">AM243 max</th><th class="ds">Source</th><th>Worst-case margin</th></tr>
+    <tr><td>SPI clock period</td><td>t<sub>CLK</sub></td><td>40 ns</td><td>8</td><td>40 ns</td><td class="ds na">none</td><td class="ds na">none</td><td class="ds na">no direct-mode limit</td><td class="ok">n/a</td></tr>
+    <tr><td>CLK high / low time</td><td>t<sub>H</sub>/t<sub>L</sub></td><td>20/20 ns</td><td>4/4</td><td>20/20 ns</td><td class="ds">t<sub>H</sub> − 2</td><td class="ds">t<sub>H</sub> + 2</td><td class="ds">PRDO1 skew</td><td class="ok">18 ns</td></tr>
+    <tr><td>Output skew CLK ↔ MOSI ↔ /CS (PRU0 pins)</td><td>t<sub>sk(GPO-GPO)</sub></td><td>0</td><td>0</td><td>0 ns</td><td class="ds">n/a</td><td class="ds">2 ns</td><td class="ds">Table 6-113 PRDO1</td><td class="ok">used below</td></tr>
+    <tr><td>/CS low to first CLK edge</td><td>t<sub>LEAD</sub></td><td>1 t<sub>CLK</sub></td><td>8</td><td>40 ns</td><td class="ds">−2</td><td class="ds">+2</td><td class="ds">PRDO1</td><td class="ok">38 ns</td></tr>
+    <tr><td>Last CLK edge to /CS high</td><td>t<sub>LAG</sub></td><td>1 t<sub>CLK</sub></td><td>8</td><td>40 ns</td><td class="ds">−2</td><td class="ds">+2</td><td class="ds">PRDO1</td><td class="ok">38 ns</td></tr>
+    <tr><td>MOSI setup before PRU1 capture edge</td><td>t<sub>SU,MOSI</sub></td><td>t<sub>H</sub></td><td>4</td><td>20 ns</td><td class="ds na">none</td><td class="ds na">none</td><td class="ds na">no direct-input table</td><td class="ok">20 − 2 skew − 5 sample = 13 ns</td></tr>
+    <tr><td>MOSI hold after PRU1 capture edge</td><td>t<sub>H,MOSI</sub></td><td>t<sub>L</sub></td><td>4</td><td>20 ns</td><td class="ds na">none</td><td class="ds na">none</td><td class="ds na">no direct-input table</td><td class="ok">13 ns</td></tr>
+    <tr><td>PRU1: CLK launch edge to MISO valid</td><td>t<sub>V,MISO</sub></td><td>poll + drive</td><td>2–3</td><td>10–15 ns</td><td class="ds na">none</td><td class="ds na">none</td><td class="ds na">firmware only</td><td>n/a</td></tr>
+    <tr><td>MISO setup before PRU0 capture edge</td><td>t<sub>SU,MISO</sub></td><td>t<sub>H</sub> − t<sub>V</sub></td><td>1–2</td><td>5–10 ns</td><td class="ds na">none</td><td class="ds na">none</td><td class="ds na">no direct-input table</td><td class="warn">5 − 5 sample = 0 ns (limit)</td></tr>
+    <tr><td>MISO hold after PRU0 capture edge</td><td>t<sub>H,MISO</sub></td><td>t<sub>L</sub> + t<sub>V</sub></td><td>6</td><td>30 ns</td><td class="ds na">none</td><td class="ds na">none</td><td class="ds na">no direct-input table</td><td class="ok">25 ns</td></tr>
+    <tr><td>Input slew rate (all inputs)</td><td>SR<sub>I</sub></td><td>n/a</td><td>n/a</td><td>ideal</td><td class="ds">1 V/ns</td><td class="ds">3 V/ns</td><td class="ds">Table 6-112</td><td>board check</td></tr>
+    <tr><td>Output load capacitance</td><td>C<sub>L</sub></td><td>n/a</td><td>n/a</td><td>n/a</td><td class="ds">2 pF</td><td class="ds">30 pF</td><td class="ds">Table 6-112</td><td>board check</td></tr>
+    <tr><td>Idle byte budget for PRU1 data fetch</td><td>t<sub>IDLE</sub></td><td>8 t<sub>CLK</sub></td><td>64</td><td>320 ns</td><td class="ds na">n/a</td><td class="ds na">n/a</td><td class="ds na">firmware only</td><td class="ok">fetch ≈ 10 cycles</td></tr>
+  </table>
+  <p class="note"><b>What the datasheet does and doesn't give:</b> for direct output mode it specifies only GPO-to-GPO skew (max 2 ns, with 2–30 pF load and 1–3 V/ns input slew). It has <b>no timing table for direct input mode</b>, so input setup and hold are design budgets, not datasheet limits. In those budgets, "sample" is the 1-core-cycle uncertainty of polling R31 (5 ns at 200 MHz, 3 ns at 333 MHz). For reference only (not used in direct mode): the parallel-capture mode requires t<sub>su</sub> ≥ 4 ns and t<sub>h</sub> ≥ 0 ns (Table 6-114).</p>
+
+  <div class="sec">Pins (LP-AM243 user's guide SPRUJ12F, Jan 2024)</div>
+  <table class="tp">
+    <tr><th>Signal</th><th>Core</th><th>PRU pin</th><th>Ball</th><th>Header</th><th>Why</th></tr>
+    <tr><td>CLK out</td><td>PRU0</td><td>PRG0_PRU0_GPO16</td><td>N3</td><td>J1.7</td><td rowspan="4">Site 1's standard BoosterPack SPI positions (board net SPI3_*), so a scope or SPI BoosterPack lands where it expects</td></tr>
+    <tr><td>MOSI out</td><td>PRU0</td><td>PRG0_PRU0_GPO13</td><td>N1</td><td>J2.15</td></tr>
+    <tr><td>MISO in</td><td>PRU0</td><td>PRG0_PRU0_GPI14</td><td>N2</td><td>J2.14</td></tr>
+    <tr><td>/CS out</td><td>PRU0</td><td>PRG0_PRU0_GPO17</td><td>E1</td><td>J2.18</td></tr>
+    <tr><td>CLK in</td><td>PRU1</td><td>PRG0_PRU1_GPI1</td><td>J2</td><td>J7.67</td><td rowspan="4">Four neighbouring pins on J7, so four short jumper wires to site 1. Site 2's own SPI positions are SPI0, not PRU pins.</td></tr>
+    <tr><td>MOSI in</td><td>PRU1</td><td>PRG0_PRU1_GPI2</td><td>M2</td><td>J7.68</td></tr>
+    <tr><td>/CS in</td><td>PRU1</td><td>PRG0_PRU1_GPI6</td><td>F5</td><td>J7.69</td></tr>
+    <tr><td>MISO out</td><td>PRU1</td><td>PRG0_PRU1_GPO11</td><td>P1</td><td>J7.70</td></tr>
+  </table>
+  <p class="note">J2.15 changes to a different ball if the board's Servo-BoosterPack switch (SW6, Rev A) is set; the default position is needed. None of these balls are among the E1/E2 output-gated balls (R21, T19, U18, U20, V20).</p>
+</div></div>

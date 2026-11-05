@@ -1,0 +1,103 @@
+<h2>Layout A with timing added</h2>
+<p class="subtitle">Timing shows up in two places: measured arrows on the trace at the current cursor bit, and a table for the selected mode, SPI CLK and core clock. The numbers below are placeholders for 25 MHz on a 200 MHz core, mode 1. The real values come from the PRU cycle counts and the simulator trace.</p>
+
+<style>
+  .spi-wrap{font-family:ui-monospace,Consolas,monospace;font-size:12px}
+  .spi-bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;padding:6px 8px;background:rgba(127,127,127,.08);border-radius:6px;margin-bottom:8px}
+  .spi-bar span{padding:3px 8px;border:1px solid rgba(127,127,127,.35);border-radius:4px}
+  .frame-strip{display:flex;gap:2px;margin:6px 0}
+  .frame-strip div{flex:1;text-align:center;padding:4px 0;border-radius:3px;color:#fff;font-size:11px}
+  .c-cmd{background:#7b4fd6}.c-adr{background:#2f7fd6}.c-idl{background:#888}.c-dat{background:#1f9d6b}.c-cur{outline:2px solid #f5a623;outline-offset:1px}
+  .mem{display:grid;grid-template-columns:repeat(16,1fr);gap:1px;font-size:10px}
+  .mem div{text-align:center;padding:2px 0;background:rgba(127,127,127,.10)}
+  .mem .hit{background:#1f9d6b;color:#fff}.mem .now{background:#f5a623;color:#000}
+  .memlbl{font-size:11px;margin:6px 0 2px;opacity:.8}
+  .cols{display:flex;gap:12px}.cols>div{flex:1;min-width:0}
+  table.tp{border-collapse:collapse;font-size:11px;width:100%;margin-top:4px}
+  table.tp td,table.tp th{border:1px solid rgba(127,127,127,.3);padding:3px 6px;text-align:left}
+  table.tp th{background:rgba(127,127,127,.10)}
+  .ok{color:#1f9d6b;font-weight:600}.warn{color:#d68a00;font-weight:600}
+  .pill{display:inline-block;padding:1px 6px;border-radius:8px;background:#1f9d6b;color:#fff;font-size:10px}
+  .sec{font-size:12px;font-weight:600;margin:10px 0 2px}
+</style>
+
+<div class="mockup"><div class="mockup-header">I/O &amp; Devices → SPI</div><div class="mockup-body spi-wrap">
+  <div class="spi-bar"><span>Mode <b>1</b> ▾</span><span>SPI CLK <b>25 MHz</b> ▾</span><span>Core <b>200 MHz</b> ▾</span><span>Cmd <b>READ/WRITE</b> ▾</span><span>Addr <b>0x02</b> (byte 32)</span><span>Pattern <b>walking 1</b> ▾</span><span>▶ Send frame</span></div>
+
+  <div class="frame-strip">
+    <div class="c-cmd">CMD 03</div><div class="c-adr">ADR 02</div><div class="c-idl">IDLE</div>
+    <div class="c-dat c-cur">01</div><div class="c-dat">02</div><div class="c-dat">04</div><div class="c-dat">08</div><div class="c-dat">10</div><div class="c-dat">20</div><div class="c-dat">40</div><div class="c-dat">80</div><div class="c-dat">…</div>
+  </div>
+
+  <svg id="scope" width="100%" viewBox="0 0 900 230"></svg>
+
+  <div class="cols">
+    <div><div class="memlbl">PRU0 TX buffer (sent on MOSI)</div><div class="mem m-ctx"></div></div>
+    <div><div class="memlbl">PRU1 RX memory @ byte 32 (written)</div><div class="mem m-prx"></div></div>
+    <div><div class="memlbl">PRU1 TX memory @ byte 32 (read)</div><div class="mem m-ptx"></div></div>
+    <div><div class="memlbl">PRU0 RX buffer (got on MISO)</div><div class="mem m-crx"></div></div>
+  </div>
+  <p style="margin:6px 0 0">Compare: <span class="pill">16/16 bytes match both ways</span></p>
+
+  <div class="sec">Timing: mode 1, SPI CLK 25 MHz, core 200 MHz (5 ns per cycle)</div>
+  <table class="tp">
+    <tr><th>Parameter</th><th>Symbol</th><th>Design value</th><th>PRU cycles</th><th>Measured in sim</th><th>Margin</th></tr>
+    <tr><td>SPI clock period</td><td>t<sub>CLK</sub></td><td>40 ns</td><td>8</td><td>40 ns</td><td class="ok">n/a</td></tr>
+    <tr><td>CLK high / low time</td><td>t<sub>H</sub> / t<sub>L</sub></td><td>20 / 20 ns</td><td>4 / 4</td><td>20 / 20 ns</td><td class="ok">50 % duty</td></tr>
+    <tr><td>/CS low to first CLK edge</td><td>t<sub>LEAD</sub></td><td>≥ 1 t<sub>CLK</sub></td><td>8</td><td>40 ns</td><td class="ok">ok</td></tr>
+    <tr><td>Last CLK edge to /CS high</td><td>t<sub>LAG</sub></td><td>≥ 1 t<sub>CLK</sub></td><td>8</td><td>40 ns</td><td class="ok">ok</td></tr>
+    <tr><td>/CS high between frames</td><td>t<sub>CSH</sub></td><td>≥ 2 t<sub>CLK</sub></td><td>16</td><td>80 ns</td><td class="ok">ok</td></tr>
+    <tr><td>MOSI setup before PRU1 capture edge</td><td>t<sub>SU,MOSI</sub></td><td>t<sub>H</sub> − skew</td><td>4</td><td>20 ns</td><td class="ok">+15 ns</td></tr>
+    <tr><td>MOSI hold after PRU1 capture edge</td><td>t<sub>H,MOSI</sub></td><td>t<sub>L</sub></td><td>4</td><td>20 ns</td><td class="ok">+15 ns</td></tr>
+    <tr><td>PRU1 reaction: CLK launch edge to MISO valid</td><td>t<sub>V,MISO</sub></td><td>poll + drive</td><td>2–3</td><td>10–15 ns</td><td>n/a</td></tr>
+    <tr><td>MISO setup before PRU0 capture edge</td><td>t<sub>SU,MISO</sub></td><td>t<sub>H</sub> − t<sub>V,MISO</sub></td><td>1–2</td><td>5–10 ns</td><td class="warn">tightest</td></tr>
+    <tr><td>MISO hold after PRU0 capture edge</td><td>t<sub>H,MISO</sub></td><td>t<sub>L</sub> + t<sub>V,MISO</sub></td><td>6</td><td>30 ns</td><td class="ok">ok</td></tr>
+    <tr><td>Idle byte budget for PRU1 data fetch</td><td>t<sub>IDLE</sub></td><td>8 t<sub>CLK</sub></td><td>64</td><td>320 ns</td><td class="ok">fetch ≈ 10 cyc</td></tr>
+  </table>
+  <p style="opacity:.75;margin:4px 0 0">"Measured in sim" comes from the pin trace of the last frame. "Margin" compares it with the design value. The worst row is marked so you can see what limits the next faster rate.</p>
+</div></div>
+
+<script>
+(function(){
+  const hx=v=>v.toString(16).toUpperCase().padStart(2,'0');
+  const walk=[1,2,4,8,16,32,64,128,1,2,4,8,16,32,64,128],cnt=[...Array(16).keys()];
+  function fill(cls,vals){document.querySelectorAll('.'+cls).forEach(g=>{g.innerHTML=vals.map((v,i)=>`<div class="${i===0?'now':'hit'}">${hx(v)}</div>`).join('')})}
+  fill('m-ctx',walk);fill('m-prx',walk);fill('m-ptx',cnt);fill('m-crx',cnt);
+
+  const svg=document.getElementById('scope'),W=900,nBits=30,x0=50,bw=(W-x0-20)/nBits,hi=-12,lo=12;
+  const Y={cs:30,clk:72,mosi:122,miso:178};
+  let s='';
+  [['/CS',Y.cs],['CLK',Y.clk],['MOSI',Y.mosi],['MISO',Y.miso]].forEach(([n,y])=>s+=`<text x="4" y="${y+4}" fill="currentColor" font-size="12">${n}</text>`);
+  const mosiB=[0x03,0x02,0x00,0x01],misoB=[0x00,0x00,0x00,0x00];
+  const bit=(a,i)=>(a[Math.floor(i/8)]>>(7-i%8))&1;
+  const st=x0+bw*1.2;
+  s+=`<path d="M${x0} ${Y.cs+hi} H${st-bw} V${Y.cs+lo} H${W-10}" stroke="#d64545" fill="none" stroke-width="1.6"/>`;
+  let d=`M${x0} ${Y.clk+lo} H${st}`;
+  for(let i=0;i<nBits;i++){const a=st+i*bw;d+=` V${Y.clk+hi} H${a+bw/2} V${Y.clk+lo} H${a+bw}`}
+  s+=`<path d="${d}" stroke="#f5a623" fill="none" stroke-width="1.6"/>`;
+  function line(y,arr,col,delay){
+    let p=`M${x0} ${y+lo} H${st+delay}`;
+    for(let i=0;i<nBits;i++){const v=bit(arr,i)?hi:lo;p+=` V${y+v} H${st+(i+1)*bw+delay}`}
+    s+=`<path d="${p}" stroke="${col}" fill="none" stroke-width="1.6"/>`;
+    const names=['CMD','ADR','IDLE','D0'],cols=['#7b4fd6','#2f7fd6','#888','#1f9d6b'];
+    for(let b=0;b*8<nBits;b++){const xa=st+b*8*bw+delay,w=Math.min(8,nBits-b*8)*bw;
+      s+=`<rect x="${xa+1}" y="${y-32}" width="${w-2}" height="14" rx="3" fill="${cols[b]}" opacity=".85"/><text x="${xa+w/2}" y="${y-21}" fill="#fff" font-size="10" text-anchor="middle">${names[b]} ${hx(arr[b])}</text>`;}
+  }
+  line(Y.mosi,mosiB,'#2f7fd6',0);
+  line(Y.miso,[0x00,0x00,0x00,0x80],'#1f9d6b',bw*0.3);
+
+  // measurement arrows at bit 6 (MOSI 1, cmd 0x03 bit6=1)
+  const k=6,rise=st+k*bw,fall=rise+bw/2;
+  function arrow(x1,x2,y,lab,col){s+=`<line x1="${x1}" x2="${x2}" y1="${y}" y2="${y}" stroke="${col}" stroke-width="1.2" marker-start="url(#ah)" marker-end="url(#ah)"/><text x="${(x1+x2)/2}" y="${y-3}" fill="${col}" font-size="10" text-anchor="middle">${lab}</text>`}
+  s=`<defs><marker id="ah" viewBox="0 0 6 6" refX="3" refY="3" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 0L6 3L0 6z" fill="currentColor"/></marker></defs>`+s;
+  s+=`<line x1="${fall}" x2="${fall}" y1="${Y.clk-18}" y2="${Y.miso+18}" stroke="#f5a623" stroke-dasharray="3 3"/>`;
+  s+=`<line x1="${rise}" x2="${rise}" y1="${Y.clk-18}" y2="${Y.miso+18}" stroke="currentColor" stroke-dasharray="2 4" opacity=".4"/>`;
+  arrow(rise,fall,Y.mosi+26,'tSU 20 ns','#2f7fd6');
+  arrow(fall,rise+bw,Y.mosi+40,'tH 20 ns','#2f7fd6');
+  arrow(rise+bw*0.3,fall,Y.miso+28,'tSU 5–10 ns','#d68a00');
+  arrow(st-bw,st,Y.cs+24,'tLEAD','#d64545');
+  arrow(rise,rise+bw,Y.clk-24,'tCLK 40 ns','#f5a623');
+  s+=`<text x="${fall+4}" y="${Y.miso+46}" fill="currentColor" font-size="10" opacity=".7">cursor: capture edge, bit 6 of CMD</text>`;
+  svg.innerHTML=s;
+})();
+</script>
