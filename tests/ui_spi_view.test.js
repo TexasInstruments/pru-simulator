@@ -1,0 +1,433 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import test from 'node:test';
+import vm from 'node:vm';
+
+class Element {
+  constructor(id) { this.id = id; this.listeners = {}; this.dataset = {}; this.value = ''; this.hidden = false;
+    this.innerHTML = ''; this.textContent = ''; this.disabled = false; this.className = ''; this.title = ''; this.checked = false; }
+  addEventListener(type, handler) { this.listeners[type] = handler; }
+  click() { this.listeners.click?.({ currentTarget: this, target: this }); }
+  fire(type) { this.listeners[type]?.({ currentTarget: this, target: this }); }
+  setAttribute(name, value) { this[name] = value; }
+  classList = { toggle() {}, add() {}, remove() {} };
+}
+function load() {
+  const nodes = new Map();
+  const get = id => { if (!nodes.has(id)) nodes.set(id, new Element(id)); return nodes.get(id); };
+  const sent = [];
+  const window = {};
+  const context = vm.createContext({ document: { getElementById: get }, window, console });
+  vm.runInContext(readFileSync(new URL('../ui/static/spi.js', import.meta.url), 'utf8'), context);
+  return { SpiView: window.SpiView, get, sent, nodes };
+}
+const fx = JSON.parse(readFileSync(new URL('./fixtures/spi_view_fixture.json', import.meta.url), 'utf8'));
+const plain = value => JSON.parse(JSON.stringify(value));
+const SPI = 'SPI multi-core (controller + peripheral)';
+
+test('rateOptions disables unsupported and 50 MHz@200', () => {
+  const { SpiView } = load();
+  const supported = { 1: [
+    { spi_mhz: 10, core_mhz: 200, pass: true },
+    { spi_mhz: 25, core_mhz: 200, pass: true },
+    { spi_mhz: 40, core_mhz: 250, pass: false },
+    { spi_mhz: 50, core_mhz: 200, pass: true },
+    { spi_mhz: 50, core_mhz: 300, pass: true },
+  ] };
+  const options = plain(SpiView.rateOptions(supported, 1));
+  assert.equal(options.length, 5);
+  assert.deepEqual(options.map(o => o.disabled), [false, false, true, true, false]);
+  assert.match(options[1].label, /25 MHz/);
+  assert.match(options[1].label, /200 MHz/);
+  assert.match(options[3].title, /50 MHz.*200/);
+  assert.deepEqual(plain(SpiView.rateOptions(supported, 0)), [], 'no rows for mode 0');
+  assert.equal(SpiView.rateOptions({ '1': [{ spi_mhz: 10, core_mhz: 200 }] }, 1).length, 1, 'string mode keys (JSON)');
+});
+
+test('decodeBoxes labels CMD ADR IDLE D0..D15 with hex', () => {
+  const { SpiView } = load();
+  for (const key of ['mode1', 'mode0']) {
+    const f = fx[key];
+    const boxes = plain(SpiView.decodeBoxes(f.edges, f.config.mode, { miso_delay: f.config.miso_delay, hop_delay: f.hop }));
+    const mosi = boxes.filter(b => b.lane === 'mosi' && !b.partial);
+    assert.deepEqual(mosi.map(b => b.label), ['CMD 03', 'ADR 02', 'IDLE 00', 'D0 00'], key);
+    assert.ok(mosi.every(b => b.endCycle > b.startCycle));
+    assert.ok(mosi[1].startCycle >= mosi[0].endCycle - 1);
+    const miso = boxes.filter(b => b.lane === 'miso' && !b.partial);
+    assert.deepEqual(miso.map(b => b.label), ['CMD 00', 'ADR 00', 'IDLE 00', 'D0 F0'], key + ' miso at the controller sample point');
+  }
+  // D0..D15 names beyond the fixture
+  assert.deepEqual(plain(load().SpiView.fieldName(18)), 'D15');
+  assert.equal(load().SpiView.fieldName(3), 'D0');
+});
+
+test('frame strip MISO row equals the decoded box bytes, not the monitor decode', () => {
+  const { SpiView } = load();
+  const state = plain(fx.state);
+  const boxes = plain(SpiView.decodeBoxes(state.frame.edges, state.config.mode,
+    { miso_delay: state.config.miso_delay, hop_delay: state.hop_delay }))
+    .filter(b => b.lane === 'miso' && !b.partial).map(b => b.value.toString(16).toUpperCase().padStart(2, '0'));
+  assert.equal(boxes.length, 19);
+  assert.deepEqual(plain(SpiView.misoBytes(state)), boxes);
+  assert.deepEqual(boxes.slice(3, 5), ['F0', 'F1'], 'PRU0 sample point gives the real data');
+  assert.notDeepEqual(boxes, state.frame.miso, 'monitor decode is shifted');
+  const strip = SpiView.frameStripHtml(state, 3);
+  assert.ok(strip.includes('>F0<'));
+  assert.ok(!strip.includes('>78<'));
+});
+
+test('compare badge shows mismatch count', () => {
+  const { SpiView } = load();
+  const state = plain(fx.state);
+  let badge = SpiView.compareBadge(state);
+  assert.equal(badge.ok, true);
+  assert.match(badge.text, /16\/16/);
+  state.match = { mosi: 14, miso: 16 };
+  state.memory.p_rx[3] = 'EE'; state.memory.p_rx[9] = 'EE';
+  badge = SpiView.compareBadge(state);
+  assert.equal(badge.ok, false);
+  assert.equal(badge.mismatches, 2);
+  assert.match(badge.text, /2 mismatch/);
+  assert.deepEqual(plain(SpiView.mismatchIndexes(state.memory.c_tx, state.memory.p_rx)), [3, 9]);
+  // WRITE frame: MISO is not expected to carry data, so it never counts
+  const w = plain(fx.state);
+  w.expect = { mosi: true, miso: false }; w.match = { mosi: 16, miso: 0 };
+  assert.equal(SpiView.compareBadge(w).ok, true);
+});
+
+test('timingRows flags exactly one worst row and keeps derived rows unflagged', () => {
+  const { SpiView } = load();
+  const rows = plain(fx.state.timing);
+  rows.forEach(r => { r.worst = false; });
+  const out = plain(SpiView.timingRows(rows));
+  assert.equal(out.filter(r => r.worst).length, 1);
+  assert.ok(out.find(r => r.worst).derived !== true);
+  const already = plain(SpiView.timingRows(plain(fx.state.timing)));
+  assert.equal(already.filter(r => r.worst).length, 1);
+  assert.equal(already.find(r => r.worst).symbol, 'tSU,MISO');
+});
+
+test('only datasheet-table cells are tinted as datasheet data (R18)', () => {
+  const { SpiView } = load();
+  const html = SpiView.timingTableHtml(plain(fx.state.timing));
+  const rows = html.split('<tr').slice(2);
+  const tinted = rows.filter(r => r.includes('class="spi-ds"'));
+  assert.ok(tinted.length >= 3);
+  assert.ok(tinted.every(r => /Table 6-11[23]/.test(r)), 'tinted rows are Table 6-112 / 6-113');
+  const lead = rows.find(r => r.includes('LEAD'));
+  assert.ok(!lead.includes('spi-ds') && /exact by construction/.test(lead));
+  assert.ok(/<td class="spi-ok">n\/a<\/td>/.test(lead), 'no margin for an exact design row');
+  assert.ok(!/>\+2 ns</.test(lead) && (lead.match(/>none</g) || []).length === 2, 'no AM243 min/max for tLEAD');
+  assert.ok(!html.includes('<th class="spi-ds"'));
+});
+
+test('misoDelayOptions lists realisable values and marks the passing window (R17)', () => {
+  const { SpiView } = load();
+  const row = { mode: 1, spi_mhz: 25, core_mhz: 200, half_k: 4, miso_delay: 17,
+    miso_delay_window: [15, 19], miso_delay_pass: [15, 17, 18, 19] };
+  const options = plain(SpiView.misoDelayOptions(row));
+  const values = options.map(o => o.value);
+  assert.deepEqual(values, [7, 9, 10, 11, 13, 14, 15, 17, 18, 19, 21, 22, 23, 25, 26, 27]);
+  assert.ok(values.every(d => d % 8 !== 0 && d % 8 !== 4), 'never on a CLK write');
+  assert.deepEqual(options.filter(o => o.pass).map(o => o.value), [15, 17, 18, 19]);
+  assert.deepEqual(options.filter(o => o.chosen).map(o => o.value), [17]);
+  assert.match(options.find(o => o.value === 17).label, /passes.*default/);
+  assert.match(options.find(o => o.value === 13).label, /fails/);
+  assert.equal(SpiView.delayOk(4, 16), false);
+  assert.equal(SpiView.delayOk(4, 8 * 7 + 1), false, 'more than 6 bits pipelined');
+  assert.deepEqual(plain(SpiView.misoDelayOptions(null)), []);
+});
+
+test('MISO delay control sends spi_setup with miso_delay; scope click at clientX 0 moves the cursor', () => {
+  const { SpiView, get } = load();
+  const sent = [];
+  SpiView.init({ send: action => sent.push(plain(action)), stop() {} });
+  SpiView.setSupported({ 1: [{ spi_mhz: 25, core_mhz: 200, half_k: 4, pass: true, miso_delay: 17,
+    miso_delay_window: [15, 19], miso_delay_pass: [15, 17, 18, 19] }] });
+  SpiView.render(plain(fx.state));
+  assert.match(get('spi-miso-delay').innerHTML, /value="18"[^>]*>18 cycles \u2713 passes/);
+  assert.equal(get('spi-miso-delay').value, '17');
+  get('spi-miso-delay').value = '18';
+  get('spi-miso-delay').fire('change');
+  assert.deepEqual(sent.at(-1), { action: 'spi_setup', mode: 1, spi_mhz: 25, miso_delay: 18 });
+  SpiView.render(plain(fx.state));
+  const scope = get('spi-scope');
+  scope.getBoundingClientRect = () => ({ left: 0, width: 1100 });
+  const before = scope.innerHTML;
+  scope.listeners.click({ clientX: 0, currentTarget: scope });
+  assert.notEqual(scope.innerHTML, before, 'clientX 0 is a valid click position');
+  assert.match(scope.innerHTML, /bit 0 \(CMD\)/);
+});
+
+test('spi view rehydrates from spi_state on connect', () => {
+  const { SpiView, get } = load();
+  const sent = [];
+  SpiView.init({ send: action => sent.push(action) });
+  SpiView.render(plain(fx.state));
+  const svg = get('spi-scope').innerHTML;
+  assert.match(svg, /<svg/);
+  assert.match(svg, /CMD 03/);
+  assert.match(svg, /D0 F0/);
+  assert.match(get('spi-mem-c-tx').innerHTML, />0F</);
+  assert.match(get('spi-mem-c-rx').innerHTML, />FF</);
+  assert.match(get('spi-frame-strip').innerHTML, /ADR/);
+  assert.match(get('spi-compare').textContent, /16\/16/);
+  assert.match(get('spi-timing').innerHTML, /SU,MISO/);
+  assert.match(get('spi-gpi-delay').textContent, /^GPI delay 5 cycles \(calibrated 18 ns @ 333 MHz\)/);
+  assert.match(get('spi-core-note').textContent, /200 MHz.*session only/);
+  assert.equal(get('spi-result').hidden, false);
+  assert.deepEqual(plain(sent), [{ action: 'spi_supported' }], 'asks once for the rate table it has not cached');
+  SpiView.render(plain(fx.state));
+  assert.equal(sent.length, 1);
+  SpiView.render(null);
+  assert.equal(get('spi-result').hidden, true);
+});
+
+test('setup, send, sequence and rate controls send the backend actions', () => {
+  const { SpiView, get } = load();
+  const sent = [];
+  SpiView.init({ send: action => sent.push(plain(action)), stop() {} });
+  SpiView.setSupported({ 0: [{ spi_mhz: 25, core_mhz: 200, pass: true }],
+    1: [{ spi_mhz: 10, core_mhz: 200, pass: true }, { spi_mhz: 25, core_mhz: 200, pass: true }] });
+  get('spi-setup-button').click();
+  assert.deepEqual(sent.at(-1), { action: 'scenario_load', name: SPI });
+  SpiView.render(plain(fx.state));
+  get('spi-cmd').value = '2'; get('spi-addr').value = '2'; get('spi-pattern').value = 'walking1';
+  get('spi-send').click();
+  assert.deepEqual(sent.at(-1), { action: 'spi_send', cmd: 2, addr: 2, pattern: 'walking1' });
+  assert.equal(get('spi-send').disabled, true, 'busy until the state returns');
+  SpiView.render(plain(fx.state));
+  assert.equal(get('spi-send').disabled, false);
+  get('spi-sequence').click();
+  assert.deepEqual(sent.at(-1), { action: 'spi_sequence' });
+  SpiView.render(plain(fx.state));
+  get('spi-rate').value = '10';
+  get('spi-rate').fire('change');
+  assert.deepEqual(sent.at(-1), { action: 'spi_setup', mode: 1, spi_mhz: 10 });
+  SpiView.render(plain(fx.state));
+  get('spi-mode').value = '0';
+  get('spi-mode').fire('change');
+  assert.deepEqual(sent.at(-1), { action: 'spi_setup', mode: 0, spi_mhz: 25 });
+  get('spi-addr').value = '5';
+  get('spi-addr').fire('input');
+  assert.match(get('spi-addr-byte').textContent, /= byte 80/);
+  SpiView.showError(['bad rate']);
+  assert.equal(get('spi-error').hidden, false);
+  assert.equal(get('spi-send').disabled, false);
+});
+
+test('index.html wires the SPI subtab, pane, assets and app dispatch', () => {
+  const html = readFileSync(new URL('../ui/static/index.html', import.meta.url), 'utf8');
+  assert.match(html, /id="io-subtab-spi" data-io-tab="spi"/);
+  assert.match(html, /id="spi-view"/);
+  assert.match(html, /\/static\/spi\.js/);
+  assert.match(html, /\/static\/spi\.css/);
+  const ids = new Set([...html.matchAll(/id="([^"]+)"/g)].map(m => m[1]));
+  const js = readFileSync(new URL('../ui/static/spi.js', import.meta.url), 'utf8');
+  for (const m of js.matchAll(/(?:byId|setHtml|setText)\('([^']+)'/g)) assert.ok(ids.has(m[1]), `index.html has ${m[1]}`);
+  const app = readFileSync(new URL('../ui/static/app.js', import.meta.url), 'utf8');
+  assert.match(app, /msg\.io\?\.spi_demo/);
+  assert.match(app, /msg\.tag === "spi"/);
+  assert.match(app, /spi_supported/);
+  assert.ok(!/AM243 columns are datasheet data/.test(html));
+  assert.ok(!/limits the next faster rate/.test(html));
+  assert.match(html, /The worst row is the tightest margin at this rate/);
+});
+
+// ---- recorded test-sequence steps (step chips) ---------------------------------
+const mk = (name, extra) => ({ step: name, ok: true, byte_errors: 0, notes: [], cmd: 3, addr: 2, pattern: 'count',
+  frame: plain(fx.state.frame), memory: plain(fx.state.memory), last: plain(fx.state.last),
+  expect: plain(fx.state.expect), match: plain(fx.state.match), timing: plain(fx.state.timing), ...extra });
+const seqState = (id, loop = ['rw:walking1']) => ({ ...plain(fx.state),
+  sequence: { id, ok: true, byte_errors: 0, steps: [], loop } });
+const chipClick = (get, i) => get('spi-steps').listeners.click({ target: { dataset: { step: String(i) } } });
+
+test('chips render ok, bad and loop marks', () => {
+  const { SpiView } = load();
+  const html = SpiView.chipsHtml([mk('write:count'), mk('rw:walking1'), mk('abort', { ok: false, notes: ['x'] })],
+    ['rw:walking1'], 1, false);
+  const chips = html.match(/<button[^>]*class="spi-chip[^"]*"[^>]*>[^<]*<\/button>/g);
+  assert.equal(chips.length, 3);
+  assert.match(chips[1], /spi-chip-loop/);
+  assert.match(chips[1], /spi-chip-cur/);
+  assert.match(chips[2], /spi-chip-bad/);
+  assert.match(chips[2], /✗/);
+  assert.match(chips[2], /title="x"/);
+  assert.doesNotMatch(html, /disabled/);
+  const locked = SpiView.chipsHtml([mk('write:count'), mk('rw:walking1')], ['rw:walking1'], null, true);
+  assert.equal(locked.match(/ disabled/g).length, 2);
+});
+
+test('steps are requested once per sequence id and stale replies are ignored', () => {
+  const { SpiView, get } = load();
+  const sent = [];
+  SpiView.init({ send: action => sent.push(plain(action)), stop() {} });
+  SpiView.setSupported({ 1: [] });
+  SpiView.render(seqState(7));
+  SpiView.render(seqState(7));
+  assert.equal(sent.filter(a => a.action === 'spi_steps').length, 1);
+  SpiView.setSteps({ id: 6, steps: [mk('write:count')] });
+  assert.equal(get('spi-steps').innerHTML, '');
+  SpiView.setSteps({ id: 7, steps: [mk('write:count'), mk('rw:walking1')] });
+  assert.equal(get('spi-steps').innerHTML.match(/<button/g).length, 2);
+  SpiView.render(seqState(8));
+  assert.equal(sent.filter(a => a.action === 'spi_steps').length, 2, 'a new id asks again');
+  assert.equal(get('spi-steps').innerHTML, '', 'the old steps are dropped');
+});
+
+test('clicking a chip shows that step and survives a state push', () => {
+  const { SpiView, get } = load();
+  SpiView.init({ send() {}, stop() {} });
+  SpiView.setSupported({ 1: [] });
+  SpiView.render(seqState(7));
+  const first = mk('write:count', { cmd: 1 });
+  first.frame.mosi[0] = '01';
+  SpiView.setSteps({ id: 7, steps: [first, mk('rw:walking1')] });
+  chipClick(get, 0);
+  assert.match(get('spi-frame-strip').innerHTML, /CMD<\/span><span class="spi-c-val">01</);
+  assert.match(get('spi-step-title').textContent, /^Step 1\/2 · write:count · WRITE \(01\) @ 0x02 · pattern count/);
+  SpiView.render(seqState(7));
+  assert.match(get('spi-frame-strip').innerHTML, /CMD<\/span><span class="spi-c-val">01</);
+});
+
+test('frameless and out-of-range steps render', () => {
+  const { SpiView, get } = load();
+  SpiView.init({ send() {}, stop() {} });
+  SpiView.setSupported({ 1: [] });
+  SpiView.render(seqState(7));
+  const b2b = { step: 'back_to_back', ok: true, byte_errors: 0, notes: [], tcsh_cycles: 16, frame: null,
+    memory: null, last: null, expect: null, match: { mosi: null, miso: null }, timing: [] };
+  const bad = mk('bad_addr', { addr: 0x80, memory: { ...plain(fx.state.memory), p_rx: null, p_tx: null } });
+  SpiView.setSteps({ id: 7, steps: [bad, b2b] });
+  chipClick(get, 0);
+  assert.match(get('spi-mem-p-rx').innerHTML, /out of range/);
+  chipClick(get, 1);
+  assert.match(get('spi-scope').innerHTML, /No frame captured/);
+  assert.match(get('spi-step-title').textContent, /back_to_back · \/CS-high gap 16 cycles/);
+});
+
+test('a cleared sequence clears chips and selection', () => {
+  const { SpiView, get } = load();
+  SpiView.init({ send() {}, stop() {} });
+  SpiView.setSupported({ 1: [] });
+  SpiView.render(seqState(7));
+  SpiView.setSteps({ id: 7, steps: [mk('write:count')] });
+  chipClick(get, 0);
+  SpiView.render({ ...plain(fx.state), sequence: null });
+  assert.equal(get('spi-steps').innerHTML, '');
+  assert.equal(get('spi-step-title').textContent, '');
+  assert.match(get('spi-frame-strip').innerHTML, /CMD<\/span><span class="spi-c-val">03</);
+});
+
+// ---- Play: bit-by-bit booth loop with the SPI controls locked --------------------
+const LOCKED_IDS = ['spi-mode', 'spi-rate', 'spi-miso-delay', 'spi-cmd', 'spi-addr', 'spi-pattern',
+  'spi-send', 'spi-sequence', 'spi-setup-button'];
+function playing(loop = ['rw:walking1', 'rw:walking0']) {
+  const ctx = load();
+  const sent = [];
+  ctx.SpiView.init({ send: action => sent.push(plain(action)), stop() {} });
+  ctx.SpiView.setSupported({ 1: [{ spi_mhz: 25, core_mhz: 200, half_k: 4, pass: true, miso_delay: 17,
+    miso_delay_window: [15, 19], miso_delay_pass: [15, 17, 18, 19] }] });
+  ctx.get('spi-speed').value = '1';
+  ctx.SpiView.render(seqState(7, loop));
+  ctx.SpiView.setSteps({ id: 7, steps: [mk('write:count'), mk('rw:walking1'),
+    mk('rw:walking0', { ok: false, notes: ['bad'] })] });
+  return { ...ctx, sent };
+}
+
+test('Play locks every SPI control except Pause and Speed', () => {
+  const { SpiView, get } = playing();
+  get('spi-play').click();
+  for (const id of LOCKED_IDS) assert.equal(get(id).disabled, true, id);
+  assert.equal(get('spi-play').disabled, false);
+  assert.equal(get('spi-speed').disabled, false);
+  assert.match(get('spi-play').textContent, /❚❚ Pause/);
+  assert.equal(get('spi-steps').innerHTML.match(/<button/g).length, get('spi-steps').innerHTML.match(/ disabled/g).length);
+  SpiView.render(seqState(7, ['rw:walking1', 'rw:walking0']));
+  for (const id of LOCKED_IDS) assert.equal(get(id).disabled, true, `${id} after a state push`);
+  get('spi-play').click();
+  for (const id of LOCKED_IDS) assert.equal(get(id).disabled, false, `${id} after Pause`);
+  assert.match(get('spi-play').textContent, /▶ Play/);
+});
+
+test('Play draws bit by bit and advances through the loop, including a failing step', () => {
+  const { SpiView, get } = playing();
+  get('spi-play').click();
+  assert.match(get('spi-step-title').textContent, /rw:walking1/);
+  SpiView.tick(3000);
+  assert.equal(get('spi-compare').textContent, 'Transferring…');
+  const cur = get('spi-frame-strip').innerHTML.split('<div class="').findIndex(c => / spi-c-cur"/.test(c.split('>')[0])) - 1;
+  assert.ok(cur >= 3, `current byte ${cur} is a data byte`);
+  assert.match(get('spi-mem-c-rx').innerHTML, /··/, 'PRU0 RX is still filling');
+  SpiView.tick(3100);
+  assert.match(get('spi-compare').textContent, /16\/16/);
+  SpiView.tick(1100);
+  assert.match(get('spi-step-title').textContent, /rw:walking0/);
+  assert.match(get('spi-steps').innerHTML, /spi-chip-bad[^"]*spi-chip-cur/);
+  SpiView.tick(6100);
+  SpiView.tick(1100);
+  assert.match(get('spi-step-title').textContent, /rw:walking1/);
+});
+
+test('fast speed finishes a frame sooner', () => {
+  const { SpiView, get } = playing();
+  get('spi-speed').value = '3';
+  get('spi-play').click();
+  SpiView.tick(2100);
+  SpiView.tick(400);
+  assert.match(get('spi-step-title').textContent, /rw:walking0/);
+});
+
+test('Play with no recording runs the sequence first', () => {
+  const { SpiView, get } = load();
+  const sent = [];
+  SpiView.init({ send: action => sent.push(plain(action)), stop() {} });
+  SpiView.setSupported({ 1: [] });
+  get('spi-speed').value = '1';
+  SpiView.render({ ...plain(fx.state), sequence: null });
+  get('spi-play').click();
+  assert.deepEqual(sent.at(-1), { action: 'spi_sequence' });
+  assert.equal(get('spi-send').disabled, true);
+  SpiView.render(seqState(9));
+  assert.deepEqual(sent.at(-1), { action: 'spi_steps' });
+  assert.equal(get('spi-send').disabled, true, 'still locked while the steps load');
+  SpiView.setSteps({ id: 9, steps: [mk('write:count'), mk('rw:walking1')] });
+  assert.match(get('spi-step-title').textContent, /rw:walking1/);
+  assert.match(get('spi-play').textContent, /Pause/);
+});
+
+test('sequence error while pending unlocks', () => {
+  const { SpiView, get } = load();
+  SpiView.init({ send() {}, stop() {} });
+  SpiView.setSupported({ 1: [] });
+  SpiView.render({ ...plain(fx.state), sequence: null });
+  get('spi-play').click();
+  SpiView.showError(['timeout']);
+  assert.equal(get('spi-send').disabled, false);
+  assert.match(get('spi-play').textContent, /▶ Play/);
+});
+
+test('a cleared or replaced sequence stops Play', () => {
+  const { SpiView, get } = playing();
+  get('spi-play').click();
+  SpiView.render({ ...plain(fx.state), sequence: null });
+  assert.match(get('spi-play').textContent, /▶ Play/);
+  for (const id of LOCKED_IDS) assert.equal(get(id).disabled, false, id);
+  const again = playing();
+  again.get('spi-play').click();
+  again.SpiView.render(seqState(8));
+  assert.match(again.get('spi-play').textContent, /▶ Play/, 'another tab recorded a new sequence');
+});
+
+test('leaving the SPI scenario during Play stops it and unlocks Set up SPI demo', () => {
+  const { SpiView, get, sent } = playing();
+  get('spi-play').click();
+  assert.equal(get('spi-setup-button').disabled, true);
+  SpiView.render(null);
+  assert.equal(get('spi-setup-button').disabled, false, 'setup button usable again');
+  assert.match(get('spi-play').textContent, /▶ Play/);
+  SpiView.tick(8000);
+  const asked = sent.filter(a => a.action === 'spi_steps').length;
+  SpiView.render(seqState(7));
+  assert.equal(sent.filter(a => a.action === 'spi_steps').length, asked + 1, 'steps cache dropped: the id is asked again');
+});

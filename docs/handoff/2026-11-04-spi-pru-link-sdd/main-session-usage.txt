@@ -1,0 +1,7 @@
+main session transcript: /home/thomas/.claude/projects/-home-thomas-GitHub-pru-simulator/248cc36f-e40d-4bf1-9042-e823bf236b73.jsonl
+first event: 2026-11-04T19:47:25.446Z  SPI prompt: 2026-11-04T20:29:36.518Z  last event: 2026-11-05T06:13:20.259Z
+assistant API messages: 214  models: {'claude-opus-5-5': 211, '<synthetic>': 3}
+input_tokens 566
+output_tokens 175602
+cache_creation_input_tokens 1030878
+cache_read_input_tokens 48734663

@@ -16,6 +16,8 @@ if TYPE_CHECKING:
     from pru_io.tca9538 import TCA9538Device
 
 _MASK_20 = 0x000FFFFF
+#: Upper bound for `IOPort.gpi_delay_cycles`.
+GPI_DELAY_MAX = 16
 _I2C_SCL_BIT = 0
 _I2C_SDA_BIT = 1
 
@@ -25,7 +27,14 @@ class IOPort:
 
     def __init__(self) -> None:
         self.gpo: int = 0             # driven by writes to R30
-        self.gpi: int = 0             # sampled by reads from R31
+        # GPI input delay: R31 reads at core cycle c see GPI as it was at
+        # c - N.  History of (cycle, word) changes, kept only while N > 0.
+        # Must exist before the first `gpi` assignment (property setter).
+        self._gpi_delay = 0
+        self._gpi_history: list[tuple[int, int]] = []
+        self._cycle_counters = None   # owning core's CycleCounters (bind_cycle_counters)
+        self._gpi: int = 0
+        self.gpi = 0                  # sampled by reads from R31
         self.sd_filter: SigmaDeltaFilter | None = None
         self.perif = None             # type: PeripheralInterface | None
         self.loopback_mask: int = 0   # which GPO bits feed back to GPI (5 groups × 4 bits)
@@ -211,17 +220,104 @@ class IOPort:
             self.loopback_mask &= ~mask
 
     # ------------------------------------------------------------------
+    # GPI input delay
+    # ------------------------------------------------------------------
+
+    @property
+    def gpi(self) -> int:
+        """Current GPI pin word (what the pads carry now, undelayed)."""
+        return self._gpi
+
+    @gpi.setter
+    def gpi(self, value: int) -> None:
+        if self._gpi_delay and value != self._gpi:
+            self._record_gpi(value)
+        self._gpi = value
+
+    def bind_cycle_counters(self, counters) -> None:
+        """Stamp GPI changes with *counters*.cycles (the owning core's clock)."""
+        self._cycle_counters = counters
+
+    def _now(self) -> int:
+        counters = self._cycle_counters
+        return counters.cycles if counters is not None else self._device_cycle
+
+    def _record_gpi(self, value: int) -> None:
+        now = self._now()
+        history = self._gpi_history
+        if history and history[-1][0] >= now:
+            # Same cycle (or a stamp from before a counter rewind): the
+            # latest value wins for this cycle.
+            while history and history[-1][0] > now:
+                history.pop()
+            if history and history[-1][0] == now:
+                history.pop()
+        history.append((now, value & _MASK_20))
+        # Reads come at cycles >= now, so they look at <= now - N: keep the
+        # newest entry at or before that horizon and everything after it.
+        # Changes are coalesced per cycle, so this is at most N + 1 entries.
+        horizon = now - self._gpi_delay
+        keep = 0
+        for i, (cycle, _) in enumerate(history):
+            if cycle <= horizon:
+                keep = i
+            else:
+                break
+        if keep:
+            del history[:keep]
+
+    @property
+    def gpi_delay_cycles(self) -> int:
+        """R31 input delay in core cycles (0 = no delay)."""
+        return self._gpi_delay
+
+    @gpi_delay_cycles.setter
+    def gpi_delay_cycles(self, cycles: int) -> None:
+        if (not isinstance(cycles, int) or isinstance(cycles, bool)
+                or not 0 <= cycles <= GPI_DELAY_MAX):
+            raise ValueError(
+                f"GPI delay must be an integer 0-{GPI_DELAY_MAX} cycles")
+        self._gpi_delay = cycles
+        # Before N cycles of history exist the earliest known word is used.
+        self._gpi_history = [(self._now(), self._gpi)] if cycles else []
+
+    def _delayed_gpi(self, cycle: int) -> int:
+        target = cycle - self._gpi_delay
+        history = self._gpi_history
+        word = history[0][1]
+        for stamp, value in history:
+            if stamp > target:
+                break
+            word = value
+        return word
+
+    def gpi_delay_snapshot(self) -> dict:
+        """State for step-back snapshots."""
+        return {"cycles": self._gpi_delay, "history": list(self._gpi_history)}
+
+    def gpi_delay_restore(self, snap: dict) -> None:
+        self._gpi_delay = snap["cycles"]
+        self._gpi_history = [tuple(entry) for entry in snap["history"]]
+
+    # ------------------------------------------------------------------
     # R31 / GPI
     # ------------------------------------------------------------------
 
-    def read_r31(self) -> int:
+    def read_r31(self, cycle: int | None = None) -> int:
         """Return R31 value: Peripheral status if perif mode active, else SD
-        status if sd_en active, else GPI masked to 20 bits."""
+        status if sd_en active, else GPI masked to 20 bits.
+
+        *cycle* is the reading core's current cycle. With a GPI delay of N it
+        selects the GPI word as it was at ``cycle - N``; omitted, the read
+        means "now" and returns the current word.
+        """
         if self.perif is not None and self.perif.enabled:
             return self.perif.get_r31_status()
         if self.sd_filter is not None and self.sd_filter.sd_en:
             return self.sd_filter.get_r31_status()
-        return self.gpi & _MASK_20
+        if self._gpi_delay and cycle is not None and self._gpi_history:
+            return self._delayed_gpi(cycle) & _MASK_20
+        return self._gpi & _MASK_20
 
     def write_r31(self, value: int) -> None:
         """Process R31 write as a Peripheral command (if perif mode active),
@@ -264,6 +360,10 @@ class IOPort:
         """
         self.gpo = 0
         self._device_cycle = 0
+        # The delay setting is configuration and survives; its history is
+        # stamped against the old cycle count, which the core just zeroed.
+        if self._gpi_delay:
+            self._gpi_history = [(0, self._gpi)]
         if self.perif is not None:
             self.perif.reset()
         # Devices stay attached across a reset (they model external hardware,

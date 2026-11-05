@@ -1608,6 +1608,7 @@
     }
   </style>
   <link rel="stylesheet" href="/static/cores.css">
+  <link rel="stylesheet" href="/static/spi.css">
 </head>
 <body>
 
@@ -2121,6 +2122,7 @@ Example:
       <button type="button" role="tab" id="io-subtab-devices" data-io-tab="devices" aria-controls="devices-view" aria-selected="true" tabindex="0">Devices</button>
       <button type="button" role="tab" id="io-subtab-peripherals" data-io-tab="peripherals" aria-controls="peripherals-view" aria-selected="false" tabindex="-1">Peripherals</button>
       <button type="button" role="tab" id="io-subtab-events" data-io-tab="events" aria-controls="events-view" aria-selected="false" tabindex="-1">Events</button>
+      <button type="button" role="tab" id="io-subtab-spi" data-io-tab="spi" aria-controls="spi-view" aria-selected="false" tabindex="-1">SPI</button>
       <span class="view-glider" aria-hidden="true"></span>
     </nav>
     <section id="devices-view" class="io-pane" role="tabpanel" aria-labelledby="io-subtab-devices">
@@ -2350,11 +2352,82 @@ Example:
       <p class="io-pane-intro">Events use the attached device&#8217;s core cycle counter. Faults include electrical contention, protocol violations and core memory faults.</p>
       <pre id="device-event-log" aria-label="Current device events">No device events. Attach a model and execute firmware to inspect its activity.</pre>
     </section>
+    <section id="spi-view" class="io-pane" role="tabpanel" aria-labelledby="io-subtab-spi" hidden>
+      <p class="io-pane-intro">A bit-banged SPI link: PRU0 is the controller, PRU1 the peripheral. The trace below is the real pin trace from the simulator. Rate and mode changes rebuild the simulator at the needed core clock for this session only; memory.cfg is not changed.</p>
+      <div class="spi-setup">
+        <button class="runtime-device-button btn-17" id="spi-setup-button" type="button"><span class="text-container"><span class="text">Set up SPI demo</span></span></button>
+        <span class="spi-hint">Replaces programs, devices and wiring with the SPI scenario.</span>
+      </div>
+      <div class="runtime-device-error" id="spi-error" role="alert" aria-live="assertive" hidden></div>
+      <div id="spi-result" class="spi-wrap" hidden>
+        <div class="spi-bar">
+          <label class="spi-field" for="spi-mode">Mode
+            <select id="spi-mode"><option value="0">0 (capture on rising)</option><option value="1">1 (capture on falling)</option></select>
+          </label>
+          <label class="spi-field" for="spi-rate">SPI CLK
+            <select id="spi-rate"></select>
+          </label>
+          <label class="spi-field" for="spi-miso-delay" title="Core cycles from each MISO launch edge to PRU0's MISO sample. Realisable values only; the passing window is marked.">MISO sample delay
+            <select id="spi-miso-delay"></select>
+          </label>
+          <span class="spi-note" id="spi-core-note">Core 200 MHz (session only)</span>
+          <label class="spi-field" for="spi-cmd">Command
+            <select id="spi-cmd"><option value="1">WRITE (01)</option><option value="2">READ (02)</option><option value="3" selected>READ/WRITE (03)</option><option value="4">Unknown (04)</option></select>
+          </label>
+          <label class="spi-field" for="spi-addr">Address
+            <input id="spi-addr" type="number" min="0" max="255" step="1" value="2">
+          </label>
+          <span class="spi-note" id="spi-addr-byte">= byte 32</span>
+          <label class="spi-field" for="spi-pattern">Pattern
+            <select id="spi-pattern"><option value="walking1">walking 1</option><option value="walking0">walking 0</option><option value="a5_5a">0xA5 / 0x5A</option><option value="count">count / F0-FF</option><option value="toggle">00 / FF toggle</option></select>
+          </label>
+          <button class="runtime-device-button btn-17" id="spi-send" type="button"><span class="text-container"><span class="text">Send frame</span></span></button>
+          <button class="runtime-device-button btn-17" id="spi-sequence" type="button"><span class="text-container"><span class="text">Run test sequence</span></span></button>
+          <button class="runtime-device-button btn-17" id="spi-play" type="button" title="Replay the booth loop (4 read/write frames) bit by bit; the SPI controls are locked until Pause"><span class="text-container"><span class="text">&#9654; Play</span></span></button>
+          <label class="spi-field" for="spi-speed">Speed
+            <select id="spi-speed"><option value="1" selected>booth</option><option value="0.5">slow</option><option value="3">fast</option></select>
+          </label>
+          <span class="spi-note" id="spi-status" role="status"></span>
+        </div>
+        <div class="spi-steps" id="spi-steps"></div>
+        <p class="spi-step-title" id="spi-step-title"></p>
+        <div class="spi-sec">Frame (CMD, ADR, IDLE, D0 to D15): top MOSI, bottom MISO</div>
+        <div class="spi-frame-strip" id="spi-frame-strip"></div>
+        <div id="spi-scope" class="spi-scope" title="Click to move the cursor to a bit"></div>
+        <p class="spi-note">MISO decoded at PRU0's sample point (launch + MISO_DELAY &minus; hop); a scope decoding at the nominal capture edge would show it shifted by the round-trip delay.</p>
+        <div class="spi-cols">
+          <div><div class="spi-memlbl">PRU0 TX buffer (sent on MOSI)</div><div class="spi-mem" id="spi-mem-c-tx"></div></div>
+          <div><div class="spi-memlbl" id="spi-mem-p-rx-label">PRU1 RX memory (written)</div><div class="spi-mem" id="spi-mem-p-rx"></div></div>
+          <div><div class="spi-memlbl" id="spi-mem-p-tx-label">PRU1 TX memory (read)</div><div class="spi-mem" id="spi-mem-p-tx"></div></div>
+          <div><div class="spi-memlbl">PRU0 RX buffer (got on MISO)</div><div class="spi-mem" id="spi-mem-c-rx"></div></div>
+        </div>
+        <p class="spi-compare-row">Compare: <span class="spi-pill" id="spi-compare">No frame sent yet</span>
+          <span class="spi-note" id="spi-peripheral-status"></span> <span class="spi-note" id="spi-sequence-result"></span></p>
+        <div class="spi-sec" id="spi-timing-title">Timing</div>
+        <p class="spi-note" id="spi-gpi-delay"></p>
+        <div class="spi-table-wrap" id="spi-timing"></div>
+        <p class="spi-note">Sim values are measured from the pin trace of the last frame. Shaded cells are AM243 datasheet data (SPRSP65J section 6.11.5.16.1, Tables 6-112 and 6-113); every other row is a design value. Input setup and hold rows are design budgets because the datasheet has no direct-input-mode table; t<sub>LEAD</sub>, t<sub>LAG</sub> and t<sub>H</sub>/t<sub>L</sub> are exact by construction and have no margin (up to 2 ns PRDO1 skew on silicon). The worst row is the tightest margin at this rate.</p>
+        <div class="spi-sec">Pins (LP-AM243 user's guide SPRUJ12F)</div>
+        <table class="spi-tp">
+          <tr><th>Signal</th><th>Core</th><th>PRU pin</th><th>Ball</th><th>Header</th></tr>
+          <tr><td>CLK out</td><td>PRU0</td><td>PRG0_PRU0_GPO16</td><td>N3</td><td>J1.7</td></tr>
+          <tr><td>MOSI out</td><td>PRU0</td><td>PRG0_PRU0_GPO13</td><td>N1</td><td>J2.15</td></tr>
+          <tr><td>MISO in</td><td>PRU0</td><td>PRG0_PRU0_GPI14</td><td>N2</td><td>J2.14</td></tr>
+          <tr><td>/CS out</td><td>PRU0</td><td>PRG0_PRU0_GPO17</td><td>E1</td><td>J2.18</td></tr>
+          <tr><td>CLK in</td><td>PRU1</td><td>PRG0_PRU1_GPI1</td><td>J2</td><td>J7.67</td></tr>
+          <tr><td>MOSI in</td><td>PRU1</td><td>PRG0_PRU1_GPI2</td><td>M2</td><td>J7.68</td></tr>
+          <tr><td>/CS in</td><td>PRU1</td><td>PRG0_PRU1_GPI6</td><td>F5</td><td>J7.69</td></tr>
+          <tr><td>MISO out</td><td>PRU1</td><td>PRG0_PRU1_GPO11</td><td>P1</td><td>J7.70</td></tr>
+        </table>
+        <p class="spi-note">PRU0 uses site 1's BoosterPack SPI positions; PRU1 uses four neighbouring pins on J7, so four short jumper wires connect the two. J2.15 needs the default Servo-BoosterPack switch (SW6) position.</p>
+      </div>
+    </section>
   </section>
   <script src="/static/chrome.js"></script>
   <script src="/static/layout.js"></script>
   <script src="/static/cores.js"></script>
   <script src="/static/cores-deck.js"></script>
+  <script src="/static/spi.js"></script>
   <script src="/static/app.js?v=20261015-cores"></script>
   <script src="/static/workspace.js"></script>
 </body>

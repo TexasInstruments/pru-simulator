@@ -1,0 +1,36 @@
+| T4 test edge-polling | reload only PRU0 with new cfg; SpiConfig frozen | Ruling R2 |
+| T5↔T6 | load_supported → scenario default 25 MHz@200 | Ruling R3 |
+| T6↔T7 | state-push key name ("spi_state" in T7 vs "wherever ssi_demo_state is" in T6) | Ruling R1 |
+| T6 | apply_scenario validates SSI config only | Ruling R4 |
+| T7 | browser check may be impossible for a subagent | Ruling R5 |
+Ruling R1: state push key is `io.spi_demo` (server: io_section["spi_demo"] = spi_demo_state(sim), next to ssi_demo at ui/server.py:1345); T7 reads msg.io?.spi_demo — follows existing SSI pattern — cost if wrong: rename in 2 places.
+Ruling R2: T4 may add `SpiLinkRuntime.reload_controller(cfg: SpiConfig)` (reassemble PRU0 only, keep PRU1, wires, monitor) — needed for edge-polling proof — cost if wrong: small API addition.
+Ruling R3: scenario default = mode 1 at 25 MHz if supported, else the fastest supported mode-1 rate ≤ 25 MHz — spec names 25 MHz/200 only as mockup example — cost if wrong: different default rate.
+Ruling R4: apply_scenario dispatches config validation per scenario; SPI config = {mode, spi_mhz} — cost if wrong: refactor of one function.
+Ruling R5: if the T7 implementer cannot drive a browser, it reports so and the controller performs the browser check with claude-in-chrome before marking T7 complete (verification only, no fixes) — cost if wrong: none beyond time.
+Ruling R6: hop delay = 5 cycles (not 4) — single-stepped sim gives 1 cycle native for wire→wbs→set at 333 MHz, so 18 ns silicon (6 cycles) needs +5; spec's binding intent is "calibrated to the user's measurement" and the 4 came from my 1–2 cycle estimate — cost if wrong: one cycle more conservative, possibly one fewer supported top rate. Spec/plan/global-constraints updated.
+Task 1: minor (deferred): UI register panel shows undelayed R31 (ui/server.py:1331) — carry to Task 7
+Task 1: minor (deferred): set_gpi_delay always resets history even if unchanged (io_port.py:497) — carry to Task 3 (load sets delay)
+Task 1: minor (deferred): history masked to 20 bits but _gpi unmasked (io_port.py:470/448)
+Task 1: minor (deferred): test docstring "1-2 cycles" ambiguity (test_gpi_delay.py:625)
+Task 1: minor (deferred): _record_gpi linear scan (bounded ≤17)
+Ruling R7: tSU,MISO / tH,MISO are measured against PRU0's actual sample point (MISO launch edge of that bit + MISO_DELAY core cycles), not the nominal capture edge — with a sample delay the capture edge is not where PRU0 samples; setup = sample − MISO change for that bit, hold = next MISO change − sample — cost if wrong: one function's measurement reference.
+Ruling R8: rows whose sim value is not measured from edges (tsk — sim models no pad skew; tIDLE — design value until Task 5 measures PRU1 fetch) carry "derived": True and never count as worst — cost if wrong: two rows' labelling.
+Task 2: minor (deferred): unbounded edge/fault lists; capture starting with /CS already low ignored; nets mutable class attr
+Ruling R9: miso_delay holes (d % 2k in {0,k}) and SpiConfig default 0 stay; Task 5 picks the window value from controller_delay_ok values nearest the middle, not the arithmetic middle — cost if wrong: one helper in the sweep.
+Task 3: minor (deferred): abort MOSI partial-byte bits unverified (diff 1403-1407); transfer mixes sim.memory.write / sim.memory_read
+Task 4: minor (deferred): thin 50 MHz MISO window (mode1 [16,17]) — Task 5 sweep; reload_controller may half-load PRU0 on asm error; find_miso_window slow (~20 s/rate) and mutates PRU1 state
+Task 4: known limitation (for final review + report): GPI changes injected between instructions (set_gpi_word) or by wires onto a stalled follower in step_paced_many are stamped at the end of the follower's current multi-cycle instruction; edges inside a 5-cycle sbco can merge. Tests use a true-cycle stimulus helper. Current PRU0↔PRU1 runs unaffected per implementer (gaps 150+, in-frame stalls ≤3).
+Task 4: minor (deferred): status block written in 4 word stores (non-atomic for host readers) — carry to Task 6 (read after frame done); test helper _gpi_at reaches into private io._gpi_history; header says "no byte >48" but byte 18 not asserted
+Ruling R10: reload_controller must leave one consistent time base for the monitor — reset both cores' cycle counters together (and GPI delay histories) and clear the monitor, so edges from PRU0 and PRU1 share a clock after reload — cost if wrong: a reload API detail.
+Ruling R7a (amends R7): the pin-referred PRU0 sample point is launch + miso_delay − hop_delay (the pin state PRU0's R31 read actually sees); measure_timing takes hop_delay (default HOP_DELAY_CYCLES). Passing rows must not show negative MISO hold — cost if wrong: re-generate tables.
+Ruling R11: the controller's real inter-frame /CS-high gap (144–231 cycles) is accepted; the strict 2 tCLK gap is proven by Task 4's direct-stimulus tests; doc/report state this — cost if wrong: demo can't show a minimum-gap burst.
+Ruling R12: pru_io/spi_rates.json holds only the summary rows (no per-combination timing tables) because it is pushed to the UI; full tables live in docs/spi_link_timing.md (and may be recomputed on demand) — cost if wrong: file layout.
+Ruling R9a: confirmed implementer's tie-break change — among accepted miso_delay values equidistant from the window middle, take the earlier one (pin-referred timing gives balanced 2+2 cycles vs 1-cycle hold) — 165 rows' miso_delay moved by 1–2, no pass/window changed — cost if wrong: a tie-break rule.
+Ruling R11 correction: controller's real inter-frame /CS-high gap is 135–249 cycles (generated doc), not 144–231 as first quoted.
+Task 5: minor (deferred): measure_timing hop default footgun (carry to Task 6: always pass rt.hop_delay); _supported_view duplicates load_supported; _work_trace/_bit_work duplicated in test_spi_peripheral; doc header says generated from JSON; p1_cycles_per_bit is min not max (6); tLEAD/tLAG ±2 in AM243 columns labelled PRDO1 could mislead; choose_miso_delay tie rule untested; run_test_sequence MOSI/RX/status failure paths untested; subset test compares early-stop window to itself; rt.close() outside try/finally; find_miso_window docstring
+Ruling R13: leaving the SPI scenario (any path) restores the configured core clock if spi_setup changed it (fresh rebuild from memory.cfg values, still without writing memory.cfg) — Review Focus 1 "other demos behave exactly as before" — cost if wrong: one extra rebuild on leaving.
+Ruling R14: `supported` (58 KB) is not sent on every state push; send it once with scenario_loaded / spi_setup responses (or a dedicated `spi_supported` message on request) and keep spi_demo light; monitor edges in the payload limited to the last frame (already) and the monitor's stored edges capped (keep last N frames) — cost if wrong: payload layout.
+Task 6: minor (deferred): spi_setup validates row twice; _load_spi_scenario non-dict config path; spi_send/sequence block event loop (documented)
+Task 6: minor (deferred): _publish_updates not called after leave-time rebuild
+Ruling R15: the SPI view decodes MISO at PRU0's sample point everywhere (strip + boxes) with a visible note; backend monitor frame.miso (capture-edge decode) is not shown — cost if wrong: one display choice; a "logic-analyzer view" could be added later.

@@ -7,12 +7,17 @@ simulator; it owns device attach/detach so GPIO drive masks stay consistent.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import count
 from math import ceil
 from pathlib import Path
 from typing import Callable
 
 from pru_io import ssi_config_abi as ssi_abi
 from pru_io.device_profiles import create_device
+from pru_io.spi_link import (ADDR_MAX, C_RX, C_TX, CMD_READ, CMD_RW, CMD_WRITE, P_RX, P_TX,
+                             PATTERNS, SpiConfig, SpiLinkRuntime, controller_delay_ok,
+                             frame_edges, load_supported, measure_timing,
+                             run_test_sequence)
 from pru_io.ssi_runtime import SSIEmulatorRuntime, SSIRuntime, load_reader
 
 _SOURCE = Path(__file__).resolve().parents[1] / "source"
@@ -78,6 +83,100 @@ def _ssi_multicore(sim, device_api, encoder_options, clock_delay_loops) -> SSIEm
     return emulator
 
 
+SPI_SCENARIO = "SPI multi-core (controller + peripheral)"
+_SPI_CONFIG_FIELDS = {"mode", "spi_mhz", "miso_delay"}
+_SPI_CONFIG_REQUIRED = {"mode", "spi_mhz"}
+_SPI_DEFAULT = (1, 25.0)
+_SPI_UI = {"view": "io", "io_tab": "spi", "capture_stride": 1, "graph_window": 4096}
+
+
+def spi_row(mode, spi_mhz) -> dict:
+    """The supported-rate row for (mode, spi_mhz); ValueError if none."""
+    if isinstance(mode, bool) or mode not in (0, 1):
+        raise ValueError(f"SPI mode must be 0 or 1, got {mode!r}")
+    if (isinstance(spi_mhz, bool) or not isinstance(spi_mhz, (int, float))
+            or spi_mhz != spi_mhz):
+        raise ValueError(f"spi_mhz must be a number, got {spi_mhz!r}")
+    rows = load_supported()[mode]
+    for row in rows:
+        if abs(row["spi_mhz"] - spi_mhz) < 5e-4:
+            return row
+    raise ValueError(f"mode {mode} supports no {spi_mhz} MHz SPI clock; supported: "
+                     f"{[round(r['spi_mhz'], 3) for r in rows]}")
+
+
+def spi_default_row() -> dict:
+    """Ruling R3: mode 1 at 25 MHz, else the fastest supported mode-1 rate below it."""
+    rows = [r for r in load_supported()[1] if r["spi_mhz"] <= _SPI_DEFAULT[1] + 5e-4]
+    if not rows:
+        raise ValueError("no supported mode-1 rate at or below 25 MHz")
+    return rows[-1]
+
+
+def spi_config_row(config: dict | None) -> dict:
+    """The supported-rate row for an SPI scenario config, with ``miso_delay``
+    replaced by the config's optional ``miso_delay`` (Ruling R17: any value
+    ``controller_delay_ok`` accepts at the row's half period; default the
+    row's chosen value). ValueError before anything changes."""
+    if config is None:
+        return spi_default_row()
+    if not isinstance(config, dict):
+        raise ValueError("SPI scenario config must be an object")
+    if any(not isinstance(key, str) for key in config):
+        raise ValueError("SPI scenario config keys must be strings")
+    unsupported = set(config) - _SPI_CONFIG_FIELDS
+    if unsupported:
+        raise ValueError(f"unsupported SPI scenario config fields: {sorted(unsupported)}")
+    if not _SPI_CONFIG_REQUIRED <= set(config):
+        raise ValueError("SPI scenario config needs mode and spi_mhz")
+    row = spi_row(config["mode"], config["spi_mhz"])
+    delay = config.get("miso_delay")
+    if delay is None:
+        return row
+    if not controller_delay_ok(row["half_k"], delay):
+        raise ValueError(
+            f"miso_delay {delay!r} is not realisable at {row['spi_mhz']:g} MHz "
+            f"(k = {row['half_k']}): it must be a non-negative integer, not "
+            f"0 or {row['half_k']} mod {2 * row['half_k']}, at most 6 bits pipelined")
+    return {**row, "miso_delay": delay}
+
+
+def spi_session_config(sim) -> dict | None:
+    """The loaded SPI demo's config (mode, spi_mhz, miso_delay), for re-applying
+    it (Ruling R21); None when the SPI scenario is not loaded."""
+    runtime = getattr(sim, "_scenario_runtime", None)
+    if not isinstance(runtime, SpiLinkRuntime):
+        return None
+    cfg = runtime.cfg
+    return {"mode": cfg.mode, "spi_mhz": cfg.spi_mhz, "miso_delay": cfg.miso_delay}
+
+
+def _spi_multicore(sim, device_api, row) -> SpiLinkRuntime:
+    for core in ("pru0", "pru1"):
+        if sim.cores[core].clock_mhz != row["core_mhz"]:
+            raise ValueError(
+                f"{row['spi_mhz']:g} MHz mode {row['mode']} needs a {row['core_mhz']} MHz core "
+                f"clock; {core} runs at {sim.cores[core].clock_mhz:g} MHz")
+    cfg = SpiConfig(row["mode"], row["core_mhz"], row["half_k"], row["miso_delay"])
+    runtime = SpiLinkRuntime(sim, cfg)
+    try:
+        runtime.load_controller()
+        runtime.load_peripheral()
+        runtime.wire()
+        names = list(PATTERNS)
+        for block in range(ADDR_MAX + 1):
+            runtime.preload_peripheral_tx(block, PATTERNS[names[block % len(names)]][1])
+    except Exception:
+        runtime.close()
+        raise
+    runtime.row = row            # supported-rate row (p1_fetch_cycles for the tIDLE row)
+    runtime.last = None          # {"cmd", "addr", "pattern", "match"} of the last send
+    runtime.sequence = None
+    runtime.recording = None     # {"id", "steps"}: recorded test-sequence steps (spi_steps)
+    runtime._view = None         # cached (edge count, cfg id) -> frame/timing
+    return runtime
+
+
 SCENARIOS = {scenario.name: scenario for scenario in (
     Scenario(
         "SSI encoder (single core)",
@@ -91,6 +190,12 @@ SCENARIOS = {scenario.name: scenario for scenario in (
         {"pru0": _READER_FIRMWARE, "pru1": _EMULATOR_FIRMWARE},
         {**_SSI_UI, "graph_window": 4096},  # its graph panel is narrow: fewer samples, wider pulses
         _ssi_multicore),
+    Scenario(
+        SPI_SCENARIO,
+        "Bit-banged SPI link: PRU0 controller drives PRU1 edge-polling peripheral.",
+        ("pru0", "pru1"), "pru0", True,
+        {"pru0": "spi/spi_controller.asm", "pru1": "spi/spi_peripheral.asm"},
+        _SPI_UI, _spi_multicore),
 )}
 
 
@@ -106,6 +211,12 @@ def apply_scenario(sim, name: str, device_api, config: dict | None = None) -> Sc
         raise ValueError(f"unknown scenario {name!r}; available: {list(SCENARIOS)}")
     if any(core not in sim.cores for core in scenario.cores):
         raise ValueError(f"scenario requires cores {list(scenario.cores)}")
+    if name == SPI_SCENARIO:
+        row = spi_config_row(config)           # validated before anything is torn down
+        _clear_for_scenario(sim, device_api)
+        sim._scenario_runtime = scenario.setup(sim, device_api, row)
+        sim._scenario = scenario
+        return scenario
     if config is None:
         config = {"preset": _PRESET, "position": _POSITION}
     if not isinstance(config, dict):
@@ -122,6 +233,19 @@ def apply_scenario(sim, name: str, device_api, config: dict | None = None) -> Sc
     # overhead; ignoring that overhead conservatively bounds the clock rate.
     clock_delay_loops = max(_CLOCK_DELAY_LOOPS,
                             ceil(layout.core_clock_hz / (4 * layout.f_max_hz)))
+    _clear_for_scenario(sim, device_api)
+    sim.memory.write(ssi_abi.CONFIG_ADDRESS, bytes(
+        ssi_abi.EMULATOR_ADDRESS + ssi_abi.EMULATOR_SIZE - ssi_abi.CONFIG_ADDRESS))
+    # Hardware reset clears IEP registers, keeping the selected external rate.
+    sim._scenario_runtime = scenario.setup(sim, device_api, encoder_options,
+                                           clock_delay_loops)
+    sim._scenario = scenario
+    return scenario
+
+
+def _clear_for_scenario(sim, device_api) -> None:
+    """Close the previous scenario and leave a hard-reset simulator with the
+    scenario GPIO setup (all 20 pins driven, no mux, no loopback)."""
     previous = getattr(sim, "_scenario_runtime", None)
     if previous is not None:
         previous.close()
@@ -140,13 +264,174 @@ def apply_scenario(sim, name: str, device_api, config: dict | None = None) -> Sc
         sim.set_gpio_drive_mask(core, _PIN_MASK)
         for group in range(5):
             sim.set_loopback(core, group, False)
-    sim.memory.write(ssi_abi.CONFIG_ADDRESS, bytes(
-        ssi_abi.EMULATOR_ADDRESS + ssi_abi.EMULATOR_SIZE - ssi_abi.CONFIG_ADDRESS))
-    # Hardware reset clears IEP registers, keeping the selected external rate.
-    sim._scenario_runtime = scenario.setup(sim, device_api, encoder_options,
-                                           clock_delay_loops)
-    sim._scenario = scenario
-    return scenario
+
+
+def leave_spi_scenario(sim) -> None:
+    """Close an SPI runtime (GPI delay 0, wires, masks, monitor) and drop the scenario."""
+    runtime = getattr(sim, "_scenario_runtime", None)
+    if isinstance(runtime, SpiLinkRuntime):
+        runtime.close()
+        sim._scenario_runtime = None
+        sim._scenario = None
+
+
+#: The test-sequence steps the dashboard's Play button loops through (booth demo).
+LOOP_STEPS = ("rw:walking1", "rw:walking0", "rw:a5_5a", "rw:toggle")
+_SEQUENCE_IDS = count(1)     # unique across runtimes: a new recording always has a new id
+
+
+def _spi_runtime(sim) -> SpiLinkRuntime:
+    runtime = getattr(sim, "_scenario_runtime", None)
+    if not isinstance(runtime, SpiLinkRuntime):
+        raise ValueError("Load the SPI example first")
+    return runtime
+
+
+def spi_send(sim, cmd, addr, pattern) -> None:
+    """One frame: PRU1 TX block ``addr`` gets the pattern's peripheral bytes,
+    PRU0 sends the pattern's controller bytes; records the result for the state."""
+    runtime = _spi_runtime(sim)
+    for name, v in (("cmd", cmd), ("addr", addr)):
+        if isinstance(v, bool) or not isinstance(v, int) or not 0 <= v <= 0xFF:
+            raise ValueError(f"{name} must be an integer 0..255, got {v!r}")
+    if not isinstance(pattern, str) or pattern not in PATTERNS:
+        raise ValueError(f"pattern must be one of {list(PATTERNS)}, got {pattern!r}")
+    c_tx, p_tx = PATTERNS[pattern]
+    if addr <= ADDR_MAX:
+        runtime.preload_peripheral_tx(addr, p_tx)
+    runtime.transfer(cmd, addr, c_tx)
+    runtime.last = {"cmd": cmd, "addr": addr, "pattern": pattern}
+    runtime.sequence = None
+    runtime.recording = None
+
+
+def spi_sequence(sim) -> None:
+    """Run the spec section 9 acceptance sequence; the result goes into the state.
+
+    It runs synchronously: the dashboard event loop stalls for about a second
+    while it executes (about 25 frames of 20k simulated cycles each)."""
+    runtime = _spi_runtime(sim)
+    result = run_test_sequence(runtime, record=True)
+    seq_id = next(_SEQUENCE_IDS)
+    runtime.recording = {"id": seq_id,
+                         "steps": [_recorded_step(runtime, s) for s in result["steps"]]}
+    for s in result["steps"]:
+        s.pop("trace", None)
+    runtime.last = None
+    runtime.sequence = {**result, "id": seq_id, "loop": list(LOOP_STEPS)}
+
+
+def spi_sequence_steps(sim) -> dict:
+    """The recorded steps of the last test sequence: ``{"id", "steps"}``.
+
+    Each step carries the fields the SPI view renders (frame, memory, last,
+    expect, match, timing) in the same shapes as ``spi_demo_state``. They are
+    sent on request (``spi_steps``), never in the state pushes."""
+    recording = _spi_runtime(sim).recording
+    if recording is None:
+        raise ValueError("No recorded test sequence")
+    return recording
+
+
+def _recorded_step(runtime: SpiLinkRuntime, step: dict) -> dict:
+    trace = step.get("trace")
+    out = {k: step[k] for k in ("step", "ok", "byte_errors", "notes", "tcsh_cycles",
+                                "cmd", "addr", "pattern") if k in step}
+    if trace is None:
+        return {**out, "frame": None, "memory": None, "last": None, "expect": None,
+                "match": {"mosi": None, "miso": None}, "timing": []}
+    fr, mem = trace["frame"], trace["memory"]
+    last = {"cmd": step["cmd"], "addr": step["addr"], "pattern": step["pattern"]}
+    memory, match = _panels(mem["c_tx"], mem["c_rx"], mem["p_rx"], mem["p_tx"], sent=True)
+    frame = None
+    timing = []
+    if fr is not None:
+        frame = _frame_view(fr, fr["edges"])
+        timing = measure_timing(fr["edges"], runtime.cfg, hop_delay=runtime.hop_delay,
+                                p1_fetch_cycles=runtime.row.get("p1_fetch_cycles"))
+    return {**out, "frame": frame, "memory": memory, "last": last,
+            "expect": _expect(step["cmd"]), "match": match, "timing": timing}
+
+
+def _frame_view(f: dict, edges: list) -> dict:
+    return {"start": f["start"], "end": f["end"], "bits": f["bits"],
+            "aborted": f["aborted"], "mosi": _hex(f["mosi"]),
+            "miso": _hex(f["miso"]), "edges": edges}
+
+
+def _expect(cmd: int) -> dict:
+    return {"mosi": cmd in (CMD_WRITE, CMD_RW), "miso": cmd in (CMD_READ, CMD_RW)}
+
+
+def _panels(c_tx, c_rx, p_rx, p_tx, sent: bool) -> tuple[dict, dict]:
+    """Memory panels (hex) and the both-ways match counts; p_rx/p_tx are None
+    for an out-of-range address, and nothing matches before a frame was sent."""
+    memory = {"c_tx": _hex(c_tx), "c_rx": _hex(c_rx),
+              "p_rx": None if p_rx is None else _hex(p_rx),
+              "p_tx": None if p_tx is None else _hex(p_tx)}
+    match = {"mosi": None, "miso": None}
+    if sent and p_rx is not None:
+        match = {"mosi": sum(a == b for a, b in zip(c_tx, p_rx)),
+                 "miso": sum(a == b for a, b in zip(p_tx, c_rx))}
+    return memory, match
+
+
+def _hex(data) -> list[str]:
+    return [f"{b:02X}" for b in data]
+
+
+def _spi_view(runtime: SpiLinkRuntime) -> dict:
+    """Frame (with its edges) and timing rows of the last complete frame, cached
+    until the monitor sees a new edge or the configuration changes."""
+    monitor = runtime.monitor
+    key = (len(monitor.edges), runtime.cfg.id)
+    if runtime._view is not None and runtime._view[0] == key:
+        return runtime._view[1]
+    frames = monitor.frames(runtime.cfg.mode)
+    if frames:
+        f = frames[-1]
+        edges = frame_edges(monitor.edges, f)
+        frame = _frame_view(f, edges)
+        timing = measure_timing(monitor.edges, runtime.cfg, hop_delay=runtime.hop_delay,
+                                p1_fetch_cycles=runtime.row.get("p1_fetch_cycles"))
+    else:
+        frame = {"start": None, "end": None, "bits": 0, "aborted": False,
+                 "mosi": [], "miso": [], "edges": []}
+        timing = []
+    view = {"frame": frame, "timing": timing}
+    runtime._view = (key, view)
+    return view
+
+
+def spi_demo_state(sim) -> dict | None:
+    """State of the SPI scenario for the dashboard; None when it is not loaded.
+
+    Read it only between transfers: PRU1 writes its status block over several
+    stores, so mid-frame the counters can be torn.
+    """
+    scenario = getattr(sim, "_scenario", None)
+    runtime = getattr(sim, "_scenario_runtime", None)
+    if scenario is None or not isinstance(runtime, SpiLinkRuntime) or runtime.monitor is None:
+        return None
+    cfg = runtime.cfg
+    view = _spi_view(runtime)
+    last = runtime.last
+    addr = last["addr"] if last else 0
+    in_range = addr <= ADDR_MAX
+    memory, match = _panels(
+        bytes(sim.memory_read(C_TX, 16)), bytes(sim.memory_read(C_RX, 16)),
+        runtime.read_peripheral_rx(addr) if in_range else None,
+        bytes(sim.memory_read(P_TX + 16 * addr, 16)) if in_range else None,
+        sent=bool(last))
+    return {"name": scenario.name,
+            "config": {"mode": cfg.mode, "spi_mhz": cfg.spi_mhz, "half_k": cfg.half_k,
+                       "miso_delay": cfg.miso_delay, "core_mhz": cfg.core_mhz, "id": cfg.id},
+            "core_mhz": cfg.core_mhz, "hop_delay": runtime.hop_delay,
+            "last": last,
+            "expect": _expect(last["cmd"]) if last else None,
+            "frame": view["frame"], "memory": memory, "match": match,
+            "timing": view["timing"], "status": runtime.peripheral_status(),
+            "faults": runtime.monitor.faults(), "sequence": runtime.sequence}
 
 
 def ssi_demo_state(sim) -> dict | None:
@@ -158,7 +443,7 @@ def ssi_demo_state(sim) -> dict | None:
     """
     scenario = getattr(sim, "_scenario", None)
     runtime = getattr(sim, "_scenario_runtime", None)
-    if scenario is None or runtime is None:
+    if scenario is None or runtime is None or isinstance(runtime, SpiLinkRuntime):
         return None
     is_model = isinstance(runtime, SSIRuntime)
     if is_model and runtime.encoder not in sim.device_bus.devices:

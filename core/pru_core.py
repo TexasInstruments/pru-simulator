@@ -122,6 +122,7 @@ class PRUCore:
         self.memory = memory
         self.xfr = xfr
         self.io_port = io_port
+        io_port.bind_cycle_counters(self.counters)
         self.constant_table: ConstantTable = constant_table if constant_table is not None else ConstantTable()
         # PRU1/RTU1 see DRAM1 at local 0x0000 and DRAM0 at 0x2000. See
         # _map_data_addr.
@@ -678,7 +679,7 @@ class PRUCore:
             if len(ops) >= 2:
                 value, bit_op = self._read_operand(ops[0]), ops[1]
             else:
-                value, bit_op = self.io_port.read_r31(), ops[0]
+                value, bit_op = self.io_port.read_r31(self.counters.cycles), ops[0]
             bit = self._read_operand(bit_op) & 0x1F
             is_set = (value >> bit) & 1
             waiting = (op == "WBS" and not is_set) or (op == "WBC" and is_set)
@@ -869,7 +870,7 @@ class PRUCore:
                 # R31 is read live from the I/O port, but the operand's byte /
                 # half-word selection still applies. Returning the full word
                 # for `r31.b3` silently reads bits [7:0] instead of [31:24].
-                val = self.io_port.read_r31()
+                val = self.io_port.read_r31(self.counters.cycles)
                 if op.width >= 32 and op.offset == 0:
                     return val
                 return (val >> op.offset) & ((1 << op.width) - 1)
@@ -1053,7 +1054,7 @@ class PRUCore:
         """
         start_byte = self._MVI_SEL_BIT_OFFSET[op.sel] >> 3
         if op.reg == 31:
-            word = self.io_port.read_r31()
+            word = self.io_port.read_r31(self.counters.cycles)
             return bytes((word >> ((start_byte + i) * 8)) & 0xFF for i in range(size))
         return self._read_registers_to_bytes(op.reg, size, start_byte)
 

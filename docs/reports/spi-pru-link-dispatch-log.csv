@@ -1,0 +1,34 @@
+phase,task,role,model,subagent_tokens,duration_ms,tool_uses,note
+brainstorm,-,web-fetch AM243x datasheet,web-fetch default,76485,85940,3,PDF undecodable by WebFetch; extracted locally with pdftotext
+brainstorm,-,web-fetch LP-AM243 guide,web-fetch default,38262,28261,2,PDF undecodable by WebFetch; extracted locally with pdftotext
+brainstorm,-,builder check of design doc,opus,65295,142274,16,3 questions; 2 settled by controller; 1 to user (I/O latency)
+build,1,implementer,opus,89952,367005,36,initial implementation 153e8a1
+build,1,implementer fix (ruling R6),opus,94157,35467,4,resumed; cumulative tokens reported by harness; c2c445c
+build,1,task reviewer,opus,70216,67328,6,approved; 6 minors deferred
+build,2,implementer,sonnet,65608,297655,14,586f8bd
+build,2,task reviewer,sonnet,50945,44538,3,needs fixes (R7 missing)
+build,2,implementer fix round 1 (a+b),sonnet,75477,124370,13,b53003f+6787cbf; cumulative tokens
+build,2,re-review fix round 1,sonnet,38761,19052,2,all addressed
+build,3,implementer,opus,260295,2162832,54,966929f
+build,3,task reviewer,opus,86997,173067,6,needs fixes (Q4-6 untested)
+build,3,implementer fix round 1,opus,274011,301056,13,2fd1a25; cumulative tokens
+build,3,re-review fix round 1,sonnet,43454,21165,4,all addressed
+build,4,implementer,opus,242762,,,7da951a; stalled on 5-hour limit then resumed; duration not comparable (split across stall)
+build,4,task reviewer,opus,107267,237255,20,needs fixes (short /CS gap drops frame)
+build,4,implementer fix round 1,opus,312102,795450,28,81d5506; cumulative tokens
+build,4,re-review fix round 1,opus,66043,104947,8,all addressed
+build,5,implementer,opus,158583,1203120,50,d003357
+build,5,implementer pre-review fix (R10/R7a/R12),opus,207007,1304399,32,1557844; cumulative
+build,5,task reviewer,opus,118088,254342,17,approved
+build,6,implementer,sonnet,100993,552062,26,0d884d7
+build,6,task reviewer,sonnet,61917,68302,9,needs fixes (R13/R14)
+build,6,implementer fix round 1,sonnet,113199,401938,9,7a4c66f; cumulative tokens
+build,6,re-review fix round 1,sonnet,43868,21650,3,all addressed
+build,7,implementer,sonnet,137073,443202,39,510622e
+build,7,task reviewer,sonnet,72112,43465,10,needs fixes (strip MISO, ui_chrome)
+build,7,implementer fix round 1,sonnet,154444,152310,12,b34174c; cumulative tokens
+build,7,re-review fix round 1,sonnet,47893,19748,5,all addressed
+build,8,docs implementer,haiku,140216,253124,37,3620e11
+build,8,final whole-branch review,opus,220029,579928,57,with fixes: 1 critical 7 important
+build,8,final fix wave implementer (incl. R18a),opus,248772,1785706,70,94cc42f..7ebca7c; stalled once on 5-hour limit; cumulative
+build,8,final fix wave re-review,opus,88969,133336,18,all addressed; 1 minor

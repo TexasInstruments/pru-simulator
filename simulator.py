@@ -598,6 +598,23 @@ class Simulator:
         """Set the GPIO output-enable bits for one core without changing R30."""
         self._get_core(core).io_port.set_gpo_drive_mask(mask)
 
+    def set_gpi_delay(self, core: str, cycles: int) -> None:
+        """Delay what *core*'s R31 reads see by *cycles* core cycles (0-16).
+
+        R31 reads at core cycle c return the GPI word as it was at c - N, for
+        every GPI source (wires, devices, set_input). SD / PERIF status reads
+        are not delayed. Silicon calibration: AM243 at 333 MHz measures 18 ns
+        (6 cycles) from input edge to the output edge of `wbs` + `set`. The
+        simulator's native PRU0 GPO -> wire -> PRU1 `wbs`/`set` edge-to-edge
+        is 1 cycle, so the calibrated delay is 5 cycles (6 cycles = 18 ns,
+        tests/test_gpi_delay.py). Kept across hard_reset(); default 0.
+        """
+        self._get_core(core).io_port.gpi_delay_cycles = cycles
+
+    def get_gpi_delay(self, core: str) -> int:
+        """Return *core*'s GPI input delay in core cycles."""
+        return self._get_core(core).io_port.gpi_delay_cycles
+
     def add_gpio_wire(self, core_a: str, pin_a: int,
                       core_b: str, pin_b: int) -> bool:
         """Connect two GPIO pins through the shared DeviceBus resolver."""

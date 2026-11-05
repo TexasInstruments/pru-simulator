@@ -119,7 +119,7 @@ for (const id of ['device-runtime-panel', 'ssi-attach-button', 'tca-attach-butto
 const nav = html.match(/<nav class="view-switch"[\s\S]*?<\/nav>/)[0];
 assert.deepEqual([...nav.matchAll(/data-workspace-view="(\w+)"/g)].map(m => m[1]), ['simulator', 'io']);
 assert.match(nav, /I\/O &amp; Devices/);
-assert.deepEqual([...html.matchAll(/data-io-tab="(\w+)"/g)].map(m => m[1]), ['devices', 'peripherals', 'events']);
+assert.deepEqual([...html.matchAll(/data-io-tab="(\w+)"/g)].map(m => m[1]), ['devices', 'peripherals', 'events', 'spi']);
 assert.equal((html.match(/class="view-glider"/g) || []).length, 2, 'one glider per tab strip');
 for (const id of ['btn-step', 'btn-run', 'btn-sim', 'btn-reset', 'btn-hard-reset',
   'btn-config', 'btn-reset-layout', 'btn-help'])
