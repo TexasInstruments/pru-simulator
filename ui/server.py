@@ -28,8 +28,8 @@ from perif.gpcfg import MUX_SD
 from pru_io.device_profiles import discover_device_profiles
 from pru_io.spi_link import SpiLinkRuntime, load_supported
 from pru_io.scenarios import (SCENARIOS, SPI_SCENARIO, apply_scenario, leave_spi_scenario,
-                              spi_default_row, spi_demo_state, spi_row, spi_send, spi_sequence,
-                              ssi_demo_state, set_ssi_demo_position)
+                              spi_config_row, spi_demo_state, spi_send, spi_sequence,
+                              spi_session_config, ssi_demo_state, set_ssi_demo_position)
 from pru_io.ssi_encoder_model import SSIEncoderModel
 from ui.live_sessions import DashboardConnection
 from xfr.crc_accelerator import CRCAccelerator
@@ -444,14 +444,23 @@ def _leave_spi_restoring_clock() -> None:
         _apply_iep_override()
 
 
+def _reapply_spi_scenario() -> bool:
+    """Ruling R21: Reset / HW Reset inside the SPI scenario re-apply it at the
+    session config (same clock, fresh time base) instead of leaving it.
+    Returns False when the SPI scenario is not loaded."""
+    config = spi_session_config(sim)
+    if config is None:
+        return False
+    apply_scenario(sim, SPI_SCENARIO, _device_api_for_current_sim(), config=config)
+    return True
+
+
 def _load_spi_scenario(config):
     """Apply the SPI scenario, first rebuilding the simulator (session only) when
     the rate needs another core clock. Returns the scenario; only replaces the
     global sim once everything worked."""
     global sim
-    row = spi_default_row() if config is None else spi_row(
-        config.get("mode") if isinstance(config, dict) else None,
-        config.get("spi_mhz") if isinstance(config, dict) else None)
+    row = spi_config_row(config)
     if any(sim.cores[name].clock_mhz != row["core_mhz"] for name in ("pru0", "pru1")):
         new_sim = _build_session_sim(row["core_mhz"])
         scenario = apply_scenario(new_sim, SPI_SCENARIO,
@@ -566,10 +575,13 @@ async def put_clock_speed(request: Request):
             if group == 0:
                 cfg = configparser.ConfigParser()
                 cfg.read_string(text, source=config_path)
-                # An omitted second clock inherits the first. Pin its old rate
-                # before changing the first so the other cores keep their rate.
-                if not cfg.has_option("device", "pru1_clock_mhz") and mhz != sim._pru1_clock_mhz:
-                    text = _set_ini_value(text, "device", "pru1_clock_mhz", str(sim._pru1_clock_mhz))
+                # An omitted second clock inherits the first. Pin its configured
+                # rate before changing the first so the other cores keep their
+                # rate. Configured, never the simulator's clock: during an SPI
+                # session that is the session-only rate.
+                inherited = cfg.get("device", "pru_clock_mhz", fallback="200").strip()
+                if not cfg.has_option("device", "pru1_clock_mhz") and mhz != float(inherited):
+                    text = _set_ini_value(text, "device", "pru1_clock_mhz", inherited)
             if group is None or group == 0:
                 text = _set_ini_value(text, "device", "pru_clock_mhz", str(mhz))
             if group is None or group == 1:
@@ -607,7 +619,15 @@ async def websocket_endpoint(websocket: WebSocket):
                     continue
                 previous = _selected_execution_cores()
                 _execution_cores = cores
-                if _selected_execution_cores() != previous:
+                if (isinstance(getattr(sim, "_scenario_runtime", None), SpiLinkRuntime)
+                        and not {"pru0", "pru1"} <= set(cores)):
+                    # Ruling R22: the SPI link needs both PRUs; dropping one leaves it.
+                    _stop_execution()
+                    _clear_history()
+                    _leave_spi_restoring_clock()
+                    _execution_cores = cores
+                    _publish_updates()
+                elif _selected_execution_cores() != previous:
                     _stop_execution()
                     _flush_skipped_publish()
                 else:
@@ -735,13 +755,13 @@ async def websocket_endpoint(websocket: WebSocket):
                             pass
             elif action == "reset":
                 _clear_history()
-                _leave_spi_restoring_clock()
-                sim.reset(core)
+                if not _reapply_spi_scenario():
+                    sim.reset(core)
                 await _send_state(websocket, core)
             elif action == "hard_reset":
                 _clear_history()
-                _leave_spi_restoring_clock()
-                sim.hard_reset()
+                if not _reapply_spi_scenario():
+                    sim.hard_reset()
                 await _send_state(websocket, core)
             elif action == "set_input":
                 sim.set_input(core, msg["pin"], bool(msg["value"]))
@@ -1106,11 +1126,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 try:
                     async with _config_lock:
                         config = {"mode": msg.get("mode"), "spi_mhz": msg.get("spi_mhz")}
-                        spi_row(**config)    # unsupported rate: error before anything changes
+                        if msg.get("miso_delay") is not None:     # Ruling R17
+                            config["miso_delay"] = msg["miso_delay"]
+                        # unsupported rate or miso_delay: error before anything changes
+                        row = spi_config_row(config)
                         if getattr(sim, "_scenario", None) is None or sim._scenario.name != SPI_SCENARIO:
                             raise ValueError("Load the SPI example first")
                         # Always a fresh Simulator: one time base, no memory.cfg write.
-                        new_sim = _build_session_sim(spi_row(**config)["core_mhz"])
+                        new_sim = _build_session_sim(row["core_mhz"])
                         scenario = apply_scenario(
                             new_sim, SPI_SCENARIO,
                             PRUSimulatorMCP(config_path=config_path, simulator=new_sim),

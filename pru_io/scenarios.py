@@ -14,8 +14,8 @@ from typing import Callable
 from pru_io import ssi_config_abi as ssi_abi
 from pru_io.device_profiles import create_device
 from pru_io.spi_link import (ADDR_MAX, C_RX, C_TX, CMD_READ, CMD_RW, CMD_WRITE, P_RX, P_TX,
-                             PATTERNS, SpiConfig, SpiLinkRuntime, load_supported,
-                             measure_timing, run_test_sequence)
+                             PATTERNS, SpiConfig, SpiLinkRuntime, controller_delay_ok,
+                             load_supported, measure_timing, run_test_sequence)
 from pru_io.ssi_runtime import SSIEmulatorRuntime, SSIRuntime, load_reader
 
 _SOURCE = Path(__file__).resolve().parents[1] / "source"
@@ -82,7 +82,8 @@ def _ssi_multicore(sim, device_api, encoder_options, clock_delay_loops) -> SSIEm
 
 
 SPI_SCENARIO = "SPI multi-core (controller + peripheral)"
-_SPI_CONFIG_FIELDS = {"mode", "spi_mhz"}
+_SPI_CONFIG_FIELDS = {"mode", "spi_mhz", "miso_delay"}
+_SPI_CONFIG_REQUIRED = {"mode", "spi_mhz"}
 _SPI_DEFAULT = (1, 25.0)
 _SPI_UI = {"view": "io", "io_tab": "spi", "capture_stride": 1, "graph_window": 4096}
 
@@ -110,7 +111,11 @@ def spi_default_row() -> dict:
     return rows[-1]
 
 
-def _spi_config_row(config: dict | None) -> dict:
+def spi_config_row(config: dict | None) -> dict:
+    """The supported-rate row for an SPI scenario config, with ``miso_delay``
+    replaced by the config's optional ``miso_delay`` (Ruling R17: any value
+    ``controller_delay_ok`` accepts at the row's half period; default the
+    row's chosen value). ValueError before anything changes."""
     if config is None:
         return spi_default_row()
     if not isinstance(config, dict):
@@ -120,9 +125,28 @@ def _spi_config_row(config: dict | None) -> dict:
     unsupported = set(config) - _SPI_CONFIG_FIELDS
     if unsupported:
         raise ValueError(f"unsupported SPI scenario config fields: {sorted(unsupported)}")
-    if set(config) != _SPI_CONFIG_FIELDS:
+    if not _SPI_CONFIG_REQUIRED <= set(config):
         raise ValueError("SPI scenario config needs mode and spi_mhz")
-    return spi_row(config["mode"], config["spi_mhz"])
+    row = spi_row(config["mode"], config["spi_mhz"])
+    delay = config.get("miso_delay")
+    if delay is None:
+        return row
+    if not controller_delay_ok(row["half_k"], delay):
+        raise ValueError(
+            f"miso_delay {delay!r} is not realisable at {row['spi_mhz']:g} MHz "
+            f"(k = {row['half_k']}): it must be a non-negative integer, not "
+            f"0 or {row['half_k']} mod {2 * row['half_k']}, at most 6 bits pipelined")
+    return {**row, "miso_delay": delay}
+
+
+def spi_session_config(sim) -> dict | None:
+    """The loaded SPI demo's config (mode, spi_mhz, miso_delay), for re-applying
+    it (Ruling R21); None when the SPI scenario is not loaded."""
+    runtime = getattr(sim, "_scenario_runtime", None)
+    if not isinstance(runtime, SpiLinkRuntime):
+        return None
+    cfg = runtime.cfg
+    return {"mode": cfg.mode, "spi_mhz": cfg.spi_mhz, "miso_delay": cfg.miso_delay}
 
 
 def _spi_multicore(sim, device_api, row) -> SpiLinkRuntime:
@@ -143,6 +167,7 @@ def _spi_multicore(sim, device_api, row) -> SpiLinkRuntime:
     except Exception:
         runtime.close()
         raise
+    runtime.row = row            # supported-rate row (p1_fetch_cycles for the tIDLE row)
     runtime.last = None          # {"cmd", "addr", "pattern", "match"} of the last send
     runtime.sequence = None
     runtime._view = None         # cached (edge count, cfg id) -> frame/timing
@@ -184,7 +209,7 @@ def apply_scenario(sim, name: str, device_api, config: dict | None = None) -> Sc
     if any(core not in sim.cores for core in scenario.cores):
         raise ValueError(f"scenario requires cores {list(scenario.cores)}")
     if name == SPI_SCENARIO:
-        row = _spi_config_row(config)          # validated before anything is torn down
+        row = spi_config_row(config)           # validated before anything is torn down
         _clear_for_scenario(sim, device_api)
         sim._scenario_runtime = scenario.setup(sim, device_api, row)
         sim._scenario = scenario
@@ -302,7 +327,8 @@ def _spi_view(runtime: SpiLinkRuntime) -> dict:
         frame = {"start": f["start"], "end": f["end"], "bits": f["bits"],
                  "aborted": f["aborted"], "mosi": _hex(f["mosi"]),
                  "miso": _hex(f["miso"]), "edges": edges}
-        timing = measure_timing(monitor.edges, runtime.cfg, hop_delay=runtime.hop_delay)
+        timing = measure_timing(monitor.edges, runtime.cfg, hop_delay=runtime.hop_delay,
+                                p1_fetch_cycles=runtime.row.get("p1_fetch_cycles"))
     else:
         frame = {"start": None, "end": None, "bits": 0, "aborted": False,
                  "mosi": [], "miso": [], "edges": []}
