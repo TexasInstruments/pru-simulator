@@ -9,7 +9,8 @@
     io: document.getElementById('io-view') };
   const panes = { devices: document.getElementById('devices-view'),
     peripherals: document.getElementById('peripherals-view'),
-    events: document.getElementById('events-view') };
+    events: document.getElementById('events-view'),
+    spi: document.getElementById('spi-view') };
   const panelBar = document.getElementById('panel-visibility');
   const panelButtons = document.getElementById('panel-visibility-buttons');
   const viewSwitch = document.querySelector('.view-switch');

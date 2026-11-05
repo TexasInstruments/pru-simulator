@@ -429,6 +429,7 @@ function connect() {
         if (msg.run_id === runPending) runPending = null;
         if (msg.iep) showIepClock(msg.iep);
         updateSsiDemo(msg.io?.ssi_demo || null);
+        if (msg.io) window.SpiView?.render(msg.io?.spi_demo || null);
         window.updateWorkspaceEvents?.(msg, multiCoreMode ? executionCores() : [currentCore]);
         if (msg.clocks) { clockState = msg.clocks; }
         updateCoreState(msg);
@@ -455,7 +456,10 @@ function connect() {
       } else if (msg.type === "scenarios") {
         populateScenarios(msg.scenarios);
       } else if (msg.type === "scenario_loaded") {
+        if (msg.spi_supported) window.SpiView?.setSupported(msg.spi_supported);
         applyScenario(msg);
+      } else if (msg.type === "spi_supported") {
+        window.SpiView?.setSupported(msg.supported);
       } else if (msg.type === "perif_ok") {
         const st = document.getElementById("perif-lb-status");
         if (st) {
@@ -479,6 +483,11 @@ function connect() {
           error.hidden = false;
         }
         else if (msg.tag === "device") showDeviceError(msg.errors);
+        else if (msg.tag === "spi") {
+          window.SpiView?.showError(msg.errors);
+          document.querySelector('[data-workspace-view="io"]')?.click();
+          document.querySelector('[data-io-tab="spi"]')?.click();
+        }
         else if (msg.tag === "scenario" || msg.tag === "ssi_demo") {
           showDeviceError(msg.errors);
           document.querySelector('[data-workspace-view="io"]')?.click();
@@ -3909,6 +3918,8 @@ function populateScenarios(scenarios) {
   }
 }
 
+window.SpiView?.init({ send: sendAction, stop: () => { stopRun(); stopSim(); } });
+
 for (const button of scenarioButtons) {
   button.addEventListener("click", () => {
     const config = readSsiFrameConfig();
@@ -3944,7 +3955,7 @@ async function applyScenario(scenario) {
     refreshMemory();
   }
   document.querySelector(`[data-workspace-view="${ui.view || "simulator"}"]`)?.click();
-  if (ui.view === 'io') document.querySelector('[data-io-tab="devices"]')?.click();
+  if (ui.view === 'io') document.querySelector(`[data-io-tab="${ui.io_tab || 'devices'}"]`)?.click();
   selectEditorCore(scenario.lead);
   // Keep each core's firmware in its own editor workspace.
   for (const core of [...scenario.cores].reverse()) {

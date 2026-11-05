@@ -37,7 +37,7 @@ class Element {
   get offsetWidth() { return this.box?.width ?? 0; }
   querySelector() { return null; }
 }
-const ids = ['main', 'io-view', 'devices-view', 'peripherals-view', 'events-view',
+const ids = ['main', 'io-view', 'devices-view', 'peripherals-view', 'events-view', 'spi-view',
   'panel-visibility', 'panel-visibility-buttons', 'device-runtime-panel', 'workspace-theme',
   'device-event-log', 'io-subtabs', 'core-fault-banner', 'io-fault-badge'];
 const elements = new Map(ids.map(id => [id, new Element()]));

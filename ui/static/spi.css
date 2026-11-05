@@ -1,0 +1,44 @@
+/* SPI view (I/O & Devices -> SPI) */
+#spi-view .spi-setup { display: flex; gap: 10px; align-items: center; margin: 0 0 10px; }
+#spi-view .spi-hint, #spi-view .spi-note { color: var(--text-dim); font-size: 11px; }
+.spi-wrap { font-family: var(--font-mono); font-size: 12px; }
+.spi-bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; padding: 8px; background: var(--panel-inset); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 8px; }
+.spi-field { display: flex; flex-direction: column; gap: 3px; color: var(--text-dim); font-size: 10px; font-weight: 700; }
+.spi-field select, .spi-field input { min-height: 28px; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: var(--control-radius); font: 12px var(--font-mono); }
+.spi-field input { width: 64px; }
+.spi-sec { font-size: 12px; font-weight: 600; margin: 12px 0 3px; }
+.spi-frame-strip { display: flex; gap: 2px; margin: 4px 0 8px; }
+.spi-frame-strip > div { flex: 1; min-width: 0; text-align: center; padding: 3px 0; border-radius: 3px; color: #fff; font-size: 10px; display: flex; flex-direction: column; }
+.spi-frame-strip .spi-c-name { font-weight: 700; }
+.spi-frame-strip .spi-c-miso { opacity: .8; }
+.spi-c-cmd { background: #7b4fd6; } .spi-c-adr { background: #2f7fd6; } .spi-c-idl { background: #7d7d7d; } .spi-c-dat { background: #1f8a5e; }
+.spi-frame-strip .spi-c-cur { outline: 2px solid #f5a623; outline-offset: 1px; }
+.spi-scope { background: var(--graph-bg); border: 1px solid var(--border); border-radius: 6px; padding: 4px; cursor: crosshair; color: var(--text); }
+.spi-scope-empty { padding: 28px; text-align: center; color: var(--graph-placeholder); }
+.spi-svg { display: block; }
+.spi-lane-name { fill: currentColor; font-size: 12px; }
+.spi-box-text { fill: #fff; font-size: 10px; pointer-events: none; }
+.spi-arrow-text { font-size: 10px; fill: currentColor; }
+.spi-cols { display: flex; gap: 12px; margin-top: 10px; }
+.spi-cols > div { flex: 1; min-width: 0; }
+.spi-memlbl { font-size: 11px; margin: 4px 0 2px; color: var(--text-dim); }
+.spi-mem { display: grid; grid-template-columns: repeat(16, 1fr); gap: 1px; font-size: 10px; }
+.spi-mem > div { text-align: center; padding: 2px 0; background: var(--panel-inset); }
+.spi-mem .spi-hit { background: #1f8a5e; color: #fff; }
+.spi-mem .spi-now { background: #f5a623; color: #000; }
+.spi-mem .spi-bad { background: #d64545; color: #fff; font-weight: 700; }
+.spi-mem-empty { grid-column: 1 / -1; padding: 4px; color: var(--text-dim); }
+.spi-compare-row { margin: 8px 0 0; }
+.spi-pill { display: inline-block; padding: 1px 8px; border-radius: 8px; background: var(--gray); color: #fff; font-size: 11px; }
+.spi-pill-ok { background: #1f8a5e; } .spi-pill-bad { background: #d64545; }
+.spi-table-wrap { overflow-x: auto; }
+table.spi-tp { border-collapse: collapse; font-size: 11px; width: 100%; margin-top: 4px; }
+table.spi-tp td, table.spi-tp th { border: 1px solid var(--border); padding: 3px 6px; text-align: left; vertical-align: top; }
+table.spi-tp th { background: var(--panel-inset); }
+table.spi-tp .spi-ds { background: rgba(47, 127, 214, .10); }
+table.spi-tp .spi-na { opacity: .65; font-style: italic; }
+table.spi-tp .spi-ok { color: var(--green); font-weight: 600; }
+table.spi-tp .spi-warn { color: #d68a00; font-weight: 700; }
+table.spi-tp .spi-bad { color: #d64545; font-weight: 700; }
+table.spi-tp tr.spi-worst td { box-shadow: inset 0 0 0 1px #d68a00; }
+@media (max-width: 800px) { .spi-cols { flex-direction: column; } }
