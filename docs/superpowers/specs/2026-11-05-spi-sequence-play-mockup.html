@@ -1,0 +1,181 @@
+<h2>SPI test sequence: step list + Play (bit by bit)</h2>
+<p class="subtitle">Both previews are animated. The trace draws bit by bit, about 7 s per frame, and the booth loop of 4 frames lasts about 30 s and then repeats. Click a step to show its frame. Pick the layout you prefer below.</p>
+
+<style>
+  .spm { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color:#222; }
+  .spm .bar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:6px 0; }
+  .spm button.pb { font:inherit; padding:4px 10px; border:1px solid #888; background:#fff; border-radius:4px; cursor:pointer; }
+  .spm button.pb.on { background:#c8102e; color:#fff; border-color:#c8102e; }
+  .spm .chips { display:flex; gap:3px; flex-wrap:wrap; margin:4px 0 8px; }
+  .spm .chip { padding:2px 6px; border-radius:3px; border:1px solid #bbb; background:#f4f4f4; cursor:pointer; white-space:nowrap; }
+  .spm .chip.ok::before { content:"✓ "; color:#1a7f37; }
+  .spm .chip.loop { border-color:#1a7f37; }
+  .spm .chip.cur { outline:2px solid #e8a500; background:#fff7dd; }
+  .spm .list { width:190px; flex:none; max-height:330px; overflow:auto; border:1px solid #ccc; border-radius:4px; }
+  .spm .row { display:flex; justify-content:space-between; padding:2px 6px; cursor:pointer; border-bottom:1px solid #eee; }
+  .spm .row.loop { background:#eef8f0; }
+  .spm .row.cur { background:#fff3c4; font-weight:bold; }
+  .spm .row .r { color:#1a7f37; }
+  .spm .strip { display:flex; gap:2px; margin:4px 0; }
+  .spm .cell { flex:1; text-align:center; color:#fff; font-size:9px; padding:2px 0; border-radius:2px; opacity:.35; }
+  .spm .cell.done { opacity:1; }
+  .spm .cell.now { opacity:1; outline:2px solid #e8a500; }
+  .spm .scope { background:#1d1f24; border-radius:6px; padding:6px; }
+  .spm .mem { display:flex; gap:10px; margin-top:6px; flex-wrap:wrap; }
+  .spm .mem > div { flex:1; min-width:220px; }
+  .spm .bytes { display:flex; gap:1px; }
+  .spm .b { flex:1; text-align:center; font-size:9px; background:#eee; color:#999; padding:1px 0; }
+  .spm .b.f { background:#f2b632; color:#000; }
+  .spm .cap { font-size:11px; color:#555; }
+  .spm .big { font-size:15px; font-weight:bold; margin:4px 0; }
+  .spm .pane { display:none; }
+  .spm .pane.show { display:block; }
+</style>
+
+<div class="spm">
+  <div class="bar">
+    <span>Preview:</span>
+    <button class="pb on" id="tabA" onclick="spmShow('A')">Layout A: steps as chips above the scope</button>
+    <button class="pb" id="tabB" onclick="spmShow('B')">Layout B: step list beside the scope</button>
+  </div>
+
+  <div class="mockup">
+    <div class="mockup-header">I/O &amp; Devices → SPI (controls bar unchanged above this)</div>
+    <div class="mockup-body">
+      <div class="bar">
+        <button class="pb" id="seqbtn">Run test sequence</button>
+        <button class="pb on" id="playbtn" onclick="spmToggle()">❚❚ Pause</button>
+        <label>Speed <select id="spd"><option value="1">booth (7 s / frame)</option><option value="3">fast</option><option value="0.3">slow</option></select></label>
+        <label><input type="checkbox" checked disabled> loop</label>
+        <span class="cap">Test sequence: passed, 0 byte errors over 21 steps</span>
+      </div>
+
+      <div class="pane show" id="paneA">
+        <div class="chips" id="chipsA"></div>
+        <div class="big" id="titleA"></div>
+        <div id="bodyA"></div>
+      </div>
+
+      <div class="pane" id="paneB">
+        <div style="display:flex; gap:10px;">
+          <div class="list" id="listB"></div>
+          <div style="flex:1; min-width:0;">
+            <div class="big" id="titleB"></div>
+            <div id="bodyB"></div>
+          </div>
+        </div>
+      </div>
+      <p class="cap">Green border or tint marks the 4 booth-loop frames that Play cycles through (my guess at the set). The other steps are still listed with ✓ and can be clicked.</p>
+    </div>
+  </div>
+
+  <h3 style="margin-top:18px">Which layout?</h3>
+  <div class="options">
+    <div class="option" data-choice="A" onclick="toggleSelect(this)"><div class="letter">A</div><div class="content"><h3>Chips above the scope</h3><p>The scope keeps its full width. All 21 steps sit in one wrapping row.</p></div></div>
+    <div class="option" data-choice="B" onclick="toggleSelect(this)"><div class="letter">B</div><div class="content"><h3>List beside the scope</h3><p>Easier to read each step and its result. The scope gets narrower.</p></div></div>
+  </div>
+</div>
+
+<script>
+(function(){
+  const W1=[1,2,4,8,16,32,64,128,1,2,4,8,16,32,64,128];
+  const W0=W1.map(b=>255-b);
+  const A5=[0xA5,0x5A,0xA5,0x5A,0xA5,0x5A,0xA5,0x5A,0xA5,0x5A,0xA5,0x5A,0xA5,0x5A,0xA5,0x5A];
+  const TG=[0,255,0,255,0,255,0,255,0,255,0,255,0,255,0,255];
+  const pats={walking1:[W1,W0],walking0:[W0,W1],a5_5a:[A5,A5.map(b=>255-b)],count:[[...Array(16).keys()],[...Array(16)].map((_,i)=>0xF0+i)],toggle:[TG,TG.map(b=>255-b)]};
+  const steps=[];
+  for(const p of Object.keys(pats)){
+    steps.push({n:'write:'+p,cmd:1,p}); steps.push({n:'read:'+p,cmd:2,p}); steps.push({n:'rw:'+p,cmd:3,p});
+  }
+  ['unknown_cmd','bad_addr','abort','back_to_back:1','back_to_back:2','back_to_back'].forEach(n=>steps.push({n,cmd:n==='unknown_cmd'?4:3,p:'walking1'}));
+  const LOOP=['rw:walking1','rw:walking0','rw:a5_5a','rw:toggle'];
+  const cmdName={1:'WRITE',2:'READ',3:'READ/WRITE',4:'Unknown'};
+  function frameOf(s){
+    const [c,p]=pats[s.p];
+    const mosi=[s.cmd,0x40,0,...c];
+    const miso=(s.cmd===1||s.cmd===4)?Array(19).fill(0):[0,0,0,...p];
+    return {mosi,miso};
+  }
+  let cur=steps.findIndex(s=>s.n===LOOP[0]), bit=0, playing=true, layout='A';
+  const NB=152;
+  function hx(b){return b.toString(16).toUpperCase().padStart(2,'0');}
+  function color(i){return i===0?'#7b4ad9':i===1?'#2f6fd6':i===2?'#777':'#1e8a4c';}
+  function bodyHTML(w){
+    const s=steps[cur], f=frameOf(s), byte=Math.min(18,Math.floor(bit/8));
+    let strip='<div class="strip">';
+    for(let i=0;i<19;i++){
+      const lab=i===0?'CMD':i===1?'ADR':i===2?'IDLE':'D'+(i-3);
+      const cls=i<byte?'done':i===byte&&bit<NB?'now':bit>=NB?'done':'';
+      strip+=`<div class="cell ${cls}" style="background:${color(i)}">${lab}<br>${hx(f.mosi[i])}<br>${hx(f.miso[i])}</div>`;
+    }
+    strip+='</div>';
+    // scope svg
+    const H=200, x0=50, bw=(w-x0-10)/NB;
+    const X=b=>x0+b*bw;
+    const shown=Math.min(bit,NB);
+    let cs=`M ${x0-20} 20 L ${x0-8} 20 L ${x0-8} 40 L ${X(shown)} 40`;
+    if(bit>=NB) cs+=` L ${X(NB)+4} 40 L ${X(NB)+4} 20 L ${w} 20`;
+    let clk=`M ${x0-20} 85`; let mo=`M ${x0-20} 130`, mi=`M ${x0-20} 175`;
+    let pm=null, pi=null;
+    for(let b=0;b<shown;b++){
+      const by=Math.floor(b/8), bi=7-(b%8);
+      const vm=(f.mosi[by]>>bi)&1, vi=(f.miso[by]>>bi)&1;
+      const ym=vm?118:138, yi=vi?163:183;
+      mo+=` L ${X(b)} ${pm===null?138:pm} L ${X(b)} ${ym} L ${X(b+1)} ${ym}`; pm=ym;
+      mi+=` L ${X(b)} ${pi===null?183:pi} L ${X(b)} ${yi} L ${X(b+1)} ${yi}`; pi=yi;
+      clk+=` L ${X(b)} 85 L ${X(b+0.5)} 85 L ${X(b+0.5)} 70 L ${X(b+1)} 70 L ${X(b+1)} 85`;
+    }
+    let boxes='';
+    for(let by=0;by<=Math.min(byte,18);by++){
+      if(by*8>=shown) break;
+      const xa=X(by*8)+1, xb=X(Math.min(shown,by*8+8))-1;
+      if(xb-xa<14) continue;
+      boxes+=`<rect x="${xa}" y="100" width="${xb-xa}" height="12" fill="${color(by)}" rx="2"/><text x="${xa+3}" y="109" font-size="9" fill="#fff">${hx(f.mosi[by])}</text>`;
+      boxes+=`<rect x="${xa}" y="146" width="${xb-xa}" height="12" fill="${color(by)}" rx="2"/><text x="${xa+3}" y="155" font-size="9" fill="#fff">${hx(f.miso[by])}</text>`;
+    }
+    const cx=X(shown);
+    const svg=`<svg width="100%" viewBox="0 0 ${w} ${H}" style="display:block">
+      <text x="4" y="34" fill="#e05a5a" font-size="10">/CS</text><path d="${cs}" stroke="#e05a5a" fill="none"/>
+      <text x="4" y="82" fill="#e8a500" font-size="10">CLK</text><path d="${clk}" stroke="#e8a500" fill="none" stroke-width="0.8"/>
+      <text x="4" y="132" fill="#4a90e2" font-size="10">MOSI</text><path d="${mo}" stroke="#4a90e2" fill="none"/>
+      <text x="4" y="177" fill="#2bb673" font-size="10">MISO</text><path d="${mi}" stroke="#2bb673" fill="none"/>
+      ${boxes}
+      ${bit<NB?`<line x1="${cx}" y1="10" x2="${cx}" y2="195" stroke="#fff" stroke-dasharray="3,3" opacity=".7"/>`:''}
+    </svg>`;
+    const memRow=(arr,n)=>'<div class="bytes">'+arr.map((v,i)=>`<div class="b ${i<n?'f':''}">${i<n?hx(v):'··'}</div>`).join('')+'</div>';
+    const dn=Math.max(0,Math.min(16,byte-3+(bit>=NB?1:0)));
+    const [c,p]=pats[s.p];
+    const wr=s.cmd!==2, rd=s.cmd===2||s.cmd===3;
+    const mem=`<div class="mem">
+      <div><div class="cap">PRU0 TX (sent on MOSI)</div>${memRow(c,16)}</div>
+      <div><div class="cap">PRU1 RX @ addr (written)</div>${memRow(c,wr?dn:0)}</div>
+      <div><div class="cap">PRU1 TX @ addr (read)</div>${memRow(p,16)}</div>
+      <div><div class="cap">PRU0 RX (got on MISO)</div>${memRow(p,rd?dn:0)}</div></div>`;
+    const status=bit>=NB?'<span style="color:#1a7f37;font-weight:bold"> ✓ 16/16 bytes match both ways</span>':` <span class="cap">byte ${byte<3?['CMD','ADR','IDLE'][byte]:'D'+(byte-3)}, bit ${7-(bit%8)}</span>`;
+    return {title:`Step ${cur+1}/21 · ${s.n} · ${cmdName[s.cmd]} @ 0x40`+status, html:strip+`<div class="scope">${svg}</div>`+mem};
+  }
+  function render(){
+    const chips=steps.map((s,i)=>`<span class="chip ok ${LOOP.includes(s.n)?'loop':''} ${i===cur?'cur':''}" onclick="spmPick(${i})">${s.n}</span>`).join('');
+    document.getElementById('chipsA').innerHTML=chips;
+    document.getElementById('listB').innerHTML=steps.map((s,i)=>`<div class="row ${LOOP.includes(s.n)?'loop':''} ${i===cur?'cur':''}" onclick="spmPick(${i})"><span>${i+1}. ${s.n}</span><span class="r">✓</span></div>`).join('');
+    const a=bodyHTML(1100), b=bodyHTML(880);
+    document.getElementById('titleA').innerHTML=a.title; document.getElementById('bodyA').innerHTML=a.html;
+    document.getElementById('titleB').innerHTML=b.title; document.getElementById('bodyB').innerHTML=b.html;
+  }
+  let hold=0;
+  setInterval(()=>{
+    if(!playing) return;
+    const spd=parseFloat(document.getElementById('spd').value);
+    if(bit<NB){ bit=Math.min(NB,bit+spd*1.0); bit=Math.floor(bit*10)/10; }
+    else { hold+=spd; if(hold>25){ hold=0; bit=0;
+      const li=LOOP.indexOf(steps[cur].n); const nx=LOOP[(li+1)%LOOP.length];
+      cur=steps.findIndex(s=>s.n===nx);} }
+    render();
+  },40);
+  window.spmShow=function(l){layout=l;document.getElementById('paneA').classList.toggle('show',l==='A');document.getElementById('paneB').classList.toggle('show',l==='B');
+    document.getElementById('tabA').classList.toggle('on',l==='A');document.getElementById('tabB').classList.toggle('on',l==='B');};
+  window.spmToggle=function(){playing=!playing;document.getElementById('playbtn').innerHTML=playing?'❚❚ Pause':'▶ Play';document.getElementById('playbtn').classList.toggle('on',playing);};
+  window.spmPick=function(i){cur=i;bit=0;hold=0;render();};
+  render();
+})();
+</script>
