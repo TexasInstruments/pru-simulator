@@ -26,6 +26,10 @@ The source code is in the open-pru repository, under
 
 Until the PRs are merged, each demo exists only on its own branch.
 
+A fourth screen can run the **SPI link** demo in the simulator alone, with
+no board and no PicoScope. It loops by itself; see "SPI link (simulator,
+runs unattended)" below.
+
 ---
 
 ## PicoScope settings at a glance
@@ -262,6 +266,65 @@ from the next pass on (within 2 ms).
 
 ---
 
+## SPI link (simulator, runs unattended)
+
+PRU0 is an SPI controller and PRU1 an SPI peripheral, both bit-banged and
+wired pin to pin in TI's pru-simulator. Visitors watch frames go across a
+scope bit by bit: walking 1, walking 0, 0xA5 / 0x5A and 00 / FF, about
+7 s per frame and about 30 s per loop, repeating. No board or PicoScope
+is needed, so it can run on its own laptop or screen next to the board
+demos.
+
+The code is in pru-simulator, branch `feat/spi-pru-link` (PR #108). Until
+the PR is merged, check out that branch.
+
+### Run (two clicks)
+1. Start the dashboard from the pru-simulator folder:
+   ```
+   python -m ui.server      # then open http://localhost:8080
+   ```
+2. Go to **I/O & Devices → SPI**.
+3. Click **Set up SPI demo**.
+4. Click **▶ Play**.
+
+Play runs the SPI test sequence once (about a second), then replays its
+frames in a loop. While it plays, every SPI control except **Pause** and
+**Speed** is greyed out, so a visitor clicking around cannot stop it.
+
+### What good looks like
+- A row of 21 green ✓ chips above the frame strip. The 4 loop frames have
+  a thicker green border, and the one playing is outlined in yellow.
+- The line above the frame strip names the step, for example
+  `Step 6/21 · rw:walking1 · READ/WRITE (03) @ 0x41 · pattern walking1`.
+- The scope trace draws left to right, the byte boxes fill in as each
+  byte completes, and the PRU1 RX and PRU0 RX panels fill byte by byte.
+  The compare badge reads **Transferring…**, then
+  **16/16 bytes match both ways** at the end of each frame.
+- **Speed**: *booth* is the default. *slow* halves the pace and *fast*
+  triples it.
+
+### Talking points
+- **Real pin trace:** what is drawn is the simulator's recorded pins
+  (/CS, CLK, MOSI, MISO), not an animation.
+- **Two PRU cores:** PRU0 drives SPI CLK at 25 MHz on a 200 MHz core
+  (5 ns per cycle). PRU1 follows every clock edge.
+- **Timing table:** below the scope, with the AM243 datasheet values
+  marked. The tightest margin (MISO setup) is flagged.
+- **Tested up to 50 MHz:** the link was swept from 10 to 50 MHz in both
+  SPI modes. 50 MHz works at a 300 MHz core.
+
+### If something is wrong
+
+| You see | Do this |
+| ------- | ------- |
+| The pane shows only **Set up SPI demo**, and the frames and chips are gone | Someone used the top toolbar (Config, loading another example, …), which ends the SPI demo. Click **Set up SPI demo**, then **▶ Play**. |
+| The loop is not moving and the button reads **▶ Play** | It was paused, or someone changed a setting after pausing. Click **▶ Play**. |
+| A red ✗ chip | That step failed. The loop still plays it, so visitors see the real result. Hover over the chip for the reason, and note it for the team. |
+| **Play** pressed, but nothing happens for a long time | Click **❚❚ Pause**, then **▶ Play** again. If that does not help, reload the page (Ctrl+Shift+R) and do the two clicks again. |
+| The page cannot connect | The dashboard is not running. Start `python -m ui.server` again. |
+
+---
+
 ## Switching between demos
 
 1. Stop the current demo:
@@ -309,6 +372,8 @@ python ui/server.py      # then open http://localhost:8080
   `i2c_io/readme.md`, `visualizer/readme.md`
 - Demo B: open-pru `examples/electronica2026/uart_rx_frame/uart_rx/readme.md`
 - Demo C: open-pru `examples/electronica2026/uart_print/uart_print/readme.md`
+- SPI link: pru-simulator `docs/spi_link.md` (branch `feat/spi-pru-link`,
+  PR #108), and `docs/handoff/2026-11-05-spi-sequence-play.md`
 - How each demo was ported: the `docs/porting_report.md` in each project
 - Session notes: `docs/handoff/2026-11-02-*.md` and
   `docs/handoff/2026-11-03-*.md` (PR #102)
