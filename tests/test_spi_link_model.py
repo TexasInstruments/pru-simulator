@@ -174,12 +174,13 @@ def test_measure_timing_synthetic(mode):
                           "am243_min", "am243_max", "source", "margin_ns", "worst", "derived"}
     # setup budget: 20 - 2 skew - 5 ns polling = 13
     assert by["tSU,MOSI"]["margin_ns"] == 13.0
-    # Ruling R18: design rows have no AM243 columns; margin = measured -
-    # design minimum - 2 ns PRDO1 skew; only Table 6-11x sources are datasheet data
-    for sym, minimum in (("tLEAD", 40.0), ("tLAG", 40.0), ("tH/tL", 20.0)):
+    # Rulings R18/R18a: design rows exact by construction have no AM243
+    # columns and no margin (never the worst); only Table 6-11x is datasheet data
+    for sym in ("tLEAD", "tLAG", "tH/tL"):
         assert by[sym]["am243_min"] is None and by[sym]["am243_max"] is None, sym
-        assert by[sym]["margin_ns"] == by[sym]["sim_ns"] - minimum - 2.0, sym
-        assert "PRDO1 skew" in by[sym]["source"] and "design" in by[sym]["source"], sym
+        assert by[sym]["margin_ns"] is None and not by[sym]["worst"], sym
+        assert by[sym]["source"] == ("exact by construction (design); "
+                                     "up to 2 ns PRDO1 skew on silicon"), sym
     for r in rows:
         if r["am243_min"] is not None or r["am243_max"] is not None:
             assert r["source"].startswith("Table 6-11"), r["symbol"]

@@ -104,7 +104,7 @@ test('timingRows flags exactly one worst row and keeps derived rows unflagged', 
   assert.ok(out.find(r => r.worst).derived !== true);
   const already = plain(SpiView.timingRows(plain(fx.state.timing)));
   assert.equal(already.filter(r => r.worst).length, 1);
-  assert.equal(already.find(r => r.worst).symbol, 'tH/tL');
+  assert.equal(already.find(r => r.worst).symbol, 'tSU,MISO');
 });
 
 test('only datasheet-table cells are tinted as datasheet data (R18)', () => {
@@ -115,7 +115,8 @@ test('only datasheet-table cells are tinted as datasheet data (R18)', () => {
   assert.ok(tinted.length >= 3);
   assert.ok(tinted.every(r => /Table 6-11[23]/.test(r)), 'tinted rows are Table 6-112 / 6-113');
   const lead = rows.find(r => r.includes('LEAD'));
-  assert.ok(!lead.includes('spi-ds') && /design \(min 1 tCLK\)/.test(lead));
+  assert.ok(!lead.includes('spi-ds') && /exact by construction/.test(lead));
+  assert.ok(/<td class="spi-ok">n\/a<\/td>/.test(lead), 'no margin for an exact design row');
   assert.ok(!/>\+2 ns</.test(lead) && (lead.match(/>none</g) || []).length === 2, 'no AM243 min/max for tLEAD');
   assert.ok(!html.includes('<th class="spi-ds"'));
 });

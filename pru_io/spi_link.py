@@ -381,23 +381,19 @@ def measure_timing(edges, cfg: SpiConfig, frame_index: int = -1,
     s = sim.get
     row("SPI clock period", "tCLK", tclk_d, s("tCLK"), None, None,
         "no direct-mode limit", None, cycles=2 * cfg.half_k)
-    # Ruling R18: design rows carry no AM243 min/max (the datasheet has none
-    # for them); margin = measured - design minimum - PRDO1 output skew.
-    def skewed(v, minimum):
-        return None if v is None else v - minimum - SKEW_NS
-
-    row("CLK high / low time", "tH/tL", half_d,
-        th, None, None, "design (min ½ tCLK) − PRDO1 skew",
-        skewed(None if th is None else min(th, tl), half_d), cycles=cfg.half_k)
+    # Rulings R18/R18a: tH/tL, tLEAD and tLAG are the controller's own design
+    # values, met exactly by construction (stepped in test_spi_controller):
+    # no AM243 min/max and no margin, so they never count as the worst row.
+    exact = "exact by construction (design); up to 2 ns PRDO1 skew on silicon"
+    row("CLK high / low time", "tH/tL", half_d, th, None, None, exact, None,
+        cycles=cfg.half_k)
     row("Output skew CLK / MOSI / CS (PRU0 pins)", "tsk(GPO-GPO)", 0.0, 0.0,
         None, SKEW_NS, "Table 6-113 PRDO1", SKEW_NS, cycles=0,
         derived=True)   # the simulator models no pad skew
     row("/CS low to first CLK edge", "tLEAD", tclk_d, s("tLEAD"), None, None,
-        "design (min 1 tCLK) − PRDO1 skew", skewed(s("tLEAD"), tclk_d),
-        cycles=2 * cfg.half_k)
+        exact, None, cycles=2 * cfg.half_k)
     row("Last CLK edge to /CS high", "tLAG", tclk_d, s("tLAG"), None, None,
-        "design (min 1 tCLK) − PRDO1 skew", skewed(s("tLAG"), tclk_d),
-        cycles=2 * cfg.half_k)
+        exact, None, cycles=2 * cfg.half_k)
     row("/CS high between frames", "tCSH", 2 * tclk_d, s("tCSH"), None, None,
         "design (min 2 tCLK)",
         None if s("tCSH") is None else s("tCSH") - 2 * tclk_d, cycles=4 * cfg.half_k)

@@ -2400,7 +2400,7 @@ Example:
         <div class="spi-sec" id="spi-timing-title">Timing</div>
         <p class="spi-note" id="spi-gpi-delay"></p>
         <div class="spi-table-wrap" id="spi-timing"></div>
-        <p class="spi-note">Sim values are measured from the pin trace of the last frame. Shaded cells are AM243 datasheet data (SPRSP65J section 6.11.5.16.1, Tables 6-112 and 6-113); every other row is a design value. Input setup and hold rows are design budgets because the datasheet has no direct-input-mode table; the t<sub>LEAD</sub>, t<sub>LAG</sub> and t<sub>H</sub>/t<sub>L</sub> margins are measured value minus design minimum minus the 2 ns PRDO1 output skew. The worst row is the tightest margin at this rate.</p>
+        <p class="spi-note">Sim values are measured from the pin trace of the last frame. Shaded cells are AM243 datasheet data (SPRSP65J section 6.11.5.16.1, Tables 6-112 and 6-113); every other row is a design value. Input setup and hold rows are design budgets because the datasheet has no direct-input-mode table; t<sub>LEAD</sub>, t<sub>LAG</sub> and t<sub>H</sub>/t<sub>L</sub> are exact by construction and have no margin (up to 2 ns PRDO1 skew on silicon). The worst row is the tightest margin at this rate.</p>
         <div class="spi-sec">Pins (LP-AM243 user's guide SPRUJ12F)</div>
         <table class="spi-tp">
           <tr><th>Signal</th><th>Core</th><th>PRU pin</th><th>Ball</th><th>Header</th></tr>
