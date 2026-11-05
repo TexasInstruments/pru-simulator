@@ -279,10 +279,12 @@ def test_close_restores(sim_config):
     assert {c: sim.io(c)["gpo_drive_mask"] for c in ("pru0", "pru1")} == masks
 
 
-def test_load_peripheral_not_yet(sim_config):
+def test_transfer_without_peripheral_steps_pru0_only(sim_config):
+    """Before load_peripheral() (Task 4) transfer() steps PRU0 alone."""
     sim, rt, _ = _runtime(sim_config, 1, 300, 3)
-    with pytest.raises(NotImplementedError):
-        rt.load_peripheral()
+    c1 = sim.cores["pru1"].counters.cycles
+    rt.transfer(CMD_RW, ADDR, PATTERNS["count"][0])
+    assert sim.cores["pru1"].counters.cycles == c1
 
 
 # ---------------------------------------------------------------------------

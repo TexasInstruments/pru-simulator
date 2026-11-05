@@ -371,6 +371,7 @@ def measure_timing(edges, cfg: SpiConfig, frame_index: int = -1) -> list[dict]:
 
 CONTROLLER_SOURCE = (Path(__file__).resolve().parents[1]
                      / "source" / "spi" / "spi_controller.asm")
+PERIPHERAL_SOURCE = CONTROLLER_SOURCE.with_name("spi_peripheral.asm")
 #: Deepest MISO pipelining the controller unrolls (MISO_DELAY // (2*HALF_K)).
 MISO_Q_MAX = 6
 _C_MASK = (1 << C_CLK) | (1 << C_MOSI) | (1 << C_CS)
@@ -488,6 +489,7 @@ class SpiLinkRuntime:
         self._wires: list[tuple[str, int, str, int]] = []
         self._controller_loaded = False
         self._peripheral_loaded = False
+        self._peripheral_mode: int | None = None
 
     # -- setup -----------------------------------------------------------------
 
@@ -526,8 +528,105 @@ class SpiLinkRuntime:
             self.monitor.mode = cfg.mode
         self._controller_loaded = True
 
+    def reload_controller(self, cfg: SpiConfig) -> None:
+        """Reassemble PRU0 only for ``cfg``; PRU1, wires and monitor stay.
+
+        The PRU1 firmware is rate independent but assembled for one SPI
+        mode, so ``cfg.mode`` must match it once PRU1 is loaded.
+        """
+        if self._peripheral_loaded and cfg.mode != self._peripheral_mode:
+            raise ValueError(f"PRU1 runs mode {self._peripheral_mode}; "
+                             f"reload_controller got mode {cfg.mode}")
+        old = self.cfg
+        self.cfg = cfg
+        try:
+            self.load_controller()
+        except Exception:
+            self.cfg = old
+            raise
+
     def load_peripheral(self) -> None:
-        raise NotImplementedError("PRU1 peripheral firmware arrives in Task 4")
+        """Assemble and start the PRU1 edge-polling peripheral (mode = cfg.mode).
+
+        Its header carries only SPI_MODE: nothing depends on the rate.
+        """
+        source = (render_header(self.cfg, role="peripheral")
+                  + PERIPHERAL_SOURCE.read_text(encoding="utf-8"))
+        errors = self.sim.load("pru1", source,
+                               include_paths=[str(PERIPHERAL_SOURCE.parent)])
+        if errors:
+            raise ValueError("SPI peripheral assembly failed: " + "; ".join(errors))
+        self.sim.reset("pru1")
+        self.sim.memory.write(P_STATUS, bytes(16))
+        pru1 = self.sim.cores["pru1"]
+        pru1.registers.write_full(30, 0)
+        pru1.io_port.write_r30(0)
+        self.sim.set_gpio_drive_mask("pru1", 1 << P_MISO)
+        self._set_delay("pru1")
+        self._peripheral_loaded = True
+        self._peripheral_mode = self.cfg.mode
+
+    # -- PRU1 memory -----------------------------------------------------------
+
+    @staticmethod
+    def _block(addr: int) -> int:
+        if isinstance(addr, bool) or not isinstance(addr, int) or not 0 <= addr <= ADDR_MAX:
+            raise ValueError(f"block address must be 0..0x{ADDR_MAX:02X}, got {addr!r}")
+        return 16 * addr
+
+    def preload_peripheral_tx(self, addr: int, data: bytes) -> None:
+        """Write PRU1 TX block ``addr`` (the source of READ and R/W data)."""
+        off = self._block(addr)
+        data = bytes(data)
+        if len(data) != 16:
+            raise ValueError("TX block must be 16 bytes")
+        self.sim.memory.write(P_TX + off, data)
+
+    def read_peripheral_rx(self, addr: int) -> bytes:
+        """PRU1 RX block ``addr`` (committed only at the end of a full frame)."""
+        return bytes(self.sim.memory_read(P_RX + self._block(addr), 16))
+
+    def peripheral_status(self) -> dict:
+        """PRU1 status block: frames (completed, valid or not), errors (completed
+        with an unknown command or address > 0x7F), aborts (/CS high before
+        bit 152), last_cmd / last_addr (last completed frame)."""
+        raw = bytes(self.sim.memory_read(P_STATUS, 14))
+        u32 = lambda i: int.from_bytes(raw[i:i + 4], "little")  # noqa: E731
+        return {"frames": u32(0), "errors": u32(4), "aborts": u32(8),
+                "last_cmd": raw[12], "last_addr": raw[13]}
+
+    def find_miso_window(self, delays=None, addr: int = 0x7E,
+                         pattern: str = "count") -> list[int]:
+        """miso_delay values for which PRU0 reads PRU1 correctly at this rate.
+
+        For each candidate (default: every ``controller_delay_ok`` value up to
+        Q = MISO_Q_MAX) PRU0 is reassembled with that delay and runs one R/W
+        frame against PRU1 TX block ``addr``; a delay passes when PRU0 gets
+        the whole MISO frame (header zeros and the 16 data bytes) right. The
+        original ``cfg`` is restored. PRU1 RX/TX block ``addr`` and its status
+        counters change.
+        """
+        if not (self._controller_loaded and self._peripheral_loaded and self._wires):
+            raise RuntimeError("load_controller(), load_peripheral() and wire() first")
+        cfg = self.cfg
+        k = cfg.half_k
+        if delays is None:
+            delays = [d for d in range(1, 2 * k * (MISO_Q_MAX + 1))
+                      if controller_delay_ok(k, d)]
+        c_tx, p_tx = PATTERNS[pattern]
+        self.preload_peripheral_tx(addr, p_tx)
+        window = []
+        try:
+            for d in delays:
+                if not controller_delay_ok(k, d):
+                    continue
+                self.reload_controller(SpiConfig(cfg.mode, cfg.core_mhz, k, d))
+                res = self.transfer(CMD_RW, addr, c_tx)
+                if res["miso"] == bytes(3) + p_tx:
+                    window.append(d)
+        finally:
+            self.reload_controller(cfg)
+        return window
 
     def wire(self) -> None:
         """Spec 5.3 nets; each has exactly one driver."""
