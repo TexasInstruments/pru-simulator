@@ -19,6 +19,11 @@ Open http://127.0.0.1:8080/ and go to **I/O & Devices → SPI**. Use `--port` to
    **MISO sample delay** lists the realisable PRU0 sample points (core cycles from each MISO launch edge; values that land on a CLK write are left out). Values in the passing window found by the sweep are marked "passes", the others "fails"; the sweep's choice is marked "(default)". Picking a value outside the window shows PRU0 reading the wrong bit. Changing the mode or rate goes back to the default.
 3. Pick the **Command** (WRITE 01, READ 02, READ/WRITE 03, or Unknown 04), an **Address** (0 to 255, shown as "= byte N"; addresses above 0x7F take the error path), and a **Pattern**.
 4. **Send frame** runs one frame. **Run test sequence** runs the full test sequence described under Protocol and reports "passed" or "FAILED" with the byte error count.
+5. After a test sequence, a row of **step chips** appears above the frame strip, one per step (21), each marked ✓ or ✗. A failed chip is red and lists its notes as a tooltip. Click a chip to show that step's recorded frame in the scope, frame strip, memory panels and timing table. A line above the frame strip names the step, command, address and pattern. The /CS-high gap (t<sub>CSH</sub>) needs two frames, so it reads "—" for a single step; the `back_to_back` step reports the measured gap.
+6. **Play** replays the booth loop bit by bit: the read/write frames for walking 1, walking 0, 0xA5 / 0x5A and 00 / FF, repeating until **Pause**. The trace draws left to right, the current byte is outlined in the frame strip, the PRU1 RX and PRU0 RX panels fill byte by byte, and each frame ends on its compare result. **Speed** *booth* (the default) takes about 7 s per frame (about 30 s per loop); *slow* and *fast* halve and triple it. Play replays the recorded traces and does not run the simulator. If no sequence has been recorded, Play runs it first.
+   While Play runs, every SPI control except **Pause** and **Speed** is locked, including the step chips. The dashboard's global toolbar is not locked. The recorded steps are cleared, and Play stops in every open tab, by a change of mode, rate or MISO sample delay, **Send frame**, **Set up SPI demo**, Reset, HW Reset, or leaving the SPI demo.
+
+**Booth setup:** click **Set up SPI demo**, then **Play**.
 
 What the view shows:
 
@@ -72,7 +77,7 @@ finally:
 - `SpiLinkRuntime(sim, cfg)` uses the calibrated hop delay (5 cycles) by default. Call `load_controller()`, `load_peripheral()` and `wire()` in that order, as the dashboard does, before `transfer()`.
 - `transfer(cmd, addr, data=bytes(16))` runs one frame. It returns a dict with `miso` (19 bytes), `c_rx`, `cycles` and `frame` (the decoded frame from the bus monitor).
 - `preload_peripheral_tx(addr, data)` and `read_peripheral_rx(addr)` access PRU1's TX and RX blocks. `peripheral_status()` returns the PRU1 counters.
-- `run_test_sequence(runtime, patterns=None)` returns `ok`, `byte_errors` and `steps`. `patterns` defaults to all of `PATTERNS`: `a5_5a`, `walking1`, `walking0`, `count` and `toggle`.
+- `run_test_sequence(runtime, patterns=None, record=False)` returns `ok`, `byte_errors` and `steps`. `patterns` defaults to all of `PATTERNS`: `a5_5a`, `walking1`, `walking0`, `count` and `toggle`. Every frame step names the `pattern` it sent. With `record=True`, each frame step also has a `trace`: its bus `frame` (`start`, `end`, `bits`, `aborted`, `mosi`, `miso` and the `edges` to draw it, starting with the idle edge before it) and the `memory` panels right after it (`c_tx`, `c_rx`, `p_rx`, `p_tx`; the PRU1 blocks are None above address 0x7F). The `back_to_back` gap check has `trace` None. The dashboard serves these steps with the `spi_steps` request.
 - `close()` removes the wires and the bus monitor and resets the GPI delays.
 
 ## Protocol
