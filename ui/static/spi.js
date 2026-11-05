@@ -194,9 +194,16 @@
   }
 
   // ---- frame strip and memory --------------------------------------------------
+  // MISO as PRU0 reads it (R15): never the backend monitor's nominal-edge decode.
+  function misoBytes(state) {
+    const frame = state.frame, cfg = state.config;
+    if (!frame || !frame.edges || !cfg) return [];
+    return decodeBoxes(frame.edges, cfg.mode, { miso_delay: cfg.miso_delay, hop_delay: state.hop_delay })
+      .filter(b => b.lane === 'miso' && !b.partial).map(b => hex2(b.value));
+  }
   function frameStripHtml(state, cursorByte) {
     const frame = state.frame || {};
-    const mosi = frame.mosi || [], miso = frame.miso || [];
+    const mosi = frame.mosi || [], miso = misoBytes(state);
     const cells = [];
     for (let i = 0; i < FRAME_BYTES; i++) {
       const cls = i === 0 ? 'spi-c-cmd' : i === 1 ? 'spi-c-adr' : i === 2 ? 'spi-c-idl' : 'spi-c-dat';
@@ -217,8 +224,8 @@
   }
 
   // ---- scope -------------------------------------------------------------------
-  const LANES = [['cs', '/CS', 30], ['clk', 'CLK', 82], ['mosi', 'MOSI', 142], ['miso', 'MISO', 208]];
-  const W = 1100, H = 262, X0 = 52, HI = -12, LO = 12;
+  const LANES = [['cs', '/CS', 30], ['clk', 'CLK', 82], ['mosi', 'MOSI', 142], ['miso', 'MISO', 230]];
+  const W = 1100, H = 292, X0 = 52, HI = -12, LO = 12;
 
   function scopeModel(state, cursorBit) {
     const frame = state && state.frame;
@@ -261,7 +268,7 @@
       s += `<path d="${path(edges, pick[key], y, x, m.t0, m.t1)}" stroke="${COLORS[key]}" fill="none" stroke-width="1.6"/>`;
     }
     for (const box of decodeBoxes(edges, cfg.mode, opts)) {
-      const y = box.lane === 'mosi' ? 142 : 208;
+      const y = box.lane === 'mosi' ? 142 : 230;
       const xa = x(box.startCycle), w = x(box.endCycle) - xa;
       s += `<rect x="${(xa + 1).toFixed(1)}" y="${y - 34}" width="${Math.max(w - 2, 1).toFixed(1)}" height="14" rx="3" ` +
         `fill="${fieldColor(box.index)}" opacity=".88"><title>${esc(box.lane.toUpperCase())} ${esc(box.label)}</title></rect>`;
@@ -274,7 +281,7 @@
     // PRU0's MISO sample points
     frame.launch.forEach(l => {
       const sample = l + cfg.miso_delay - state.hop_delay;
-      if (sample <= frame.end) s += `<circle cx="${x(sample).toFixed(1)}" cy="${208 + HI - 4}" r="1.8" fill="${COLORS.miso}" opacity=".75"/>`;
+      if (sample <= frame.end) s += `<circle cx="${x(sample).toFixed(1)}" cy="${230 + HI - 4}" r="1.8" fill="${COLORS.miso}" opacity=".75"/>`;
     });
     s += cursorGroup(state, m, edges);
     return s + '</svg>';
@@ -290,31 +297,32 @@
     const arrow = (a, b, y, text, color) => `<line x1="${x(a).toFixed(1)}" x2="${x(b).toFixed(1)}" y1="${y}" y2="${y}" ` +
       `stroke="${color}" stroke-width="1.2" marker-start="url(#spi-ah)" marker-end="url(#spi-ah)" style="color:${color}"/>` +
       `<text x="${((x(a) + x(b)) / 2).toFixed(1)}" y="${y - 3}" fill="${color}" class="spi-arrow-text" text-anchor="middle">${esc(text)}</text>`;
-    let s = `<line x1="${x(capture).toFixed(1)}" x2="${x(capture).toFixed(1)}" y1="${82 + HI - 22}" y2="${208 + 22}" stroke="${COLORS.clk}" stroke-dasharray="3 3"/>`;
-    s += `<line x1="${x(launch).toFixed(1)}" x2="${x(launch).toFixed(1)}" y1="${82 + HI - 22}" y2="${208 + 22}" stroke="currentColor" stroke-dasharray="2 4" opacity=".4"/>`;
-    s += arrow(launch, nextLaunch, 82 + HI - 22, `tCLK ${label(launch, nextLaunch)}`, COLORS.clk);
+    let s = `<line x1="${x(capture).toFixed(1)}" x2="${x(capture).toFixed(1)}" y1="60" y2="${230 + 22}" stroke="${COLORS.clk}" stroke-dasharray="3 3"/>`;
+    s += `<line x1="${x(launch).toFixed(1)}" x2="${x(launch).toFixed(1)}" y1="60" y2="${230 + 22}" stroke="currentColor" stroke-dasharray="2 4" opacity=".4"/>`;
+    s += arrow(launch, nextLaunch, 56, `tCLK ${label(launch, nextLaunch)}`, COLORS.clk);
     const first = frame.capture[0];
     const firstClk = Math.min(frame.launch[0] ?? first, first);
-    s += arrow(frame.start, Math.max(firstClk, frame.start + 1), 30 + 26, `tLEAD ${label(frame.start, firstClk)}`, COLORS.cs);
+    s += arrow(frame.start, Math.max(firstClk, frame.start + 1), 56, `tLEAD ${label(frame.start, firstClk)}`, COLORS.cs);
     // MOSI setup and hold around the capture edge
     const recs = frame.recs;
     const changes = recs.slice(1).filter((r, i) => mosiBit(r[1]) !== mosiBit(recs[i][1])).map(r => r[0]);
     const before = changes.filter(c => c <= capture).pop();
     const after = changes.find(c => c > capture);
-    if (before != null && before < capture) s += arrow(before, capture, 142 + 26, `tSU ${label(before, capture)}`, COLORS.mosi);
-    if (after != null) s += arrow(capture, after, 142 + 40, `tH ${label(capture, after)}`, COLORS.mosi);
+    const per = 2 * cfg.half_k;
+    if (before != null && before < capture && capture - before <= per) s += arrow(before, capture, 142 + 24, `tSU ${label(before, capture)}`, COLORS.mosi);
+    if (after != null && after - capture <= per) s += arrow(capture, after, 142 + 40, `tH ${label(capture, after)}`, COLORS.mosi);
     // MISO change for this bit up to PRU0's sample point
     const sample = launch + cfg.miso_delay - state.hop_delay;
     const misoChanges = edges.slice(1).filter((r, i) => misoBit(r[1]) !== misoBit(edges[i][1])).map(r => r[0]);
     const own = misoChanges.find(c => c >= launch + state.hop_delay && c < nextLaunch + state.hop_delay);
-    if (own != null && own < sample) s += arrow(own, sample, 208 + 30, `tSU,MISO ${label(own, sample)}`, '#d68a00');
+    if (own != null && own < sample) s += arrow(own, sample, 230 + 28, `tSU,MISO ${label(own, sample)}`, '#d68a00');
     s += `<text x="${(x(capture) + 4).toFixed(1)}" y="${H - 6}" class="spi-arrow-text" opacity=".75">cursor: capture edge, bit ${bit} (${fieldName(Math.floor(bit / 8))})</text>`;
     return s;
   }
 
   // ---- DOM ---------------------------------------------------------------------
   const view = { send: null, stop: null, supported: null, requested: false, busy: false,
-    cursor: 6, last: null, seeded: false, bound: false, layout: null, html: {} };
+    cursor: 31, last: null, seeded: false, bound: false, layout: null, html: {} };
   const byId = id => document.getElementById(id);
 
   function setHtml(id, html) {
@@ -468,6 +476,6 @@
   }
 
   window.SpiView = { SCENARIO, render: show, init, setSupported, showError, rateOptions, decodeBoxes,
-    timingRows, compareBadge, mismatchIndexes, fieldName, scopeSvg, timingTableHtml,
+    timingRows, compareBadge, misoBytes, frameStripHtml, mismatchIndexes, fieldName, scopeSvg, timingTableHtml,
     get supported() { return view.supported; } };
 })();

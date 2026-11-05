@@ -61,6 +61,21 @@ test('decodeBoxes labels CMD ADR IDLE D0..D15 with hex', () => {
   assert.equal(load().SpiView.fieldName(3), 'D0');
 });
 
+test('frame strip MISO row equals the decoded box bytes, not the monitor decode', () => {
+  const { SpiView } = load();
+  const state = plain(fx.state);
+  const boxes = plain(SpiView.decodeBoxes(state.frame.edges, state.config.mode,
+    { miso_delay: state.config.miso_delay, hop_delay: state.hop_delay }))
+    .filter(b => b.lane === 'miso' && !b.partial).map(b => b.value.toString(16).toUpperCase().padStart(2, '0'));
+  assert.equal(boxes.length, 19);
+  assert.deepEqual(plain(SpiView.misoBytes(state)), boxes);
+  assert.deepEqual(boxes.slice(3, 5), ['F0', 'F1'], 'PRU0 sample point gives the real data');
+  assert.notDeepEqual(boxes, state.frame.miso, 'monitor decode is shifted');
+  const strip = SpiView.frameStripHtml(state, 3);
+  assert.ok(strip.includes('>F0<'));
+  assert.ok(!strip.includes('>78<'));
+});
+
 test('compare badge shows mismatch count', () => {
   const { SpiView } = load();
   const state = plain(fx.state);

@@ -2385,6 +2385,7 @@ Example:
         <div class="spi-sec">Frame (CMD, ADR, IDLE, D0 to D15): top MOSI, bottom MISO</div>
         <div class="spi-frame-strip" id="spi-frame-strip"></div>
         <div id="spi-scope" class="spi-scope" title="Click to move the cursor to a bit"></div>
+        <p class="spi-note">MISO decoded at PRU0's sample point (launch + MISO_DELAY &minus; hop); a scope decoding at the nominal capture edge would show it shifted by the round-trip delay.</p>
         <div class="spi-cols">
           <div><div class="spi-memlbl">PRU0 TX buffer (sent on MOSI)</div><div class="spi-mem" id="spi-mem-c-tx"></div></div>
           <div><div class="spi-memlbl" id="spi-mem-p-rx-label">PRU1 RX memory (written)</div><div class="spi-mem" id="spi-mem-p-rx"></div></div>

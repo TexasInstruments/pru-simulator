@@ -18,7 +18,8 @@
 .spi-svg { display: block; }
 .spi-lane-name { fill: currentColor; font-size: 12px; }
 .spi-box-text { fill: #fff; font-size: 10px; pointer-events: none; }
-.spi-arrow-text { font-size: 10px; fill: currentColor; }
+.spi-arrow-text { font-size: 10px; }
+.spi-svg text:not([fill]) { fill: currentColor; }
 .spi-cols { display: flex; gap: 12px; margin-top: 10px; }
 .spi-cols > div { flex: 1; min-width: 0; }
 .spi-memlbl { font-size: 11px; margin: 4px 0 2px; color: var(--text-dim); }
