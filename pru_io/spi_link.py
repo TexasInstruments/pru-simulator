@@ -225,8 +225,15 @@ class SpiBusMonitor(DeviceModel):
 # Timing measurement
 # ---------------------------------------------------------------------------
 
-def measure_timing(edges, cfg: SpiConfig, frame_index: int = -1) -> list[dict]:
-    """Timing rows for one frame of an edge list. See spec section 6."""
+def measure_timing(edges, cfg: SpiConfig, frame_index: int = -1,
+                   p1_fetch_cycles: int | None = None) -> list[dict]:
+    """Timing rows for one frame of an edge list. See spec section 6.
+
+    ``p1_fetch_cycles``: PRU1's idle-byte TX fetch time, single-stepped
+    (``measure_peripheral_work``). Given, the tIDLE row reports it against
+    the idle-byte budget as a measured row; otherwise tIDLE is the derived
+    design value.
+    """
     ns = 1000.0 / cfg.core_mhz
     poll = ns                                   # one core cycle of polling uncertainty
     tclk_d = 1000.0 / cfg.spi_mhz
@@ -356,9 +363,15 @@ def measure_timing(edges, cfg: SpiConfig, frame_index: int = -1) -> list[dict]:
         None, cycles=None)
     row("Output load capacitance", "CL", None, None, 2.0, 30.0, "Table 6-112",
         None, cycles=None)
-    row("Idle byte budget for PRU1 data fetch", "tIDLE", 8 * tclk_d, 8 * tclk_d,
-        None, None, "firmware only", None, cycles=16 * cfg.half_k,
-        derived=True)   # design value; replaced by PRU1's measured fetch time
+    if p1_fetch_cycles is None:
+        row("Idle byte budget for PRU1 data fetch", "tIDLE", 8 * tclk_d, 8 * tclk_d,
+            None, None, "firmware only", None, cycles=16 * cfg.half_k,
+            derived=True)   # design value; no PRU1 measurement given
+    else:
+        fetch_ns = p1_fetch_cycles * ns
+        row("Idle byte budget for PRU1 data fetch", "tIDLE", 8 * tclk_d, fetch_ns,
+            None, None, "PRU1 fetch, stepped", 8 * tclk_d - fetch_ns,
+            cycles=p1_fetch_cycles)
 
     cand = [r for r in rows if r["margin_ns"] is not None and not r["derived"]]
     if cand:
@@ -599,7 +612,7 @@ class SpiLinkRuntime:
                 "last_cmd": raw[12], "last_addr": raw[13]}
 
     def find_miso_window(self, delays=None, addr: int = 0x7E,
-                         pattern: str = "count") -> list[int]:
+                         pattern: str = "count", contiguous: bool = False) -> list[int]:
         """miso_delay values for which PRU0 reads PRU1 correctly at this rate.
 
         For each candidate (default: every ``controller_delay_ok`` value up to
@@ -608,6 +621,10 @@ class SpiLinkRuntime:
         the whole MISO frame (header zeros and the 16 data bytes) right. The
         original ``cfg`` is restored. PRU1 RX/TX block ``addr`` and its status
         counters change.
+
+        ``contiguous``: stop once the window has closed, i.e. after two
+        realisable delays in a row fail following a pass (the sweep uses this;
+        a later second window would read a neighbouring bit and cannot pass).
         """
         if not (self._controller_loaded and self._peripheral_loaded and self._wires):
             raise RuntimeError("load_controller(), load_peripheral() and wire() first")
@@ -619,6 +636,7 @@ class SpiLinkRuntime:
         c_tx, p_tx = PATTERNS[pattern]
         self.preload_peripheral_tx(addr, p_tx)
         window = []
+        misses = 0
         try:
             for d in delays:
                 if not controller_delay_ok(k, d):
@@ -627,6 +645,11 @@ class SpiLinkRuntime:
                 res = self.transfer(CMD_RW, addr, c_tx)
                 if res["miso"] == bytes(3) + p_tx:
                     window.append(d)
+                    misses = 0
+                elif window:
+                    misses += 1
+                    if contiguous and misses >= 2:
+                        break
         finally:
             self.reload_controller(cfg)
         return window
@@ -702,3 +725,210 @@ class SpiLinkRuntime:
             self.sim.set_gpi_delay(core, 0)
         self._controller_loaded = False
         self._peripheral_loaded = False
+
+
+# ---------------------------------------------------------------------------
+# Acceptance sequence, PRU1 work measurement, supported-rate table
+# ---------------------------------------------------------------------------
+
+#: Committed sweep result (tools/spi_sweep.py --write).
+RATES_PATH = Path(__file__).resolve().with_name("spi_rates.json")
+
+
+def choose_miso_delay(passing: list[int]) -> int | None:
+    """Ruling R9: the passing (controller_delay_ok) value nearest the middle
+    of the passing window; on a tie the later one (more MISO setup)."""
+    if not passing:
+        return None
+    mid = (min(passing) + max(passing)) / 2
+    return min(passing, key=lambda d: (abs(d - mid), -d))
+
+
+def measure_peripheral_work(runtime: "SpiLinkRuntime", cmd: int, addr: int,
+                            data: bytes) -> dict:
+    """Single-step one frame and measure PRU1's work, not counting waiting.
+
+    Every poll iteration that branched back to its own label (the edge was
+    not visible yet) is dropped; everything else counts for the bit whose
+    poll label precedes it. Returns ``bit_work`` {bit: cycles},
+    ``data_bit_cycles`` (data bits 24..150 without gap work: polls + MISO
+    drive), ``data_bit_cycles_max`` (a data bit that also carries gap work),
+    ``data_byte_cycles``
+    (max over the steady data bytes 4..17), ``max_byte_cycles`` (max over
+    bytes 0..17, incl. fetch and gather work in the gaps) and
+    ``fetch_cycles`` (the idle-byte TX fetch, every LBBO in the frame).
+    """
+    import bisect
+
+    rt = runtime
+    sim = rt.sim
+    pru1 = sim.cores["pru1"]
+    trace = []
+    orig = pru1.step
+
+    def step():
+        pc, c0 = pru1.pc, pru1.counters.cycles
+        orig()
+        trace.append((pc, pru1.counters.cycles - c0, pru1.pc))
+
+    pru1.step = step
+    try:
+        rt.transfer(cmd, addr, data)
+    finally:
+        del pru1.step
+    labels = dict(pru1._parser.labels)
+    mode = rt.cfg.mode
+    polls = sorted((v, int(k[4:])) for k, v in labels.items()
+                   if k.startswith((f"m{mode}_l", f"m{mode}_c")))
+    poll_pcs = {v for v, _ in polls}
+    keys = [v for v, _ in polls]
+    first, end = polls[0][0], labels["frame_end"]
+    seq = []
+    for pc, dc, nxt in trace:
+        if pc == first and not seq:
+            seq.append((pc, dc, nxt))
+        elif seq:
+            if pc == end:
+                break
+            seq.append((pc, dc, nxt))
+    work: dict[int, int] = {}
+    fetch = 0
+    j = 0
+    while j < len(seq):
+        pc = seq[j][0]
+        if pc in poll_pcs:
+            back = next((i for i in range(j, min(j + 4, len(seq))) if seq[i][2] == pc), None)
+            if back is not None:
+                j = back + 1
+                continue
+        if pru1.instructions[pc].opcode == "LBBO":
+            fetch += seq[j][1]
+        n = polls[bisect.bisect_right(keys, pc) - 1][1]
+        work[n] = work.get(n, 0) + seq[j][1]
+        j += 1
+    per_byte = [sum(work.get(8 * m + i, 0) for i in range(8)) for m in range(FRAME_BYTES)]
+    data_bits = [work[n] for n in range(24, 151)]
+    return {"bit_work": work,
+            "data_bit_cycles": min(data_bits),
+            "data_bit_cycles_max": max(data_bits),
+            "data_byte_cycles": max(per_byte[4:18]),
+            "max_byte_cycles": max(per_byte[:18]),
+            "fetch_cycles": fetch}
+
+
+def run_test_sequence(runtime: "SpiLinkRuntime", patterns=None) -> dict:
+    """Spec section 9 acceptance sequence on a loaded, wired link.
+
+    Per pattern: WRITE a block, READ a preloaded TX block, R/W full duplex.
+    Then an unknown command, an out-of-range address, a mid-frame /CS abort,
+    and two back-to-back R/W frames at the controller's minimum /CS-high gap
+    (the last two frames on the bus, so ``measure_timing(..., frame_index=-2)``
+    sees tCSH). Each step checks the MISO bytes PRU0 received, the MOSI bytes
+    on the bus (monitor decode), every PRU1 RX block, and the PRU1 status
+    counters. ``byte_errors`` counts wrong bytes over all checks; ``ok`` also
+    needs every status and the gap check right.
+    """
+    rt = runtime
+    names = list(PATTERNS) if patterns is None else list(patterns)
+    steps: list[dict] = []
+    k = rt.cfg.half_k
+
+    def rx_all():
+        return bytes(rt.sim.memory_read(P_RX, 16 * (ADDR_MAX + 1)))
+
+    def diff(a, b):
+        return sum(x != y for x, y in zip(a, b)) + abs(len(a) - len(b))
+
+    def frame(step, cmd, addr, data, miso, rx_write=None, valid=True, abort=None):
+        before_rx = rx_all()
+        st = rt.peripheral_status()
+        res = rt.transfer(cmd, addr, data, abort_after_bits=abort)
+        errs = 0
+        notes = []
+        fr = res["frame"]
+        if abort is None:
+            errs += diff(res["miso"], miso)
+            mosi = bytes([cmd, addr, 0]) + bytes(data)
+            if fr is None or fr["aborted"]:
+                errs += FRAME_BYTES
+                notes.append("no complete frame on the bus")
+            else:
+                errs += diff(fr["mosi"], mosi)
+        elif fr is None or fr["bits"] != abort or not fr["aborted"]:
+            notes.append(f"abort frame not seen with {abort} bits")
+        exp_rx = bytearray(before_rx)
+        if rx_write is not None:
+            exp_rx[16 * addr:16 * addr + 16] = rx_write
+        errs += diff(rx_all(), bytes(exp_rx))
+        want = dict(st)
+        if abort is None:
+            want["frames"] += 1
+            want["errors"] += 0 if valid else 1
+            want["last_cmd"], want["last_addr"] = cmd, addr
+        else:
+            want["aborts"] += 1
+        got = rt.peripheral_status()
+        if got != want:
+            notes.append(f"status {got} != {want}")
+        s = {"step": step, "cmd": cmd, "addr": addr, "byte_errors": errs,
+             "ok": errs == 0 and not notes, "notes": notes, "cycles": res["cycles"],
+             "frame": fr}
+        steps.append(s)
+        return s
+
+    for i, name in enumerate(names):
+        c_tx, p_tx = PATTERNS[name]
+        aw, ar, arw = 3 * i, ADDR_MAX - i, 0x40 + i
+        frame(f"write:{name}", CMD_WRITE, aw, c_tx, bytes(FRAME_BYTES), rx_write=c_tx)
+        rt.preload_peripheral_tx(ar, p_tx)
+        frame(f"read:{name}", CMD_READ, ar, c_tx, bytes(3) + p_tx)
+        rt.preload_peripheral_tx(arw, p_tx)
+        frame(f"rw:{name}", CMD_RW, arw, c_tx, bytes(3) + p_tx, rx_write=c_tx)
+
+    c_tx, p_tx = PATTERNS[names[0]]
+    rt.preload_peripheral_tx(0x10, p_tx)
+    frame("unknown_cmd", 0x04, 0x10, c_tx, bytes(FRAME_BYTES), valid=False)
+    frame("bad_addr", CMD_RW, 0x80, c_tx, bytes(FRAME_BYTES), valid=False)
+    rt.preload_peripheral_tx(0x20, p_tx)
+    frame("abort", CMD_RW, 0x20, c_tx, None, abort=76)
+
+    c2, p2 = PATTERNS[names[-1]]
+    rt.preload_peripheral_tx(0x30, p_tx)
+    rt.preload_peripheral_tx(0x31, p2)
+    a = frame("back_to_back:1", CMD_RW, 0x30, c_tx, bytes(3) + p_tx, rx_write=c_tx)
+    b = frame("back_to_back:2", CMD_RW, 0x31, c2, bytes(3) + p2, rx_write=c2)
+    gap = None
+    if a["frame"] is not None and b["frame"] is not None:
+        gap = b["frame"]["start"] - a["frame"]["end"]
+    notes = [] if gap is not None and gap >= 4 * k else [f"/CS-high gap {gap} < 2 tCLK"]
+    steps.append({"step": "back_to_back", "byte_errors": 0, "ok": not notes,
+                  "notes": notes, "tcsh_cycles": gap, "frame": None})
+
+    for s in steps:
+        s.pop("frame", None)
+    total = sum(s["byte_errors"] for s in steps)
+    return {"ok": all(s["ok"] for s in steps) and total == 0,
+            "byte_errors": total, "steps": steps}
+
+
+def load_supported(path: Path | str | None = None) -> dict[int, list[dict]]:
+    """Supported rates per mode from the committed sweep (spi_rates.json).
+
+    Mode -> passing rows at the supported hop delay, one per SPI rate (the
+    lowest passing core clock), sorted by rate.
+    """
+    import json
+
+    data = json.loads(Path(path or RATES_PATH).read_text(encoding="utf-8"))
+    hop = data["hop_delay_supported"]
+    out: dict[int, list[dict]] = {0: [], 1: []}
+    for mode in out:
+        best: dict[float, dict] = {}
+        for r in data["rows"]:
+            if r["mode"] != mode or r["hop_delay"] != hop or not r["pass"]:
+                continue
+            key = round(r["spi_mhz"], 6)
+            if key not in best or r["core_mhz"] < best[key]["core_mhz"]:
+                best[key] = r
+        out[mode] = [best[key] for key in sorted(best)]
+    return out
