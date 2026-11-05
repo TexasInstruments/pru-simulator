@@ -249,10 +249,11 @@
     }
     return cells.join('');
   }
-  function memoryHtml(values, other, active, nowIndex) {
+  function memoryHtml(values, other, active, nowIndex, filled = 16) {
     if (!values) return '<div class="spi-mem-empty">out of range</div>';
     const bad = new Set(active ? mismatchIndexes(values, other) : []);
     return values.map((v, i) => {
+      if (i >= filled) return '<div class="spi-mem-wait">\u00b7\u00b7</div>';
       const cls = bad.has(i) ? 'spi-bad' : active ? (i === nowIndex ? 'spi-now' : 'spi-hit') : '';
       return `<div class="${cls}">${esc(v)}</div>`;
     }).join('');
@@ -288,21 +289,27 @@
     return d + ` H${x(t1).toFixed(1)}`;
   }
 
-  function scopeSvg(state, cursorBit) {
+  // upTo (a cycle, Play only): draw the trace up to it, with a plain cursor line
+  // and no measurement arrows; byte boxes appear once their byte is complete.
+  function scopeSvg(state, cursorBit, upTo = null) {
     const m = scopeModel(state, cursorBit);
     if (!m) return '<div class="spi-scope-empty">No frame captured yet. Send a frame to see the pin trace.</div>';
     const { cfg, frame, x } = m;
+    const cut = upTo == null ? null : x(upTo);
     const edges = state.frame.edges;
     const opts = { miso_delay: cfg.miso_delay, hop_delay: state.hop_delay };
     let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="SPI pin trace" class="spi-svg">` +
       '<defs><marker id="spi-ah" viewBox="0 0 6 6" refX="3" refY="3" markerWidth="5" markerHeight="5" orient="auto-start-reverse">' +
-      '<path d="M0 0L6 3L0 6z" fill="currentColor"/></marker></defs>';
+      '<path d="M0 0L6 3L0 6z" fill="currentColor"/></marker>' +
+      (cut == null ? '' : `<clipPath id="spi-play-clip"><rect x="0" y="0" width="${cut.toFixed(1)}" height="${H}"/></clipPath>`) +
+      '</defs>' + (cut == null ? '' : '<g clip-path="url(#spi-play-clip)">');
     const pick = { cs, clk, mosi: mosiBit, miso: misoBit };
     for (const [key, name, y] of LANES) {
       s += `<text x="4" y="${y + 4}" class="spi-lane-name">${name}</text>`;
       s += `<path d="${path(edges, pick[key], y, x, m.t0, m.t1)}" stroke="${COLORS[key]}" fill="none" stroke-width="1.6"/>`;
     }
     for (const box of decodeBoxes(edges, cfg.mode, opts)) {
+      if (upTo != null && box.endCycle > upTo) continue;
       const y = box.lane === 'mosi' ? 142 : 230;
       const xa = x(box.startCycle), w = x(box.endCycle) - xa;
       s += `<rect x="${(xa + 1).toFixed(1)}" y="${y - 34}" width="${Math.max(w - 2, 1).toFixed(1)}" height="14" rx="3" ` +
@@ -318,6 +325,10 @@
       const sample = l + cfg.miso_delay - state.hop_delay;
       if (sample <= frame.end) s += `<circle cx="${x(sample).toFixed(1)}" cy="${230 + HI - 4}" r="1.8" fill="${COLORS.miso}" opacity=".75"/>`;
     });
+    if (cut != null) {
+      return s + `</g><line x1="${cut.toFixed(1)}" x2="${cut.toFixed(1)}" y1="20" y2="${H - 10}" ` +
+        'stroke="currentColor" stroke-dasharray="3 3" opacity=".7" class="spi-play-cursor"/></svg>';
+    }
     s += cursorGroup(state, m, edges);
     return s + '</svg>';
   }
@@ -387,7 +398,96 @@
   // ---- DOM ---------------------------------------------------------------------
   const view = { send: null, stop: null, supported: null, requested: false, busy: false,
     cursor: 31, last: null, seeded: false, bound: false, layout: null, html: {},
-    steps: null, stepsAsked: null, shown: null, locked: false, displayed: null };
+    steps: null, stepsAsked: null, shown: null, locked: false, displayed: null,
+    play: { running: false, pending: false, bit: 0, hold: 0, timer: null, at: 0 } };
+
+  // ---- Play: the booth loop, replayed from the recorded steps -------------------
+  const FRAME_BITS = 152;
+  const BOOTH_BITS_PER_S = FRAME_BITS / 6;     // booth speed: ~6 s drawing + 1 s hold
+  const HOLD_S = 1;
+  const LOCK_IDS = ['spi-send', 'spi-sequence', 'spi-mode', 'spi-rate', 'spi-miso-delay',
+    'spi-cmd', 'spi-addr', 'spi-pattern', 'spi-setup-button'];
+
+  function speed() {
+    const v = Number(byId('spi-speed')?.value);
+    return v > 0 ? v : 1;
+  }
+  function loopIndexes() {
+    const loop = (view.last && view.last.sequence && view.last.sequence.loop) || [];
+    const steps = (view.steps && view.steps.steps) || [];
+    return loop.map(name => steps.findIndex(st => st.step === name)).filter(i => i >= 0);
+  }
+  function setPlayLabel() {
+    const el = byId('spi-play');
+    if (!el) return;
+    const text = (el.querySelector && el.querySelector('.text')) || el;
+    text.textContent = view.play.running || view.play.pending ? '\u275a\u275a Pause' : '\u25b6 Play';
+  }
+  function setLocked(locked) {
+    view.locked = locked;
+    setBusy(view.busy);
+    setPlayLabel();
+    if (view.last) renderSteps(view.last.sequence);
+  }
+  function startTimer() {
+    if (view.play.timer != null || typeof setInterval !== 'function') return;
+    view.play.at = Date.now();
+    view.play.timer = setInterval(() => {
+      const now = Date.now();
+      tick(now - view.play.at);
+      view.play.at = now;
+    }, 40);
+  }
+  function stopTimer() {
+    if (view.play.timer != null && typeof clearInterval === 'function') clearInterval(view.play.timer);
+    view.play.timer = null;
+  }
+  function beginLoop() {
+    const loop = loopIndexes();
+    const p = view.play;
+    p.pending = false;
+    if (!loop.length) { stopPlay(); return; }
+    if (!loop.includes(view.shown)) view.shown = loop[0];
+    p.running = true; p.bit = 0; p.hold = 0;
+    setLocked(true);
+    startTimer();
+    if (view.last) show(view.last);
+  }
+  function stopPlay() {
+    const p = view.play;
+    const was = p.running || p.pending;
+    p.running = false; p.pending = false; p.bit = FRAME_BITS; p.hold = 0;
+    stopTimer();
+    if (was || view.locked) setLocked(false);
+  }
+  function togglePlay() {
+    const p = view.play;
+    if (p.running || p.pending) { stopPlay(); if (view.last) show(view.last); return; }
+    if (view.steps && loopIndexes().length) { beginLoop(); return; }
+    p.pending = true;
+    setLocked(true);
+    const seq = view.last && view.last.sequence;
+    if (seq && seq.id != null) return;     // steps for this id are on their way
+    view.stop?.();
+    act({ action: 'spi_sequence' });
+  }
+  function tick(ms) {
+    const p = view.play;
+    if (!p.running) return;
+    const k = speed();
+    if (p.bit < FRAME_BITS) {
+      p.bit = Math.min(FRAME_BITS, p.bit + BOOTH_BITS_PER_S * k * ms / 1000);
+    } else {
+      p.hold += ms / 1000;
+      if (p.hold >= HOLD_S / k) {
+        const loop = loopIndexes();
+        const at = loop.indexOf(view.shown);
+        view.shown = loop[(at + 1) % loop.length];
+        p.bit = 0; p.hold = 0;
+      }
+    }
+    if (view.last) show(view.last);
+  }
   const byId = id => document.getElementById(id);
 
   function setHtml(id, html) {
@@ -400,9 +500,11 @@
 
   function setBusy(busy) {
     view.busy = busy;
-    for (const id of ['spi-send', 'spi-sequence', 'spi-mode', 'spi-rate', 'spi-miso-delay']) {
+    const busyIds = new Set(['spi-send', 'spi-sequence', 'spi-mode', 'spi-rate', 'spi-miso-delay']);
+    for (const id of LOCK_IDS) {
       const el = byId(id);
-      if (el) el.disabled = busy || ((id === 'spi-rate' || id === 'spi-miso-delay') && !view.supported);
+      if (el) el.disabled = view.locked || (busyIds.has(id) && busy) ||
+        ((id === 'spi-rate' || id === 'spi-miso-delay') && !view.supported);
     }
     const status = byId('spi-status');
     if (status) status.textContent = busy ? 'Running…' : '';
@@ -457,21 +559,23 @@
     const live = state;
     state = shownState(live);
     view.displayed = state;
-    const cursorByte = Math.floor(view.cursor / 8);
+    const anim = view.play.running && view.shown != null ? playFrame(state) : null;
+    const cursorByte = anim ? anim.byte : Math.floor(view.cursor / 8);
     setHtml('spi-frame-strip', frameStripHtml(state, cursorByte));
-    setHtml('spi-scope', scopeSvg(state, view.cursor));
+    setHtml('spi-scope', anim ? scopeSvg(state, view.cursor, anim.upTo) : scopeSvg(state, view.cursor));
     const mem = state.memory || {};
     const expect = state.expect || { mosi: true, miso: true };
     const dataNow = cursorByte >= 3 ? cursorByte - 3 : -1;
     const sent = !!state.last;
     setHtml('spi-mem-c-tx', memoryHtml(mem.c_tx, mem.p_rx, sent && expect.mosi && !!mem.p_rx, dataNow));
-    setHtml('spi-mem-p-rx', memoryHtml(mem.p_rx, mem.c_tx, sent && expect.mosi, dataNow));
+    const filled = anim ? anim.filled : 16;
+    setHtml('spi-mem-p-rx', memoryHtml(mem.p_rx, mem.c_tx, sent && expect.mosi, dataNow, filled));
     setHtml('spi-mem-p-tx', memoryHtml(mem.p_tx, mem.c_rx, sent && expect.miso, dataNow));
-    setHtml('spi-mem-c-rx', memoryHtml(mem.c_rx, mem.p_tx, sent && expect.miso && !!mem.p_tx, dataNow));
+    setHtml('spi-mem-c-rx', memoryHtml(mem.c_rx, mem.p_tx, sent && expect.miso && !!mem.p_tx, dataNow, filled));
     const byte = state.last && state.last.addr <= 0x7F ? 16 * state.last.addr : null;
     setText('spi-mem-p-rx-label', `PRU1 RX memory${byte == null ? '' : ` @ byte ${byte}`} (written)`);
     setText('spi-mem-p-tx-label', `PRU1 TX memory${byte == null ? '' : ` @ byte ${byte}`} (read)`);
-    const badge = compareBadge(state);
+    const badge = anim && !anim.done ? { ok: null, text: 'Transferring\u2026' } : compareBadge(state);
     const badgeEl = byId('spi-compare');
     if (badgeEl) {
       badgeEl.textContent = badge.text;
@@ -487,6 +591,18 @@
     setBusy(false);
   }
 
+  // Where Play is in the shown frame: the cycle drawn up to, the current byte,
+  // and how many data bytes have arrived in the RX panels.
+  function playFrame(state) {
+    const bit = view.play.bit;
+    const done = bit >= FRAME_BITS;
+    const byte = Math.min(FRAME_BYTES - 1, Math.floor(bit / 8));
+    const f = state.frame;
+    let upTo = null;
+    if (!done && f && f.start != null) upTo = f.start + (f.end - f.start) * bit / FRAME_BITS;
+    return { done, byte, upTo, filled: done ? 16 : Math.max(0, Math.min(16, byte - 3)) };
+  }
+
   function shownState(state) {
     const steps = view.steps && view.steps.steps;
     return steps && view.shown != null && steps[view.shown] ? stepState(state, steps[view.shown]) : state;
@@ -495,7 +611,10 @@
   // Drop the cached steps when the sequence id changes; ask once per new id.
   function syncSteps(seq) {
     const id = seq && seq.id != null ? seq.id : null;
-    if (view.steps && view.steps.id !== id) { view.steps = null; view.shown = null; }
+    if (view.steps && view.steps.id !== id) {
+      view.steps = null; view.shown = null;
+      if (view.play.running) stopPlay();      // cleared or replaced (another tab, Reset, a setting)
+    }
     if (id != null && !view.steps && view.stepsAsked !== id && view.send) {
       view.stepsAsked = id;
       view.send({ action: 'spi_steps' });
@@ -514,6 +633,7 @@
     if (!msg || msg.id !== id) return;
     view.steps = { id: msg.id, steps: msg.steps || [] };
     view.shown = null;
+    if (view.play.pending) { beginLoop(); return; }
     show(view.last);
   }
 
@@ -535,6 +655,7 @@
       el.hidden = false;
     }
     setBusy(false);
+    stopPlay();
   }
   function clearError() { const el = byId('spi-error'); if (el) el.hidden = true; }
 
@@ -583,6 +704,7 @@
       view.stop?.();
       act({ action: 'spi_setup', mode, spi_mhz: pick.spi_mhz });
     });
+    byId('spi-play')?.addEventListener('click', togglePlay);
     byId('spi-steps')?.addEventListener('click', event => {
       const target = event && event.target;
       const chip = target && (target.closest ? target.closest('[data-step]') : target);
@@ -592,6 +714,7 @@
       show(view.last);
     });
     byId('spi-scope')?.addEventListener('click', event => {
+      if (view.locked) return;
       const m = view.displayed && scopeModel(view.displayed, view.cursor);
       const target = event && event.currentTarget;
       if (!m || event.clientX == null || !target || !target.getBoundingClientRect) return;
@@ -604,7 +727,7 @@
     });
   }
 
-  window.SpiView = { SCENARIO, render: show, init, setSupported, setSteps, chipsHtml, stepState, showError, rateOptions, decodeBoxes,
+  window.SpiView = { SCENARIO, render: show, init, setSupported, setSteps, tick, chipsHtml, stepState, showError, rateOptions, decodeBoxes,
     timingRows, compareBadge, misoBytes, misoDelayOptions, delayOk, frameStripHtml, mismatchIndexes, fieldName, scopeSvg, timingTableHtml,
     get supported() { return view.supported; } };
 })();

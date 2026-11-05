@@ -318,3 +318,103 @@ test('a cleared sequence clears chips and selection', () => {
   assert.equal(get('spi-step-title').textContent, '');
   assert.match(get('spi-frame-strip').innerHTML, /CMD<\/span><span class="spi-c-val">03</);
 });
+
+// ---- Play: bit-by-bit booth loop with the SPI controls locked --------------------
+const LOCKED_IDS = ['spi-mode', 'spi-rate', 'spi-miso-delay', 'spi-cmd', 'spi-addr', 'spi-pattern',
+  'spi-send', 'spi-sequence', 'spi-setup-button'];
+function playing(loop = ['rw:walking1', 'rw:walking0']) {
+  const ctx = load();
+  const sent = [];
+  ctx.SpiView.init({ send: action => sent.push(plain(action)), stop() {} });
+  ctx.SpiView.setSupported({ 1: [{ spi_mhz: 25, core_mhz: 200, half_k: 4, pass: true, miso_delay: 17,
+    miso_delay_window: [15, 19], miso_delay_pass: [15, 17, 18, 19] }] });
+  ctx.get('spi-speed').value = '1';
+  ctx.SpiView.render(seqState(7, loop));
+  ctx.SpiView.setSteps({ id: 7, steps: [mk('write:count'), mk('rw:walking1'),
+    mk('rw:walking0', { ok: false, notes: ['bad'] })] });
+  return { ...ctx, sent };
+}
+
+test('Play locks every SPI control except Pause and Speed', () => {
+  const { SpiView, get } = playing();
+  get('spi-play').click();
+  for (const id of LOCKED_IDS) assert.equal(get(id).disabled, true, id);
+  assert.equal(get('spi-play').disabled, false);
+  assert.equal(get('spi-speed').disabled, false);
+  assert.match(get('spi-play').textContent, /❚❚ Pause/);
+  assert.equal(get('spi-steps').innerHTML.match(/<button/g).length, get('spi-steps').innerHTML.match(/ disabled/g).length);
+  SpiView.render(seqState(7, ['rw:walking1', 'rw:walking0']));
+  for (const id of LOCKED_IDS) assert.equal(get(id).disabled, true, `${id} after a state push`);
+  get('spi-play').click();
+  for (const id of LOCKED_IDS) assert.equal(get(id).disabled, false, `${id} after Pause`);
+  assert.match(get('spi-play').textContent, /▶ Play/);
+});
+
+test('Play draws bit by bit and advances through the loop, including a failing step', () => {
+  const { SpiView, get } = playing();
+  get('spi-play').click();
+  assert.match(get('spi-step-title').textContent, /rw:walking1/);
+  SpiView.tick(3000);
+  assert.equal(get('spi-compare').textContent, 'Transferring…');
+  const cur = get('spi-frame-strip').innerHTML.split('<div class="').findIndex(c => / spi-c-cur"/.test(c.split('>')[0])) - 1;
+  assert.ok(cur >= 3, `current byte ${cur} is a data byte`);
+  assert.match(get('spi-mem-c-rx').innerHTML, /··/, 'PRU0 RX is still filling');
+  SpiView.tick(3100);
+  assert.match(get('spi-compare').textContent, /16\/16/);
+  SpiView.tick(1100);
+  assert.match(get('spi-step-title').textContent, /rw:walking0/);
+  assert.match(get('spi-steps').innerHTML, /spi-chip-bad[^"]*spi-chip-cur/);
+  SpiView.tick(6100);
+  SpiView.tick(1100);
+  assert.match(get('spi-step-title').textContent, /rw:walking1/);
+});
+
+test('fast speed finishes a frame sooner', () => {
+  const { SpiView, get } = playing();
+  get('spi-speed').value = '3';
+  get('spi-play').click();
+  SpiView.tick(2100);
+  SpiView.tick(400);
+  assert.match(get('spi-step-title').textContent, /rw:walking0/);
+});
+
+test('Play with no recording runs the sequence first', () => {
+  const { SpiView, get } = load();
+  const sent = [];
+  SpiView.init({ send: action => sent.push(plain(action)), stop() {} });
+  SpiView.setSupported({ 1: [] });
+  get('spi-speed').value = '1';
+  SpiView.render({ ...plain(fx.state), sequence: null });
+  get('spi-play').click();
+  assert.deepEqual(sent.at(-1), { action: 'spi_sequence' });
+  assert.equal(get('spi-send').disabled, true);
+  SpiView.render(seqState(9));
+  assert.deepEqual(sent.at(-1), { action: 'spi_steps' });
+  assert.equal(get('spi-send').disabled, true, 'still locked while the steps load');
+  SpiView.setSteps({ id: 9, steps: [mk('write:count'), mk('rw:walking1')] });
+  assert.match(get('spi-step-title').textContent, /rw:walking1/);
+  assert.match(get('spi-play').textContent, /Pause/);
+});
+
+test('sequence error while pending unlocks', () => {
+  const { SpiView, get } = load();
+  SpiView.init({ send() {}, stop() {} });
+  SpiView.setSupported({ 1: [] });
+  SpiView.render({ ...plain(fx.state), sequence: null });
+  get('spi-play').click();
+  SpiView.showError(['timeout']);
+  assert.equal(get('spi-send').disabled, false);
+  assert.match(get('spi-play').textContent, /▶ Play/);
+});
+
+test('a cleared or replaced sequence stops Play', () => {
+  const { SpiView, get } = playing();
+  get('spi-play').click();
+  SpiView.render({ ...plain(fx.state), sequence: null });
+  assert.match(get('spi-play').textContent, /▶ Play/);
+  for (const id of LOCKED_IDS) assert.equal(get(id).disabled, false, id);
+  const again = playing();
+  again.get('spi-play').click();
+  again.SpiView.render(seqState(8));
+  assert.match(again.get('spi-play').textContent, /▶ Play/, 'another tab recorded a new sequence');
+});

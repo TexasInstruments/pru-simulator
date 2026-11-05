@@ -2383,6 +2383,10 @@ Example:
           </label>
           <button class="runtime-device-button btn-17" id="spi-send" type="button"><span class="text-container"><span class="text">Send frame</span></span></button>
           <button class="runtime-device-button btn-17" id="spi-sequence" type="button"><span class="text-container"><span class="text">Run test sequence</span></span></button>
+          <button class="runtime-device-button btn-17" id="spi-play" type="button" title="Replay the booth loop (4 read/write frames) bit by bit; the SPI controls are locked until Pause"><span class="text-container"><span class="text">&#9654; Play</span></span></button>
+          <label class="spi-field" for="spi-speed">Speed
+            <select id="spi-speed"><option value="1" selected>booth</option><option value="0.5">slow</option><option value="3">fast</option></select>
+          </label>
           <span class="spi-note" id="spi-status" role="status"></span>
         </div>
         <div class="spi-steps" id="spi-steps"></div>
