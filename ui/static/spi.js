@@ -355,9 +355,39 @@
     return s;
   }
 
+  // ---- recorded test-sequence steps -----------------------------------------------
+  const CMD_NAMES = { 1: 'WRITE (01)', 2: 'READ (02)', 3: 'READ/WRITE (03)', 4: 'Unknown (04)' };
+
+  function chipsHtml(steps, loop, current, locked) {
+    const inLoop = new Set(loop || []);
+    return (steps || []).map((st, i) => {
+      const cls = ['spi-chip', st.ok ? 'spi-chip-ok' : 'spi-chip-bad'];
+      if (inLoop.has(st.step)) cls.push('spi-chip-loop');
+      if (i === current) cls.push('spi-chip-cur');
+      const title = !st.ok && st.notes && st.notes.length ? ` title="${esc(st.notes.join('; '))}"` : '';
+      return `<button type="button" class="${cls.join(' ')}" data-step="${i}"${title}${locked ? ' disabled' : ''}>` +
+        `${st.ok ? '\u2713' : '\u2717'} ${esc(st.step)}</button>`;
+    }).join('');
+  }
+
+  // A recorded step shown in place of the live frame: frame, panels, badge and
+  // timing come from the step; configuration, status and faults stay live.
+  function stepState(state, step) {
+    return { ...state, frame: step.frame, memory: step.memory, last: step.last,
+      expect: step.expect, match: step.match, timing: step.timing };
+  }
+
+  function stepTitle(steps, i) {
+    const st = steps[i];
+    const head = `Step ${i + 1}/${steps.length} \u00b7 ${st.step}`;
+    if (st.cmd == null) return st.tcsh_cycles != null ? `${head} \u00b7 /CS-high gap ${st.tcsh_cycles} cycles` : head;
+    return `${head} \u00b7 ${CMD_NAMES[st.cmd] || hex2(st.cmd)} @ 0x${hex2(st.addr)} \u00b7 pattern ${st.pattern}`;
+  }
+
   // ---- DOM ---------------------------------------------------------------------
   const view = { send: null, stop: null, supported: null, requested: false, busy: false,
-    cursor: 31, last: null, seeded: false, bound: false, layout: null, html: {} };
+    cursor: 31, last: null, seeded: false, bound: false, layout: null, html: {},
+    steps: null, stepsAsked: null, shown: null, locked: false, displayed: null };
   const byId = id => document.getElementById(id);
 
   function setHtml(id, html) {
@@ -404,6 +434,7 @@
     if (result) result.hidden = !state;
     if (!state) { setBusy(false); view.last = null; return; }
     view.last = state;
+    syncSteps(state.sequence);
     if (!view.supported && !view.requested && view.send) {
       view.requested = true;
       view.send({ action: 'spi_supported' });
@@ -422,6 +453,10 @@
       byId('spi-pattern').value = state.last.pattern;
       updateAddrNote();
     }
+    renderSteps(state.sequence);
+    const live = state;
+    state = shownState(live);
+    view.displayed = state;
     const cursorByte = Math.floor(view.cursor / 8);
     setHtml('spi-frame-strip', frameStripHtml(state, cursorByte));
     setHtml('spi-scope', scopeSvg(state, view.cursor));
@@ -450,6 +485,36 @@
     setText('spi-timing-title', `Timing: mode ${cfg.mode}, SPI CLK ${num(cfg.spi_mhz)} MHz, core ${cfg.core_mhz} MHz (${num(1000 / cfg.core_mhz)} ns per cycle)`);
     setHtml('spi-timing', timingTableHtml(state.timing));
     setBusy(false);
+  }
+
+  function shownState(state) {
+    const steps = view.steps && view.steps.steps;
+    return steps && view.shown != null && steps[view.shown] ? stepState(state, steps[view.shown]) : state;
+  }
+
+  // Drop the cached steps when the sequence id changes; ask once per new id.
+  function syncSteps(seq) {
+    const id = seq && seq.id != null ? seq.id : null;
+    if (view.steps && view.steps.id !== id) { view.steps = null; view.shown = null; }
+    if (id != null && !view.steps && view.stepsAsked !== id && view.send) {
+      view.stepsAsked = id;
+      view.send({ action: 'spi_steps' });
+    }
+    if (id == null) view.stepsAsked = null;
+  }
+
+  function renderSteps(seq) {
+    const steps = view.steps && view.steps.steps;
+    setHtml('spi-steps', steps ? chipsHtml(steps, seq && seq.loop, view.shown, view.locked) : '');
+    setText('spi-step-title', steps && view.shown != null && steps[view.shown] ? stepTitle(steps, view.shown) : '');
+  }
+
+  function setSteps(msg) {
+    const id = view.last && view.last.sequence ? view.last.sequence.id : null;
+    if (!msg || msg.id !== id) return;
+    view.steps = { id: msg.id, steps: msg.steps || [] };
+    view.shown = null;
+    show(view.last);
   }
 
   function setSupported(table) {
@@ -518,8 +583,16 @@
       view.stop?.();
       act({ action: 'spi_setup', mode, spi_mhz: pick.spi_mhz });
     });
+    byId('spi-steps')?.addEventListener('click', event => {
+      const target = event && event.target;
+      const chip = target && (target.closest ? target.closest('[data-step]') : target);
+      const i = chip && chip.dataset ? Number(chip.dataset.step) : NaN;
+      if (view.locked || !Number.isInteger(i) || !view.steps || !view.steps.steps[i]) return;
+      view.shown = i;
+      show(view.last);
+    });
     byId('spi-scope')?.addEventListener('click', event => {
-      const m = view.last && scopeModel(view.last, view.cursor);
+      const m = view.displayed && scopeModel(view.displayed, view.cursor);
       const target = event && event.currentTarget;
       if (!m || event.clientX == null || !target || !target.getBoundingClientRect) return;
       const box = target.getBoundingClientRect();
@@ -531,7 +604,7 @@
     });
   }
 
-  window.SpiView = { SCENARIO, render: show, init, setSupported, showError, rateOptions, decodeBoxes,
+  window.SpiView = { SCENARIO, render: show, init, setSupported, setSteps, chipsHtml, stepState, showError, rateOptions, decodeBoxes,
     timingRows, compareBadge, misoBytes, misoDelayOptions, delayOk, frameStripHtml, mismatchIndexes, fieldName, scopeSvg, timingTableHtml,
     get supported() { return view.supported; } };
 })();

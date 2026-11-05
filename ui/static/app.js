@@ -460,6 +460,8 @@ function connect() {
         applyScenario(msg);
       } else if (msg.type === "spi_supported") {
         window.SpiView?.setSupported(msg.supported);
+      } else if (msg.type === "spi_steps") {
+        window.SpiView?.setSteps(msg);
       } else if (msg.type === "perif_ok") {
         const st = document.getElementById("perif-lb-status");
         if (st) {

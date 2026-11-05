@@ -233,3 +233,88 @@ test('index.html wires the SPI subtab, pane, assets and app dispatch', () => {
   assert.ok(!/limits the next faster rate/.test(html));
   assert.match(html, /The worst row is the tightest margin at this rate/);
 });
+
+// ---- recorded test-sequence steps (step chips) ---------------------------------
+const mk = (name, extra) => ({ step: name, ok: true, byte_errors: 0, notes: [], cmd: 3, addr: 2, pattern: 'count',
+  frame: plain(fx.state.frame), memory: plain(fx.state.memory), last: plain(fx.state.last),
+  expect: plain(fx.state.expect), match: plain(fx.state.match), timing: plain(fx.state.timing), ...extra });
+const seqState = (id, loop = ['rw:walking1']) => ({ ...plain(fx.state),
+  sequence: { id, ok: true, byte_errors: 0, steps: [], loop } });
+const chipClick = (get, i) => get('spi-steps').listeners.click({ target: { dataset: { step: String(i) } } });
+
+test('chips render ok, bad and loop marks', () => {
+  const { SpiView } = load();
+  const html = SpiView.chipsHtml([mk('write:count'), mk('rw:walking1'), mk('abort', { ok: false, notes: ['x'] })],
+    ['rw:walking1'], 1, false);
+  const chips = html.match(/<button[^>]*class="spi-chip[^"]*"[^>]*>[^<]*<\/button>/g);
+  assert.equal(chips.length, 3);
+  assert.match(chips[1], /spi-chip-loop/);
+  assert.match(chips[1], /spi-chip-cur/);
+  assert.match(chips[2], /spi-chip-bad/);
+  assert.match(chips[2], /✗/);
+  assert.match(chips[2], /title="x"/);
+  assert.doesNotMatch(html, /disabled/);
+  const locked = SpiView.chipsHtml([mk('write:count'), mk('rw:walking1')], ['rw:walking1'], null, true);
+  assert.equal(locked.match(/ disabled/g).length, 2);
+});
+
+test('steps are requested once per sequence id and stale replies are ignored', () => {
+  const { SpiView, get } = load();
+  const sent = [];
+  SpiView.init({ send: action => sent.push(plain(action)), stop() {} });
+  SpiView.setSupported({ 1: [] });
+  SpiView.render(seqState(7));
+  SpiView.render(seqState(7));
+  assert.equal(sent.filter(a => a.action === 'spi_steps').length, 1);
+  SpiView.setSteps({ id: 6, steps: [mk('write:count')] });
+  assert.equal(get('spi-steps').innerHTML, '');
+  SpiView.setSteps({ id: 7, steps: [mk('write:count'), mk('rw:walking1')] });
+  assert.equal(get('spi-steps').innerHTML.match(/<button/g).length, 2);
+  SpiView.render(seqState(8));
+  assert.equal(sent.filter(a => a.action === 'spi_steps').length, 2, 'a new id asks again');
+  assert.equal(get('spi-steps').innerHTML, '', 'the old steps are dropped');
+});
+
+test('clicking a chip shows that step and survives a state push', () => {
+  const { SpiView, get } = load();
+  SpiView.init({ send() {}, stop() {} });
+  SpiView.setSupported({ 1: [] });
+  SpiView.render(seqState(7));
+  const first = mk('write:count', { cmd: 1 });
+  first.frame.mosi[0] = '01';
+  SpiView.setSteps({ id: 7, steps: [first, mk('rw:walking1')] });
+  chipClick(get, 0);
+  assert.match(get('spi-frame-strip').innerHTML, /CMD<\/span><span class="spi-c-val">01</);
+  assert.match(get('spi-step-title').textContent, /^Step 1\/2 · write:count · WRITE \(01\) @ 0x02 · pattern count/);
+  SpiView.render(seqState(7));
+  assert.match(get('spi-frame-strip').innerHTML, /CMD<\/span><span class="spi-c-val">01</);
+});
+
+test('frameless and out-of-range steps render', () => {
+  const { SpiView, get } = load();
+  SpiView.init({ send() {}, stop() {} });
+  SpiView.setSupported({ 1: [] });
+  SpiView.render(seqState(7));
+  const b2b = { step: 'back_to_back', ok: true, byte_errors: 0, notes: [], tcsh_cycles: 16, frame: null,
+    memory: null, last: null, expect: null, match: { mosi: null, miso: null }, timing: [] };
+  const bad = mk('bad_addr', { addr: 0x80, memory: { ...plain(fx.state.memory), p_rx: null, p_tx: null } });
+  SpiView.setSteps({ id: 7, steps: [bad, b2b] });
+  chipClick(get, 0);
+  assert.match(get('spi-mem-p-rx').innerHTML, /out of range/);
+  chipClick(get, 1);
+  assert.match(get('spi-scope').innerHTML, /No frame captured/);
+  assert.match(get('spi-step-title').textContent, /back_to_back · \/CS-high gap 16 cycles/);
+});
+
+test('a cleared sequence clears chips and selection', () => {
+  const { SpiView, get } = load();
+  SpiView.init({ send() {}, stop() {} });
+  SpiView.setSupported({ 1: [] });
+  SpiView.render(seqState(7));
+  SpiView.setSteps({ id: 7, steps: [mk('write:count')] });
+  chipClick(get, 0);
+  SpiView.render({ ...plain(fx.state), sequence: null });
+  assert.equal(get('spi-steps').innerHTML, '');
+  assert.equal(get('spi-step-title').textContent, '');
+  assert.match(get('spi-frame-strip').innerHTML, /CMD<\/span><span class="spi-c-val">03</);
+});
