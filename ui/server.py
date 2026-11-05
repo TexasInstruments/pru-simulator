@@ -26,6 +26,7 @@ from mcp_server.server import PRUSimulatorMCP
 from core.branch import LoopState
 from perif.gpcfg import MUX_SD
 from pru_io.device_profiles import discover_device_profiles
+from pru_io.spi_link import SpiLinkRuntime, load_supported
 from pru_io.scenarios import (SCENARIOS, SPI_SCENARIO, apply_scenario, leave_spi_scenario,
                               spi_default_row, spi_demo_state, spi_row, spi_send, spi_sequence,
                               ssi_demo_state, set_ssi_demo_position)
@@ -416,6 +417,33 @@ def _build_session_sim(core_mhz) -> Simulator:
         return Simulator(config_path=tmp_cfg)
 
 
+def _supported_payload(scenario) -> dict:
+    """The supported-rate table travels once, with scenario_loaded (or on
+    request via the spi_supported action), never in the state pushes."""
+    return {"spi_supported": load_supported()} if scenario.name == SPI_SCENARIO else {}
+
+
+def _configured_clocks() -> tuple[float, float]:
+    cfg = configparser.ConfigParser()
+    cfg.read(config_path)
+    dev = cfg["device"] if "device" in cfg else {}
+    pru = float(dev.get("pru_clock_mhz", "200"))
+    return pru, float(dev.get("pru1_clock_mhz", pru))
+
+
+def _leave_spi_restoring_clock() -> None:
+    """Leave the SPI scenario (Ruling R13). spi_setup changes the core clock for
+    the session only, so when the clocks differ from memory.cfg, rebuild the
+    simulator from the real config (read only) and keep the IEP override."""
+    global sim
+    if not isinstance(getattr(sim, "_scenario_runtime", None), SpiLinkRuntime):
+        return
+    leave_spi_scenario(sim)
+    if (sim.cores["pru0"].clock_mhz, sim.cores["pru1"].clock_mhz) != _configured_clocks():
+        sim = Simulator(config_path=config_path)
+        _apply_iep_override()
+
+
 def _load_spi_scenario(config):
     """Apply the SPI scenario, first rebuilding the simulator (session only) when
     the rate needs another core clock. Returns the scenario; only replaces the
@@ -637,7 +665,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({"type": "capture_subscription", "enabled": websocket.capture})
             elif action == "load":
                 _clear_history()
-                leave_spi_scenario(sim)
+                _leave_spi_restoring_clock()
                 sim._scenario = None
                 filename = msg.get("filename")
                 include_paths = None
@@ -660,7 +688,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await _send_state(websocket, core)
             elif action == "load_elf":
                 _clear_history()
-                leave_spi_scenario(sim)
+                _leave_spi_restoring_clock()
                 sim._scenario = None
                 # ELF binary sent as base64-encoded string
                 elf_b64 = msg.get("data", "")
@@ -707,12 +735,12 @@ async def websocket_endpoint(websocket: WebSocket):
                             pass
             elif action == "reset":
                 _clear_history()
-                leave_spi_scenario(sim)
+                _leave_spi_restoring_clock()
                 sim.reset(core)
                 await _send_state(websocket, core)
             elif action == "hard_reset":
                 _clear_history()
-                leave_spi_scenario(sim)
+                _leave_spi_restoring_clock()
                 sim.hard_reset()
                 await _send_state(websocket, core)
             elif action == "set_input":
@@ -1058,18 +1086,22 @@ async def websocket_endpoint(websocket: WebSocket):
                     if msg.get("name") == SPI_SCENARIO:
                         scenario = _load_spi_scenario(msg.get("config"))
                     else:
+                        _leave_spi_restoring_clock()
                         scenario = apply_scenario(sim, msg.get("name"),
                                                   _device_api_for_current_sim(),
                                                   config=msg.get("config"))
                     _execution_cores = list(scenario.cores)
                     _clear_history()
-                    await websocket.send_json({"type": "scenario_loaded", **scenario.describe()})
+                    await websocket.send_json({"type": "scenario_loaded", **scenario.describe(),
+                                               **_supported_payload(scenario)})
                 except (KeyError, TypeError, ValueError) as exc:
                     await websocket.send_json({"type": "error", "tag": "scenario",
                                                "errors": [str(exc)]})
                     scenario = None
                 for scenario_core in (scenario.cores if scenario else (core,)):
                     await _send_state(websocket, scenario_core)
+            elif action == "spi_supported":
+                await websocket.send_json({"type": "spi_supported", "supported": load_supported()})
             elif action == "spi_setup":
                 try:
                     async with _config_lock:
@@ -1090,7 +1122,8 @@ async def websocket_endpoint(websocket: WebSocket):
                         _clear_history()
                         _stop_execution()
                         _publish_updates(origin=websocket)
-                    await websocket.send_json({"type": "scenario_loaded", **scenario.describe()})
+                    await websocket.send_json({"type": "scenario_loaded", **scenario.describe(),
+                                               **_supported_payload(scenario)})
                 except (KeyError, TypeError, ValueError) as exc:
                     await websocket.send_json({"type": "error", "tag": "spi", "errors": [str(exc)]})
                     scenario = None

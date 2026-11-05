@@ -77,7 +77,7 @@ def test_scenario_listed_and_applies(fresh_sim):
     assert st["config"]["mode"] == 1 and st["config"]["spi_mhz"] == 25.0
     assert st["core_mhz"] == 200 and st["hop_delay"] == 5
     assert st["config"]["miso_delay"] > 0
-    assert set(st["supported"]) == {0, 1} or set(st["supported"]) == {"0", "1"}
+    assert "supported" not in st          # Ruling R14a: sent once, not in every push
     assert st["frame"]["edges"] == []
     assert st["status"]["frames"] == 0
     # patterns cycle per block
@@ -232,3 +232,57 @@ def test_ssi_state_has_no_spi_demo(fresh_sim):
         _receive(ws)
         msg = _receive(ws)
         assert "spi_demo" not in msg["io"] and "ssi_demo" in msg["io"]
+
+
+def test_supported_table_sent_once_not_in_state(fresh_sim):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "scenario_load", "name": SPI})
+        loaded = _receive(ws)
+        assert set(loaded["spi_supported"]) == {"0", "1"}
+        assert loaded["spi_supported"]["1"][0]["mode"] == 1
+        states = [_receive(ws), _receive(ws)]
+        assert all("supported" not in m["io"]["spi_demo"] for m in states if m["core"] == "pru0")
+        err, msg = _state_after(ws, "spi_setup", mode=0, spi_mhz=10.0)
+        assert "supported" not in msg["io"]["spi_demo"]
+        ws.send_json({"action": "spi_supported"})
+        reply = _drain_until(ws, "spi_supported")
+        assert reply["supported"] == loaded["spi_supported"]
+
+
+@pytest.mark.parametrize("leave", ["scenario_load", "load", "reset", "hard_reset"])
+def test_leaving_after_setup_restores_configured_clock(fresh_sim, leave):
+    import ui.server as srv
+    before = hashlib.sha256(MEMORY_CFG.read_bytes()).hexdigest()
+    configured = srv._configured_clocks()
+    fast = next(r for r in load_supported()[1] if r["core_mhz"] != configured[0])
+    with client.websocket_connect("/ws") as ws:
+        _load_spi(ws)
+        _state_after(ws, "spi_setup", mode=1, spi_mhz=fast["spi_mhz"])
+        assert srv.sim.cores["pru0"].clock_mhz == fast["core_mhz"]
+        extra = {"load": {"source": "nop\n halt\n"}, "scenario_load": {"name": SSI_MULTI}}.get(leave, {})
+        ws.send_json({"action": leave, **extra})
+        while _receive(ws)["type"] != "state":
+            pass
+        assert (srv.sim.cores["pru0"].clock_mhz, srv.sim.cores["pru1"].clock_mhz) == configured
+        assert srv.sim.get_gpi_delay("pru0") == 0
+    assert hashlib.sha256(MEMORY_CFG.read_bytes()).hexdigest() == before
+
+
+def test_monitor_edges_bounded_and_timing_survives(fresh_sim):
+    import ui.server as srv
+    from pru_io.scenarios import spi_send
+    apply_scenario(fresh_sim, SPI, srv._device_api)
+    rt = fresh_sim._scenario_runtime
+    counts = []
+    for i in range(20):
+        spi_send(fresh_sim, 3, i, "count")
+        counts.append(len(rt.monitor.edges))
+    assert counts[-1] == counts[-2] or max(counts[10:]) <= max(counts[:10]) + 2
+    assert len(rt.monitor.frames()) == rt.monitor.KEEP_FRAMES
+    assert rt.peripheral_status()["frames"] == 20
+    st = spi_demo_state(fresh_sim)
+    assert st["match"] == {"mosi": 16, "miso": 16}
+    from pru_io.spi_link import measure_timing
+    rows = {r["symbol"]: r for r in measure_timing(
+        rt.monitor.edges, rt.cfg, frame_index=-2, hop_delay=rt.hop_delay)}
+    assert rows["tCSH"]["sim_ns"] is not None

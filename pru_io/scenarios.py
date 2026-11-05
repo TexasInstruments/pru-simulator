@@ -272,7 +272,10 @@ def spi_send(sim, cmd, addr, pattern) -> None:
 
 
 def spi_sequence(sim) -> None:
-    """Run the spec section 9 acceptance sequence; the result goes into the state."""
+    """Run the spec section 9 acceptance sequence; the result goes into the state.
+
+    It runs synchronously: the dashboard event loop stalls for about a second
+    while it executes (about 25 frames of 20k simulated cycles each)."""
     runtime = _spi_runtime(sim)
     result = run_test_sequence(runtime)
     runtime.last = None
@@ -339,7 +342,7 @@ def spi_demo_state(sim) -> dict | None:
             "config": {"mode": cfg.mode, "spi_mhz": cfg.spi_mhz, "half_k": cfg.half_k,
                        "miso_delay": cfg.miso_delay, "core_mhz": cfg.core_mhz, "id": cfg.id},
             "core_mhz": cfg.core_mhz, "hop_delay": runtime.hop_delay,
-            "supported": load_supported(), "last": last,
+            "last": last,
             "expect": ({"mosi": last["cmd"] in (CMD_WRITE, CMD_RW),
                         "miso": last["cmd"] in (CMD_READ, CMD_RW)} if last else None),
             "frame": view["frame"], "memory": memory, "match": match,

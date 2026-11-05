@@ -169,6 +169,11 @@ class SpiBusMonitor(DeviceModel):
         self.edges: list[tuple[int, int]] = []
         self._last: int | None = None
         self._faults: list[str] = []
+        self._starts: list[int] = []     # indices in ``edges`` of /CS falling edges
+
+    #: Complete frames kept in ``edges`` (measure_timing needs two for tCSH);
+    #: older edges are dropped so per-frame work stays bounded.
+    KEEP_FRAMES = 8
 
     def tick(self, cycle: int, bus: int):
         w = (((bus >> C_CS) & 1) | (((bus >> C_CLK) & 1) << 1)
@@ -177,7 +182,14 @@ class SpiBusMonitor(DeviceModel):
             if self._last is not None and _cs(w) == 1 and _cs(self._last) == 1 \
                     and _clk(w) != _clk(self._last):
                 self._faults.append(f"cycle {cycle}: CLK edge while /CS high")
+            if self._last is not None and _cs(self._last) == 1 and _cs(w) == 0:
+                self._starts.append(len(self.edges))
             self.edges.append((cycle, w))
+            if (self._last is not None and _cs(self._last) == 0 and _cs(w) == 1
+                    and len(self._starts) > self.KEEP_FRAMES):
+                cut = self._starts[-self.KEEP_FRAMES] - 1    # keep the idle edge before it
+                del self.edges[:cut]
+                self._starts = [i - cut for i in self._starts[-self.KEEP_FRAMES:]]
             self._last = w
         return 0, 0
 
@@ -202,6 +214,7 @@ class SpiBusMonitor(DeviceModel):
 
     def clear(self) -> None:
         self.edges = []
+        self._starts = []
         self._last = None
 
     def reset(self) -> None:
@@ -210,10 +223,11 @@ class SpiBusMonitor(DeviceModel):
 
     def snapshot(self) -> dict:
         return {"edges": list(self.edges), "last": self._last,
-                "faults": list(self._faults)}
+                "faults": list(self._faults), "starts": list(self._starts)}
 
     def restore(self, snap: dict) -> None:
         self.edges = list(snap["edges"])
+        self._starts = list(snap.get("starts", []))
         self._last = snap["last"]
         self._faults = list(snap["faults"])
 
@@ -726,7 +740,8 @@ class SpiLinkRuntime:
         mem.write(C_TX, data)
         mem.write(CTRL + CTRL_CMD, bytes([cmd, addr, ST_IDLE]))
         mem.write(CTRL + CTRL_ABORT, abort.to_bytes(2, "little"))
-        n_frames = len(self.monitor.frames(self.cfg.mode))
+        seen = self.monitor.frames(self.cfg.mode)
+        last_end = seen[-1]["end"] if seen else -1     # the monitor keeps only recent frames
         pru0 = self.sim.cores["pru0"]
         start = pru0.counters.cycles
         mem.write(CTRL + CTRL_GO, b"\x01")
@@ -742,7 +757,7 @@ class SpiLinkRuntime:
         rx_hdr = self.sim.memory_read(C_RX_HDR, 3)
         c_rx = self.sim.memory_read(C_RX, 16)
         return {"miso": rx_hdr + c_rx, "c_rx": c_rx, "cycles": cycles,
-                "frame": frames[-1] if len(frames) > n_frames else None}
+                "frame": frames[-1] if frames and frames[-1]["end"] > last_end else None}
 
     def close(self) -> None:
         for w in self._wires:
