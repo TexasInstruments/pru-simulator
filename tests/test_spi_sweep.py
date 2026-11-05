@@ -12,7 +12,8 @@ from pathlib import Path
 import pytest
 
 from pru_io.spi_link import (CMD_RW, HOP_DELAY_CYCLES, PATTERNS, SpiConfig,
-                             SpiLinkRuntime, load_supported, measure_timing,
+                             SpiLinkRuntime, controller_delay_ok,
+                             load_supported, measure_timing,
                              rate_candidates, run_test_sequence)
 from simulator import Simulator
 from tools import spi_sweep
@@ -48,12 +49,22 @@ def test_rates_json_schema_and_coverage():
     rows = data["rows"]
     for r in rows:
         assert keys <= set(r), r["id"]
+        assert set(r) == set(spi_sweep.SUMMARY_KEYS), r["id"]
         if r["pass"]:
             lo, hi = r["miso_delay_window"]
             assert lo <= r["miso_delay"] <= hi
-            assert r["miso_delay"] in r["miso_delay_pass"]
+            assert controller_delay_ok(r["half_k"], r["miso_delay"])
     want = {(m, c, k, h) for m in (0, 1) for c, k in rate_candidates() for h in (0, 5)}
     assert {(r["mode"], r["core_mhz"], r["half_k"], r["hop_delay"]) for r in rows} == want
+    assert RATES_JSON.stat().st_size < 100_000          # pushed to the UI (R12)
+
+
+def test_no_negative_miso_setup_hold_at_hop5():
+    """Ruling R7a: with the sample referred to the pin, no passing row shows
+    a negative MISO setup or hold."""
+    for r in _rates()["rows"]:
+        if r["pass"] and r["hop_delay"] == 5:
+            assert r["tsu_miso_ns"] > 0 and r["th_miso_ns"] > 0, r["id"]
 
 
 def test_no_50mhz_at_200():
@@ -181,6 +192,29 @@ def test_timing_doc_lists_every_supported_row():
         assert phrase in doc, phrase
 
 
-def test_timing_doc_up_to_date():
-    """The committed doc is what the committed JSON renders to."""
-    assert spi_sweep.render_doc(_rates()) == TIMING_DOC.read_text(encoding="utf-8")
+def test_timing_doc_agrees_with_json():
+    """The committed doc's results table matches the committed JSON."""
+    assert spi_sweep.doc_mismatches(TIMING_DOC.read_text(encoding="utf-8"), _rates()) == []
+
+
+def test_reload_controller_keeps_one_time_base(sim_config):
+    """Ruling R10: after reload_controller, PRU0- and PRU1-driven edges share
+    a clock, so tV,MISO matches a fresh simulator's."""
+    def tv(rt):
+        rt.preload_peripheral_tx(4, PATTERNS["count"][1])
+        rt.transfer(CMD_RW, 4, PATTERNS["count"][0])
+        rows = {r["symbol"]: r for r in measure_timing(rt.monitor.edges, rt.cfg)}
+        return rows["tV,MISO"]["cycles"]
+
+    fresh = _runtime(sim_config, 1, 200, 10, 24)
+    want = tv(fresh)
+    fresh.close()
+    rt = _runtime(sim_config, 1, 200, 10, 23)
+    rt.transfer(CMD_RW, 4, PATTERNS["a5_5a"][0])     # advance both clocks
+    rt.reload_controller(SpiConfig(1, 200, 10, 24))
+    p0, p1 = rt.sim.cores["pru0"], rt.sim.cores["pru1"]
+    assert p0.counters.cycles == p1.counters.cycles == 0
+    assert len(rt.monitor.edges) == 1                 # cleared, seeded with idle bus
+    got = tv(rt)
+    assert abs(got - want) <= 2, (got, want)
+    rt.close()

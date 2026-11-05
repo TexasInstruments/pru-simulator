@@ -211,14 +211,23 @@ def _mode1_miso_frame(lag, half=4, nbytes=3):
 
 @pytest.mark.parametrize("delay,su,hd", [(3, 5.0, 35.0), (0, -10.0, 10.0), (6, 20.0, 20.0)])
 def test_measure_timing_miso_rows_use_sample_point(delay, su, hd):
+    # synthetic frame with no hop (MISO follows the launch edge after `lag`):
+    # hop_delay=0 keeps the R7 semantics, sample point = launch + miso_delay
     cfg = SpiConfig(1, 200, 4, delay)
-    rows = measure_timing(_mode1_miso_frame(lag=2), cfg)
+    rows = measure_timing(_mode1_miso_frame(lag=2), cfg, hop_delay=0)
     by = {r["symbol"]: r for r in rows}
     assert by["tV,MISO"]["sim_ns"] == 10.0
     assert by["MISO_DELAY"]["cycles"] == delay
     assert by["MISO_DELAY"]["sim_ns"] == delay * 5.0
-    assert by["HOP"]["cycles"] == sl.HOP_DELAY_CYCLES
-    assert by["HOP"]["sim_ns"] == 25.0
+    assert by["HOP"]["cycles"] == 0
+    # Ruling R7a: with a hop the pin-referred sample is launch + miso_delay - hop
+    hop = sl.HOP_DELAY_CYCLES
+    byh = {r["symbol"]: r for r in measure_timing(_mode1_miso_frame(lag=2 + hop),
+                                                   SpiConfig(1, 200, 4, delay + 2 * hop))}
+    assert (byh["tSU,MISO"]["sim_ns"], byh["tH,MISO"]["sim_ns"]) == (su, hd)
+    assert byh["tV,MISO"]["sim_ns"] == (2 + hop) * 5.0
+    assert byh["HOP"]["cycles"] == hop
+    assert byh["HOP"]["sim_ns"] == 25.0
     # delay 6 > half period 4: pipelined, sample lands after the next launch
     assert by["tSU,MISO"]["sim_ns"] == su
     assert by["tH,MISO"]["sim_ns"] == hd

@@ -226,8 +226,17 @@ class SpiBusMonitor(DeviceModel):
 # ---------------------------------------------------------------------------
 
 def measure_timing(edges, cfg: SpiConfig, frame_index: int = -1,
-                   p1_fetch_cycles: int | None = None) -> list[dict]:
+                   p1_fetch_cycles: int | None = None,
+                   hop_delay: int = HOP_DELAY_CYCLES) -> list[dict]:
     """Timing rows for one frame of an edge list. See spec section 6.
+
+    ``hop_delay``: the GPI delay on both cores (Ruling R7a). The MISO rows
+    refer PRU0's sample to the pin: its delayed R31 read at launch +
+    miso_delay sees the pin as it was ``hop_delay`` cycles earlier. A MISO
+    change belongs to the latest launch edge at least ``hop_delay`` cycles
+    before it (PRU1 sees the edge one hop late), which also keeps tV,MISO
+    from wrapping when the sample is pipelined. MOSI rows are not affected
+    (the delay shifts CLK and MOSI equally at PRU1).
 
     ``p1_fetch_cycles``: PRU1's idle-byte TX fetch time, single-stepped
     (``measure_peripheral_work``). Given, the tIDLE row reports it against
@@ -289,16 +298,21 @@ def measure_timing(edges, cfg: SpiConfig, frame_index: int = -1,
         if hd:
             sim["tH,MOSI"] = min(hd) * ns
         ic = changes(_miso)
-        v = [c - max(x for x in launch if x <= c) for c in ic if any(x <= c for x in launch)]
+        # PRU1 cannot answer a launch edge before it sees it, one hop later
+        # (R7a): a MISO change at c belongs to the latest launch <= c - hop.
+        hp = hop_delay
+        v = [c - max(x for x in launch if x <= c - hp) for c in ic
+             if any(x <= c - hp for x in launch)]
         if v:
             sim["tV,MISO"] = max(v) * ns
         # PRU0 samples each bit at its MISO launch edge + miso_delay cycles
-        # (Ruling R7), which may fall after the next launch edge when pipelined.
+        # (Ruling R7), which may fall after the next launch edge when pipelined;
+        # at the pin that read sees the state hop_delay cycles earlier (R7a).
         su, hd = [], []
         bounds = launch[1:] + [float("inf")]
         for lc, nxt in zip(launch, bounds):
-            sp = lc + cfg.miso_delay
-            own = [x for x in ic if lc <= x < nxt]       # this bit's MISO change
+            sp = lc + cfg.miso_delay - hop_delay
+            own = [x for x in ic if lc + hp <= x < nxt + hp]   # this bit's MISO change
             if not own:
                 continue                                 # constant MISO: nothing to measure
             su.append(sp - own[0])                       # negative: sampled before the change
@@ -357,8 +371,8 @@ def measure_timing(edges, cfg: SpiConfig, frame_index: int = -1,
     row("PRU0 MISO sample delay in effect", "MISO_DELAY", cfg.miso_delay * ns,
         cfg.miso_delay * ns, None, None, "firmware only", None, cycles=cfg.miso_delay)
     row("Modelled hop delay (pin to pin)", "HOP", HOP_DELAY_CYCLES * ns,
-        HOP_DELAY_CYCLES * ns, None, None, "simulator calibration", None,
-        cycles=HOP_DELAY_CYCLES)
+        hop_delay * ns, None, None, "simulator calibration", None,
+        cycles=hop_delay)
     row("Input slew rate (all inputs)", "SRI", None, None, 1.0, 3.0, "Table 6-112",
         None, cycles=None)
     row("Output load capacitance", "CL", None, None, 2.0, 30.0, "Table 6-112",
@@ -560,6 +574,22 @@ class SpiLinkRuntime:
         except Exception:
             self.cfg = old
             raise
+        self._align_time_base()
+
+    def _align_time_base(self) -> None:
+        """Ruling R10: one time base after a reload. Loading PRU0 reset its
+        cycle counter (and its GPI delay history); reset PRU1's with it and
+        clear the monitor, so PRU0- and PRU1-driven edges share a clock."""
+        if self._peripheral_loaded:
+            pru1 = self.sim.cores["pru1"]
+            pru1.counters.reset()
+            io = pru1.io_port
+            io._device_cycle = 0     # device-bus stamp of PRU1's pin writes (as io_port.reset)
+            io.gpi_delay_cycles = io.gpi_delay_cycles   # restart history at cycle 0
+        if self.monitor is not None:
+            self.monitor.clear()
+            io0 = self.sim.cores["pru0"].io_port   # seed with the idle bus word
+            self.monitor.tick(0, io0.gpo | io0.gpi)
 
     def load_peripheral(self) -> None:
         """Assemble and start the PRU1 edge-polling peripheral (mode = cfg.mode).
@@ -737,11 +767,12 @@ RATES_PATH = Path(__file__).resolve().with_name("spi_rates.json")
 
 def choose_miso_delay(passing: list[int]) -> int | None:
     """Ruling R9: the passing (controller_delay_ok) value nearest the middle
-    of the passing window; on a tie the later one (more MISO setup)."""
+    of the passing window; on a tie the earlier one (pin-referred MISO
+    setup and hold are then the more balanced at k = 3, see the sweep)."""
     if not passing:
         return None
     mid = (min(passing) + max(passing)) / 2
-    return min(passing, key=lambda d: (abs(d - mid), -d))
+    return min(passing, key=lambda d: (abs(d - mid), d))
 
 
 def measure_peripheral_work(runtime: "SpiLinkRuntime", cmd: int, addr: int,

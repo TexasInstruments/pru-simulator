@@ -14,10 +14,11 @@ hop delay (default 0 and the calibrated 5 cycles) this:
 
 "Supported" = passes at hop delay 5 (Ruling R6). ``--write`` writes
 ``pru_io/spi_rates.json`` and ``docs/spi_link_timing.md``; without it the
-result is only printed. ``--render`` re-renders the doc from the committed
-JSON; ``--check`` compares the committed doc with what it renders to.
+result is only printed. The JSON keeps only the summary rows the UI needs
+(``SUMMARY_KEYS``); the per-combination timing tables live in the doc.
+``--check`` compares the committed doc's results table with the committed JSON.
 
-Usage: python tools/spi_sweep.py [--write] [--jobs N] [--render] [--check]
+Usage: python tools/spi_sweep.py [--write] [--jobs N] [--check]
 """
 from __future__ import annotations
 
@@ -123,16 +124,19 @@ def sweep_row(mode: int, core: int, k: int, hop: int,
     rt = _runtime(config_path, cfg, hop)
     seq = run_test_sequence(rt)
     timing = measure_timing(rt.monitor.edges, cfg, frame_index=-2,
-                            p1_fetch_cycles=work["fetch_cycles"])
+                            p1_fetch_cycles=work["fetch_cycles"], hop_delay=hop)
     rt.close()
     b2b = next(s for s in seq["steps"] if s["step"] == "back_to_back")
     worst = next(r for r in timing if r["worst"])
+    by = {r["symbol"]: r for r in timing}
     row.update({
         "pass": seq["ok"],
         "seq_byte_errors": seq["byte_errors"],
         "seq_failed_steps": [s["step"] for s in seq["steps"] if not s["ok"]],
         "tcsh_cycles": b2b["tcsh_cycles"],
         "worst": {"symbol": worst["symbol"], "margin_ns": _round(worst["margin_ns"])},
+        "tsu_miso_ns": _round(by["tSU,MISO"]["sim_ns"]),
+        "th_miso_ns": _round(by["tH,MISO"]["sim_ns"]),
     })
     if seq["ok"]:
         row["limit"] = (f"MISO window {len(passing)} values [{min(passing)}..{max(passing)}]; "
@@ -228,8 +232,8 @@ def render_doc(data: dict) -> str:
       "idle-byte TX fetch;")
     a("2. reassembles PRU0 for every realisable `miso_delay` (`controller_delay_ok`: "
       "`d mod 2k` not 0 or k, pipelining ≤ 6 bits) until the passing window has closed, "
-      "one R/W frame each, and picks the passing value nearest the middle of the window "
-      "(Ruling R9; the window has holes at `d mod 2k ∈ {0, k}`);")
+      "one R/W frame each, and picks the passing value nearest the middle of the window, "
+      "the earlier one on a tie (Ruling R9; the window has holes at `d mod 2k ∈ {0, k}`);")
     a("3. on a fresh simulator at that delay runs the spec §9 acceptance sequence: WRITE, "
       "READ of a preloaded TX block and R/W full duplex with every pattern "
       f"({', '.join(PATTERNS)}), an unknown command (0x04), an out-of-range address (0x80), "
@@ -264,13 +268,15 @@ def render_doc(data: dict) -> str:
     a("- The simulator models no pad skew: t<sub>sk</sub> is shown as 0 in sim and is a "
       "derived row (never the worst).")
     a("- \"Measured in sim\" comes from the bus monitor on PRU0's pins, last back-to-back "
-      "frame pair (first frame; t<sub>CSH</sub> is the gap to the second). The MISO rows are "
-      "taken at PRU0's pin: PRU0's GPI sees each MISO change a further hop delay later, so "
-      "the setup PRU0's sample actually gets is t<sub>SU,MISO</sub> − hop and the hold is "
-      "t<sub>H,MISO</sub> + hop. A negative MISO hold margin in a passing row is this "
-      "pin-referenced view, not a failed sample. t<sub>V,MISO</sub> is measured from the "
-      "latest launch edge before the change, so once hop + PRU1 reaction + hop exceeds a "
-      "bit period (the MISO sample is pipelined) it wraps modulo t<sub>CLK</sub>.")
+      "frame pair (first frame; t<sub>CSH</sub> is the gap to the second). The MISO "
+      "setup/hold rows refer PRU0's sample to its MISO pin (Ruling R7a): the delayed R31 "
+      "read at launch edge + `miso_delay` sees the pin as it was one hop delay earlier, so "
+      "the pin-referred sample point is launch + `miso_delay` − hop. The MOSI rows need no "
+      "such correction, because the hop delays CLK and MOSI equally at PRU1. "
+      "A MISO change is assigned to the latest launch edge at least one hop before it (PRU1 "
+      "sees each edge one hop late), so t<sub>V,MISO</sub> includes the inbound hop and "
+      "does not wrap when the sample is pipelined, as long as PRU1 answers within one bit "
+      "period (it does in every passing row: its MISO bytes are right).")
     a("- Simulator limitation (recorded, not fixed): a GPI change that arrives while the "
       "reading core is inside a multi-cycle instruction is stamped at the end of that "
       "instruction (`io_port._record_gpi` uses the reader's cycle counter), so it can land "
@@ -280,13 +286,16 @@ def render_doc(data: dict) -> str:
     a("")
     a("## Controller /CS-high gap")
     a("")
+    gaps = [r["tcsh_cycles"] for r in rows if r["tcsh_cycles"] is not None]
     a("The spec minimum gap between frames is 2 t<sub>CLK</sub> (4k cycles). PRU0's "
       "controller first holds /CS high for at least 4k cycles, then realigns and stores "
       "the MISO samples, updates the control block and polls `go` again, so the shortest "
       "gap it produces is longer than 2 t<sub>CLK</sub>. The back-to-back step sets `go` "
       "for the second frame as soon as the first reports done, i.e. at that controller "
-      "minimum (column t<sub>CSH</sub> cycles below, measured on the bus). PRU1 itself "
-      "keeps up with the strict 2 t<sub>CLK</sub> gap: `tests/test_spi_peripheral.py::"
+      "minimum (column t<sub>CSH</sub> cycles below, measured on the bus): the controller's "
+      f"real gap is **{min(gaps)}–{max(gaps)} cycles** over the sweep, always ≥ 4k. The strict "
+      "2 t<sub>CLK</sub> gap is therefore not exercised PRU0 to PRU1; it is proven for PRU1 "
+      "by the Task 4 direct-stimulus tests: `tests/test_spi_peripheral.py::"
       "test_min_cs_gap_no_frame_lost` drives PRU1's GPI directly at a 4k-cycle gap (k = 3 "
       "and 6, both modes, hop 5). The minimum PRU1 needs is 9 cycles (mode 1) / 5 (mode 0) "
       "at k = 3.")
@@ -401,8 +410,37 @@ def render_doc(data: dict) -> str:
     return "\n".join(L)
 
 
+#: Row keys kept in pru_io/spi_rates.json (pushed to the UI; Ruling R12).
+SUMMARY_KEYS = ("id", "mode", "core_mhz", "half_k", "spi_mhz", "hop_delay",
+                "miso_delay_window", "miso_delay", "pass", "p1_cycles_per_bit",
+                "p1_byte_slack", "worst", "tsu_miso_ns", "th_miso_ns")
+
+
+def summary(data: dict) -> dict:
+    return {**{key: v for key, v in data.items() if key != "rows"},
+            "rows": [{key: r[key] for key in SUMMARY_KEYS} for r in data["rows"]]}
+
+
+def doc_mismatches(doc: str, data: dict) -> list[str]:
+    """Rows whose line in the doc's "All results" table disagrees with the
+    JSON (pass, window, miso_delay), or that are missing."""
+    lines = {ln.split("|")[1].strip().strip("`"): ln for ln in doc.splitlines()
+             if ln.startswith("| `m")}
+    bad = []
+    for r in data["rows"]:
+        ln = lines.get(r["id"])
+        w = r["miso_delay_window"]
+        cells = [c.strip() for c in ln.split("|")] if ln else []
+        if (not ln or cells[7] != ("pass" if r["pass"] else "FAIL")
+                or not cells[8].startswith(f"{w[0]}..{w[1]} " if w else "none")
+                or cells[9] != ("–" if r["miso_delay"] is None else str(r["miso_delay"]))):
+            bad.append(r["id"])
+    return bad
+
+
 def dump_rates(data: dict) -> str:
-    """spi_rates.json text: header keys, then one row per line."""
+    """spi_rates.json text (summary rows only): header keys, one row per line."""
+    data = summary(data)
     head = {key: v for key, v in data.items() if key != "rows"}
     lines = [json.dumps(r, separators=(",", ":")) for r in data["rows"]]
     return (json.dumps(head)[:-1] + ', "rows": [\n' + ",\n".join(lines) + "\n]}\n")
@@ -413,21 +451,14 @@ def main(argv=None) -> int:
     ap.add_argument("--write", action="store_true",
                     help="write pru_io/spi_rates.json and docs/spi_link_timing.md")
     ap.add_argument("--jobs", type=int, default=None, help="worker processes")
-    ap.add_argument("--render", action="store_true",
-                    help="re-render the doc from the committed JSON (no sweep)")
     ap.add_argument("--check", action="store_true",
-                    help="check the committed doc against the committed JSON only")
+                    help="check the committed doc's results table against the JSON")
     args = ap.parse_args(argv)
-    if args.render:
-        data = json.loads(RATES_PATH.read_text(encoding="utf-8"))
-        DOC_PATH.write_text(render_doc(data), encoding="utf-8")
-        print(f"wrote {DOC_PATH.relative_to(REPO)}")
-        return 0
     if args.check:
         data = json.loads(RATES_PATH.read_text(encoding="utf-8"))
-        ok = render_doc(data) == DOC_PATH.read_text(encoding="utf-8")
-        print("doc up to date" if ok else "doc out of date: run --write")
-        return 0 if ok else 1
+        bad = doc_mismatches(DOC_PATH.read_text(encoding="utf-8"), data)
+        print("doc agrees with JSON" if not bad else f"doc out of date for {bad}")
+        return 0 if not bad else 1
     t0 = time.time()
     rows = sweep(jobs=args.jobs, progress=lambda s: print(s, flush=True))
     wall = round(time.time() - t0, 1)
@@ -440,7 +471,8 @@ def main(argv=None) -> int:
     if args.write:
         RATES_PATH.write_text(dump_rates(data), encoding="utf-8")
         DOC_PATH.write_text(render_doc(data), encoding="utf-8")
-        assert load_supported() == _supported_view(data)
+        assert ({m: [r["id"] for r in rs] for m, rs in load_supported().items()}
+                == {m: [r["id"] for r in rs] for m, rs in _supported_view(data).items()})
         print(f"wrote {RATES_PATH.relative_to(REPO)} and {DOC_PATH.relative_to(REPO)}")
     return 0
 
