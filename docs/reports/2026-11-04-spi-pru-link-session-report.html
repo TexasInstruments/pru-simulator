@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SPI PRU0 Controller / PRU1 Peripheral Link</title>
+<style>
+  :root {
+    --bg: #F0F3F1;
+    --surface: #FFFFFF;
+    --surface-2: #E7ECE9;
+    --border: #D3DBD6;
+    --text: #16201C;
+    --text-muted: #55645C;
+    --text-faint: #7C8A82;
+    --accent: #B25C25;
+    --accent-strong: #8F481B;
+    --good: #2E8B67;
+    --warn: #B23B3B;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #101512;
+      --surface: #171D1A;
+      --surface-2: #1E2622;
+      --border: #2B3530;
+      --text: #E8EDEA;
+      --text-muted: #93A39B;
+      --text-faint: #6D7B74;
+      --accent: #E58A4C;
+      --accent-strong: #F3A466;
+      --good: #4FBF93;
+      --warn: #E48383;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #101512;
+    --surface: #171D1A;
+    --surface-2: #1E2622;
+    --border: #2B3530;
+    --text: #E8EDEA;
+    --text-muted: #93A39B;
+    --text-faint: #6D7B74;
+    --accent: #E58A4C;
+    --accent-strong: #F3A466;
+    --good: #4FBF93;
+    --warn: #E48383;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--serif);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 64px 24px 96px;
+  }
+
+  @media (max-width: 600px) {
+    .page { padding: 40px 16px 64px; }
+  }
+
+  /* ---- Header block ---- */
+
+  .titleblock {
+    border-bottom: 2px solid var(--text);
+    padding-bottom: 22px;
+    margin-bottom: 40px;
+  }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin: 0 0 10px;
+  }
+
+  h1 {
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: clamp(1.7rem, 4vw, 2.3rem);
+    letter-spacing: -0.01em;
+    line-height: 1.15;
+    margin: 0 0 14px;
+    text-wrap: balance;
+  }
+
+  .meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 18px;
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--text-muted);
+  }
+
+  .meta-row span b {
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  .status-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--good);
+    border: 1px solid color-mix(in srgb, var(--good) 45%, transparent);
+    background: color-mix(in srgb, var(--good) 12%, transparent);
+    padding: 3px 9px;
+    border-radius: 3px;
+  }
+
+  .status-chip::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--good);
+    flex: none;
+  }
+
+  /* ---- Sections ---- */
+
+  section { margin-bottom: 52px; }
+
+  h2 {
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: 0.95rem;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 18px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+
+  h2 .num {
+    color: var(--text-faint);
+    font-weight: 500;
+  }
+
+  p {
+    font-size: 1.03rem;
+    line-height: 1.7;
+    color: var(--text);
+    max-width: 66ch;
+    margin: 0 0 16px;
+  }
+
+  p.lede {
+    color: var(--text-muted);
+  }
+
+  /* ---- Prompt block ---- */
+
+  .prompt-block {
+    font-family: var(--mono);
+    font-size: 0.88rem;
+    line-height: 1.65;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 2px;
+    padding: 18px 20px;
+    color: var(--text);
+    white-space: pre-wrap;
+  }
+
+  .prompt-source {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    color: var(--text-faint);
+    margin: 10px 0 0;
+  }
+
+  /* ---- Process steps ---- */
+
+  .steps {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+    background: var(--surface);
+  }
+
+  .step {
+    flex: 1 1 140px;
+    padding: 14px 16px;
+    border-right: 1px solid var(--border);
+    font-family: var(--mono);
+  }
+
+  .step:last-child { border-right: none; }
+
+  .step .n {
+    font-size: 0.7rem;
+    color: var(--accent);
+    letter-spacing: 0.06em;
+  }
+
+  .step .label {
+    font-size: 0.83rem;
+    color: var(--text);
+    margin-top: 4px;
+    font-weight: 600;
+  }
+
+  /* ---- Decision log ---- */
+
+  .decision-group-label {
+    font-family: var(--mono);
+    font-size: 0.76rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin: 28px 0 12px;
+  }
+
+  .decision-group-label:first-child { margin-top: 0; }
+
+  .decision {
+    display: grid;
+    grid-template-columns: 34px 1fr;
+    gap: 4px 16px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .decision:last-child { border-bottom: none; }
+
+  .decision .idx {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--text-faint);
+    padding-top: 2px;
+  }
+
+  .decision .title {
+    font-weight: 700;
+    font-size: 1rem;
+    color: var(--text);
+    margin: 0 0 4px;
+  }
+
+  .decision .why {
+    font-size: 0.95rem;
+    color: var(--text-muted);
+    line-height: 1.6;
+    margin: 0;
+    max-width: 62ch;
+  }
+
+  .decision.fixed .title::after {
+    content: "bug found in review";
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--warn);
+    border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+    background: color-mix(in srgb, var(--warn) 12%, transparent);
+    padding: 2px 6px;
+    border-radius: 3px;
+    margin-left: 10px;
+    font-weight: 600;
+    vertical-align: middle;
+  }
+
+  /* ---- Context usage ---- */
+
+  .arch-note {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 16px 20px;
+    margin-bottom: 22px;
+  }
+
+  .arch-note p { margin-bottom: 0; }
+
+  .table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-size: 0.83rem;
+    background: var(--surface);
+  }
+
+  thead th {
+    text-align: left;
+    font-size: 0.68rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    font-weight: 600;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+
+  thead th.num, td.num { text-align: right; }
+
+  tbody td {
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    vertical-align: middle;
+  }
+
+  tbody tr:last-child td { border-bottom: none; }
+
+  tbody tr.rounds td { color: var(--text-muted); }
+
+  .bar-cell {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 160px;
+  }
+
+  .bar-track {
+    flex: 1 1 auto;
+    height: 7px;
+    background: var(--surface-2);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .bar-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+  }
+
+  tfoot td {
+    padding: 12px 14px;
+    font-weight: 700;
+    color: var(--text);
+    border-top: 2px solid var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .task-name { color: var(--text); font-weight: 600; font-family: var(--serif); font-size: 0.92rem; }
+
+  /* ---- Footer stats ---- */
+
+  .statgrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  .stat {
+    background: var(--surface);
+    padding: 16px 18px;
+  }
+
+  .stat .v {
+    font-family: var(--mono);
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .stat .k {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin-top: 4px;
+  }
+
+  footer {
+    margin-top: 60px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    color: var(--text-faint);
+  }
+
+  img.shot { width:100%; border:1px solid var(--border); border-radius:3px; margin:6px 0 4px; }
+  figcaption { font-family:var(--mono); font-size:.74rem; color:var(--text-faint); margin-bottom:22px; }
+  figure { margin:0; }
+  td.wrap, th.wrap { white-space:normal; }
+  table.small { font-size:.78rem; }
+  .fn { font-family:var(--mono); font-size:.76rem; color:var(--text-muted); line-height:1.6; max-width:none; }
+  .devia { border-left:3px solid var(--warn); }
+  p.title code, .why code, p code, td code { font-family:var(--mono); font-size:.88em; }
+  .stall td { color: var(--warn); }
+</style></head><body>
+<div class="page">
+  <div class="titleblock">
+    <p class="eyebrow">Session Report · pru-simulator</p>
+    <h1>SPI Link: PRU0 Controller, PRU1 Peripheral, SPI View</h1>
+    <div class="meta-row">
+      <span>Branch <b>feat/spi-pru-link</b> → <b>main</b></span>
+      <span>27 commits since 46efc4a</span>
+      <span>33 subagent dispatches</span>
+      <span>212/212 sweep rows pass</span>
+      <span class="status-chip">Step 1 done · silicon test pending</span>
+    </div>
+  </div>
+
+<section id="prompt"><h2><span class="num">1</span> The Initial Request</h2>
+<p class="lede">Verbatim, as given at the start of the session (2026-11-04 21:29:36 CET), typos kept (&ldquo;typcial&rdquo;, &ldquo;seperate&rdquo;, &ldquo;loacations&rdquo;):</p>
+<div class="prompt-block">Implement SPI interface using pru-simulator. PRU0 is SPI controller with clock, MOSI, MISO and /CS signals. PRU1 is SPI peripheral with same signals, /CS, CLK and MISO as inputs and MOSI as output. Assume minimum delay between the interfaces. Provide a selection for different SPI CLK rates between 10 Mbit and 50 Mbit. Allow different PRU core clocks to meet more clocking options. Use typcial sample edges such as set on rising and capture on falling edge. Use a protocol from controller side which has first two bytes as command and address followed by one idle bytes and 16 data bytes. Idle byte is used on the peripheral side to get data in time for read commands. Commands are read, write and read/write. Address is a 16 byte address in ICSS_G data memory. Data memory for transmit and receive is seperate on controller and peripheral to check on data consistency. Use direct GPIO modes and use PRU pins which are available on AM243 LP boosterpack header. Document this prompt and the whole development flow including model, token, time, clarifications - similar to the i2c report. Use best model for different tasks. On PRU simulator add an IO&amp;Device tab which visualized the timing diagram and memory loacations on transfer. Use test patterns which are good to follow on the SPI scope. List timing parameters for the selected interface options such as setup and hold times.</div>
+<p class="prompt-source">Source: first user message of session 248cc36f; the later instruction &ldquo;if you hit a usage limit, retry every 15 minutes until it clears&rdquo; came at 23:23 CET.</p>
+<p class="decision-group-label">How the prompt was interpreted</p>
+<div class="decision"><div class="idx">1.1</div><div><p class="title">PRU1 &ldquo;MISO as inputs and MOSI as output&rdquo;</p><p class="why">Read as a slip. Confirmed by the user (&ldquo;yes PRU1 reads MOSI&rdquo;): PRU1 reads CLK, MOSI and /CS and drives MISO.</p></div></div>
+<div class="decision"><div class="idx">1.2</div><div><p class="title">&ldquo;16 byte address&rdquo;</p><p class="why">The one address byte indexes 16-byte blocks (user: 1 &rarr; 16, 2 &rarr; 32). Byte offset = address &times; 16.</p></div></div>
+<div class="decision"><div class="idx">1.3</div><div><p class="title">&ldquo;Mbit&rdquo;</p><p class="why">Taken as the SPI clock in MHz (10 to 50 MHz).</p></div></div>
+<div class="decision"><div class="idx">1.4</div><div><p class="title">&ldquo;Set on rising, capture on falling edge&rdquo;</p><p class="why">That is SPI mode 1, not the usual mode 0. The user asked for both modes 0 and 1.</p></div></div>
+<div class="decision"><div class="idx">1.5</div><div><p class="title">&ldquo;IO&amp;Device tab&rdquo;, &ldquo;best model for different tasks&rdquo;</p><p class="why">An SPI view in the simulator&rsquo;s IO and Device area, with scope, byte decode, memory panels and timing table. Models were chosen per task: Opus for the firmware, the timing-critical runtime and the reviews of those; Sonnet for the protocol model and UI work and their reviews; Haiku for the user-guide text.</p></div></div>
+</section>
+<section id="process"><h2><span class="num">2</span> Process</h2>
+<p>The prompt asked for a documented development flow, so the session followed the repo&rsquo;s superpowers workflow: brainstorm with the user, write the design down, have it checked, plan it as tasks, then build with an implementer and a reviewer per task, and finish with a review of the whole branch.</p>
+<div class="steps">
+<div class="step"><div class="n">01</div><div class="label">Brainstorm (Q&amp;A + mockups)</div></div>
+<div class="step"><div class="n">02</div><div class="label">Design doc</div></div>
+<div class="step"><div class="n">03</div><div class="label">Builder check (Opus)</div></div>
+<div class="step"><div class="n">04</div><div class="label">Plan, 8 tasks</div></div>
+<div class="step"><div class="n">05</div><div class="label">Subagent-driven build</div></div>
+<div class="step"><div class="n">06</div><div class="label">Whole-branch review + fix wave</div></div>
+</div>
+<p style="margin-top:18px"><b>Brainstorm.</b> Questions to the user are the 12 clarifications in section 3. The visual companion showed three layouts for the SPI view: A (scope on top, memory below), B (scope left, memory and timing right) and C (decoded list first). The user chose A &ldquo;but miss timing&rdquo;, which became A + timing (v2). Asking for AM243 min/max values and pins led to A + timing + AM243 limits and pins (v3), which was then fixed in the spec. Two web-fetch dispatches read the AM243x datasheet and the LP-AM243 guide (section 6).</p>
+<p><b>Design doc and builder check.</b> The spec (<code>docs/superpowers/specs/2026-11-04-spi-pru0-pru1-design.md</code>) landed at 22:07 CET. A fresh Opus subagent checked it as a builder would and returned 3 questions: the controller settled 2, and the remaining one, how much I/O latency &ldquo;proven&rdquo; should assume, went to the user, who answered with a silicon measurement (clarification 12). The plan landed at 22:12.</p>
+<p><b>Subagent-driven build.</b> Eight tasks: (1) per-core GPI input delay, (2) protocol model, rate table, patterns, bus monitor, timing measurement, (3) PRU0 controller firmware and runtime, (4) PRU1 edge-polling firmware, (5) rate sweep and timing doc, (6) scenario, rate rebuild and websocket actions, (7) SPI view, (8) user guide, whole-branch review, session report. Each task: implementer, task reviewer, and fix rounds resumed on the same implementer with a re-review (section 5). The controller session recorded 23 numbered rulings (section 4).</p>
+<p><b>Whole-branch review and fix wave.</b> An Opus review of 46efc4a..3620e11 found 1 critical and 7 important issues. A fresh Opus implementer fixed 15 items plus Ruling R18a, and a scoped Opus re-review found all addressed with one minor left (a duplicated sentence in the user guide, fixed with this report).</p>
+</section>
+<section id="clar"><h2><span class="num">3</span> Clarifications</h2><p class="lede">All 12 from spec section 2, in the order they came up.</p><div class="table-wrap"><table class="small"><thead><tr><th class="wrap">#</th><th class="wrap">Question / issue</th><th class="wrap">User&rsquo;s answer</th><th class="wrap">Effect</th></tr></thead><tbody><tr class=""><td class="wrap">1</td><td class="wrap">Who sees this and what should they take away?</td><td class="wrap">Theme &ldquo;vibe coding realtime interfaces&rdquo;: show the SPI can be coded and is easy to demonstrate in the simulator. open-pru + AM243 LP test is step 2.</td><td class="wrap">Scope is the simulator. Real pins and real timing are kept for step 2.</td></tr><tr class=""><td class="wrap">2</td><td class="wrap">Prompt had PRU1 with MISO as input and MOSI as output</td><td class="wrap">&ldquo;yes PRU1 reads MOSI&rdquo;</td><td class="wrap">PRU1: CLK, MOSI and /CS in; MISO out.</td></tr><tr class=""><td class="wrap">3</td><td class="wrap">&ldquo;Set rising / capture falling&rdquo; is mode 1, not mode 0</td><td class="wrap">Support both modes 0 and 1</td><td class="wrap">Mode selector.</td></tr><tr class=""><td class="wrap">4</td><td class="wrap">50 MHz at 200 MHz is only 4 cycles/bit</td><td class="wrap">Not needed at 200 MHz; use a higher core clock</td><td class="wrap">50 MHz is only offered on a faster core clock (in the sweep: 300 MHz, k=3).</td></tr><tr class=""><td class="wrap">5</td><td class="wrap">&ldquo;16 byte address&rdquo; vs one address byte</td><td class="wrap">Address byte points to 16-byte blocks: 1 &rarr; 16, 2 &rarr; 32, &hellip;</td><td class="wrap">Byte offset = addr &times; 16.</td></tr><tr class=""><td class="wrap">6</td><td class="wrap">Scope view</td><td class="wrap">Should also decode byte by byte like PicoScope</td><td class="wrap">Byte boxes over MOSI and MISO.</td></tr><tr class=""><td class="wrap">7</td><td class="wrap">Layout for the SPI view (3 mockups)</td><td class="wrap">Picked A (scope on top, memory below), &ldquo;but miss timing&rdquo;</td><td class="wrap">Timing arrows on the trace and a timing table were added.</td></tr><tr class=""><td class="wrap">8</td><td class="wrap">Timing table</td><td class="wrap">Add min/max for the AM243 pins</td><td class="wrap">AM243 datasheet and LP guide were fetched.</td></tr><tr class=""><td class="wrap">9</td><td class="wrap">Pins and table as proposed</td><td class="wrap">&ldquo;yes pins and table work&rdquo;</td><td class="wrap">Pin table fixed in the spec.</td></tr><tr class=""><td class="wrap">10</td><td class="wrap">Edge-polling vs clock-locked peripheral for top rates</td><td class="wrap">Must be a real edge-polling peripheral. Hint: sample clock and data in one masked R31 compare, and sample based on the previous edge.</td><td class="wrap">Anti-goal: no clock-locked shortcut. The masked R31 read is used. The previous-edge hint was <b>not</b> used (Ruling R20).</td></tr><tr class=""><td class="wrap">11</td><td class="wrap">Playback of protocol, rates, patterns, report and models</td><td class="wrap">&ldquo;all good&rdquo;</td><td class="wrap">Protocol, rates, patterns, report content and model plan as written.</td></tr><tr class=""><td class="wrap">12</td><td class="wrap">Builder check: simulator has 0-cycle GPI/GPO latency; what delay should &ldquo;proven&rdquo; assume?</td><td class="wrap">Silicon measurement: at 333 MHz, <code>wbs input_pin</code> + <code>set output_pin</code> shows 18 ns from async input edge to output edge on an external scope</td><td class="wrap">Calibrated pin-to-pin hop delay of 5 core cycles in the simulator (Ruling R6, first estimated as 4). The controller gets a MISO sample delay.</td></tr></tbody></table></div><p style="margin-top:16px"><b>The user&rsquo;s own technique hints</b> (clarification 10): sample clock and data together with one masked R31 read, and sample from the previous edge. The first is in the PRU1 firmware. The second is a deviation, see R20. <b>The silicon measurement</b> (clarification 12) is the only timing number in the project that comes from real hardware: 18 ns for <code>wbs</code> + <code>set</code> at 333 MHz is 6 core cycles, against 1 cycle in the simulator with no delay, so the simulator adds 5.</p></section>
+<section id="design"><h2><span class="num">4</span> Design Choices and Rulings</h2><p class="lede">Every ruling the controller session made, with the reason and the cost if it turns out wrong. R7a, R9a and R18a amend R7, R9 and R18.</p><p class="decision-group-label">Plan pre-flight (before Task 1)</p><div class="decision"><div class="idx">R1</div><div><p class="title">State push key is <code>io.spi_demo</code></p><p class="why">Follows the existing SSI pattern (<code>io_section["spi_demo"]</code> next to <code>ssi_demo</code>). Cost if wrong: rename in 2 places.</p></div></div><div class="decision"><div class="idx">R2</div><div><p class="title"><code>SpiLinkRuntime.reload_controller(cfg)</code> may be added</p><p class="why">Reassembles PRU0 only and keeps PRU1, wires and monitor; needed to prove the peripheral edge-polls rather than being clock-locked. Cost if wrong: a small API addition.</p></div></div><div class="decision"><div class="idx">R3</div><div><p class="title">Scenario default is mode 1 at 25 MHz if supported, else the fastest supported mode-1 rate at or below 25 MHz</p><p class="why">The spec names 25 MHz at 200 MHz only as a mockup example. Cost if wrong: a different default rate.</p></div></div><div class="decision"><div class="idx">R4</div><div><p class="title"><code>apply_scenario</code> validates config per scenario; SPI config is {mode, spi_mhz}</p><p class="why">Cost if wrong: refactor of one function. Amended by R17.</p></div></div><div class="decision"><div class="idx">R5</div><div><p class="title">If the Task 7 implementer cannot drive a browser, the controller does the browser check</p><p class="why">Verification only, no fixes. Cost if wrong: only time. (In practice the implementer ran a headless-Chrome check and took the screenshots.)</p></div></div><p class="decision-group-label">Timing model and calibration</p><div class="decision"><div class="idx">R6</div><div><p class="title">Hop delay is 5 cycles, not 4</p><p class="why">Single-stepping gave 1 cycle native for wire&rarr;<code>wbs</code>&rarr;<code>set</code> at 333 MHz, so the user&rsquo;s 18 ns (6 cycles) needs +5. The 4 came from the controller&rsquo;s own 1-2 cycle estimate. Cost if wrong: one cycle more conservative, possibly one fewer supported top rate.</p></div></div><div class="decision"><div class="idx">R7</div><div><p class="title">tSU,MISO and tH,MISO are measured against PRU0&rsquo;s actual sample point</p><p class="why">Not the nominal capture edge: with a sample delay these differ. Setup = sample &minus; MISO change of that bit; hold = next MISO change &minus; sample. Cost if wrong: one function&rsquo;s measurement reference. (A review finding, see section 5.)</p></div></div><div class="decision"><div class="idx">R7a</div><div><p class="title">Pin-referred sample point = launch + miso_delay &minus; hop delay</p><p class="why">That is the pin state PRU0&rsquo;s delayed R31 read actually sees (amends R7). <code>measure_timing</code> takes <code>hop_delay</code>. Passing rows must not show negative MISO hold. Cost if wrong: regenerate tables.</p></div></div><div class="decision"><div class="idx">R8</div><div><p class="title">Rows not measured from edges are marked <code>derived</code> and never count as worst</p><p class="why">tsk (the simulator models no pad skew) and tIDLE (a design value until measured). Cost if wrong: two rows&rsquo; labelling.</p></div></div><div class="decision"><div class="idx">R9</div><div><p class="title">miso_delay holes and default 0 stay; the window value is picked from realisable values nearest the middle</p><p class="why">Realisable means <code>controller_delay_ok</code> (d mod 2k not 0 or k, pipelining at most 6 bits). Cost if wrong: one helper in the sweep.</p></div></div><div class="decision"><div class="idx">R9a</div><div><p class="title">Equidistant candidates: take the earlier one</p><p class="why">Pin-referred timing gives a balanced 2+2 cycles against a 1-cycle hold. 165 rows&rsquo; miso_delay moved by 1-2; no pass or window changed. Cost if wrong: a tie-break rule.</p></div></div><div class="decision"><div class="idx">R10</div><div><p class="title"><code>reload_controller</code> leaves one consistent time base</p><p class="why">Both cores&rsquo; cycle counters and GPI delay histories are reset together and the monitor is cleared, so PRU0 and PRU1 edges share one clock. Cost if wrong: a reload API detail.</p></div></div><div class="decision"><div class="idx">R11</div><div><p class="title">The controller&rsquo;s real inter-frame /CS-high gap is accepted (135-249 cycles)</p><p class="why">The strict 2 tCLK gap is proven by Task 4&rsquo;s direct-stimulus tests. First quoted as 144-231, corrected from the generated doc. Cost if wrong: the demo cannot show a minimum-gap burst.</p></div></div><div class="decision"><div class="idx">R12</div><div><p class="title"><code>pru_io/spi_rates.json</code> holds summary rows only</p><p class="why">It is pushed to the UI (58 KB instead of 480 KB); full tables live in <code>docs/spi_link_timing.md</code>. Cost if wrong: file layout.</p></div></div><p class="decision-group-label">Server, UI and honesty of labels (review-driven)</p><div class="decision"><div class="idx">R13</div><div><p class="title">Leaving the SPI scenario restores the configured core clock</p><p class="why">If <code>spi_setup</code> changed it, by a fresh rebuild from memory.cfg values without writing memory.cfg. Cost if wrong: one extra rebuild on leaving.</p></div></div><div class="decision"><div class="idx">R14</div><div><p class="title">The 58 KB <code>supported</code> table is sent once, not on every state push</p><p class="why">Sent with <code>scenario_loaded</code> / <code>spi_setup</code> responses or an <code>spi_supported</code> message; the monitor keeps only the last 8 frames. Cost if wrong: payload layout.</p></div></div><div class="decision"><div class="idx">R15</div><div><p class="title">The SPI view decodes MISO at PRU0&rsquo;s sample point everywhere, with a visible note</p><p class="why">The backend monitor&rsquo;s capture-edge decode is not shown. Cost if wrong: one display choice; a logic-analyzer view could be added.</p></div></div><div class="decision"><div class="idx">R16</div><div><p class="title">Editor-visible firmware assembles standalone</p><p class="why">Each .asm carries a default config block between markers that <code>render_header</code> replaces at load. The simulator assembler evaluates <code>$isdefed</code> as false, so <code>.if</code> guards cannot be used. Cost if wrong: header mechanism.</p></div></div><div class="decision"><div class="idx">R17</div><div><p class="title">MISO sample delay is selectable in the UI</p><p class="why"><code>spi_setup</code> takes an optional <code>miso_delay</code> validated with <code>controller_delay_ok</code>; the control lists realisable values with the passing window marked (spec 5.1; amends R4). Cost if wrong: one control.</p></div></div><div class="decision"><div class="idx">R18</div><div><p class="title">tLEAD, tLAG and tH/tL get no AM243 min/max; only datasheet-sourced cells are tinted</p><p class="why">Spec anti-goal: no number presented as a datasheet limit when the datasheet gives none. Margin was first defined as measured &minus; design minimum &minus; 2 ns PRDO1 skew. Cost if wrong: labelling.</p></div></div><div class="decision"><div class="idx">R18a</div><div><p class="title">Those three rows are exact by construction: margin None, excluded from worst</p><p class="why">The literal R18 made a self-imposed minimum the worst row everywhere. Source text: &ldquo;exact by construction (design); up to 2 ns PRDO1 skew on silicon&rdquo;. Worst returns to tSU,MISO. Cost if wrong: labelling of three rows.</p></div></div><div class="decision"><div class="idx">R19</div><div><p class="title">The &ldquo;PRU1 needs 9 (mode 1) / 5 (mode 0) cycles of /CS high at k=3&rdquo; claim gets stimulus tests</p><p class="why">Pass at 9/5, lost frame at 8/4; otherwise the claim is removed. No untested cycle claims. Cost if wrong: a doc line.</p></div></div><div class="decision"><div class="idx">R21</div><div><p class="title">Reset / HW Reset inside the SPI scenario re-applies the scenario</p><p class="why">At the current session config, so the demo survives with a fresh time base, matching SSI. Only program loads and other scenarios leave it. Cost if wrong: reset semantics.</p></div></div><div class="decision"><div class="idx">R22</div><div><p class="title">Dropping PRU0 or PRU1 from the execution-core selection leaves the SPI scenario</p><p class="why">Tested. Cost if wrong: a leave path.</p></div></div><div class="decision"><div class="idx">R23</div><div><p class="title"><code>p1_cycles_per_bit</code> stays the minimum; <code>p1_bit_cycles_max</code> is added</p><p class="why">&ldquo;Limiting&rdquo; text uses the max (6 cycles in both modes). Cost if wrong: a field name and some wording.</p></div></div><p class="decision-group-label">Deviation from the user&rsquo;s hint</p><div class="devia"><div class="decision"><div class="idx">R20</div><div><p class="title">Deviation: &ldquo;sample from the previous edge&rdquo; is NOT used</p><p class="why">Spec 5.2 carried the user&rsquo;s technique hint. It was optional (&ldquo;you can also&rdquo;), and the two-poll design (one masked R31 read per edge) already reaches 50 MHz in both modes and is more robust against jitter and stretched clocks. Documented in <code>docs/spi_link.md</code>, here, and surfaced to the user. Cost if wrong: an unused optimisation that would give PRU1 more slack in mode 1, which has 0 cycles of slack per byte at the top rate.</p></div></div></div></section>
+<section id="review"><h2><span class="num">5</span> Bugs and Gaps Caught in Review</h2><p class="lede">Every task had a separate reviewer; every task needed at least one fix round or ruling before it was accepted (section 8 shows the cost).</p><p class="decision-group-label">Task 1 (opus review: approved)</p><p class="why">No defects beyond Ruling R6 (applied in the same task). Minors deferred: the UI register panel showed the undelayed R31 (fixed in Task 6), delay reset even when unchanged, history masked to 20 bits while the pin state is not. Pre-existing baseline failures were confirmed on a clean HEAD worktree.</p><p class="decision-group-label">Task 2 (sonnet review: needs fixes)</p><div class="decision fixed"><div class="idx">2a</div><div><p class="title">MISO timing measured against the nominal edge, not PRU0&rsquo;s sample point</p><p class="why">Led to R7. No MISO-row tests existed.</p></div></div><div class="decision fixed"><div class="idx">2b</div><div><p class="title">Negative setup was hidden as None</p><p class="why">A MISO change after the sample point must show as negative setup. tIDLE and tsk were also not measured; marked derived (R8).</p></div></div><p class="decision-group-label">Task 3 (opus review: needs fixes)</p><div class="decision fixed"><div class="idx">3a</div><div><p class="title">MISO pipelining depth 4-6 untested</p><p class="why">Data for Q=4..6 bits in flight is now proven.</p></div></div><div class="decision fixed"><div class="idx">3b</div><div><p class="title">/CS was low at load</p><p class="why">/CS (R30 = 0) was low before the first instruction; now idle high, plus monitor re-attach and close fixes.</p></div></div><p class="decision-group-label">Task 4 (opus review: needs fixes)</p><div class="decision fixed"><div class="idx">4a</div><div><p class="title">PRU1 dropped a whole frame at a spec-minimum /CS gap</p><p class="why">With only 2 tCLK of /CS high at k up to 6 or 7 the peripheral missed the next frame silently. Fix: commit takes 10 cycles; minimum gap at k=3 is 9 cycles (mode 1) / 5 (mode 0).</p></div></div><p class="decision-group-label">Task 5 (opus review: approved; pre-review fixes by the controller&rsquo;s rulings)</p><div class="decision fixed"><div class="idx">5a</div><div><p class="title">Reload broke the monitor time base</p><p class="why">PRU0 reset its cycle counter but PRU1 did not, so edges were stamped on different clocks (R10).</p></div></div><div class="decision fixed"><div class="idx">5b</div><div><p class="title">Pin-referred MISO sample</p><p class="why">Passing rows showed &minus;2 ns hold (R7a).</p></div></div><div class="decision fixed"><div class="idx">5c</div><div><p class="title">480 KB rate table pushed to the UI</p><p class="why">Reduced to 58 KB summary rows (R12).</p></div></div><p class="decision-group-label">Task 6 (sonnet review: needs fixes)</p><div class="decision fixed"><div class="idx">6a</div><div><p class="title">Clock not restored on leaving the scenario</p><p class="why">R13.</p></div></div><div class="decision fixed"><div class="idx">6b</div><div><p class="title">Supported table sent on every push</p><p class="why">R14.</p></div></div><div class="decision fixed"><div class="idx">6c</div><div><p class="title">Monitor edges unbounded</p><p class="why">Capped to the last 8 frames.</p></div></div><p class="decision-group-label">Task 7 (sonnet review: needs fixes)</p><div class="decision fixed"><div class="idx">7a</div><div><p class="title">Frame-strip MISO contradicted the scope</p><p class="why">Strip showed the monitor&rsquo;s capture-edge decode (3F BF FD &hellip;) while scope boxes and PRU0 RX showed FE FD FB &hellip; (R15). Also an io-tab list in <code>ui_chrome</code> broke, and cursor labels overlapped.</p></div></div><p class="decision-group-label">Final whole-branch review (opus: with fixes, 1 critical, 7 important)</p><div class="decision fixed"><div class="idx">F1</div><div><p class="title">Critical: scenario tests depended on the user&rsquo;s uncommitted memory.cfg (200 MHz)</p><p class="why">The tests passed only on this machine&rsquo;s working tree. Fix: scenario tests own their clock.</p></div></div><div class="decision fixed"><div class="idx">F2</div><div><p class="title">Editor firmware did not assemble standalone</p><p class="why">R16.</p></div></div><div class="decision fixed"><div class="idx">F3</div><div><p class="title">MISO delay not selectable</p><p class="why">Spec 5.1 required it; R17.</p></div></div><div class="decision fixed"><div class="idx">F4</div><div><p class="title">Non-datasheet numbers sat in datasheet columns</p><p class="why">R18, later R18a.</p></div></div><div class="decision fixed"><div class="idx">F5</div><div><p class="title">Untested cycle claim</p><p class="why">R19.</p></div></div><div class="decision fixed"><div class="idx">F6</div><div><p class="title">Reset tore down the demo</p><p class="why">R21.</p></div></div><div class="decision fixed"><div class="idx">F7</div><div><p class="title">Core-selection leave path</p><p class="why">R22.</p></div></div><div class="decision fixed"><div class="idx">F8</div><div><p class="title">Limiting cycle count used the minimum</p><p class="why">R23.</p></div></div><div class="decision fixed"><div class="idx">F9</div><div><p class="title">R18 literal reading made a self-imposed minimum the worst row</p><p class="why">Found while retaking screenshots; corrected by R18a (re-review addressed all 15 items and R18a).</p></div></div><p class="why">Also fixed in the wave: tIDLE measured fetch shown in the UI, a UI note that the worst row limits the next faster rate, a timing-doc contradiction on cycles per edge, <code>clientX 0</code> in <code>spi.js</code>, <code>put_clock_speed</code> persisting a session clock, and a runnable Python example via <code>tools/spi_sweep.make_config</code>.</p></section>
+<section id="sources"><h2><span class="num">6</span> Sources</h2>
+<div class="decision"><div class="idx">6.1</div><div><p class="title">AM243x datasheet SPRSP65J (rev. June 2026)</p><p class="why">Section 6.11.5.16.1, the PRU timing tables: Table 6-112 (timing conditions: input slew 1-3 V/ns, output load 2-30 pF) and Table 6-113 (direct output mode, PRDO1: output skew between GPO pins at most 2 ns). Key finding: there is no direct-input-mode timing table, so the input setup and hold rows are design budgets, not datasheet limits.</p></div></div>
+<div class="decision"><div class="idx">6.2</div><div><p class="title">LP-AM243 user&rsquo;s guide SPRUJ12F (Jan 2024)</p><p class="why">Tables 4-11 to 4-14 and B-2: which PRU pins reach the BoosterPack headers; used to fix the pin table (spec section 7).</p></div></div>
+<div class="decision"><div class="idx">6.3</div><div><p class="title">The user&rsquo;s 18 ns scope measurement</p><p class="why">At 333 MHz, <code>wbs input_pin</code> followed by <code>set output_pin</code>: 18 ns from asynchronous input edge to output edge on an external scope. This sets the 5-cycle hop delay (R6).</p></div></div>
+<p class="fn">WebFetch could not decode either PDF, so both were extracted locally with <code>pdftotext</code> and read from the text. Board trace and jumper-wire delay are not modelled (docs/spi_link_timing.md).</p></section>
+<section id="results"><h2><span class="num">7</span> Results</h2>
+<p class="lede">From <code>pru_io/spi_rates.json</code> (generated 2026-11-05T06:08:39Z, sweep wall time 127.7 s) and <code>docs/spi_link_timing.md</code>.</p>
+<div class="statgrid">
+<div class="stat"><div class="v">212/212</div><div class="k">sweep rows pass (2 modes &times; 53 core/k combos &times; hop 0/5)</div></div>
+<div class="stat"><div class="v">0</div><div class="k">byte errors over the full sequence</div></div>
+<div class="stat"><div class="v">50 MHz</div><div class="k">fastest rate, both modes</div></div>
+<div class="stat"><div class="v">+1.33 ns</div><div class="k">worst margin, tSU,MISO</div></div>
+</div>
+<p style="margin-top:18px"><b>Supported</b> means zero byte errors and every step right at the 5-cycle hop delay on both cores, so the table below shows the 106 hop-5 rows (53 combinations per mode); the 106 hop-0 rows are informational. Core clocks are 200, 225, 250, 300 and 333 MHz; SPI clock = core / 2k with k = 3 to 16, 10 to 50 MHz, never 50 MHz at 200 MHz. The test sequence covers WRITE, READ and R/W with five patterns (a5_5a, walking1, walking0, count, toggle), an unknown command, an out-of-range address, a mid-frame /CS abort and back-to-back frames.</p>
+<p><b>PRU1 cycles per data bit:</b> mode 0 min 4, max 6; mode 1 min 5, max 6 (max includes gap work; single-stepped, same in every row because PRU1 waits for each edge). Steady data byte 40 (mode 0) / 47 (mode 1) cycles, longest byte 47 / 48, idle-byte TX fetch 12.</p>
+<p><b>Fastest supported rate:</b> 50.000 MHz at 300 MHz core, k=3, in both modes. Mode 0: MISO window 13..17 (4 passing values), PRU1 slack 1 of 48 cycles per byte. Mode 1: window 16..17 (2 values), PRU1 slack 0 of 48. Limiting factors: PRU1 itself is exactly at its limit at k=3 in mode 1 (bit budget 2k = 6 cycles against a 6-cycle limiting bit, no slack per byte), and the MISO window is narrowest there. A faster rate would need k below 3 or more than 50 MHz, outside the requested range.</p>
+<p><b>Worst margins:</b> tSU,MISO +1.33 ns (mode 0, 300 MHz, k=3) and +1.33 ns (mode 1, 300 MHz, k=3); the next worst are +2.00 ns at 250 MHz, +2.44 at 225, +3.00 at 200 (k=3 in each). Per-row worst margins are in the table (exact-by-construction rows are excluded, R18a).</p>
+<p class="fn">Cell format: chosen miso_delay [passing window lo..hi] (number of passing delay values). Margin is the worst measured margin in ns. All rows shown pass; rows ordered by SPI clock.</p>
+<div class="table-wrap"><table class="small"><thead><tr><th class="num">Core MHz</th><th class="num">k</th><th class="num">SPI MHz</th><th class="wrap">Mode 0: delay [window] (n)</th><th class="num">Mode 0 worst ns</th><th class="wrap">Mode 1: delay [window] (n)</th><th class="num">Mode 1 worst ns</th></tr></thead><tbody><tr class=""><td class="num">200</td><td class="num">10</td><td class="num">10.000</td><td class="wrap">21 [12..31] (18) pass</td><td class="num">43.00</td><td class="wrap">23 [15..32] (16) pass</td><td class="num">38.00</td></tr><tr class=""><td class="num">300</td><td class="num">15</td><td class="num">10.000</td><td class="wrap">26 [12..41] (28) pass</td><td class="num">44.67</td><td class="wrap">29 [16..42] (26) pass</td><td class="num">38.00</td></tr><tr class=""><td class="num">225</td><td class="num">11</td><td class="num">10.227</td><td class="wrap">21 [12..32] (20) pass</td><td class="num">38.00</td><td class="wrap">24 [15..34] (18) pass</td><td class="num">38.00</td></tr><tr class=""><td class="num">333</td><td class="num">16</td><td class="num">10.406</td><td class="wrap">27 [12..43] (30) pass</td><td class="num">43.05</td><td class="wrap">29 [15..44] (28) pass</td><td class="num">40.04</td></tr><tr class=""><td class="num">250</td><td class="num">12</td><td class="num">10.417</td><td class="wrap">23 [13..35] (22) pass</td><td class="num">42.00</td><td class="wrap">25 [15..35] (20) pass</td><td class="num">38.00</td></tr><tr class=""><td class="num">300</td><td class="num">14</td><td class="num">10.714</td><td class="wrap">25 [12..39] (26) pass</td><td class="num">41.33</td><td class="wrap">27 [15..40] (25) pass</td><td class="num">38.00</td></tr><tr class=""><td class="num">333</td><td class="num">15</td><td class="num">11.100</td><td class="wrap">26 [12..41] (28) pass</td><td class="num">40.04</td><td class="wrap">29 [16..42] (26) pass</td><td class="num">34.04</td></tr><tr class=""><td class="num">200</td><td class="num">9</td><td class="num">11.111</td><td class="wrap">20 [12..29] (16) pass</td><td class="num">38.00</td><td class="wrap">22 [15..30] (14) pass</td><td class="num">33.00</td></tr><tr class=""><td class="num">225</td><td class="num">10</td><td class="num">11.250</td><td class="wrap">21 [12..31] (18) pass</td><td class="num">38.00</td><td class="wrap">23 [15..32] (16) pass</td><td class="num">33.56</td></tr><tr class=""><td class="num">250</td><td class="num">11</td><td class="num">11.364</td><td class="wrap">21 [12..32] (20) pass</td><td class="num">34.00</td><td class="wrap">24 [15..34] (18) pass</td><td class="num">34.00</td></tr><tr class=""><td class="num">300</td><td class="num">13</td><td class="num">11.538</td><td class="wrap">24 [12..37] (24) pass</td><td class="num">38.00</td><td class="wrap">27 [15..38] (23) pass</td><td class="num">31.33</td></tr><tr class=""><td class="num">333</td><td class="num">14</td><td class="num">11.893</td><td class="wrap">25 [12..39] (26) pass</td><td class="num">37.04</td><td class="wrap">27 [15..40] (25) pass</td><td class="num">34.04</td></tr><tr class=""><td class="num">200</td><td class="num">8</td><td class="num">12.500</td><td class="wrap">19 [12..27] (14) pass</td><td class="num">33.00</td><td class="wrap">21 [15..28] (12) pass</td><td class="num">28.00</td></tr><tr class=""><td class="num">225</td><td class="num">9</td><td class="num">12.500</td><td class="wrap">20 [12..29] (16) pass</td><td class="num">33.56</td><td class="wrap">22 [15..30] (14) pass</td><td class="num">29.11</td></tr><tr class=""><td class="num">250</td><td class="num">10</td><td class="num">12.500</td><td class="wrap">21 [12..31] (18) pass</td><td class="num">34.00</td><td class="wrap">23 [15..32] (16) pass</td><td class="num">30.00</td></tr><tr class=""><td class="num">300</td><td class="num">12</td><td class="num">12.500</td><td class="wrap">23 [13..35] (22) pass</td><td class="num">34.67</td><td class="wrap">25 [15..35] (20) pass</td><td class="num">31.33</td></tr><tr class=""><td class="num">333</td><td class="num">13</td><td class="num">12.808</td><td class="wrap">24 [12..37] (24) pass</td><td class="num">34.04</td><td class="wrap">27 [15..38] (23) pass</td><td class="num">28.03</td></tr><tr class=""><td class="num">300</td><td class="num">11</td><td class="num">13.636</td><td class="wrap">21 [12..32] (20) pass</td><td class="num">28.00</td><td class="wrap">24 [15..34] (18) pass</td><td class="num">28.00</td></tr><tr class=""><td class="num">333</td><td class="num">12</td><td class="num">13.875</td><td class="wrap">23 [13..35] (22) pass</td><td class="num">31.03</td><td class="wrap">25 [15..35] (20) pass</td><td class="num">28.03</td></tr><tr class=""><td class="num">250</td><td class="num">9</td><td class="num">13.889</td><td class="wrap">20 [12..29] (16) pass</td><td class="num">30.00</td><td class="wrap">22 [15..30] (14) pass</td><td class="num">26.00</td></tr><tr class=""><td class="num">225</td><td class="num">8</td><td class="num">14.062</td><td class="wrap">19 [12..27] (14) pass</td><td class="num">29.11</td><td class="wrap">21 [15..28] (12) pass</td><td class="num">24.67</td></tr><tr class=""><td class="num">200</td><td class="num">7</td><td class="num">14.286</td><td class="wrap">18 [12..25] (12) pass</td><td class="num">28.00</td><td class="wrap">20 [15..26] (11) pass</td><td class="num">23.00</td></tr><tr class=""><td class="num">300</td><td class="num">10</td><td class="num">15.000</td><td class="wrap">21 [12..31] (18) pass</td><td class="num">28.00</td><td class="wrap">23 [15..32] (16) pass</td><td class="num">24.67</td></tr><tr class=""><td class="num">333</td><td class="num">11</td><td class="num">15.136</td><td class="wrap">21 [12..32] (20) pass</td><td class="num">25.03</td><td class="wrap">24 [15..34] (18) pass</td><td class="num">25.03</td></tr><tr class=""><td class="num">250</td><td class="num">8</td><td class="num">15.625</td><td class="wrap">19 [12..27] (14) pass</td><td class="num">26.00</td><td class="wrap">21 [15..28] (12) pass</td><td class="num">22.00</td></tr><tr class=""><td class="num">225</td><td class="num">7</td><td class="num">16.071</td><td class="wrap">18 [12..25] (12) pass</td><td class="num">24.67</td><td class="wrap">20 [15..26] (11) pass</td><td class="num">20.22</td></tr><tr class=""><td class="num">333</td><td class="num">10</td><td class="num">16.650</td><td class="wrap">21 [12..31] (18) pass</td><td class="num">25.03</td><td class="wrap">23 [15..32] (16) pass</td><td class="num">22.02</td></tr><tr class=""><td class="num">200</td><td class="num">6</td><td class="num">16.667</td><td class="wrap">17 [13..23] (10) pass</td><td class="num">23.00</td><td class="wrap">19 [15..23] (8) pass</td><td class="num">18.00</td></tr><tr class=""><td class="num">300</td><td class="num">9</td><td class="num">16.667</td><td class="wrap">20 [12..29] (16) pass</td><td class="num">24.67</td><td class="wrap">22 [15..30] (14) pass</td><td class="num">21.33</td></tr><tr class=""><td class="num">250</td><td class="num">7</td><td class="num">17.857</td><td class="wrap">18 [12..25] (12) pass</td><td class="num">22.00</td><td class="wrap">20 [15..26] (11) pass</td><td class="num">18.00</td></tr><tr class=""><td class="num">333</td><td class="num">9</td><td class="num">18.500</td><td class="wrap">20 [12..29] (16) pass</td><td class="num">22.02</td><td class="wrap">22 [15..30] (14) pass</td><td class="num">19.02</td></tr><tr class=""><td class="num">225</td><td class="num">6</td><td class="num">18.750</td><td class="wrap">17 [13..23] (10) pass</td><td class="num">20.22</td><td class="wrap">19 [15..23] (8) pass</td><td class="num">15.78</td></tr><tr class=""><td class="num">300</td><td class="num">8</td><td class="num">18.750</td><td class="wrap">19 [12..27] (14) pass</td><td class="num">21.33</td><td class="wrap">21 [15..28] (12) pass</td><td class="num">18.00</td></tr><tr class=""><td class="num">200</td><td class="num">5</td><td class="num">20.000</td><td class="wrap">16 [12..21] (8) pass</td><td class="num">18.00</td><td class="wrap">19 [16..22] (6) pass</td><td class="num">8.00</td></tr><tr class=""><td class="num">333</td><td class="num">8</td><td class="num">20.812</td><td class="wrap">19 [12..27] (14) pass</td><td class="num">19.02</td><td class="wrap">21 [15..28] (12) pass</td><td class="num">16.02</td></tr><tr class=""><td class="num">250</td><td class="num">6</td><td class="num">20.833</td><td class="wrap">17 [13..23] (10) pass</td><td class="num">18.00</td><td class="wrap">19 [15..23] (8) pass</td><td class="num">14.00</td></tr><tr class=""><td class="num">300</td><td class="num">7</td><td class="num">21.429</td><td class="wrap">18 [12..25] (12) pass</td><td class="num">18.00</td><td class="wrap">20 [15..26] (11) pass</td><td class="num">14.67</td></tr><tr class=""><td class="num">225</td><td class="num">5</td><td class="num">22.500</td><td class="wrap">16 [12..21] (8) pass</td><td class="num">15.78</td><td class="wrap">19 [16..22] (6) pass</td><td class="num">6.89</td></tr><tr class=""><td class="num">333</td><td class="num">7</td><td class="num">23.786</td><td class="wrap">18 [12..25] (12) pass</td><td class="num">16.02</td><td class="wrap">20 [15..26] (11) pass</td><td class="num">13.02</td></tr><tr class=""><td class="num">200</td><td class="num">4</td><td class="num">25.000</td><td class="wrap">15 [13..19] (6) pass</td><td class="num">8.00</td><td class="wrap">17 [15..19] (4) pass</td><td class="num">8.00</td></tr><tr class=""><td class="num">250</td><td class="num">5</td><td class="num">25.000</td><td class="wrap">16 [12..21] (8) pass</td><td class="num">14.00</td><td class="wrap">19 [16..22] (6) pass</td><td class="num">6.00</td></tr><tr class=""><td class="num">300</td><td class="num">6</td><td class="num">25.000</td><td class="wrap">17 [13..23] (10) pass</td><td class="num">14.67</td><td class="wrap">19 [15..23] (8) pass</td><td class="num">11.33</td></tr><tr class=""><td class="num">333</td><td class="num">6</td><td class="num">27.750</td><td class="wrap">17 [13..23] (10) pass</td><td class="num">13.02</td><td class="wrap">19 [15..23] (8) pass</td><td class="num">10.01</td></tr><tr class=""><td class="num">225</td><td class="num">4</td><td class="num">28.125</td><td class="wrap">15 [13..19] (6) pass</td><td class="num">6.89</td><td class="wrap">17 [15..19] (4) pass</td><td class="num">6.89</td></tr><tr class=""><td class="num">300</td><td class="num">5</td><td class="num">30.000</td><td class="wrap">16 [12..21] (8) pass</td><td class="num">11.33</td><td class="wrap">19 [16..22] (6) pass</td><td class="num">4.67</td></tr><tr class=""><td class="num">250</td><td class="num">4</td><td class="num">31.250</td><td class="wrap">15 [13..19] (6) pass</td><td class="num">6.00</td><td class="wrap">17 [15..19] (4) pass</td><td class="num">6.00</td></tr><tr class=""><td class="num">333</td><td class="num">5</td><td class="num">33.300</td><td class="wrap">16 [12..21] (8) pass</td><td class="num">10.01</td><td class="wrap">19 [16..22] (6) pass</td><td class="num">4.01</td></tr><tr class=""><td class="num">200</td><td class="num">3</td><td class="num">33.333</td><td class="wrap">14 [13..17] (4) pass</td><td class="num">3.00</td><td class="wrap">16 [16..17] (2) pass</td><td class="num">3.00</td></tr><tr class=""><td class="num">225</td><td class="num">3</td><td class="num">37.500</td><td class="wrap">14 [13..17] (4) pass</td><td class="num">2.44</td><td class="wrap">16 [16..17] (2) pass</td><td class="num">2.44</td></tr><tr class=""><td class="num">300</td><td class="num">4</td><td class="num">37.500</td><td class="wrap">15 [13..19] (6) pass</td><td class="num">4.67</td><td class="wrap">17 [15..19] (4) pass</td><td class="num">4.67</td></tr><tr class=""><td class="num">333</td><td class="num">4</td><td class="num">41.625</td><td class="wrap">15 [13..19] (6) pass</td><td class="num">4.01</td><td class="wrap">17 [15..19] (4) pass</td><td class="num">4.01</td></tr><tr class=""><td class="num">250</td><td class="num">3</td><td class="num">41.667</td><td class="wrap">14 [13..17] (4) pass</td><td class="num">2.00</td><td class="wrap">16 [16..17] (2) pass</td><td class="num">2.00</td></tr><tr class=""><td class="num">300</td><td class="num">3</td><td class="num">50.000</td><td class="wrap">14 [13..17] (4) pass</td><td class="num">1.33</td><td class="wrap">16 [16..17] (2) pass</td><td class="num">1.33</td></tr></tbody></table></div>
+<figure style="margin-top:24px"><img class="shot" src="img/spi-view-fastest.png" alt="SPI view at the fastest rate"><figcaption>spi-view-fastest.png: mode 1, 50 MHz at 300 MHz core.</figcaption></figure>
+<figure><img class="shot" src="img/spi-view-default-25mhz.png" alt="SPI view default scenario"><figcaption>spi-view-default-25mhz.png: scenario default, mode 1, 25 MHz.</figcaption></figure>
+<figure><img class="shot" src="img/spi-view-mode0.png" alt="SPI view mode 0"><figcaption>spi-view-mode0.png: SPI mode 0.</figcaption></figure>
+<figure><img class="shot" src="img/spi-view-after-refresh.png" alt="SPI view after refresh"><figcaption>spi-view-after-refresh.png: view after a page refresh (state restored).</figcaption></figure>
+</section>
+<section id="usage"><h2><span class="num">8</span> Models, Tokens and Time</h2>
+<div class="arch-note"><p>The controller session ran on <b>Opus 5.5</b> throughout and delegated all code work. Token counts for dispatches are as reported by the harness in <code>docs/reports/spi-pru-link-dispatch-log.csv</code>. A resumed agent (fix rounds, and implementers resumed after a usage limit) reports <b>cumulative</b> tokens for its whole life, so a fix-round row includes the implementer row above it: the sum below double-counts those and is an upper bound for the work, not a billing figure. The model column is as dispatched; the two web-fetch rows used the web-fetch agent&rsquo;s default model, which the log does not record.</p></div>
+<p class="decision-group-label">Per dispatch</p>
+<div class="table-wrap"><table class="small"><thead><tr><th>Phase</th><th>Task</th><th>Role</th><th>Model</th><th class="num" style="min-width:190px">Tokens</th><th class="num">Duration</th><th class="num">Tool uses</th></tr></thead><tbody><tr class=""><td>brainstorm</td><td>-</td><td class="wrap">web-fetch AM243x datasheet</td><td>web-fetch</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:25%"></div></div><span>76,485</span></div></td><td class="num">1m 26s</td><td class="num">3</td></tr><tr class=""><td>brainstorm</td><td>-</td><td class="wrap">web-fetch LP-AM243 guide</td><td>web-fetch</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:12%"></div></div><span>38,262</span></div></td><td class="num">0m 28s</td><td class="num">2</td></tr><tr class=""><td>brainstorm</td><td>-</td><td class="wrap">builder check of design doc</td><td>Opus</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:21%"></div></div><span>65,295</span></div></td><td class="num">2m 22s</td><td class="num">16</td></tr><tr class=""><td>build</td><td>1</td><td class="wrap">implementer</td><td>Opus</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:29%"></div></div><span>89,952</span></div></td><td class="num">6m 07s</td><td class="num">36</td></tr><tr class="rounds"><td>build</td><td>1</td><td class="wrap">implementer fix (ruling R6)</td><td>Opus</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:30%"></div></div><span>94,157</span></div></td><td class="num">0m 35s</td><td class="num">4</td></tr><tr class=""><td>build</td><td>1</td><td class="wrap">task reviewer</td><td>Opus</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:22%"></div></div><span>70,216</span></div></td><td class="num">1m 07s</td><td class="num">6</td></tr><tr class=""><td>build</td><td>2</td><td class="wrap">implementer</td><td>Sonnet</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:21%"></div></div><span>65,608</span></div></td><td class="num">4m 58s</td><td class="num">14</td></tr><tr class=""><td>build</td><td>2</td><td class="wrap">task reviewer</td><td>Sonnet</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:16%"></div></div><span>50,945</span></div></td><td class="num">0m 45s</td><td class="num">3</td></tr><tr class="rounds"><td>build</td><td>2</td><td class="wrap">implementer fix round 1 (a+b)</td><td>Sonnet</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:24%"></div></div><span>75,477</span></div></td><td class="num">2m 04s</td><td class="num">13</td></tr><tr class="rounds"><td>build</td><td>2</td><td class="wrap">re-review fix round 1</td><td>Sonnet</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:12%"></div></div><span>38,761</span></div></td><td class="num">0m 19s</td><td class="num">2</td></tr><tr class=""><td>build</td><td>3</td><td class="wrap">implementer</td><td>Opus</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:83%"></div></div><span>260,295</span></div></td><td class="num">36m 03s</td><td class="num">54</td></tr><tr class=""><td>build</td><td>3</td><td class="wrap">task reviewer</td><td>Opus</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:28%"></div></div><span>86,997</span></div></td><td class="num">2m 53s</td><td class="num">6</td></tr><tr class="rounds"><td>build</td><td>3</td><td class="wrap">implementer fix round 1</td><td>Opus</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:88%"></div></div><span>274,011</span></div></td><td class="num">5m 01s</td><td class="num">13</td></tr><tr class="rounds"><td>build</td><td>3</td><td class="wrap">re-review fix round 1</td><td>Sonnet</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:14%"></div></div><span>43,454</span></div></td><td class="num">0m 21s</td><td class="num">4</td></tr><tr class=""><td>build</td><td>4</td><td class="wrap">implementer</td><td>Opus</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:78%"></div></div><span>242,762</span></div></td><td class="num">n/a</td><td class="num">n/a</td></tr><tr class=""><td>build</td><td>4</td><td class="wrap">task reviewer</td><td>Opus</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:34%"></div></div><span>107,267</span></div></td><td class="num">3m 57s</td><td class="num">20</td></tr><tr class="rounds"><td>build</td><td>4</td><td class="wrap">implementer fix round 1</td><td>Opus</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:100%"></div></div><span>312,102</span></div></td><td class="num">13m 15s</td><td class="num">28</td></tr><tr class="rounds"><td>build</td><td>4</td><td class="wrap">re-review fix round 1</td><td>Opus</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:21%"></div></div><span>66,043</span></div></td><td class="num">1m 45s</td><td class="num">8</td></tr><tr class=""><td>build</td><td>5</td><td class="wrap">implementer</td><td>Opus</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:51%"></div></div><span>158,583</span></div></td><td class="num">20m 03s</td><td class="num">50</td></tr><tr class="rounds"><td>build</td><td>5</td><td class="wrap">implementer pre-review fix (R10/R7a/R12)</td><td>Opus</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:66%"></div></div><span>207,007</span></div></td><td class="num">21m 44s</td><td class="num">32</td></tr><tr class=""><td>build</td><td>5</td><td class="wrap">task reviewer</td><td>Opus</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:38%"></div></div><span>118,088</span></div></td><td class="num">4m 14s</td><td class="num">17</td></tr><tr class=""><td>build</td><td>6</td><td class="wrap">implementer</td><td>Sonnet</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:32%"></div></div><span>100,993</span></div></td><td class="num">9m 12s</td><td class="num">26</td></tr><tr class=""><td>build</td><td>6</td><td class="wrap">task reviewer</td><td>Sonnet</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:20%"></div></div><span>61,917</span></div></td><td class="num">1m 08s</td><td class="num">9</td></tr><tr class="rounds"><td>build</td><td>6</td><td class="wrap">implementer fix round 1</td><td>Sonnet</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:36%"></div></div><span>113,199</span></div></td><td class="num">6m 42s</td><td class="num">9</td></tr><tr class="rounds"><td>build</td><td>6</td><td class="wrap">re-review fix round 1</td><td>Sonnet</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:14%"></div></div><span>43,868</span></div></td><td class="num">0m 22s</td><td class="num">3</td></tr><tr class=""><td>build</td><td>7</td><td class="wrap">implementer</td><td>Sonnet</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:44%"></div></div><span>137,073</span></div></td><td class="num">7m 23s</td><td class="num">39</td></tr><tr class=""><td>build</td><td>7</td><td class="wrap">task reviewer</td><td>Sonnet</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:23%"></div></div><span>72,112</span></div></td><td class="num">0m 43s</td><td class="num">10</td></tr><tr class="rounds"><td>build</td><td>7</td><td class="wrap">implementer fix round 1</td><td>Sonnet</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:49%"></div></div><span>154,444</span></div></td><td class="num">2m 32s</td><td class="num">12</td></tr><tr class="rounds"><td>build</td><td>7</td><td class="wrap">re-review fix round 1</td><td>Sonnet</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:15%"></div></div><span>47,893</span></div></td><td class="num">0m 20s</td><td class="num">5</td></tr><tr class=""><td>build</td><td>8</td><td class="wrap">docs implementer</td><td>Haiku</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:45%"></div></div><span>140,216</span></div></td><td class="num">4m 13s</td><td class="num">37</td></tr><tr class=""><td>build</td><td>8</td><td class="wrap">final whole-branch review</td><td>Opus</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:70%"></div></div><span>220,029</span></div></td><td class="num">9m 40s</td><td class="num">57</td></tr><tr class="rounds"><td>build</td><td>8</td><td class="wrap">final fix wave implementer (incl. R18a)</td><td>Opus</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:80%"></div></div><span>248,772</span></div></td><td class="num">29m 46s</td><td class="num">70</td></tr><tr class="rounds"><td>build</td><td>8</td><td class="wrap">final fix wave re-review</td><td>Opus</td><td class="num"><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:29%"></div></div><span>88,969</span></div></td><td class="num">2m 13s</td><td class="num">18</td></tr></tbody></table></div>
+<p class="fn">Task 4 implementer duration is n/a: the run was split by the first usage-limit stall, so its duration is not comparable. Fix-round and implementer rows with cumulative tokens: tasks 1, 2, 3, 4, 5 (pre-review fix), 6, 7 and the final fix wave.</p>
+<p class="decision-group-label">Totals per model (dispatches)</p>
+<div class="table-wrap"><table><thead><tr><th>Model</th><th class="num">Dispatches</th><th class="num">Tokens</th><th class="num">Sum of durations</th></tr></thead><tbody><tr><td>Opus</td><td class="num">17</td><td class="num">2,710,545</td><td class="num">2h 40m 48s</td></tr><tr><td>Sonnet</td><td class="num">13</td><td class="num">1,005,744</td><td class="num">36m 49s</td></tr><tr><td>Haiku</td><td class="num">1</td><td class="num">140,216</td><td class="num">4m 13s</td></tr><tr><td>web-fetch default (model not recorded)</td><td class="num">2</td><td class="num">114,747</td><td class="num">1m 54s</td></tr><tr><td><b>All dispatches</b></td><td class="num"><b>33</b></td><td class="num"><b>3,971,252</b></td><td class="num"><b>3h 23m 44s</b></td></tr></tbody></table></div>
+<p class="decision-group-label">Controller session (Opus 5.5), from the transcript</p>
+<div class="statgrid">
+<div class="stat"><div class="v">566</div><div class="k">input tokens</div></div>
+<div class="stat"><div class="v">175,602</div><div class="k">output tokens</div></div>
+<div class="stat"><div class="v">1,030,878</div><div class="k">cache creation tokens</div></div>
+<div class="stat"><div class="v">48,734,663</div><div class="k">cache read tokens</div></div>
+</div>
+<p class="fn">Sum of the <code>usage</code> fields of the 214 assistant API messages in session 248cc36f (211 by claude-opus-5-5, 3 synthetic) over the whole transcript, which starts at 20:47:25 CET (19:47:25Z) with earlier work; the SPI prompt arrived at 21:29:36 CET. The totals therefore include the 42 minutes before the SPI request and are an upper bound for this project.</p>
+<p class="decision-group-label">Timeline, from git commit times</p>
+<p class="lede">Elapsed is the time between landings. The two usage-limit stalls are shown separately and subtracted.</p>
+<div class="table-wrap"><table class="small"><thead><tr><th>Step</th><th>Landed (CET, 2026-11-04/05)</th><th class="num">Elapsed</th><th class="num">Stall</th><th class="num">Net</th></tr></thead><tbody><tr class=""><td class="wrap">Brainstorm + design doc</td><td class="wrap">prompt 21:29:36 &rarr; ae0a3a7 &middot; 22:07:15</td><td class="num">37m 39s</td><td class="num">&ndash;</td><td class="num">37m 39s</td></tr><tr class=""><td class="wrap">Implementation plan</td><td class="wrap">e033a87 &middot; 22:12:00</td><td class="num">4m 45s</td><td class="num">&ndash;</td><td class="num">4m 45s</td></tr><tr class=""><td class="wrap">1 &middot; GPI input delay</td><td class="wrap">c2c445c &middot; 22:26:01</td><td class="num">14m 01s</td><td class="num">&ndash;</td><td class="num">14m 01s</td></tr><tr class=""><td class="wrap">2 &middot; Protocol, rates, monitor</td><td class="wrap">6787cbf &middot; 22:35:46</td><td class="num">9m 45s</td><td class="num">&ndash;</td><td class="num">9m 45s</td></tr><tr class=""><td class="wrap">3 &middot; PRU0 controller</td><td class="wrap">2fd1a25 &middot; 23:21:15</td><td class="num">45m 29s</td><td class="num">&ndash;</td><td class="num">45m 29s</td></tr><tr class="stall"><td class="wrap">4 &middot; PRU1 peripheral</td><td class="wrap">81d5506 &middot; 02:04:44</td><td class="num">2h 43m 29s</td><td class="num">&minus;1h 48m 12s</td><td class="num">55m 17s</td></tr><tr class=""><td class="wrap">5 &middot; Rate sweep, timing doc</td><td class="wrap">1557844 &middot; 02:50:11</td><td class="num">45m 27s</td><td class="num">&ndash;</td><td class="num">45m 27s</td></tr><tr class=""><td class="wrap">6 &middot; Scenario, websocket</td><td class="wrap">7a4c66f &middot; 03:13:30</td><td class="num">23m 19s</td><td class="num">&ndash;</td><td class="num">23m 19s</td></tr><tr class=""><td class="wrap">7 &middot; SPI view</td><td class="wrap">b34174c &middot; 03:26:38</td><td class="num">13m 08s</td><td class="num">&ndash;</td><td class="num">13m 08s</td></tr><tr class=""><td class="wrap">8a &middot; User guide (haiku)</td><td class="wrap">3620e11 &middot; 03:31:53</td><td class="num">5m 15s</td><td class="num">&ndash;</td><td class="num">5m 15s</td></tr><tr class=""><td class="wrap">8b &middot; Whole-branch review, ledger fixes</td><td class="wrap">89cb9ad &middot; 03:43:05</td><td class="num">11m 12s</td><td class="num">&ndash;</td><td class="num">11m 12s</td></tr><tr class="stall"><td class="wrap">8c &middot; Final fix wave + R18a + screenshots</td><td class="wrap">94cc42f &hellip; 7ebca7c &middot; 07:09:27</td><td class="num">3h 26m 22s</td><td class="num">&minus;2h 56m 20s</td><td class="num">30m 02s</td></tr><tr><td><b>Prompt &rarr; last commit</b></td><td></td><td class="num"><b>9h 39m 51s</b></td><td class="num"><b>&minus;4h 44m 32s</b></td><td class="num"><b>4h 55m 19s</b></td></tr></tbody></table></div>
+<div class="statgrid" style="margin-top:18px">
+<div class="stat"><div class="v">9h 43m 44s</div><div class="k">prompt to last session event (07:13:20)</div></div>
+<div class="stat"><div class="v">1h 48m 12s</div><div class="k">stall 1: 5-hour limit, task 4</div></div>
+<div class="stat"><div class="v">2h 56m 20s</div><div class="k">stall 2: 5-hour limit, final fix wave</div></div>
+<div class="stat"><div class="v">4h 59m 12s</div><div class="k">active time, net of stalls</div></div>
+</div>
+<p class="fn">Arithmetic. Prompt 21:29:36 &rarr; last session event 07:13:20 = 9h 43m 44s (35024 s). Stall 1: limit hit 23:53:23 (task 4 implementer failed with HTTP 429, transcript), reset 01:40, implementer resumed 01:41:35 (ledger): 1h 48m 12s (6492 s). Stall 2: hit 03:45:33, reset 06:40, resumed 06:41:53 (ledger): 2h 56m 20s (10580 s). Active = 35024 &minus; 6492 &minus; 10580 = 17952 s = 4h 59m 12s. In the timeline table, the first landing (ae0a3a7, 22:07:15) is 37m 39s after the prompt and the last (7ebca7c, 07:09:27) is 9h 39m 51s after it; the 3m 53s after the last commit went to the scoped re-review, this report and the usage collation. Stalls are counted from the failing API call to the resumption; waiting retries every 15 minutes (user instruction) happened inside them.</p>
+</section>
+<section id="tests"><h2><span class="num">9</span> Tests</h2>
+<p class="lede">Run in a clean worktree of HEAD 7ebca7c (so the uncommitted memory.cfg and scratch files do not affect it).</p>
+<div class="statgrid">
+<div class="stat"><div class="v">3486</div><div class="k">pytest passed</div></div>
+<div class="stat"><div class="v">3</div><div class="k">pytest failed (all known)</div></div>
+<div class="stat"><div class="v">84</div><div class="k">node UI tests passed</div></div>
+<div class="stat"><div class="v">9</div><div class="k">node UI tests failed (all known)</div></div>
+</div>
+<p style="margin-top:18px"><b>pytest:</b> <code>3 failed, 3486 passed, 2 skipped, 2 xfailed, 1 warning in 342.97s (0:05:42)</code>. The 3 failures are the known pre-existing ones (test_clock_speed_endpoint x2, test_server am263x rtu0). <code>tests/test_mcp_stdio_device_sdk.py</code> was excluded: the <code>mcp</code> Python package is not installed on this machine, so collection fails with ModuleNotFoundError (not a project failure; it is not counted above).</p>
+<p><b>Node:</b> each <code>tests/ui_*.test.js</code> run individually (Node 22 rejects <code>--test-isolation=none</code>).</p>
+<div class="table-wrap"><table class="small"><thead><tr><th class="wrap">File</th><th class="num">Passed</th><th class="num">Failed</th></tr></thead><tbody><tr class=""><td class="wrap">ui_capture_integrity.test.js</td><td class="num">6</td><td class="num">2</td></tr><tr class=""><td class="wrap">ui_chrome.test.js</td><td class="num">0</td><td class="num">1</td></tr><tr class=""><td class="wrap">ui_connection_recovery.test.js</td><td class="num">3</td><td class="num">0</td></tr><tr class=""><td class="wrap">ui_controls.test.js</td><td class="num">1</td><td class="num">0</td></tr><tr class=""><td class="wrap">ui_cores.test.js</td><td class="num">18</td><td class="num">0</td></tr><tr class=""><td class="wrap">ui_device_panel_state.test.js</td><td class="num">1</td><td class="num">0</td></tr><tr class=""><td class="wrap">ui_editor_cores.test.js</td><td class="num">6</td><td class="num">0</td></tr><tr class=""><td class="wrap">ui_issue_regressions.test.js</td><td class="num">4</td><td class="num">0</td></tr><tr class=""><td class="wrap">ui_layout_recovery.test.js</td><td class="num">11</td><td class="num">0</td></tr><tr class=""><td class="wrap">ui_run_flow.test.js</td><td class="num">11</td><td class="num">0</td></tr><tr class=""><td class="wrap">ui_shared_run_flow.test.js</td><td class="num">10</td><td class="num">0</td></tr><tr class=""><td class="wrap">ui_shared_selection.test.js</td><td class="num">0</td><td class="num">6</td></tr><tr class=""><td class="wrap">ui_spi_view.test.js</td><td class="num">11</td><td class="num">0</td></tr><tr class=""><td class="wrap">ui_ssi_demo.test.js</td><td class="num">1</td><td class="num">0</td></tr><tr class=""><td class="wrap">ui_workspace.test.js</td><td class="num">1</td><td class="num">0</td></tr></tbody></table></div>
+<p class="fn">Known failures, present on main and not from this branch (verified by the implementers and the controller on clean worktrees): pytest <code>test_clock_speed_endpoint</code> (2) and <code>test_server</code> am263x rtu0; node <code>ui_capture_integrity</code> (2), <code>ui_chrome</code> (1, line 214), <code>ui_shared_selection</code> (6). <code>ui_spi_view</code> passes 11 of 11.</p></section>
+<section id="next"><h2><span class="num">10</span> Open Items and Next Step</h2>
+<div class="decision"><div class="idx">10.1</div><div><p class="title">Step 2: port to open-pru and test on LP-AM243</p><p class="why">Everything above is simulation. The 5-cycle hop delay rests on one scope measurement at 333 MHz; the real MISO window, jumper-wire delay and PRDO1 pad skew (up to 2 ns) are only known on silicon. Note that 50 MHz needs the 300 MHz core clock.</p></div></div>
+<div class="decision"><div class="idx">10.2</div><div><p class="title">Simulator limitation: GPI stamping</p><p class="why">A GPI change that arrives while the reading core is inside a multi-cycle instruction is stamped at the end of that instruction (<code>io_port._record_gpi</code> uses the reader&rsquo;s cycle counter), so it can land late and two edges inside one stall can merge. Not fixed. The PRU0-PRU1 runs are unaffected (PRU1&rsquo;s longest in-frame instruction is a 3-cycle <code>lbbo</code>, PRU0 does no loads or stores in a frame); the PRU1 tests use a true-cycle stimulus helper.</p></div></div>
+<div class="decision"><div class="idx">10.3</div><div><p class="title">PRU1 at its limit in mode 1 at 50 MHz</p><p class="why">0 cycles of slack per byte, MISO window of two values. The previous-edge technique from the user&rsquo;s hint (R20) is the unused optimisation that would give more slack.</p></div></div>
+<div class="decision"><div class="idx">10.4</div><div><p class="title">Parked or deferred (ledger)</p><p class="why">Hop-0 sweep rows show a &minus;2 ns tH,MISO limiting text; hop 0 is informational and supported rates are hop 5 (ruling: stands). <code>put_clock_speed</code> drops a live <code>SpiLinkRuntime</code> without closing it (harmless). The greyed failing-rate UI path is dead because no rate fails. <code>_publish_updates</code> is not called after the leave-time rebuild. Minors deferred from tasks 2 to 6 include a status block written in four word stores (not atomic for host readers) and slow <code>find_miso_window</code> (about 20 s per rate).</p></div></div>
+<div class="decision"><div class="idx">10.5</div><div><p class="title">Uncommitted user files untouched</p><p class="why"><code>memory.cfg</code>, <code>source/program.asm</code> and <code>source/pif_eth_100/</code> were never staged or edited by this work.</p></div></div>
+</section>
+<footer>Generated from <code>docs/reports/spi-pru-link-dispatch-log.csv</code>, <code>pru_io/spi_rates.json</code>, the controller transcript totals and <code>git log 46efc4a..HEAD</code>. No figure is estimated.</footer>
+</div></body></html>
