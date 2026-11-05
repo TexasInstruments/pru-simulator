@@ -104,7 +104,58 @@ test('timingRows flags exactly one worst row and keeps derived rows unflagged', 
   assert.ok(out.find(r => r.worst).derived !== true);
   const already = plain(SpiView.timingRows(plain(fx.state.timing)));
   assert.equal(already.filter(r => r.worst).length, 1);
-  assert.equal(already.find(r => r.worst).symbol, 'tSU,MISO');
+  assert.equal(already.find(r => r.worst).symbol, 'tH/tL');
+});
+
+test('only datasheet-table cells are tinted as datasheet data (R18)', () => {
+  const { SpiView } = load();
+  const html = SpiView.timingTableHtml(plain(fx.state.timing));
+  const rows = html.split('<tr').slice(2);
+  const tinted = rows.filter(r => r.includes('class="spi-ds"'));
+  assert.ok(tinted.length >= 3);
+  assert.ok(tinted.every(r => /Table 6-11[23]/.test(r)), 'tinted rows are Table 6-112 / 6-113');
+  const lead = rows.find(r => r.includes('LEAD'));
+  assert.ok(!lead.includes('spi-ds') && /design \(min 1 tCLK\)/.test(lead));
+  assert.ok(!/>\+2 ns</.test(lead) && (lead.match(/>none</g) || []).length === 2, 'no AM243 min/max for tLEAD');
+  assert.ok(!html.includes('<th class="spi-ds"'));
+});
+
+test('misoDelayOptions lists realisable values and marks the passing window (R17)', () => {
+  const { SpiView } = load();
+  const row = { mode: 1, spi_mhz: 25, core_mhz: 200, half_k: 4, miso_delay: 17,
+    miso_delay_window: [15, 19], miso_delay_pass: [15, 17, 18, 19] };
+  const options = plain(SpiView.misoDelayOptions(row));
+  const values = options.map(o => o.value);
+  assert.deepEqual(values, [7, 9, 10, 11, 13, 14, 15, 17, 18, 19, 21, 22, 23, 25, 26, 27]);
+  assert.ok(values.every(d => d % 8 !== 0 && d % 8 !== 4), 'never on a CLK write');
+  assert.deepEqual(options.filter(o => o.pass).map(o => o.value), [15, 17, 18, 19]);
+  assert.deepEqual(options.filter(o => o.chosen).map(o => o.value), [17]);
+  assert.match(options.find(o => o.value === 17).label, /passes.*default/);
+  assert.match(options.find(o => o.value === 13).label, /fails/);
+  assert.equal(SpiView.delayOk(4, 16), false);
+  assert.equal(SpiView.delayOk(4, 8 * 7 + 1), false, 'more than 6 bits pipelined');
+  assert.deepEqual(plain(SpiView.misoDelayOptions(null)), []);
+});
+
+test('MISO delay control sends spi_setup with miso_delay; scope click at clientX 0 moves the cursor', () => {
+  const { SpiView, get } = load();
+  const sent = [];
+  SpiView.init({ send: action => sent.push(plain(action)), stop() {} });
+  SpiView.setSupported({ 1: [{ spi_mhz: 25, core_mhz: 200, half_k: 4, pass: true, miso_delay: 17,
+    miso_delay_window: [15, 19], miso_delay_pass: [15, 17, 18, 19] }] });
+  SpiView.render(plain(fx.state));
+  assert.match(get('spi-miso-delay').innerHTML, /value="18"[^>]*>18 cycles \u2713 passes/);
+  assert.equal(get('spi-miso-delay').value, '17');
+  get('spi-miso-delay').value = '18';
+  get('spi-miso-delay').fire('change');
+  assert.deepEqual(sent.at(-1), { action: 'spi_setup', mode: 1, spi_mhz: 25, miso_delay: 18 });
+  SpiView.render(plain(fx.state));
+  const scope = get('spi-scope');
+  scope.getBoundingClientRect = () => ({ left: 0, width: 1100 });
+  const before = scope.innerHTML;
+  scope.listeners.click({ clientX: 0, currentTarget: scope });
+  assert.notEqual(scope.innerHTML, before, 'clientX 0 is a valid click position');
+  assert.match(scope.innerHTML, /bit 0 \(CMD\)/);
 });
 
 test('spi view rehydrates from spi_state on connect', () => {
@@ -177,4 +228,7 @@ test('index.html wires the SPI subtab, pane, assets and app dispatch', () => {
   assert.match(app, /msg\.io\?\.spi_demo/);
   assert.match(app, /msg\.tag === "spi"/);
   assert.match(app, /spi_supported/);
+  assert.ok(!/AM243 columns are datasheet data/.test(html));
+  assert.ok(!/limits the next faster rate/.test(html));
+  assert.match(html, /The worst row is the tightest margin at this rate/);
 });

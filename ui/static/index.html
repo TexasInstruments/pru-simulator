@@ -2367,6 +2367,9 @@ Example:
           <label class="spi-field" for="spi-rate">SPI CLK
             <select id="spi-rate"></select>
           </label>
+          <label class="spi-field" for="spi-miso-delay" title="Core cycles from each MISO launch edge to PRU0's MISO sample. Realisable values only; the passing window is marked.">MISO sample delay
+            <select id="spi-miso-delay"></select>
+          </label>
           <span class="spi-note" id="spi-core-note">Core 200 MHz (session only)</span>
           <label class="spi-field" for="spi-cmd">Command
             <select id="spi-cmd"><option value="1">WRITE (01)</option><option value="2">READ (02)</option><option value="3" selected>READ/WRITE (03)</option><option value="4">Unknown (04)</option></select>
@@ -2397,7 +2400,7 @@ Example:
         <div class="spi-sec" id="spi-timing-title">Timing</div>
         <p class="spi-note" id="spi-gpi-delay"></p>
         <div class="spi-table-wrap" id="spi-timing"></div>
-        <p class="spi-note">Sim values are measured from the pin trace of the last frame. The AM243 columns are datasheet data (SPRSP65J section 6.11.5.16.1); input setup and hold rows are design budgets because the datasheet has no direct-input-mode table. The worst row limits the next faster rate.</p>
+        <p class="spi-note">Sim values are measured from the pin trace of the last frame. Shaded cells are AM243 datasheet data (SPRSP65J section 6.11.5.16.1, Tables 6-112 and 6-113); every other row is a design value. Input setup and hold rows are design budgets because the datasheet has no direct-input-mode table; the t<sub>LEAD</sub>, t<sub>LAG</sub> and t<sub>H</sub>/t<sub>L</sub> margins are measured value minus design minimum minus the 2 ns PRDO1 output skew. The worst row is the tightest margin at this rate.</p>
         <div class="spi-sec">Pins (LP-AM243 user's guide SPRUJ12F)</div>
         <table class="spi-tp">
           <tr><th>Signal</th><th>Core</th><th>PRU pin</th><th>Ball</th><th>Header</th></tr>

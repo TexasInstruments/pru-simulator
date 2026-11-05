@@ -44,6 +44,39 @@
     });
   }
 
+  // ---- MISO sample delay choices (Ruling R17) ---------------------------------
+  // Mirrors spi_link.controller_delay_ok: the sample is its own R31 read, so it
+  // cannot land on a CLK write (offset 0 or k in a bit), and at most 6 bits deep.
+  const MISO_Q_MAX = 6;
+  function delayOk(halfK, d) {
+    if (!Number.isInteger(d) || d < 0) return false;
+    const s = d % (2 * halfK);
+    return s !== 0 && s !== halfK && Math.floor(d / (2 * halfK)) <= MISO_Q_MAX;
+  }
+  function findRow(supported, mode, spiMhz) {
+    const rows = (supported && (supported[mode] || supported[String(mode)])) || [];
+    return rows.find(r => Math.abs(Number(r.spi_mhz) - spiMhz) < 5e-4) || null;
+  }
+  // Realisable miso_delay values around the row's passing window (one bit
+  // period either side), passing ones and the sweep's choice marked.
+  function misoDelayOptions(row) {
+    if (!row || !row.half_k) return [];
+    const k = Number(row.half_k), per = 2 * k;
+    const pass = new Set(row.miso_delay_pass || []);
+    const win = row.miso_delay_window || [row.miso_delay, row.miso_delay];
+    const lo = Math.max(1, win[0] - per), hi = Math.min(per * (MISO_Q_MAX + 1) - 1, win[1] + per);
+    const out = [];
+    for (let d = lo; d <= hi; d++) {
+      if (!delayOk(k, d)) continue;
+      const passes = pass.has(d), chosen = d === row.miso_delay;
+      out.push({ value: d, pass: passes, chosen,
+        label: `${d} cycles${passes ? ' \u2713 passes' : ' \u2717 fails'}${chosen ? ' (default)' : ''}`,
+        title: passes ? `In the passing window ${win[0]}..${win[1]}: PRU0 reads PRU1 correctly`
+          : `Outside the passing window ${win[0]}..${win[1]}: PRU0 reads the wrong bit` });
+    }
+    return out;
+  }
+
   // ---- decode ------------------------------------------------------------------
   // edges: [[cycle, word], ...] word bits 0 /CS, 1 CLK, 2 MOSI, 3 MISO. The first
   // entry is the edge before the frame. Returns the frame's records plus its
@@ -169,15 +202,17 @@
       return m && !/^(MISO_DELAY|HOP)$/.test(part) ? `${esc(m[1])}<sub>${esc(m[2])}</sub>` : esc(part);
     }).join('/');
   }
+  const isDatasheet = row => /^Table 6-11\d/.test(String(row.source || ''));
   function timingTableHtml(rows) {
     const list = timingRows(rows);
     const head = '<tr><th>Parameter</th><th>Symbol</th><th>Design</th><th>Cycles</th><th>Sim</th>' +
-      '<th class="spi-ds">AM243 min</th><th class="spi-ds">AM243 max</th><th class="spi-ds">Source</th>' +
+      '<th>AM243 min</th><th>AM243 max</th><th>Source</th>' +
       '<th>Worst-case margin</th></tr>';
     const body = list.map(r => {
       const unit = unitOf(r.symbol);
       const none = r.am243_min == null && r.am243_max == null;
-      const dsClass = none ? 'spi-ds spi-na' : 'spi-ds';
+      // Only a datasheet table (SPRSP65J Table 6-11x) is tinted as datasheet data (R18).
+      const dsClass = isDatasheet(r) ? 'spi-ds' : none ? 'spi-na' : '';
       const signed = r.am243_min != null && r.am243_min < 0;
       const lo = none ? 'none' : (r.am243_min == null ? 'n/a' : cell(r.am243_min, unit, signed));
       const hi = none ? 'none' : (r.am243_max == null ? 'n/a' : cell(r.am243_max, unit, signed));
@@ -335,9 +370,9 @@
 
   function setBusy(busy) {
     view.busy = busy;
-    for (const id of ['spi-send', 'spi-sequence', 'spi-mode', 'spi-rate']) {
+    for (const id of ['spi-send', 'spi-sequence', 'spi-mode', 'spi-rate', 'spi-miso-delay']) {
       const el = byId(id);
-      if (el) el.disabled = busy || (id === 'spi-rate' && !view.supported);
+      if (el) el.disabled = busy || ((id === 'spi-rate' || id === 'spi-miso-delay') && !view.supported);
     }
     const status = byId('spi-status');
     if (status) status.textContent = busy ? 'Running…' : '';
@@ -349,6 +384,19 @@
     setHtml('spi-rate', options.map(o => `<option value="${o.spi_mhz}"${o.disabled ? ' disabled' : ''} title="${esc(o.title)}">${esc(o.label)}</option>`).join(''));
     const el = byId('spi-rate');
     if (el && chosen) el.value = String(chosen.spi_mhz);
+  }
+
+  function populateMisoDelay(cfg) {
+    const options = misoDelayOptions(findRow(view.supported, cfg.mode, cfg.spi_mhz));
+    if (!options.some(o => o.value === cfg.miso_delay)) {
+      options.push({ value: cfg.miso_delay, pass: false, chosen: false,
+        label: `${cfg.miso_delay} cycles`, title: 'In effect' });
+      options.sort((a, b) => a.value - b.value);
+    }
+    setHtml('spi-miso-delay', options.map(o => `<option value="${o.value}" class="${o.pass ? 'spi-ok' : 'spi-bad'}" ` +
+      `title="${esc(o.title)}">${esc(o.label)}</option>`).join(''));
+    const el = byId('spi-miso-delay');
+    if (el) el.value = String(cfg.miso_delay);
   }
 
   function show(state) {
@@ -364,6 +412,7 @@
     const modeEl = byId('spi-mode');
     if (modeEl) modeEl.value = String(cfg.mode);
     populateRates(cfg.mode, cfg.spi_mhz);
+    populateMisoDelay(cfg);
     setText('spi-core-note', `Core ${cfg.core_mhz} MHz (set automatically, session only)`);
     setText('spi-gpi-delay', `GPI delay ${state.hop_delay} cycles ${GPI_DELAY_NOTE}`);
     if (!view.seeded && state.last) {
@@ -452,6 +501,13 @@
       view.stop?.();
       act({ action: 'spi_setup', mode: Number(byId('spi-mode').value), spi_mhz: Number(byId('spi-rate').value) });
     });
+    byId('spi-miso-delay')?.addEventListener('change', () => {
+      const cfg = view.last && view.last.config;
+      if (!cfg) return;
+      view.stop?.();
+      act({ action: 'spi_setup', mode: cfg.mode, spi_mhz: cfg.spi_mhz,
+        miso_delay: Number(byId('spi-miso-delay').value) });
+    });
     byId('spi-mode')?.addEventListener('change', () => {
       const mode = Number(byId('spi-mode').value);
       const options = rateOptions(view.supported, mode).filter(o => !o.disabled);
@@ -465,7 +521,7 @@
     byId('spi-scope')?.addEventListener('click', event => {
       const m = view.last && scopeModel(view.last, view.cursor);
       const target = event && event.currentTarget;
-      if (!m || !event.clientX || !target || !target.getBoundingClientRect) return;
+      if (!m || event.clientX == null || !target || !target.getBoundingClientRect) return;
       const box = target.getBoundingClientRect();
       const px = (event.clientX - box.left) / box.width * W;
       let best = 0;
@@ -476,6 +532,6 @@
   }
 
   window.SpiView = { SCENARIO, render: show, init, setSupported, showError, rateOptions, decodeBoxes,
-    timingRows, compareBadge, misoBytes, frameStripHtml, mismatchIndexes, fieldName, scopeSvg, timingTableHtml,
+    timingRows, compareBadge, misoBytes, misoDelayOptions, delayOk, frameStripHtml, mismatchIndexes, fieldName, scopeSvg, timingTableHtml,
     get supported() { return view.supported; } };
 })();
