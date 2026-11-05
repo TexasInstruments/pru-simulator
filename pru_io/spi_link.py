@@ -192,7 +192,10 @@ class SpiBusMonitor(DeviceModel):
         return out
 
     def events(self) -> list[dict]:
-        return [{"cycle": f["end"], "kind": "frame", **f} for f in self.frames()]
+        # The device bus publishes events as JSON: payload bytes travel as hex.
+        return [{"cycle": f["end"], "kind": "frame", **f,
+                 "mosi": f["mosi"].hex(), "miso": f["miso"].hex()}
+                for f in self.frames()]
 
     def faults(self) -> list[str]:
         return list(self._faults)

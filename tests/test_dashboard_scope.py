@@ -10,6 +10,7 @@ def test_dashboard_demo_scope():
     assert set(SCENARIOS) == {
         "SSI encoder (single core)",
         "SSI multi-core (emulator + reader)",
+        "SPI multi-core (controller + peripheral)",
     }
     root = Path(__file__).parents[1]
     html = (root / "ui/static/index.html").read_text()
