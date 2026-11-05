@@ -15,7 +15,8 @@ from pru_io import ssi_config_abi as ssi_abi
 from pru_io.device_profiles import create_device
 from pru_io.spi_link import (ADDR_MAX, C_RX, C_TX, CMD_READ, CMD_RW, CMD_WRITE, P_RX, P_TX,
                              PATTERNS, SpiConfig, SpiLinkRuntime, controller_delay_ok,
-                             load_supported, measure_timing, run_test_sequence)
+                             frame_edges, load_supported, measure_timing,
+                             run_test_sequence)
 from pru_io.ssi_runtime import SSIEmulatorRuntime, SSIRuntime, load_reader
 
 _SOURCE = Path(__file__).resolve().parents[1] / "source"
@@ -321,9 +322,7 @@ def _spi_view(runtime: SpiLinkRuntime) -> dict:
     frames = monitor.frames(runtime.cfg.mode)
     if frames:
         f = frames[-1]
-        prior = [e for e in monitor.edges if e[0] < f["start"]]
-        edges = ([list(prior[-1])] if prior else []) + [
-            [c, w] for c, w in monitor.edges if f["start"] <= c <= f["end"]]
+        edges = frame_edges(monitor.edges, f)
         frame = {"start": f["start"], "end": f["end"], "bits": f["bits"],
                  "aborted": f["aborted"], "mosi": _hex(f["mosi"]),
                  "miso": _hex(f["miso"]), "edges": edges}

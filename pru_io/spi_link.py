@@ -263,6 +263,15 @@ class SpiBusMonitor(DeviceModel):
 # Timing measurement
 # ---------------------------------------------------------------------------
 
+def frame_edges(edges, frame: dict) -> list[list[int]]:
+    """Edges of one monitor frame for drawing: the last edge before it (the idle
+    level) followed by every ``[cycle, word]`` inside ``[start, end]``."""
+    start, end = frame["start"], frame["end"]
+    prior = [e for e in edges if e[0] < start]
+    return ([list(prior[-1])] if prior else []) + [
+        [c, w] for c, w in edges if start <= c <= end]
+
+
 def measure_timing(edges, cfg: SpiConfig, frame_index: int = -1,
                    p1_fetch_cycles: int | None = None,
                    hop_delay: int = HOP_DELAY_CYCLES) -> list[dict]:
@@ -886,7 +895,7 @@ def measure_peripheral_work(runtime: "SpiLinkRuntime", cmd: int, addr: int,
             "fetch_cycles": fetch}
 
 
-def run_test_sequence(runtime: "SpiLinkRuntime", patterns=None) -> dict:
+def run_test_sequence(runtime: "SpiLinkRuntime", patterns=None, record: bool = False) -> dict:
     """Spec section 9 acceptance sequence on a loaded, wired link.
 
     Per pattern: WRITE a block, READ a preloaded TX block, R/W full duplex.
@@ -897,6 +906,12 @@ def run_test_sequence(runtime: "SpiLinkRuntime", patterns=None) -> dict:
     on the bus (monitor decode), every PRU1 RX block, and the PRU1 status
     counters. ``byte_errors`` counts wrong bytes over all checks; ``ok`` also
     needs every status and the gap check right.
+
+    Every frame step names the ``pattern`` whose controller bytes it sent.
+    ``record=True`` also keeps each frame step's ``trace``: its bus frame with
+    the edges to draw it and the memory panels right after it. They are
+    captured when the step runs, because the monitor keeps only recent frames.
+    The ``back_to_back`` gap check has ``trace`` None.
     """
     rt = runtime
     names = list(PATTERNS) if patterns is None else list(patterns)
@@ -909,7 +924,8 @@ def run_test_sequence(runtime: "SpiLinkRuntime", patterns=None) -> dict:
     def diff(a, b):
         return sum(x != y for x, y in zip(a, b)) + abs(len(a) - len(b))
 
-    def frame(step, cmd, addr, data, miso, rx_write=None, valid=True, abort=None):
+    def frame(step, cmd, addr, data, miso, rx_write=None, valid=True, abort=None,
+              pattern=None):
         before_rx = rx_all()
         st = rt.peripheral_status()
         res = rt.transfer(cmd, addr, data, abort_after_bits=abort)
@@ -942,37 +958,57 @@ def run_test_sequence(runtime: "SpiLinkRuntime", patterns=None) -> dict:
             notes.append(f"status {got} != {want}")
         s = {"step": step, "cmd": cmd, "addr": addr, "byte_errors": errs,
              "ok": errs == 0 and not notes, "notes": notes, "cycles": res["cycles"],
-             "frame": fr}
+             "frame": fr, "pattern": pattern}
+        if record:
+            s["trace"] = {
+                "frame": None if fr is None else {
+                    "start": fr["start"], "end": fr["end"], "bits": fr["bits"],
+                    "aborted": fr["aborted"], "mosi": bytes(fr["mosi"]),
+                    "miso": bytes(fr["miso"]),
+                    "edges": frame_edges(rt.monitor.edges, fr)},
+                "memory": {
+                    "c_tx": bytes(rt.sim.memory_read(C_TX, 16)),
+                    "c_rx": bytes(rt.sim.memory_read(C_RX, 16)),
+                    "p_rx": rt.read_peripheral_rx(addr) if addr <= ADDR_MAX else None,
+                    "p_tx": (bytes(rt.sim.memory_read(P_TX + 16 * addr, 16))
+                             if addr <= ADDR_MAX else None)}}
         steps.append(s)
         return s
 
     for i, name in enumerate(names):
         c_tx, p_tx = PATTERNS[name]
         aw, ar, arw = 3 * i, ADDR_MAX - i, 0x40 + i
-        frame(f"write:{name}", CMD_WRITE, aw, c_tx, bytes(FRAME_BYTES), rx_write=c_tx)
+        frame(f"write:{name}", CMD_WRITE, aw, c_tx, bytes(FRAME_BYTES), rx_write=c_tx,
+              pattern=name)
         rt.preload_peripheral_tx(ar, p_tx)
-        frame(f"read:{name}", CMD_READ, ar, c_tx, bytes(3) + p_tx)
+        frame(f"read:{name}", CMD_READ, ar, c_tx, bytes(3) + p_tx, pattern=name)
         rt.preload_peripheral_tx(arw, p_tx)
-        frame(f"rw:{name}", CMD_RW, arw, c_tx, bytes(3) + p_tx, rx_write=c_tx)
+        frame(f"rw:{name}", CMD_RW, arw, c_tx, bytes(3) + p_tx, rx_write=c_tx,
+              pattern=name)
 
     c_tx, p_tx = PATTERNS[names[0]]
     rt.preload_peripheral_tx(0x10, p_tx)
-    frame("unknown_cmd", 0x04, 0x10, c_tx, bytes(FRAME_BYTES), valid=False)
-    frame("bad_addr", CMD_RW, 0x80, c_tx, bytes(FRAME_BYTES), valid=False)
+    frame("unknown_cmd", 0x04, 0x10, c_tx, bytes(FRAME_BYTES), valid=False,
+          pattern=names[0])
+    frame("bad_addr", CMD_RW, 0x80, c_tx, bytes(FRAME_BYTES), valid=False,
+          pattern=names[0])
     rt.preload_peripheral_tx(0x20, p_tx)
-    frame("abort", CMD_RW, 0x20, c_tx, None, abort=76)
+    frame("abort", CMD_RW, 0x20, c_tx, None, abort=76, pattern=names[0])
 
     c2, p2 = PATTERNS[names[-1]]
     rt.preload_peripheral_tx(0x30, p_tx)
     rt.preload_peripheral_tx(0x31, p2)
-    a = frame("back_to_back:1", CMD_RW, 0x30, c_tx, bytes(3) + p_tx, rx_write=c_tx)
-    b = frame("back_to_back:2", CMD_RW, 0x31, c2, bytes(3) + p2, rx_write=c2)
+    a = frame("back_to_back:1", CMD_RW, 0x30, c_tx, bytes(3) + p_tx, rx_write=c_tx,
+              pattern=names[0])
+    b = frame("back_to_back:2", CMD_RW, 0x31, c2, bytes(3) + p2, rx_write=c2,
+              pattern=names[-1])
     gap = None
     if a["frame"] is not None and b["frame"] is not None:
         gap = b["frame"]["start"] - a["frame"]["end"]
     notes = [] if gap is not None and gap >= 4 * k else [f"/CS-high gap {gap} < 2 tCLK"]
     steps.append({"step": "back_to_back", "byte_errors": 0, "ok": not notes,
-                  "notes": notes, "tcsh_cycles": gap, "frame": None})
+                  "notes": notes, "tcsh_cycles": gap, "frame": None,
+                  **({"trace": None} if record else {})})
 
     for s in steps:
         s.pop("frame", None)

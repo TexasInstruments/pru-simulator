@@ -139,6 +139,46 @@ def test_supported_rows_pass_full_sequence(sim_config, mode):
     rt.close()
 
 
+def _default_runtime(sim_config):
+    row = next(r for r in load_supported()[1] if r["spi_mhz"] == 25)
+    return _runtime(sim_config, 1, row["core_mhz"], row["half_k"], row["miso_delay"])
+
+
+def test_sequence_record_keeps_one_trace_per_frame_step(sim_config):
+    rt = _default_runtime(sim_config)
+    res = run_test_sequence(rt, record=True)
+    rt.close()
+    assert res["ok"] is True
+    assert len(res["steps"]) == 21
+    by = {s["step"]: s for s in res["steps"]}
+    for s in res["steps"]:
+        if s["step"] != "back_to_back":
+            assert s["trace"]["frame"]["edges"], s["step"]
+    rw = by["rw:walking1"]["trace"]
+    c_tx, p_tx = PATTERNS["walking1"]
+    rw_addr = 0x40 + list(PATTERNS).index("walking1")     # run_test_sequence: arw = 0x40 + i
+    assert rw["frame"]["mosi"] == bytes([3, rw_addr, 0]) + c_tx
+    assert rw["memory"]["c_rx"] == p_tx
+    assert rw["memory"]["p_rx"] == c_tx
+    assert by["bad_addr"]["trace"]["memory"]["p_rx"] is None
+    assert by["back_to_back"]["trace"] is None
+    assert by["abort"]["trace"]["frame"]["aborted"] is True
+    assert by["rw:walking1"]["pattern"] == "walking1"
+    assert by["back_to_back:2"]["pattern"] == "toggle"
+
+
+def test_sequence_without_record_has_no_trace(sim_config):
+    rt = _default_runtime(sim_config)
+    plain = run_test_sequence(rt)
+    rt.close()
+    rt = _default_runtime(sim_config)
+    recorded = run_test_sequence(rt, record=True)
+    rt.close()
+    assert all("trace" not in s for s in plain["steps"])
+    assert (plain["ok"], plain["byte_errors"]) == (recorded["ok"], recorded["byte_errors"])
+    assert [s["step"] for s in plain["steps"]] == [s["step"] for s in recorded["steps"]]
+
+
 # ---------------------------------------------------------------------------
 # run_test_sequence detects errors
 # ---------------------------------------------------------------------------
