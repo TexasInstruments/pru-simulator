@@ -534,7 +534,13 @@
   function show(state) {
     const result = byId('spi-result');
     if (result) result.hidden = !state;
-    if (!state) { setBusy(false); view.last = null; return; }
+    if (!state) {                 // the SPI scenario is gone: stop Play, forget its steps
+      view.last = null;
+      view.steps = null; view.shown = null; view.stepsAsked = null;
+      stopPlay();
+      setBusy(false);
+      return;
+    }
     view.last = state;
     syncSteps(state.sequence);
     if (!view.supported && !view.requested && view.send) {

@@ -39,8 +39,8 @@ The commits after `66fbcf1`:
 ## Tests
 
 On this PC, with this work in place:
-- **pytest:** `env -u PYTHONPATH .venv/bin/python -m pytest tests -q`. Result: 3491 passed, 2 xfailed. The only failures are the 3 that already fail on `main`.
-- **UI tests:** run each `tests/ui_*.test.js` with `node --test`. The only failures are the 9 that already fail on `main` (capture_integrity 2, chrome 1, shared_selection 6). `ui_spi_view` passes 22/22.
+- **pytest:** `env -u PYTHONPATH .venv/bin/python -m pytest tests -q`. Result: 3494 passed, 2 xfailed. The only failures are the 3 that already fail on `main`.
+- **UI tests:** run each `tests/ui_*.test.js` with `node --test`. The only failures are the 9 that already fail on `main` (capture_integrity 2, chrome 1, shared_selection 6). `ui_spi_view` passes 23/23.
 - **Browser check:** a 30 s run showed the loop cycling `rw:walking1 → rw:walking0 → rw:a5_5a → rw:toggle → rw:walking1` at about 7 s per frame. The 9 SPI controls were disabled while Play ran, Pause unlocked them, and a rate change cleared the chips.
 
 ## Not done

@@ -418,3 +418,16 @@ test('a cleared or replaced sequence stops Play', () => {
   again.SpiView.render(seqState(8));
   assert.match(again.get('spi-play').textContent, /▶ Play/, 'another tab recorded a new sequence');
 });
+
+test('leaving the SPI scenario during Play stops it and unlocks Set up SPI demo', () => {
+  const { SpiView, get, sent } = playing();
+  get('spi-play').click();
+  assert.equal(get('spi-setup-button').disabled, true);
+  SpiView.render(null);
+  assert.equal(get('spi-setup-button').disabled, false, 'setup button usable again');
+  assert.match(get('spi-play').textContent, /▶ Play/);
+  SpiView.tick(8000);
+  const asked = sent.filter(a => a.action === 'spi_steps').length;
+  SpiView.render(seqState(7));
+  assert.equal(sent.filter(a => a.action === 'spi_steps').length, asked + 1, 'steps cache dropped: the id is asked again');
+});

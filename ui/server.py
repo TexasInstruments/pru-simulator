@@ -1168,7 +1168,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 except (KeyError, TypeError, ValueError, RuntimeError, TimeoutError) as exc:
                     await websocket.send_json({"type": "error", "tag": "spi", "errors": [str(exc)]})
                 await _send_state(websocket, core)
-                _publish_updates(origin=websocket)     # other tabs see the new or cleared sequence
             elif action == "ssi_demo_position":
                 try:
                     set_ssi_demo_position(sim, msg.get("position"))

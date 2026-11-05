@@ -552,3 +552,24 @@ def test_second_sequence_gets_new_id(fresh_sim):
         _, one = _state_after(ws, "spi_sequence")
         _, two = _state_after(ws, "spi_sequence")
         assert one["io"]["spi_demo"]["sequence"]["id"] != two["io"]["spi_demo"]["sequence"]["id"]
+
+
+@pytest.mark.parametrize("action,kw", [
+    ("reset", {}),
+    ("hard_reset", {}),
+    ("scenario_load", {"name": SPI}),
+])
+def test_clear_by_reset_or_setup_reaches_other_tabs(fresh_sim, action, kw):
+    with client.websocket_connect("/ws") as a, client.websocket_connect("/ws") as b:
+        _load_spi(a)
+        _state_after(a, "spi_sequence")
+        while True:
+            st = _pru0_state(b)["io"].get("spi_demo")
+            if st and st["sequence"]:
+                break
+        err, _ = _state_after(a, action, **kw)     # drain A: its unread replies hold up the handler
+        assert err is None
+        while True:
+            st = _pru0_state(b)["io"].get("spi_demo")
+            if st is not None and st["sequence"] is None:
+                break
