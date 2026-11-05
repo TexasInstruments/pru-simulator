@@ -7,6 +7,7 @@ simulator; it owns device attach/detach so GPIO drive masks stay consistent.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import count
 from math import ceil
 from pathlib import Path
 from typing import Callable
@@ -171,6 +172,7 @@ def _spi_multicore(sim, device_api, row) -> SpiLinkRuntime:
     runtime.row = row            # supported-rate row (p1_fetch_cycles for the tIDLE row)
     runtime.last = None          # {"cmd", "addr", "pattern", "match"} of the last send
     runtime.sequence = None
+    runtime.recording = None     # {"id", "steps"}: recorded test-sequence steps (spi_steps)
     runtime._view = None         # cached (edge count, cfg id) -> frame/timing
     return runtime
 
@@ -273,6 +275,11 @@ def leave_spi_scenario(sim) -> None:
         sim._scenario = None
 
 
+#: The test-sequence steps the dashboard's Play button loops through (booth demo).
+LOOP_STEPS = ("rw:walking1", "rw:walking0", "rw:a5_5a", "rw:toggle")
+_SEQUENCE_IDS = count(1)     # unique across runtimes: a new recording always has a new id
+
+
 def _spi_runtime(sim) -> SpiLinkRuntime:
     runtime = getattr(sim, "_scenario_runtime", None)
     if not isinstance(runtime, SpiLinkRuntime):
@@ -295,6 +302,7 @@ def spi_send(sim, cmd, addr, pattern) -> None:
     runtime.transfer(cmd, addr, c_tx)
     runtime.last = {"cmd": cmd, "addr": addr, "pattern": pattern}
     runtime.sequence = None
+    runtime.recording = None
 
 
 def spi_sequence(sim) -> None:
@@ -303,9 +311,69 @@ def spi_sequence(sim) -> None:
     It runs synchronously: the dashboard event loop stalls for about a second
     while it executes (about 25 frames of 20k simulated cycles each)."""
     runtime = _spi_runtime(sim)
-    result = run_test_sequence(runtime)
+    result = run_test_sequence(runtime, record=True)
+    seq_id = next(_SEQUENCE_IDS)
+    runtime.recording = {"id": seq_id,
+                         "steps": [_recorded_step(runtime, s) for s in result["steps"]]}
+    for s in result["steps"]:
+        s.pop("trace", None)
     runtime.last = None
-    runtime.sequence = result
+    runtime.sequence = {**result, "id": seq_id, "loop": list(LOOP_STEPS)}
+
+
+def spi_sequence_steps(sim) -> dict:
+    """The recorded steps of the last test sequence: ``{"id", "steps"}``.
+
+    Each step carries the fields the SPI view renders (frame, memory, last,
+    expect, match, timing) in the same shapes as ``spi_demo_state``. They are
+    sent on request (``spi_steps``), never in the state pushes."""
+    recording = _spi_runtime(sim).recording
+    if recording is None:
+        raise ValueError("No recorded test sequence")
+    return recording
+
+
+def _recorded_step(runtime: SpiLinkRuntime, step: dict) -> dict:
+    trace = step.get("trace")
+    out = {k: step[k] for k in ("step", "ok", "byte_errors", "notes", "tcsh_cycles",
+                                "cmd", "addr", "pattern") if k in step}
+    if trace is None:
+        return {**out, "frame": None, "memory": None, "last": None, "expect": None,
+                "match": {"mosi": None, "miso": None}, "timing": []}
+    fr, mem = trace["frame"], trace["memory"]
+    last = {"cmd": step["cmd"], "addr": step["addr"], "pattern": step["pattern"]}
+    memory, match = _panels(mem["c_tx"], mem["c_rx"], mem["p_rx"], mem["p_tx"], sent=True)
+    frame = None
+    timing = []
+    if fr is not None:
+        frame = _frame_view(fr, fr["edges"])
+        timing = measure_timing(fr["edges"], runtime.cfg, hop_delay=runtime.hop_delay,
+                                p1_fetch_cycles=runtime.row.get("p1_fetch_cycles"))
+    return {**out, "frame": frame, "memory": memory, "last": last,
+            "expect": _expect(step["cmd"]), "match": match, "timing": timing}
+
+
+def _frame_view(f: dict, edges: list) -> dict:
+    return {"start": f["start"], "end": f["end"], "bits": f["bits"],
+            "aborted": f["aborted"], "mosi": _hex(f["mosi"]),
+            "miso": _hex(f["miso"]), "edges": edges}
+
+
+def _expect(cmd: int) -> dict:
+    return {"mosi": cmd in (CMD_WRITE, CMD_RW), "miso": cmd in (CMD_READ, CMD_RW)}
+
+
+def _panels(c_tx, c_rx, p_rx, p_tx, sent: bool) -> tuple[dict, dict]:
+    """Memory panels (hex) and the both-ways match counts; p_rx/p_tx are None
+    for an out-of-range address, and nothing matches before a frame was sent."""
+    memory = {"c_tx": _hex(c_tx), "c_rx": _hex(c_rx),
+              "p_rx": None if p_rx is None else _hex(p_rx),
+              "p_tx": None if p_tx is None else _hex(p_tx)}
+    match = {"mosi": None, "miso": None}
+    if sent and p_rx is not None:
+        match = {"mosi": sum(a == b for a, b in zip(c_tx, p_rx)),
+                 "miso": sum(a == b for a, b in zip(p_tx, c_rx))}
+    return memory, match
 
 
 def _hex(data) -> list[str]:
@@ -323,9 +391,7 @@ def _spi_view(runtime: SpiLinkRuntime) -> dict:
     if frames:
         f = frames[-1]
         edges = frame_edges(monitor.edges, f)
-        frame = {"start": f["start"], "end": f["end"], "bits": f["bits"],
-                 "aborted": f["aborted"], "mosi": _hex(f["mosi"]),
-                 "miso": _hex(f["miso"]), "edges": edges}
+        frame = _frame_view(f, edges)
         timing = measure_timing(monitor.edges, runtime.cfg, hop_delay=runtime.hop_delay,
                                 p1_fetch_cycles=runtime.row.get("p1_fetch_cycles"))
     else:
@@ -351,25 +417,18 @@ def spi_demo_state(sim) -> dict | None:
     view = _spi_view(runtime)
     last = runtime.last
     addr = last["addr"] if last else 0
-    memory = {"c_tx": _hex(sim.memory_read(C_TX, 16)), "c_rx": _hex(sim.memory_read(C_RX, 16)),
-              "p_rx": None, "p_tx": None}
-    match = {"mosi": None, "miso": None}
-    if addr <= ADDR_MAX:
-        p_rx = runtime.read_peripheral_rx(addr)
-        p_tx = bytes(sim.memory_read(P_TX + 16 * addr, 16))
-        memory["p_rx"], memory["p_tx"] = _hex(p_rx), _hex(p_tx)
-        if last:
-            c_tx = bytes(sim.memory_read(C_TX, 16))
-            c_rx = bytes(sim.memory_read(C_RX, 16))
-            match = {"mosi": sum(a == b for a, b in zip(c_tx, p_rx)),
-                     "miso": sum(a == b for a, b in zip(p_tx, c_rx))}
+    in_range = addr <= ADDR_MAX
+    memory, match = _panels(
+        bytes(sim.memory_read(C_TX, 16)), bytes(sim.memory_read(C_RX, 16)),
+        runtime.read_peripheral_rx(addr) if in_range else None,
+        bytes(sim.memory_read(P_TX + 16 * addr, 16)) if in_range else None,
+        sent=bool(last))
     return {"name": scenario.name,
             "config": {"mode": cfg.mode, "spi_mhz": cfg.spi_mhz, "half_k": cfg.half_k,
                        "miso_delay": cfg.miso_delay, "core_mhz": cfg.core_mhz, "id": cfg.id},
             "core_mhz": cfg.core_mhz, "hop_delay": runtime.hop_delay,
             "last": last,
-            "expect": ({"mosi": last["cmd"] in (CMD_WRITE, CMD_RW),
-                        "miso": last["cmd"] in (CMD_READ, CMD_RW)} if last else None),
+            "expect": _expect(last["cmd"]) if last else None,
             "frame": view["frame"], "memory": memory, "match": match,
             "timing": view["timing"], "status": runtime.peripheral_status(),
             "faults": runtime.monitor.faults(), "sequence": runtime.sequence}

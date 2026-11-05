@@ -453,3 +453,102 @@ def test_monitor_edges_bounded_and_timing_survives(fresh_sim):
     rows = {r["symbol"]: r for r in measure_timing(
         rt.monitor.edges, rt.cfg, frame_index=-2, hop_delay=rt.hop_delay)}
     assert rows["tCSH"]["sim_ns"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Recorded test-sequence steps (step chips and Play)
+# ---------------------------------------------------------------------------
+
+LOOP = ["rw:walking1", "rw:walking0", "rw:a5_5a", "rw:toggle"]
+
+
+def test_sequence_state_carries_summary_only(fresh_sim):
+    with client.websocket_connect("/ws") as ws:
+        _load_spi(ws)
+        err, msg = _state_after(ws, "spi_sequence")
+        assert err is None
+        seq = msg["io"]["spi_demo"]["sequence"]
+        assert isinstance(seq["id"], int) and seq["loop"] == LOOP
+        for step in seq["steps"]:
+            assert not {"frame", "trace", "memory"} & set(step), step["step"]
+
+
+def test_spi_steps_returns_recorded_frames(fresh_sim):
+    with client.websocket_connect("/ws") as ws:
+        _load_spi(ws)
+        _, msg = _state_after(ws, "spi_sequence")
+        ws.send_json({"action": "spi_steps"})
+        reply = _drain_until(ws, "spi_steps")
+        assert reply["id"] == msg["io"]["spi_demo"]["sequence"]["id"]
+        assert len(reply["steps"]) == 21
+        by = {s["step"]: s for s in reply["steps"]}
+        rw = by["rw:walking1"]
+        addr = 0x40 + list(PATTERNS).index("walking1")
+        assert rw["frame"]["mosi"][:3] == ["03", f"{addr:02X}", "00"]
+        assert rw["match"] == {"mosi": 16, "miso": 16}
+        assert rw["last"] == {"cmd": 3, "addr": addr, "pattern": "walking1"}
+        assert any("SU,MISO" in r["symbol"] for r in rw["timing"])
+        assert next(r for r in rw["timing"] if r["symbol"] == "tCSH")["sim_ns"] is None
+        assert by["back_to_back"]["frame"] is None
+        assert isinstance(by["back_to_back"]["tcsh_cycles"], int)
+        assert by["bad_addr"]["memory"]["p_rx"] is None
+        json.dumps(reply)
+
+
+def test_spi_steps_without_recording_is_spi_error(fresh_sim):
+    with client.websocket_connect("/ws") as ws:
+        _load_spi(ws)
+        ws.send_json({"action": "spi_steps"})
+        err = _drain_until(ws, "error")
+        assert err["tag"] == "spi"
+
+
+@pytest.mark.parametrize("action,kw", [
+    ("spi_send", {"cmd": 3, "addr": 2, "pattern": "count"}),
+    ("spi_setup", {"mode": 1, "spi_mhz": 25.0}),
+    ("reset", {}),
+    ("hard_reset", {}),
+    ("scenario_load", {"name": SPI}),
+])
+def test_recording_cleared_by(fresh_sim, action, kw):
+    with client.websocket_connect("/ws") as ws:
+        _load_spi(ws)
+        _state_after(ws, "spi_sequence")
+        err, msg = _state_after(ws, action, **kw)
+        assert err is None
+        assert msg["io"]["spi_demo"]["sequence"] is None
+        ws.send_json({"action": "spi_steps"})
+        assert _drain_until(ws, "error")["tag"] == "spi"
+
+
+def _pru0_state(ws):
+    for _ in range(40):
+        msg = _receive(ws)
+        if msg["type"] == "state" and msg.get("core") == "pru0" and "io" in msg:
+            return msg
+    raise AssertionError("no pru0 state")
+
+
+def test_sequence_and_clear_reach_other_tabs(fresh_sim):
+    with client.websocket_connect("/ws") as a, client.websocket_connect("/ws") as b:
+        _load_spi(a)
+        _state_after(a, "spi_sequence")
+        while True:
+            st = _pru0_state(b)["io"].get("spi_demo")
+            if st and st["sequence"]:
+                break
+        assert isinstance(st["sequence"]["id"], int)
+        _state_after(a, "spi_send", cmd=3, addr=2, pattern="count")
+        while True:
+            st = _pru0_state(b)["io"]["spi_demo"]
+            if st["sequence"] is None:
+                break
+        assert st["last"] == {"cmd": 3, "addr": 2, "pattern": "count"}
+
+
+def test_second_sequence_gets_new_id(fresh_sim):
+    with client.websocket_connect("/ws") as ws:
+        _load_spi(ws)
+        _, one = _state_after(ws, "spi_sequence")
+        _, two = _state_after(ws, "spi_sequence")
+        assert one["io"]["spi_demo"]["sequence"]["id"] != two["io"]["spi_demo"]["sequence"]["id"]

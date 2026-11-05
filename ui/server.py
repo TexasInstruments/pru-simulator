@@ -29,6 +29,7 @@ from pru_io.device_profiles import discover_device_profiles
 from pru_io.spi_link import SpiLinkRuntime, load_supported
 from pru_io.scenarios import (SCENARIOS, SPI_SCENARIO, apply_scenario, leave_spi_scenario,
                               spi_config_row, spi_demo_state, spi_send, spi_sequence,
+                              spi_sequence_steps,
                               spi_session_config, ssi_demo_state, set_ssi_demo_position)
 from pru_io.ssi_encoder_model import SSIEncoderModel
 from ui.live_sessions import DashboardConnection
@@ -1122,6 +1123,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     await _send_state(websocket, scenario_core)
             elif action == "spi_supported":
                 await websocket.send_json({"type": "spi_supported", "supported": load_supported()})
+            elif action == "spi_steps":
+                try:
+                    await websocket.send_json({"type": "spi_steps", **spi_sequence_steps(sim)})
+                except ValueError as exc:
+                    await websocket.send_json({"type": "error", "tag": "spi", "errors": [str(exc)]})
             elif action == "spi_setup":
                 try:
                     async with _config_lock:
@@ -1162,6 +1168,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 except (KeyError, TypeError, ValueError, RuntimeError, TimeoutError) as exc:
                     await websocket.send_json({"type": "error", "tag": "spi", "errors": [str(exc)]})
                 await _send_state(websocket, core)
+                _publish_updates(origin=websocket)     # other tabs see the new or cleared sequence
             elif action == "ssi_demo_position":
                 try:
                     set_ssi_demo_position(sim, msg.get("position"))
