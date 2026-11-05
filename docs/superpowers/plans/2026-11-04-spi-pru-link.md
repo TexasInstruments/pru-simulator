@@ -76,6 +76,7 @@ Memory map (global ICSSG addresses; each PRU uses its own DMEM via `c24`):
 | `C_RX` | 0x0110 | 16 | PRU0 data bytes captured on MISO (bytes 3–18 of the frame) |
 | `C_RX_HDR` | 0x0120 | 3 | MISO bytes 0–2 (expected 0x00) |
 | `P_STATUS` | 0x2000 | 16 | +0 frames u32, +4 errors u32 (bad cmd/addr), +8 aborts u32, +12 last_cmd u8, +13 last_addr u8 |
+| `ZERO_BLK` | 0x27F0 | 16 | all-zero block: PRU1's MISO source for WRITE, bad cmd/addr (added in Task 4) |
 | `P_TX` | 0x2800 | 2048 | PRU1 read source, block n at +16·n |
 | `P_RX` | 0x3000 | 2048 | PRU1 write target, block n at +16·n |
 

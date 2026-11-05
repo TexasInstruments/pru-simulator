@@ -63,7 +63,7 @@ in the style of `docs/reports/2026-08-12-i2c-tca9538-session-report.html`.
 | 9 | Pins and table as proposed | "yes pins and table work" | §7 is fixed. |
 | 10 | Edge-polling vs clock-locked peripheral for top rates | Must be a real edge-polling peripheral. Hint: sample clock and data in one masked R31 compare, and sample based on the previous edge. | Anti-goal above. Firmware techniques in §5.2. |
 | 11 | Playback of protocol, rates, patterns, report and models | "all good" | §3, §4, §8 and §9 as written. |
-| 12 | Builder check: simulator has 0-cycle GPI/GPO latency; what delay should "proven" assume? | Silicon measurement: at 333 MHz, `wbs input_pin` + `set output_pin` shows 18 ns from async input edge to output edge on an external scope | Calibrated pin-to-pin hop delay of 4 core cycles in the simulator (§5.4). The controller gets a MISO sample delay (§5.1). |
+| 12 | Builder check: simulator has 0-cycle GPI/GPO latency; what delay should "proven" assume? | Silicon measurement: at 333 MHz, `wbs input_pin` + `set output_pin` shows 18 ns from async input edge to output edge on an external scope | Calibrated pin-to-pin hop delay of 5 core cycles in the simulator (§5.4; Ruling R6 after single-stepped calibration — first estimated as 4). The controller gets a MISO sample delay (§5.1). |
 
 ## 3. Protocol
 
