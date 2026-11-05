@@ -298,7 +298,8 @@ def render_doc(data: dict) -> str:
       "by the Task 4 direct-stimulus tests: `tests/test_spi_peripheral.py::"
       "test_min_cs_gap_no_frame_lost` drives PRU1's GPI directly at a 4k-cycle gap (k = 3 "
       "and 6, both modes, hop 5). The minimum PRU1 needs is 9 cycles (mode 1) / 5 (mode 0) "
-      "at k = 3.")
+      "at k = 3: `test_min_cs_gap_threshold` drives that gap (all frames land) and one "
+      "cycle less (a frame is lost).")
     a("")
     a("## PRU1 cycles (single-stepped)")
     a("")
@@ -314,16 +315,21 @@ def render_doc(data: dict) -> str:
       "the same in every row. A byte lasts 16k cycles; the PRU1 slack per byte is "
       "16k − max byte. At k = 3 (48 cycles) that is the tightest PRU1 budget.")
     a("")
-    a("Limiting instruction sequence (the per-bit polls of `source/spi/spi_peripheral.asm`, "
+    a("Per-bit instruction sequence (the polls of `source/spi/spi_peripheral.asm`, "
       "stepped in `tests/test_spi_peripheral.py::test_per_bit_cycles`): mode 1 data bit = "
       "launch-edge poll 2 + MISO drive (`lsl r30.w0`) 1 + capture-edge poll 2 = 5 cycles; "
       "a data byte adds the 7-op gather (xor/shift) of the 8 capture snapshots, 47 cycles. "
       "Mode 0 data bit = capture poll 2 + launch poll 1 + MISO drive 1 = 4 cycles; a byte "
       "adds the gather and one `xor 0xFF`, 40 cycles. The max-byte column also counts the "
-      "TX fetch and commit-pointer work placed in the gaps of the header bytes. Every poll is "
-      "a single masked R31 read plus a branch, so a bit cannot cost fewer than two cycles "
-      "per edge; PRU1 was not optimised further because no catalogue rate is limited by it "
-      "(see below).")
+      "TX fetch and commit-pointer work placed in the gaps of the header bytes. The "
+      "limiting data bit is the one that also carries gap work: "
+      + ", ".join(f"mode {m} {by_mode_hop[(m, hop)][0]['p1_bit_cycles_max']} cycles"
+                  for m in (0, 1))
+      + " (column \"data bit (max)\"), against a bit budget of 2k = 6 cycles at k = 3. "
+      "A poll that keeps MOSI is a masked R31 read plus a branch (2 cycles from the read "
+      "that shows the edge); the mode 0 launch poll and the idle-byte capture polls are "
+      "a bare `qbbs`/`qbbc` on R31 (1 cycle) because they keep no MOSI. PRU1 was not optimised "
+      "further because no catalogue rate is limited by it (see below).")
     a("")
     a("## Supported rates (UI list)")
     a("")
@@ -373,14 +379,15 @@ def render_doc(data: dict) -> str:
       "`miso_delay` values (lo..hi, count).")
     a("")
     a("| row | mode | core MHz | k | SPI MHz | hop | pass | window | miso_delay | "
-      "PRU1 cyc/bit | PRU1 slack/byte | t<sub>CSH</sub> cycles | limiting factor |")
+      "PRU1 cyc/bit (min/max) | PRU1 slack/byte | t<sub>CSH</sub> cycles | limiting factor |")
     a("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for r in rows:
         win = (f"{r['miso_delay_window'][0]}..{r['miso_delay_window'][1]} "
                f"({len(r['miso_delay_pass'])})" if r["miso_delay_window"] else "none")
         a(f"| `{r['id']}` | {r['mode']} | {r['core_mhz']} | {r['half_k']} | {_rate(r)} | "
           f"{r['hop_delay']} | {'pass' if r['pass'] else 'FAIL'} | {win} | "
-          f"{_f(r['miso_delay'])} | {r['p1_cycles_per_bit']} | {r['p1_byte_slack']} | "
+          f"{_f(r['miso_delay'])} | {r['p1_cycles_per_bit']}/{r['p1_bit_cycles_max']} | "
+          f"{r['p1_byte_slack']} | "
           f"{_f(r['tcsh_cycles'])} | {r['limit']} |")
     a("")
     a(f"## Timing per supported combination (hop delay {hop})")
@@ -412,8 +419,9 @@ def render_doc(data: dict) -> str:
 
 #: Row keys kept in pru_io/spi_rates.json (pushed to the UI; Ruling R12).
 SUMMARY_KEYS = ("id", "mode", "core_mhz", "half_k", "spi_mhz", "hop_delay",
-                "miso_delay_window", "miso_delay", "pass", "p1_cycles_per_bit",
-                "p1_byte_slack", "worst", "tsu_miso_ns", "th_miso_ns")
+                "miso_delay_window", "miso_delay_pass", "miso_delay", "pass",
+                "p1_cycles_per_bit", "p1_bit_cycles_max", "p1_byte_slack",
+                "p1_fetch_cycles", "worst", "tsu_miso_ns", "th_miso_ns")
 
 
 def summary(data: dict) -> dict:

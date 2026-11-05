@@ -45,15 +45,22 @@ def test_rates_json_schema_and_coverage():
     assert data["hop_delay_supported"] == HOP_DELAY_CYCLES == 5
     assert isinstance(data["generated"], str) and "T" in data["generated"]
     keys = {"id", "mode", "core_mhz", "half_k", "spi_mhz", "hop_delay",
-            "miso_delay_window", "miso_delay", "pass", "p1_cycles_per_bit"}
+            "miso_delay_window", "miso_delay", "pass", "p1_cycles_per_bit",
+            "p1_bit_cycles_max", "miso_delay_pass", "p1_fetch_cycles"}
     rows = data["rows"]
     for r in rows:
         assert keys <= set(r), r["id"]
         assert set(r) == set(spi_sweep.SUMMARY_KEYS), r["id"]
+        # Ruling R23: the minimum and the limiting (max) data-bit cost
+        assert r["p1_bit_cycles_max"] >= r["p1_cycles_per_bit"], r["id"]
         if r["pass"]:
             lo, hi = r["miso_delay_window"]
             assert lo <= r["miso_delay"] <= hi
             assert controller_delay_ok(r["half_k"], r["miso_delay"])
+            # Ruling R17: the passing values travel to the UI with the window
+            assert r["miso_delay"] in r["miso_delay_pass"]
+            assert min(r["miso_delay_pass"]) == lo and max(r["miso_delay_pass"]) == hi
+            assert all(controller_delay_ok(r["half_k"], d) for d in r["miso_delay_pass"])
     want = {(m, c, k, h) for m in (0, 1) for c, k in rate_candidates() for h in (0, 5)}
     assert {(r["mode"], r["core_mhz"], r["half_k"], r["hop_delay"]) for r in rows} == want
     assert RATES_JSON.stat().st_size < 100_000          # pushed to the UI (R12)

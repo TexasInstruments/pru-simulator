@@ -98,6 +98,27 @@ def render_header(cfg: SpiConfig, role: str = "controller") -> str:
     return "\n".join(lines) + "\n"
 
 
+#: Default-config block in each firmware file (Ruling R16): the file
+#: assembles as it is; render_source() swaps in render_header(cfg).
+CONFIG_BEGIN = "; >>> spi config\n"
+CONFIG_END = "; <<< spi config\n"
+
+
+def render_source(cfg: SpiConfig, role: str = "controller") -> str:
+    """The firmware text for ``cfg``: the file with its default-config block
+    replaced (not prepended: the assembler has no ``$isdefed``) by
+    ``render_header(cfg, role)``."""
+    path = {"controller": CONTROLLER_SOURCE, "peripheral": PERIPHERAL_SOURCE}.get(role)
+    if path is None:
+        raise ValueError(f"unknown role {role!r}")
+    text = path.read_text(encoding="utf-8")
+    head, sep, rest = text.partition(CONFIG_BEGIN)
+    _, sep2, tail = rest.partition(CONFIG_END)
+    if not sep or not sep2:
+        raise ValueError(f"{path.name}: spi config markers not found")
+    return head + CONFIG_BEGIN + render_header(cfg, role) + CONFIG_END + tail
+
+
 _W1 = bytes([1 << (i % 8) for i in range(16)])
 _W0 = bytes([(~(1 << (i % 8))) & 0xFF for i in range(16)])
 
@@ -360,17 +381,22 @@ def measure_timing(edges, cfg: SpiConfig, frame_index: int = -1,
     s = sim.get
     row("SPI clock period", "tCLK", tclk_d, s("tCLK"), None, None,
         "no direct-mode limit", None, cycles=2 * cfg.half_k)
+    # Ruling R18: design rows carry no AM243 min/max (the datasheet has none
+    # for them); margin = measured - design minimum - PRDO1 output skew.
+    def skewed(v, minimum):
+        return None if v is None else v - minimum - SKEW_NS
+
     row("CLK high / low time", "tH/tL", half_d,
-        th, None, None, "PRDO1 skew",
-        None if th is None else min(th, tl) - SKEW_NS, cycles=cfg.half_k)
+        th, None, None, "design (min ½ tCLK) − PRDO1 skew",
+        skewed(None if th is None else min(th, tl), half_d), cycles=cfg.half_k)
     row("Output skew CLK / MOSI / CS (PRU0 pins)", "tsk(GPO-GPO)", 0.0, 0.0,
         None, SKEW_NS, "Table 6-113 PRDO1", SKEW_NS, cycles=0,
         derived=True)   # the simulator models no pad skew
-    row("/CS low to first CLK edge", "tLEAD", tclk_d, s("tLEAD"), -SKEW_NS, SKEW_NS,
-        "PRDO1", None if s("tLEAD") is None else s("tLEAD") - SKEW_NS,
+    row("/CS low to first CLK edge", "tLEAD", tclk_d, s("tLEAD"), None, None,
+        "design (min 1 tCLK) − PRDO1 skew", skewed(s("tLEAD"), tclk_d),
         cycles=2 * cfg.half_k)
-    row("Last CLK edge to /CS high", "tLAG", tclk_d, s("tLAG"), -SKEW_NS, SKEW_NS,
-        "PRDO1", None if s("tLAG") is None else s("tLAG") - SKEW_NS,
+    row("Last CLK edge to /CS high", "tLAG", tclk_d, s("tLAG"), None, None,
+        "design (min 1 tCLK) − PRDO1 skew", skewed(s("tLAG"), tclk_d),
         cycles=2 * cfg.half_k)
     row("/CS high between frames", "tCSH", 2 * tclk_d, s("tCSH"), None, None,
         "design (min 2 tCLK)",
@@ -553,7 +579,7 @@ class SpiLinkRuntime:
                 f"miso_delay mod {2 * cfg.half_k} must not be 0 or {cfg.half_k} "
                 f"and miso_delay // {2 * cfg.half_k} must be <= {MISO_Q_MAX}; "
                 f"choose miso_delay with controller_delay_ok()")
-        source = render_header(cfg) + CONTROLLER_SOURCE.read_text(encoding="utf-8")
+        source = render_source(cfg)
         errors = self.sim.load("pru0", source,
                                include_paths=[str(CONTROLLER_SOURCE.parent)])
         if errors:
@@ -611,10 +637,9 @@ class SpiLinkRuntime:
     def load_peripheral(self) -> None:
         """Assemble and start the PRU1 edge-polling peripheral (mode = cfg.mode).
 
-        Its header carries only SPI_MODE: nothing depends on the rate.
+        Its config block carries only SPI_MODE: nothing depends on the rate.
         """
-        source = (render_header(self.cfg, role="peripheral")
-                  + PERIPHERAL_SOURCE.read_text(encoding="utf-8"))
+        source = render_source(self.cfg, role="peripheral")
         errors = self.sim.load("pru1", source,
                                include_paths=[str(PERIPHERAL_SOURCE.parent)])
         if errors:

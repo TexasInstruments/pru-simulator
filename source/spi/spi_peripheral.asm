@@ -3,7 +3,9 @@
 ; 19-byte frames of the PRU0 controller. Spec: docs/superpowers/specs/
 ; 2026-11-04-spi-pru0-pru1-design.md, sections 3 and 5.2.
 ;
-; Loaded by pru_io.spi_link.SpiLinkRuntime.load_peripheral, which prepends
+; Configuration: the ">>> spi config" block below holds the scenario default
+; (SPI_MODE 1), so this file assembles and runs as it is.
+; pru_io.spi_link.SpiLinkRuntime.load_peripheral replaces that block with
 ; render_header(cfg, role="peripheral"). That header sets only:
 ;   SPI_MODE   0 or 1 (mode 1: MISO set on CLK rising, MOSI captured on
 ;              falling; mode 0: captured on rising, set on falling, bit 0
@@ -107,6 +109,11 @@
 ; r29      error flag (1: unknown cmd or bad address)  frame, commit
 ; r30      GPO (MISO = bit 11)                         hardware
 ; r31      GPI                                         hardware
+
+; ---- Configuration (render_header replaces the lines between the markers) --
+; >>> spi config
+SPI_MODE   .set 1
+; <<< spi config
 
 ; ---- Constants -------------------------------------------------------------
 P_TX_LOC   .set 0x0800

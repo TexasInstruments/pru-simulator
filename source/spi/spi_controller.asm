@@ -3,7 +3,10 @@
 ; frames to the PRU1 edge-polling peripheral. Spec: docs/superpowers/specs/
 ; 2026-11-04-spi-pru0-pru1-design.md, sections 3 and 5.1.
 ;
-; Loaded by pru_io.spi_link.SpiLinkRuntime, which prepends render_header():
+; Configuration: the ">>> spi config" block below holds the scenario default
+; (mode 1, 25 MHz SPI CLK at a 200 MHz core, MISO_DELAY 17), so this file
+; assembles and runs as it is. pru_io.spi_link.SpiLinkRuntime replaces that
+; block with render_header(cfg) when it loads another configuration:
 ;   SPI_MODE   0 or 1 (mode 1: launch on CLK rising, capture on falling;
 ;              mode 0: capture on rising, launch on falling, bit 0 valid
 ;              before the first rising edge)
@@ -79,6 +82,13 @@
 ; /CS low -> 1st CLK  2*HALF_K        tLEAD == 2*HALF_K
 ; last CLK -> /CS high 2*HALF_K       tLAG == 2*HALF_K
 ; /CS high hold     >= 4*HALF_K       tCSH >= 2 tCLK (back-to-back test)
+
+; ---- Configuration (render_header replaces the lines between the markers) --
+; >>> spi config
+SPI_MODE   .set 1
+HALF_K     .set 4
+MISO_DELAY .set 17
+; <<< spi config
 
 ; ---- Constants -------------------------------------------------------------
 CTRL_GO       .set 0

@@ -465,6 +465,25 @@ def test_min_cs_gap_no_frame_lost(sim_config, mode, k):
     rt.close()
 
 
+@pytest.mark.parametrize("mode,gap,lands", [(1, 9, True), (1, 8, False),
+                                              (0, 5, True), (0, 4, False)])
+def test_min_cs_gap_threshold(sim_config, mode, gap, lands):
+    """Ruling R19, quoted in docs/spi_link_timing.md: at k = 3 the shortest
+    /CS-high gap PRU1 needs is 9 cycles (mode 1) / 5 (mode 0); one cycle
+    less loses a frame."""
+    frames = [bytes([CMD_WRITE, 0x21]) + bytes(1) + _stim_data(1),
+              bytes([CMD_RW, 0x22]) + bytes(1) + _stim_data(2),
+              bytes([CMD_WRITE, 0x23]) + bytes(1) + _stim_data(3)]
+    rt = _run_stim(sim_config, mode, 3, frames, gap)
+    st = rt.peripheral_status()
+    got = [rt.read_peripheral_rx(f[1]) == f[3:] for f in frames]
+    if lands:
+        assert all(got) and st == _status(frames=3, last_cmd=CMD_WRITE, last_addr=0x23)
+    else:
+        assert not all(got) and st["frames"] < 3
+    rt.close()
+
+
 @pytest.mark.parametrize("mode", MODES)
 @pytest.mark.parametrize("k", [3, 6])
 def test_min_cs_gap_after_error_and_abort(sim_config, mode, k):
