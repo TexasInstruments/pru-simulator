@@ -375,10 +375,11 @@ class PRUSimulatorMCP:
         def follow_stop(_name: str) -> bool:
             # The follow core runs many instructions per lead step (a slow lead
             # instruction lets it run ahead), so check it before each one.
-            if follow_core.pc in follow_core.breakpoints:
-                follow_hit.append(("breakpoint", follow))
-            elif condition_core == follow and met():
+            # Condition first, matching the main loop's priority.
+            if met():
                 follow_hit.append((met_reason, None))
+            elif follow_core.pc in follow_core.breakpoints:
+                follow_hit.append(("breakpoint", follow))
             return bool(follow_hit)
 
         lead_steps = 0

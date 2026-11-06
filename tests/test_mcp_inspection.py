@@ -228,3 +228,19 @@ def test_multicore_gpo_condition_set_then_cleared_by_follow_inside_a_slow_lead_s
         condition="gpo:3==1", condition_core="pru1", max_steps=100)
     assert result["reason"] == "condition_met" and result["success"]
     assert mcp.sim.io("pru1")["gpo_pins"][3] == 1
+
+
+def test_multicore_lead_condition_beats_follow_breakpoint_during_catch_up():
+    mcp = slow_lead_mcp("nop\nnop\nnop\nnop\nnop\nnop\nnop\njmp 0")
+    mcp.pru_breakpoint(core="pru1", address=4)
+    result = mcp.pru_run_until_multicore(
+        condition="cycles>10", condition_core="pru0", max_steps=100)
+    assert result["reason"] == "condition_met" and result["success"]
+
+
+def test_multicore_follow_condition_beats_breakpoint_at_same_check():
+    mcp = slow_lead_mcp("nop\nnop\nnop\nset r30, r30, 3\nnop\nnop\nhalt")
+    mcp.pru_breakpoint(core="pru1", address=4)
+    result = mcp.pru_run_until_multicore(
+        condition="gpo:3==1", condition_core="pru1", max_steps=100)
+    assert result["reason"] == "condition_met" and result["success"]
