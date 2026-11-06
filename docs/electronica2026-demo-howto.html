@@ -132,6 +132,26 @@ table.fix td:first-child { width: 40%; color: var(--ink); font-weight: 500; }
 table.fix thead th:first-child::before { content: "\25B8  "; }
 td.na { color: var(--muted); font-style: italic; }
 
+/* Pin map */
+:root { --clash-bg: #fde8eb; --clash-ink: #a0102a; --pdm: #4a5a6a; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --clash-bg: #3a1a20; --clash-ink: #ff8a9a; } }
+:root[data-theme="dark"] { --clash-bg: #3a1a20; --clash-ink: #ff8a9a; }
+table.pins { font-size: 13.5px; }
+table.pins th, table.pins td { padding: 7px 10px; }
+table.pins td { min-width: 96px; }
+table.pins td:first-child { font-weight: 600; white-space: nowrap; }
+table.pins td:nth-child(2) { font-family: var(--font-mono); font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+table.pins td.u { box-shadow: inset 3px 0 0 var(--c); }
+table.pins td.clash { background: var(--clash-bg); color: var(--clash-ink); font-weight: 600; }
+table.pins td.ok { color: var(--muted); }
+table.pins tr.hot td:first-child { color: var(--clash-ink); }
+th.col-pdm { box-shadow: inset 0 -3px 0 var(--pdm); }
+th.col-spi { box-shadow: inset 0 -3px 0 var(--demo-spi); color: var(--demo-spi); }
+.c-pdm { --c: var(--pdm); }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.swatch { width: 14px; height: 14px; border-radius: 3px; background: var(--clash-bg); border: 1px solid var(--clash-ink); }
+
 /* Steps */
 ol.steps { list-style: none; padding: 0; counter-reset: s; display: grid; gap: 12px; }
 ol.steps > li { counter-increment: s; position: relative; padding-left: 40px; max-width: 72ch; }
@@ -193,6 +213,7 @@ footer { margin-top: 64px; padding-top: 20px; border-top: 1px solid var(--line);
     <li><a href="#overview"><span class="dot"></span>Overview</a></li>
     <li><a href="#picoscope"><span class="dot"></span>PicoScope at a glance</a></li>
     <li><a href="#wiring"><span class="dot"></span>Wiring</a></li>
+    <li><a href="#pins"><span class="dot"></span>BoosterPack pin map</a></li>
     <li><a href="#before"><span class="dot"></span>Before the booth opens</a></li>
     <li class="sep" aria-hidden="true"></li>
     <li><a href="#demo-a"><span class="badge c-a">A</span>I2C IO expander</a></li>
@@ -309,6 +330,83 @@ footer { margin-top: 64px; padding-top: 20px; border-top: 1px solid var(--line);
     </table>
   </div>
   <p class="wire-note">TCA9538 board: A1 = A0 = high (address 0x23), RESET high, LEDs with series resistors on P0 to P7. No I2C pull-ups needed. During Demo C the TCA9538 sees the UART signal on its SCL pin; ignore the LEDs then.</p>
+</section>
+
+<!-- ============================================================ -->
+<section class="block" id="pins">
+  <h2>BoosterPack pin map (all demos)</h2>
+  <div class="prose">
+    <p>Every pin any demo uses, by BoosterPack number. Two more setups share the header with Demos A, B and C:</p>
+    <ul class="plain">
+      <li><strong>PDM loopback (board):</strong> the 8-channel PDM demo from open-pru (<code>examples/electronica2026/pdm_audio/</code>, PR #191; also the base of the PDM-over-Ethernet demo). Nine jumpers connect PRU1 outputs to PRU0 SD inputs. <a href="#demo-d">Demo D</a> is the simulator version of this demo.</li>
+      <li><strong>SPI link:</strong> runs in the simulator only. The SPI pane's pin table plans these LP pins for a later board version; nothing is wired today.</li>
+    </ul>
+    <p>All pads are ICSSG0 (<code>PRG0_…</code>). "out" = the demo drives the pin, "in" = it only reads it.</p>
+  </div>
+  <div class="legend"><span><span class="swatch"></span>Clash with Demo A: two push-pull outputs on one wire</span><span><span class="badge c-a">A</span><span class="badge c-b">B</span><span class="badge c-c">C</span> board demos</span><span><span class="badge c-pdm">PDM</span> 8-ch loopback</span><span><span class="badge c-spi">SPI</span> planned only</span></div>
+  <div class="table-wrap">
+    <table class="pins">
+      <thead><tr><th>BP pin</th><th>PRU pad</th><th class="col-a">A · I2C</th><th class="col-b">B · UART RX</th><th class="col-c">C · UART print</th><th class="col-pdm">PDM loopback (board)</th><th class="col-spi">SPI link (planned)</th><th>Clash</th></tr></thead>
+      <tbody>
+        <tr><td>BP.1</td><td>3V3</td><td class="u c-a">TCA9538 VCC</td><td></td><td></td><td></td><td></td><td></td></tr>
+        <tr><td>BP.7</td><td>PRU0_GPO16</td><td></td><td></td><td></td><td class="u c-pdm">clock in (GPI16, SD8_CLK), from BP.11</td><td class="u c-spi">PRU0 CLK out</td><td class="">PDM / SPI</td></tr>
+        <tr><td>BP.11</td><td>PRU1_GPO0</td><td></td><td></td><td></td><td class="u c-pdm">clock out, to BP.7</td><td></td><td></td></tr>
+        <tr><td>BP.12</td><td>PRU0_GPO15</td><td></td><td></td><td></td><td class="u c-pdm">ch6 in (GPI15, SD7_D), from BP.59</td><td></td><td></td></tr>
+        <tr><td>BP.13</td><td>PRU0_GPO5</td><td></td><td></td><td></td><td class="u c-pdm">ch2 in (GPI5, SD2_D), from BP.69</td><td></td><td></td></tr>
+        <tr><td>BP.14</td><td>PRU0_GPO14</td><td></td><td></td><td></td><td></td><td class="u c-spi">PRU0 MISO in</td><td></td></tr>
+        <tr><td>BP.15</td><td>PRU0_GPO13</td><td></td><td></td><td></td><td class="u c-pdm">ch5 in (GPI13, SD6_D), from BP.71</td><td class="u c-spi">PRU0 MOSI out</td><td class="">PDM / SPI</td></tr>
+        <tr><td>BP.18</td><td>PRU0_GPO17</td><td></td><td></td><td></td><td class="u c-pdm">ch7 in (GPI17, SD8_D), from BP.57</td><td class="u c-spi">PRU0 /CS out</td><td class="">PDM / SPI</td></tr>
+        <tr><td>BP.19</td><td>PRU0_GPO3</td><td></td><td></td><td></td><td class="u c-pdm">ch1 in (GPI3, SD1_D), from BP.68</td><td></td><td></td></tr>
+        <tr><td>BP.20</td><td>GND</td><td class="u c-a">GND</td><td class="u c-b">GND</td><td class="u c-c">GND</td><td class="u c-pdm">GND (scope reference)</td><td></td><td class="ok">shared, fine</td></tr>
+        <tr><td>BP.31</td><td>PRU0_GPO2</td><td></td><td class="u c-b">UART RX in (GPI2), from the AWG</td><td></td><td></td><td></td><td></td></tr>
+        <tr class="hot"><td>BP.32</td><td>PRU0_GPO1</td><td class="u c-a clash">SDA out (GPO1), to TCA9538 + D1</td><td></td><td></td><td class="u c-pdm clash">ch0 in (GPI1, SD0_D), from BP.67</td><td></td><td class="clash">A / PDM</td></tr>
+        <tr><td>BP.33</td><td>PRU0_GPO0</td><td class="u c-a">SCL out (GPO0), to TCA9538 + D0</td><td></td><td class="u c-c">UART TX out (GPO0), to D0</td><td></td><td></td><td class="ok">A + C share it on purpose</td></tr>
+        <tr><td>BP.43</td><td>PRU0_GPO11</td><td></td><td></td><td></td><td class="u c-pdm">ch4 in (GPI11, SD5_D), from BP.72</td><td></td><td></td></tr>
+        <tr><td>BP.44</td><td>PRU0_GPO7</td><td></td><td></td><td></td><td class="u c-pdm">ch3 in (GPI7, SD3_D), from BP.70</td><td></td><td></td></tr>
+        <tr><td>BP.57</td><td>PRU1_GPO16</td><td></td><td></td><td></td><td class="u c-pdm">ch7 out, to BP.18</td><td></td><td></td></tr>
+        <tr><td>BP.59</td><td>PRU1_GPO15</td><td></td><td></td><td></td><td class="u c-pdm">ch6 out, to BP.12</td><td></td><td></td></tr>
+        <tr class="hot"><td>BP.67</td><td>PRU1_GPO1</td><td></td><td></td><td></td><td class="u c-pdm clash">ch0 out, to BP.32</td><td class="u c-spi">PRU1 CLK in</td><td class="clash">A / PDM (via the jumper), PDM / SPI</td></tr>
+        <tr><td>BP.68</td><td>PRU1_GPO2</td><td></td><td></td><td></td><td class="u c-pdm">ch1 out, to BP.19</td><td class="u c-spi">PRU1 MOSI in</td><td class="">PDM / SPI</td></tr>
+        <tr><td>BP.69</td><td>PRU1_GPO6</td><td></td><td></td><td></td><td class="u c-pdm">ch2 out, to BP.13</td><td class="u c-spi">PRU1 /CS in</td><td class="">PDM / SPI</td></tr>
+        <tr><td>BP.70</td><td>PRU1_GPO11</td><td></td><td></td><td></td><td class="u c-pdm">ch3 out, to BP.44</td><td class="u c-spi">PRU1 MISO out</td><td class="">PDM / SPI</td></tr>
+        <tr><td>BP.71</td><td>PRU1_GPO13</td><td></td><td></td><td></td><td class="u c-pdm">ch5 out, to BP.15</td><td></td><td></td></tr>
+        <tr><td>BP.72</td><td>PRU1_GPO12</td><td></td><td></td><td></td><td class="u c-pdm">ch4 out, to BP.43</td><td></td><td></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>What clashes</h3>
+  <ul class="plain">
+    <li><strong>BP.32: Demo A and the PDM loopback.</strong> Demo A drives SDA push-pull on BP.32, and the ch0 jumper connects BP.32 to PRU1_GPO1 (BP.67), which the PDM demo drives push-pull. While PRU1 still runs, two outputs fight on one wire. This is the only clash between the PDM loopback and Demos A, B and C.</li>
+    <li><strong>BP.33: Demos A and C</strong> use the same pin for the same kind of signal (a PRU0 output to PicoScope D0). Only one runs at a time, so this is fine.</li>
+    <li><strong>SPI link vs PDM loopback:</strong> 7 of the 8 planned SPI pins are PDM jumper pins. It does not matter today, because the SPI link runs only in the simulator. A board version would need the PDM jumpers off.</li>
+    <li>Demos B and C share no signal pin with the PDM loopback.</li>
+  </ul>
+
+  <h3 id="from-pdm">From the PDM loopback to another demo</h3>
+  <p>Starting point: the nine PDM jumpers are fitted and the PicoScope probes the PDM clock and ch0.</p>
+  <div class="callout warn"><span class="label">Always first</span>
+    <p>Press <strong>SW1 (MCU PORZ)</strong> to reset the SoC (this stops PRU1), then reconnect CCS to the target. Loading another demo's R5F program alone does <strong>not</strong> stop PRU1.</p></div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>To run</th><th>Wiring</th><th>PicoScope</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge c-a">A</span> I2C</td><td><strong>Remove the ch0 jumper BP.67 to BP.32.</strong> Connect the TCA9538: SCL to BP.33, SDA to BP.32, VCC to BP.1, GND to BP.20.</td><td>D0 to <strong>BP.33</strong>, D1 to <strong>BP.32</strong>. If your ch0 probe sits on BP.32 (the PRU0 end of the jumper), it is already the D1 position. The clock probe moves to BP.33.</td></tr>
+      <tr><td><span class="badge c-b">B</span> UART RX</td><td>No pin in common. AWG output to BP.31, ground to BP.20.</td><td>Digital probes not used; only the AWG output.</td></tr>
+      <tr><td><span class="badge c-c">C</span> UART print</td><td>No pin in common.</td><td>D0 to <strong>BP.33</strong>. The clock probe moves there.</td></tr>
+      <tr><td><span class="badge c-d">D</span> <span class="badge c-spi">SPI</span> simulator</td><td>None: laptop only.</td><td>Not used.</td></tr>
+    </tbody>
+  </table></div>
+  <p class="wire-note">The other eight jumpers share no pin with Demos A, B and C. After the SW1 reset nothing drives them, so they should be harmless left in place. That is reasoned, not tested; the PDM readme's rule is to pull all nine jumpers before another demo.</p>
+
+  <h3>Back to the PDM loopback</h3>
+  <ol class="steps">
+    <li>Press <strong>SW1</strong>, reconnect CCS.</li>
+    <li>Fit the ch0 jumper BP.67 to BP.32 again (and any other jumper you pulled).</li>
+    <li>Disconnect the TCA9538's <strong>SDA wire from BP.32</strong>. Left on, the TCA9538 sits on ch0's data line. (A precaution; not tried.)</li>
+    <li>The AWG on BP.31 can stay. BP.31 is SD1_CLK, which the PDM demo does not use (all channels take the clock from BP.7).</li>
+    <li>PicoScope: clock probe on BP.11 or BP.7, ch0 probe on BP.67 or BP.32.</li>
+    <li>SW6 must still be in its default position (LD17 off) for ch4 to ch7.</li>
+  </ol>
 </section>
 
 <!-- ============================================================ -->
@@ -610,6 +708,7 @@ python ui/server.py      # then open http://localhost:8080</code></pre><button c
     <li><span class="badge c-c">C</span> open-pru <code>examples/electronica2026/uart_print/uart_print/readme.md</code></li>
     <li><span class="badge c-d">D</span> pru-simulator <code>source/pdm/README.md</code> (branch <code>feat/pdm-audio-demo</code>, PR #106), and <code>docs/reports/2026-11-03-pdm-audio-demo-report.md</code></li>
     <li><span class="badge c-spi">SPI</span> pru-simulator <code>docs/spi_link.md</code> (branch <code>feat/spi-pru-link</code>, PR #108), and <code>docs/handoff/2026-11-05-spi-sequence-play.md</code></li>
+    <li><span class="badge c-pdm">PDM</span> open-pru <code>examples/electronica2026/pdm_audio/pdm_audio/readme.md</code> (jumper table, reset rule) and <code>pdm_audio_eth/pdm_audio_eth/docs/demo_howto.md</code> (PR #191)</li>
     <li>How each demo was ported: the <code>docs/porting_report.md</code> in each project</li>
     <li>Session notes: <code>docs/handoff/2026-11-02-*.md</code> and <code>docs/handoff/2026-11-03-*.md</code> (PR #102)</li>
   </ul>

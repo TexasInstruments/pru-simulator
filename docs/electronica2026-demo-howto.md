@@ -87,6 +87,94 @@ sees the UART signal on its SCL pin; ignore the LEDs then.
 
 ---
 
+## BoosterPack pin map (all demos)
+
+Every pin any demo uses, by BoosterPack number. Two more setups share the
+header with Demos A, B and C:
+
+- **PDM loopback (board):** the 8-channel PDM demo from open-pru
+  (`examples/electronica2026/pdm_audio/`, PR #191; also the base of the
+  PDM-over-Ethernet demo). Nine jumpers connect PRU1 outputs to PRU0 SD
+  inputs. Demo D above is the simulator version of this demo.
+- **SPI link:** runs in the simulator only. The SPI pane's pin table plans
+  these LP pins for a later board version; nothing is wired today.
+
+All pads are ICSSG0 (`PRG0_...`). "out" = the demo drives the pin, "in" =
+it only reads it.
+
+| BP pin | PRU pad | A · I2C | B · UART RX | C · UART print | PDM loopback (board) | SPI link (planned) | Clash |
+| ------ | ------- | ------- | ----------- | -------------- | -------------------- | ------------------ | ----- |
+| BP.1 | 3V3 | TCA9538 VCC | | | | | |
+| BP.7 | PRU0_GPO16 | | | | clock in (GPI16, SD8_CLK), from BP.11 | PRU0 CLK out | PDM / SPI |
+| BP.11 | PRU1_GPO0 | | | | clock out, to BP.7 | | |
+| BP.12 | PRU0_GPO15 | | | | ch6 in (GPI15, SD7_D), from BP.59 | | |
+| BP.13 | PRU0_GPO5 | | | | ch2 in (GPI5, SD2_D), from BP.69 | | |
+| BP.14 | PRU0_GPO14 | | | | | PRU0 MISO in | |
+| BP.15 | PRU0_GPO13 | | | | ch5 in (GPI13, SD6_D), from BP.71 | PRU0 MOSI out | PDM / SPI |
+| BP.18 | PRU0_GPO17 | | | | ch7 in (GPI17, SD8_D), from BP.57 | PRU0 /CS out | PDM / SPI |
+| BP.19 | PRU0_GPO3 | | | | ch1 in (GPI3, SD1_D), from BP.68 | | |
+| BP.20 | GND | GND | GND | GND | GND (scope reference) | | shared, fine |
+| BP.31 | PRU0_GPO2 | | UART RX in (GPI2), from the AWG | | | | |
+| BP.32 | PRU0_GPO1 | **SDA out** (GPO1), to TCA9538 + D1 | | | **ch0 in** (GPI1, SD0_D), from BP.67 | | **A / PDM** |
+| BP.33 | PRU0_GPO0 | SCL out (GPO0), to TCA9538 + D0 | | UART TX out (GPO0), to D0 | | | A + C share it on purpose |
+| BP.43 | PRU0_GPO11 | | | | ch4 in (GPI11, SD5_D), from BP.72 | | |
+| BP.44 | PRU0_GPO7 | | | | ch3 in (GPI7, SD3_D), from BP.70 | | |
+| BP.57 | PRU1_GPO16 | | | | ch7 out, to BP.18 | | |
+| BP.59 | PRU1_GPO15 | | | | ch6 out, to BP.12 | | |
+| BP.67 | PRU1_GPO1 | | | | **ch0 out**, to BP.32 | PRU1 CLK in | **A / PDM** (via the jumper), PDM / SPI |
+| BP.68 | PRU1_GPO2 | | | | ch1 out, to BP.19 | PRU1 MOSI in | PDM / SPI |
+| BP.69 | PRU1_GPO6 | | | | ch2 out, to BP.13 | PRU1 /CS in | PDM / SPI |
+| BP.70 | PRU1_GPO11 | | | | ch3 out, to BP.44 | PRU1 MISO out | PDM / SPI |
+| BP.71 | PRU1_GPO13 | | | | ch5 out, to BP.15 | | |
+| BP.72 | PRU1_GPO12 | | | | ch4 out, to BP.43 | | |
+
+What clashes:
+
+- **BP.32: Demo A and the PDM loopback.** Demo A drives SDA push-pull on
+  BP.32, and the ch0 jumper connects BP.32 to PRU1_GPO1 (BP.67), which the
+  PDM demo drives push-pull. While PRU1 still runs, two outputs fight on one
+  wire. This is the only clash between the PDM loopback and Demos A, B and C.
+- **BP.33: Demos A and C** use the same pin for the same kind of signal (a
+  PRU0 output to PicoScope D0). Only one runs at a time, so this is fine.
+- **SPI link vs PDM loopback:** 7 of the 8 planned SPI pins are PDM jumper
+  pins. It does not matter today, because the SPI link runs only in the
+  simulator. A board version would need the PDM jumpers off.
+- Demos B and C share no signal pin with the PDM loopback.
+
+### From the PDM loopback to another demo
+
+Starting point: the nine PDM jumpers are fitted and the PicoScope probes the
+PDM clock and ch0.
+
+Always first: press **SW1 (MCU PORZ)** to reset the SoC (this stops PRU1),
+then reconnect CCS to the target. Loading another demo's R5F program alone
+does **not** stop PRU1.
+
+| To run | Wiring | PicoScope |
+| ------ | ------ | --------- |
+| **A · I2C** | **Remove the ch0 jumper BP.67 to BP.32.** Connect the TCA9538: SCL to BP.33, SDA to BP.32, VCC to BP.1, GND to BP.20. | D0 to **BP.33**, D1 to **BP.32**. If your ch0 probe sits on BP.32 (the PRU0 end of the jumper), it is already the D1 position. The clock probe moves to BP.33. |
+| **B · UART RX** | No pin in common. AWG output to BP.31, ground to BP.20. | Digital probes not used; only the AWG output. |
+| **C · UART print** | No pin in common. | D0 to **BP.33**. The clock probe moves there. |
+| **D · PDM audio (simulator)**, **SPI link** | None: laptop only. | Not used. |
+
+The other eight jumpers share no pin with Demos A, B and C. After the SW1
+reset nothing drives them, so they should be harmless left in place. That is
+reasoned, not tested; the PDM readme's rule is to pull all nine jumpers
+before another demo.
+
+### Back to the PDM loopback
+1. Press **SW1**, reconnect CCS.
+2. Fit the ch0 jumper BP.67 to BP.32 again (and any other jumper you
+   pulled).
+3. Disconnect the TCA9538's **SDA wire from BP.32**. Left on, the TCA9538
+   sits on ch0's data line. (A precaution; not tried.)
+4. The AWG on BP.31 can stay. BP.31 is SD1_CLK, which the PDM demo does not
+   use (all channels take the clock from BP.7).
+5. PicoScope: clock probe on BP.11 or BP.7, ch0 probe on BP.67 or BP.32.
+6. SW6 must still be in its default position (LD17 off) for ch4 to ch7.
+
+---
+
 ## Before the booth opens (once per PC)
 
 1. **CCS 21** with both projects of each demo imported. CCS copies the
@@ -461,6 +549,8 @@ python ui/server.py      # then open http://localhost:8080
   PR #106), and `docs/reports/2026-11-03-pdm-audio-demo-report.md`
 - SPI link: pru-simulator `docs/spi_link.md` (branch `feat/spi-pru-link`,
   PR #108), and `docs/handoff/2026-11-05-spi-sequence-play.md`
+- PDM loopback (board): open-pru `examples/electronica2026/pdm_audio/pdm_audio/readme.md`
+  (jumper table, reset rule) and `pdm_audio_eth/pdm_audio_eth/docs/demo_howto.md` (PR #191)
 - How each demo was ported: the `docs/porting_report.md` in each project
 - Session notes: `docs/handoff/2026-11-02-*.md` and
   `docs/handoff/2026-11-03-*.md` (PR #102)
