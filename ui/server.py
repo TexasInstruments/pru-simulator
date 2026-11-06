@@ -45,7 +45,11 @@ _trailing_publish = None  # timer that publishes a withheld state if the owner g
 
 # Use project root for config resolution
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-config_path = os.path.join(PROJECT_ROOT, "memory.cfg")
+config_path = os.path.join(PROJECT_ROOT, "memory.cfg")   # the active config
+# The user's own config: the processor selector never overwrites it. Every
+# other processor runs from a copy under RUNTIME_DIR (gitignored, session-only).
+HOME_CONFIG_PATH = config_path
+RUNTIME_DIR = os.path.join(PROJECT_ROOT, ".pru_runtime")
 SOURCE_DIR = pathlib.Path(PROJECT_ROOT) / "source"
 
 
@@ -348,28 +352,31 @@ async def put_source_file(path: str, request: Request):
     return {"ok": True}
 
 
-def _replace_config(text: str) -> Simulator:
-    """Build a Simulator from *text*, then make *text* the content of config_path.
+def _replace_config(text: str, path: str | None = None) -> Simulator:
+    """Build a Simulator from *text*, then make *text* the content of *path*
+    (default: the active config_path).
 
-    The text is validated through a temp file beside config_path (so lookups
+    The text is validated through a temp file beside *path* (so lookups
     relative to the config directory resolve the same way) and only replaces
-    config_path once the Simulator built; a bad config leaves the file as it was."""
+    *path* once the Simulator built; a bad config leaves the file as it was."""
+    path = config_path if path is None else path
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(
         prefix=".memory-", suffix=".cfg.tmp",
-        dir=os.path.dirname(os.path.abspath(config_path)),
+        dir=os.path.dirname(os.path.abspath(path)),
     )
     try:
         with os.fdopen(fd, "w") as f:
             f.write(text)
-        if os.path.exists(config_path):
-            shutil.copymode(config_path, tmp_path)
+        if os.path.exists(path):
+            shutil.copymode(path, tmp_path)
         try:
             new_sim = Simulator(config_path=tmp_path)
         except Exception as e:
-            # Parser errors quote the file name; report config_path, not the temp file.
-            msg = str(e).replace(repr(tmp_path)[1:-1], repr(config_path)[1:-1])
-            raise ValueError(msg.replace(tmp_path, config_path)) from e
-        os.replace(tmp_path, config_path)
+            # Parser errors quote the file name; report path, not the temp file.
+            msg = str(e).replace(repr(tmp_path)[1:-1], repr(path)[1:-1])
+            raise ValueError(msg.replace(tmp_path, path)) from e
+        os.replace(tmp_path, path)
         return new_sim
     finally:
         if os.path.exists(tmp_path):
@@ -468,6 +475,13 @@ async def put_clock_speed(request: Request):
         return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
     if not isinstance(body, dict):
         return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+    unknown = sorted(set(body) - {"mhz"})
+    if unknown:
+        return JSONResponse(
+            {"error": f"unknown field(s) {unknown}; only 'mhz' is accepted, "
+                      "all PRU cores share one frequency"},
+            status_code=422,
+        )
     mhz = body.get("mhz")
     if (isinstance(mhz, bool) or not isinstance(mhz, (int, float))
             or mhz not in ALLOWED_CLOCK_MHZ):
@@ -480,13 +494,109 @@ async def put_clock_speed(request: Request):
             with open(config_path, "r") as f:
                 text = f.read()
             text = _set_ini_value(text, "device", "pru_clock_mhz", str(mhz))
-            text = _set_ini_value(text, "device", "pru1_clock_mhz", str(mhz))
+            # The per-core key is gone; drop a stale line so the config still loads.
+            text = re.sub(r"^pru1_clock_mhz[ \t]*=.*(?:\r?\n|\Z)", "", text,
+                          flags=re.MULTILINE)
             sim = _replace_config(text)
             _apply_iep_override()
             _clear_history()
             _stop_execution()
             _publish_updates()
             return {"ok": True}
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+
+
+CONFIG_DIR = os.path.join(PROJECT_ROOT, "config")
+
+
+def _read_target(path) -> str | None:
+    cfg = configparser.ConfigParser()
+    try:
+        cfg.read(path, encoding="utf-8")
+        return cfg.get("device", "target").split("#", 1)[0].strip()
+    except (configparser.Error, OSError, UnicodeDecodeError):
+        return None
+
+
+def _processor_configs() -> dict[str, str]:
+    """Map each processor name to the config it runs from: the home config
+    (memory.cfg) for its own target, config/memory_<target>.cfg for the rest."""
+    found = {}
+    for path in sorted(pathlib.Path(CONFIG_DIR).glob("memory_*.cfg")):
+        target = _read_target(path)
+        # memory_<target>.cfg only; other variants (e.g. memory_pif_eth_rx.cfg) are demos.
+        if target is not None and path.stem.lower() == f"memory_{target.lower()}":
+            found[target] = str(path)
+    home_target = _read_target(HOME_CONFIG_PATH)
+    if home_target:
+        found[home_target] = HOME_CONFIG_PATH
+    return dict(sorted(found.items()))
+
+
+def _runtime_copy_path(configured: str) -> str:
+    """Stage a preset into RUNTIME_DIR (with the constants files the simulator
+    looks up beside its config) and return the runtime copy's path."""
+    os.makedirs(RUNTIME_DIR, exist_ok=True)
+    for constants in pathlib.Path(CONFIG_DIR).glob("constants_*.cfg"):
+        shutil.copy2(constants, RUNTIME_DIR)
+    return os.path.join(RUNTIME_DIR, os.path.basename(configured))
+
+
+def _processor_state() -> dict:
+    return {"processor": sim.target, "choices": list(_processor_configs())}
+
+
+@app.get("/config/processor")
+async def get_processor():
+    return _processor_state()
+
+
+@app.put("/config/processor")
+async def put_processor(request: Request):
+    global sim, config_path
+    try:
+        body = await request.json()
+    except (ValueError, UnicodeDecodeError):
+        return JSONResponse({"error": "body must be a JSON object"}, status_code=422)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "body must be a JSON object"}, status_code=422)
+    unknown = sorted(set(body) - {"processor"})
+    configs = _processor_configs()
+    processor = body.get("processor")
+    if unknown or not isinstance(processor, str) or processor not in configs:
+        return JSONResponse(
+            {"error": f"body must be {{'processor': one of {list(configs)}}}"},
+            status_code=422,
+        )
+    async with _config_lock:
+        try:
+            source = configs[processor]
+            with open(source, "r", encoding="utf-8") as f:
+                text = f.read()
+            # Keep the chosen core frequency when it is a supported preset.
+            current = sim._pru_clock_mhz
+            if current in ALLOWED_CLOCK_MHZ:
+                text = _set_ini_value(text, "device", "pru_clock_mhz", f"{current:g}")
+            if os.path.abspath(source) == os.path.abspath(HOME_CONFIG_PATH):
+                # Back home: memory.cfg stays the active path and is never rewritten;
+                # the simulator is built from a scratch copy that carries the clock.
+                new_path = HOME_CONFIG_PATH
+                scratch = _runtime_copy_path(source) + ".scratch"
+                try:
+                    new_sim = _replace_config(text, scratch)
+                finally:
+                    if os.path.exists(scratch):
+                        os.remove(scratch)
+            else:
+                new_path = _runtime_copy_path(source)
+                new_sim = _replace_config(text, new_path)
+            sim, config_path = new_sim, new_path
+            _apply_iep_override()
+            _clear_history()
+            _stop_execution()
+            _publish_updates()
+            return {"ok": True, **_processor_state()}
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=400)
 
@@ -1339,6 +1449,7 @@ def _state(core, at_breakpoint=False, captured=False):
         "type": "state",
         "available_cores": list(sim.cores),
         "clocks": _clock_speed_state(),
+        "processor": sim.target,
         "core": core,
         "pc": c.pc,
         "halted": c.halted,

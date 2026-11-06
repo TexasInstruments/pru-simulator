@@ -170,7 +170,10 @@ class Simulator:
         self.vbus_memory = MemoryBus()
         dev = self._get_device_config(config_path)
         pru_clock = dev.get("pru_clock_mhz", "200")
-        pru1_clock = dev.get("pru1_clock_mhz", pru_clock)
+        if "pru1_clock_mhz" in dev:
+            raise ValueError(
+                "[device] pru1_clock_mhz has been removed: all PRU cores use one "
+                "frequency, set it with pru_clock_mhz")
         iep_clock = dev.get("iep_clock_mhz", IEP_DEFAULT_CLOCK_MHZ)
         target = dev.get("target", "AM243x").split("#", 1)[0].strip()
         self.target: str = target
@@ -236,16 +239,12 @@ class Simulator:
         for name, core in self.cores.items():
             core.io_port.bind_device_bus(self.device_bus, name)
 
-        # PRU0/RTU0 use the first configured rate; PRU1/RTU1 use the second.
+        # Every core runs at the one configured rate.
         pru_clock_mhz = float(pru_clock)
-        pru1_clock_mhz = float(pru1_clock)
         self._pru_clock_mhz = pru_clock_mhz
-        self._pru1_clock_mhz = pru1_clock_mhz
-        core_clocks = {"pru0": pru_clock_mhz, "rtu0": pru_clock_mhz,
-                       "pru1": pru1_clock_mhz, "rtu1": pru1_clock_mhz}
-        for name, core in self.cores.items():
-            core.clock_mhz = core_clocks[name]
-            core.io_port.sd_filter = SigmaDeltaFilter(pru_clock_mhz=core_clocks[name])
+        for core in self.cores.values():
+            core.clock_mhz = pru_clock_mhz
+            core.io_port.sd_filter = SigmaDeltaFilter(pru_clock_mhz=pru_clock_mhz)
 
         # Wire SD registers into memory bus (pru0 owns the register region)
         pru0_sd = self.cores["pru0"].io_port.sd_filter
@@ -273,7 +272,7 @@ class Simulator:
         self._perif = {}
         for name in core_order:
             core = self.cores[name]
-            perif = PeripheralInterface(pru_clock_mhz=core_clocks[name],
+            perif = PeripheralInterface(pru_clock_mhz=pru_clock_mhz,
                                         uart_clock_mhz=uart_clock_mhz)
             perif.registers = PerifRegisters(perif_bases[name])
             perif.build_channels()
@@ -292,14 +291,7 @@ class Simulator:
         self.memory.add_region(GpcfgRegion(self._gpcfg))
 
         # IEP0 timer. Shared by all cores on the ICSSG, like the real peripheral.
-        core_clock_rates = {
-            "pru0": pru_clock,
-            "rtu0": pru_clock,
-            "pru1": pru1_clock,
-            "rtu1": pru1_clock,
-        }
-        core_clock_rates = {name: rate for name, rate in core_clock_rates.items()
-                            if name in self.cores}
+        core_clock_rates = {name: pru_clock for name in self.cores}
         self.iep = IepTimer(
             clock_mhz=iep_clock,
             ocp_clock_mhz=pru_clock,

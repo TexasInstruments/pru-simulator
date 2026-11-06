@@ -9,11 +9,21 @@ under the active tab (see [Motion](#motion)).
 
 The Simulator view is generic debugging and holds the source and disassembly,
 the assembly editor, registers, memory panels, the memory and signal graphs
-and an **I/O Pins** panel. I/O Pins is reduced to what every core has: the
+and an **I/O Pins** panel. I/O Pins shows every GPO and GPI signal at once, in
+one block per PRU core that the processor has (PRU0, then PRU1; RTU and TX_PRU
+cores have no block). The block label uses the core colour. Each block has the
 GP-mux selector (GPCFG `PRU_GP_MUX_SEL`), the R30 output grid, the R31 input
-grid and the GPIO loopback strip. The R30/R31 grids stay visible in every mux
-mode; in SD or Peripheral Interface mode a note next to the selector points to
-**I/O & Devices > Peripherals** for the controls of that block.
+grid, the GPIO loopback strip and the GPIO output-enable buttons, and all of
+them act on that block's own core. A state message repaints only its own core's
+block. The R30/R31 grids stay visible in every mux mode; in SD or Peripheral
+Interface mode a note next to the selector points to **I/O & Devices >
+Peripherals** for the controls of that block. The SD, Peripheral Interface and
+I2C cards follow the focus core.
+
+The processor shown next to the PRU SIM logo is a selector. Choosing another one
+asks for confirmation, reloads the simulator and clears loaded programs (see
+[Processor selector API](#processor-selector-api)). It is disabled while the
+simulator runs. The CORES deck, panes and I/O blocks rebuild for the new core set.
 
 A core memory fault (for example an access to an unmapped address, which halts the core) is
 shown in a red **Core fault** band above the panels, with the core, opcode,
@@ -87,23 +97,41 @@ to used/shown; an old multicore tile tree alone does not enable cores. The
 first-use CORES hint hides while the deck is open and is dismissed permanently
 by **Got it** or a deck interaction. Reset Layout preserves that dismissal.
 
+### Processor selector API
+
+`GET /config/processor` returns `{"processor": "AM243x", "choices": [...]}`, where
+the choices are the target of your `memory.cfg` (the home config) plus the
+`config/memory_<target>.cfg` files. `PUT /config/processor` with `{"processor": "AM261x"}`
+copies that preset into `.pru_runtime/` (gitignored), keeping the current
+`pru_clock_mhz` when it is one of the clock presets, makes the copy the active config
+and rebuilds the simulator exactly like a clock change (programs, devices and step-back
+history are reset). `memory.cfg` and the tracked `config/memory_*.cfg` are never
+overwritten: `GET /config`, `PUT /config` and `PUT /config/clock_speed` all act on the
+active copy while another processor is selected, and choosing the home processor again
+switches back to `memory.cfg`. The switch lasts for the session only: restarting the
+server always starts from `memory.cfg`.
+An unknown processor or extra field returns 422. The `state` and `device_profiles`
+websocket messages report the active `processor`.
+
 ### Core frequencies
 
 One frequency applies to all PRU cores (`pru_clock_mhz`). The CORES deck
-shows a single stepper that sets the same rate for PRU0, RTU0, PRU1, and RTU1.
-`pru1_clock_mhz` in the config is always written to match `pru_clock_mhz` on
-any clock change from the dashboard. Unsupported cores are omitted on targets
+shows a single slider that sets the same rate for PRU0, RTU0, PRU1, and RTU1.
+The per-core `pru1_clock_mhz` key no longer exists; a config that still has it
+fails to load with an error. Unsupported cores are omitted on targets
 such as AM263x, but the shared frequency still applies to those that exist.
 
 The presets are **200, 225, 250, 300 and 333 MHz**, supplied by
 `ui/server.py:ALLOWED_CLOCK_MHZ`. These are dashboard choices, not hardware
-limits. The arrows move to the next lower or higher preset.
+limits. Dragging the slider (or using its arrow keys) only moves the
+readout; the new rate is applied once, when you release the slider (its `change`
+event).
 Omitting `pru_clock_mhz` uses the 200 MHz fallback.
 
 Changing the clock recreates the simulator and clears loaded programs.
 **Reload programs after editing.** This also resets registers, devices,
 step-back history and firmware's IEP source selection, then refreshes the
-dashboard. The stepper is disabled during Run/SIM, while an execution chunk or
+dashboard. The slider is disabled during Run/SIM, while an execution chunk or
 clock change is pending, or when no core is used. A clock edit preserves the
 configured IEP rate and the external IEP session override. Layout restoration
 and Reset Layout never write the clock.
@@ -269,13 +297,12 @@ error message.
 The **Sigma-delta (SD) filter** and **Peripheral Interface** cards moved here
 from the I/O Pins panel. Each is live only when the GP mux selects it. Otherwise
 the card stays visible with an "Inactive in this mux mode" notice and a link
-that writes the GPCFG mux (the same action as the selector in I/O Pins).
+that writes the GPCFG mux (the same action as the selectors in I/O Pins, applied to the focus core).
 
 ### Events
 
 Device frame/fault events, bus contention messages and the memory faults of the
-visible cores. Event cycles belong to the named device's core, so unequal-clock
-cores do not share a cycle scale. The view reflects current simulator state,
+visible cores. Event cycles belong to the named device's core. The view reflects current simulator state,
 including reset and step-back, rather than retaining a separate history that
 could disagree with it. The display includes up to 500 events and 100 fault
 messages.
@@ -303,7 +330,7 @@ The signal graph, memory graph, memory-fill preview read
 their colours from the `--graph-*` tokens when they draw and redraw when the
 theme changes.
 
-The round half-filled-circle icon switches between Dark and High contrast; its tooltip names the next theme. The IEP rate and SIM seconds field use the same rounded pill surface and border as the toolbar buttons. The Target label and persistent clock summary are removed; active/configured IEP details remain in the rate selector tooltip, and group rates remain in the CORES deck.
+The round half-filled-circle icon switches between Dark and High contrast; its tooltip names the next theme. The IEP rate and SIM seconds field use the same rounded pill surface and border as the toolbar buttons. The Target label and persistent clock summary are removed; active/configured IEP details remain in the rate selector tooltip, and the core frequency slider remains in the CORES deck.
 
 Dark and High contrast themes, view selection, the I/O & Devices sub-tab and
 panel visibility are local browser preferences. Navigation and panel toggles

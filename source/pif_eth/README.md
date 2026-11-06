@@ -279,7 +279,7 @@ browser UI, instead of via `rx_driver.py`. Same firmware, same DRAM1 addresses;
 only the driver changes.
 
 1. **Config.** The server always loads the project-root `memory.cfg`. This
-   demo needs both cores at 250 MHz and a DRAM1 region, i.e. the same config
+   demo needs the 250 MHz core clock (`pru_clock_mhz = 250`, one frequency for all cores) and a DRAM1 region, i.e. the same config
    `rx_driver.py` uses — copy it in before starting the server:
    ```bash
    cp config/memory_pif_eth_rx.cfg memory.cfg

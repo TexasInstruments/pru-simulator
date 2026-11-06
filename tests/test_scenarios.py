@@ -47,9 +47,18 @@ def test_unknown_scenario_is_a_value_error():
         apply_scenario(sim, "nope", api)
 
 
+def test_renamed_ssi_scenario_still_loads_under_its_old_name():
+    old = "SSI multi-core (emulator + reader)"
+    assert old not in SCENARIOS
+    sim, api = _new()
+    scenario = apply_scenario(sim, old, api)
+    assert scenario is SCENARIOS[MULTI]
+    assert sim.cores["pru1"].instructions
+
+
 @pytest.mark.parametrize("clock_mhz", [200, 300, 333])
 def test_single_core_ssi_decodes_the_commanded_position(sim_config, clock_mhz):
-    sim, api = _new(sim_config(pru_clock_mhz=clock_mhz, pru1_clock_mhz=clock_mhz))
+    sim, api = _new(sim_config(pru_clock_mhz=clock_mhz))
     apply_scenario(sim, SINGLE, api)
     encoder = sim.device_bus.devices[0]
 
@@ -149,14 +158,6 @@ def test_reloading_multicore_releases_the_old_emulator_and_leases():
     assert set(frames.values()) == {0xABC}
     assert sim.device_bus.faults() == []
 
-@pytest.mark.parametrize('reader_mhz, encoder_mhz', [(333, 200), (200, 333)])
-def test_multicore_demo_with_unequal_core_clocks(sim_config, reader_mhz, encoder_mhz):
-    sim, api = _new(sim_config(pru_clock_mhz=reader_mhz, pru1_clock_mhz=encoder_mhz))
-    apply_scenario(sim, MULTI, api)
-    frames = _frames(sim, 40_000, lambda n: sim.step_paced_many('pru0', ['pru1'], n))
-    assert len(frames) >= 3 and set(frames.values()) == {0xABC}
-    assert sim.device_bus.faults() == []
-
 
 @pytest.mark.parametrize("name", [SINGLE, MULTI])
 @pytest.mark.parametrize("config, raw, position, error", [
@@ -215,7 +216,7 @@ def test_invalid_ssi_scenario_config_preserves_the_loaded_setup(name, config):
 
 @pytest.mark.parametrize("name", [SINGLE, MULTI])
 def test_slower_ssi_presets_use_a_safe_reader_clock(sim_config, name):
-    sim, api = _new(sim_config(pru_clock_mhz=333, pru1_clock_mhz=333))
+    sim, api = _new(sim_config(pru_clock_mhz=333))
     scenario = apply_scenario(sim, name, api, config={
         "preset": "AHS_AHM36_SINGLETURN", "position": 0x1234,
         "error_value": 1,

@@ -94,6 +94,10 @@ SCENARIOS = {scenario.name: scenario for scenario in (
 )}
 
 
+# Names a scenario used to have; still accepted by apply_scenario, not listed.
+_SCENARIO_ALIASES = {"SSI multi-core (emulator + reader)": "SSI (encoder PRU + reader)"}
+
+
 def apply_scenario(sim, name: str, device_api, config: dict | None = None) -> Scenario:
     """Validate SSI settings, then reset and set up the complete scenario.
 
@@ -101,6 +105,8 @@ def apply_scenario(sim, name: str, device_api, config: dict | None = None) -> Sc
     explicit config uses device-profile defaults, with ``preset=None`` for
     a custom frame. Pins and core timing belong to the scenario.
     """
+    if isinstance(name, str):
+        name = _SCENARIO_ALIASES.get(name, name)
     scenario = SCENARIOS.get(name) if isinstance(name, str) else None
     if scenario is None:
         raise ValueError(f"unknown scenario {name!r}; available: {list(SCENARIOS)}")
