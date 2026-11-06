@@ -1,7 +1,8 @@
 # electronica 2026 booth demos: how to run
 
 This page is for booth staff. It covers the three PRU demos on the AM243x
-LaunchPad (LP-AM243). Each demo needs the PicoScope set up differently, so
+LaunchPad (LP-AM243) and two demos that run in the simulator only (PDM
+audio and the SPI link). Each board demo needs the PicoScope set up differently, so
 that setup gets its own section for each demo, and a side-by-side table
 comes first.
 
@@ -26,9 +27,20 @@ The source code is in the open-pru repository, under
 
 Until the PRs are merged, each demo exists only on its own branch.
 
-A fourth screen can run the **SPI link** demo in the simulator alone, with
-no board and no PicoScope. It loops by itself; see "SPI link (simulator,
-runs unattended)" below.
+Two more demos run in TI's pru-simulator alone, with no board and no
+PicoScope, on their own laptop or screen:
+
+| Demo | What visitors see |
+| ---- | ----------------- |
+| **D. PDM audio** | PRU1 synthesises two PDM microphones from audio clips, PRU0 decodes them into 16 kHz audio. Two live spectrograms show speech and a chirp. See "Demo D: PDM audio (simulator)". |
+| **SPI link** | PRU0 and PRU1 talk SPI, frame by frame, in a loop that runs by itself. See "SPI link (simulator, runs unattended)". |
+
+Both are in pru-simulator. Until their PRs are merged, use the branch
+`electronica2026-demos` on the demo laptop: it merges the SPI branch
+(`feat/spi-pru-link`, PR #108) and the audio branch (`feat/pdm-audio-demo`,
+PR #106) into `main`, which already has the simulator versions of Demos A,
+B and C. This branch exists only locally on the demo laptop; it is not
+pushed.
 
 ---
 
@@ -93,7 +105,10 @@ sees the UART signal on its SCL pin; ignore the LEDs then.
    A PicoScope update resets the flag.
 3. **LED window** (Demo A) built once:
    `cd i2c_io_expander/visualizer && cargo build --release`.
-4. **AWG file** (Demo B): copy
+4. **pru-simulator** (Demo D, SPI link, and "show the simulator first"):
+   check out branch `electronica2026-demos` and run
+   `pip install -r requirements.txt` once.
+5. **AWG file** (Demo B): copy
    `uart_rx_frame/uart_rx/test/helloworld_4mbaud_awg.csv` to a folder
    **outside the repository** (for example `~/booth/`) and import it from
    there. A PicoScope save onto the repository file once replaced it with
@@ -266,6 +281,72 @@ from the next pass on (within 2 ms).
 
 ---
 
+## Demo D: PDM audio (simulator)
+
+PRU1 synthesises two PDM microphones from audio clips (two 2nd-order
+sigma-delta modulators, 3.072 MHz PDM clock). PRU0 decodes them through the
+ICSS sigma-delta hardware (SINC3 filter, then a 63-tap FIR) into 16 kHz PCM.
+The dashboard's **Audio** view shows both channels as live spectrograms.
+Every PRU cycle is simulated, so the picture builds up slowly: about 1.5 ms
+of audio per second.
+
+### Run
+1. Start the dashboard from the pru-simulator folder (branch
+   `electronica2026-demos`):
+   ```
+   python3 ui/server.py      # then open http://127.0.0.1:8080/
+   ```
+2. Open the **Audio** tab.
+3. Pick **Gen L** `speech_librivox.wav` and **Gen R**
+   `chirp_lin_100_7000.wav`. **Swap L↔R** exchanges them.
+4. Click **Run**. The first setup sets both PRU clocks to 200 MHz and shows
+   a notice; that is expected.
+5. Click **Booth** for the large view: only the clip pickers, Run/Stop and
+   the two spectrograms. **Exit booth** or **Esc** leaves it.
+
+### What good looks like
+- The first spectrogram column appears after about 11 s (it needs 16 ms of
+  audio). After that a new column (8 ms of audio) follows about every 5 s.
+- **Left:** speech formants. **Right:** the chirp ridge climbing from 100 Hz
+  to 7 kHz.
+- The progress bar moves and **Simulation speed** reads about
+  1.5 ms audio / s.
+- The 450 ms speech clip takes about 5 minutes. The 250 ms chirp ends after
+  about 2 min 50 s, so the right side stays blank from then on while the left
+  keeps going. Then the run stops; click **Run** to start again from 0.
+
+### Talking points
+- **Two PRU cores, one data line:** both microphones share one PDM data
+  line. The left mic is valid on the rising clock edge, the right mic on the
+  falling edge, like a real stereo PDM pair.
+- **Exact clock:** 3.072 MHz from a 200 MHz core is 65 + 5/48 cycles per
+  period. PRU1 mixes short and long periods so there is no drift, only 5 ns
+  jitter.
+- **Headroom:** the PRU0 receiver needs at most 1009 of the 6250 cycles per
+  sample window for 2 channels (16 %). 8 channels are estimated at about 64 %.
+- **Every cycle simulated:** that is why it is slow. The same receiver code
+  was then ported to the LP-AM243 (open-pru PR #191).
+
+### If something is wrong
+
+| You see | Do this |
+| ------- | ------- |
+| The tab says "Running in another tab" and Run is greyed out | A second browser tab only watches. Use the tab that started the run, or close the other one. |
+| The page was reloaded and the run stopped | Normal. The spectrograms come back from the server; click **Run** to continue without a gap. |
+| **Reset** is greyed out | Reset only works while the run is stopped. Click **Stop** first. |
+| The pictures start again from 0 | Someone used the Simulator view (Load, Reset, a scenario, a clock change) or set up the SPI demo. That hands the simulator back; the next **Run** sets the audio demo up again from 0. |
+| No new column for a long time | Check **Simulation speed**. At about 1.5 ms audio / s a column takes about 5 s. A slower laptop takes longer. |
+
+### SPI link and audio on two screens
+One dashboard runs one simulator: setting up the SPI demo ends the audio
+run, and an audio **Run** ends the SPI demo. To show both at the same time,
+start a second dashboard on another port, for example
+`python3 ui/server.py --port 8081`, and open `http://127.0.0.1:8081/` on the
+second screen. Checked on the development PC: the SPI test sequence and
+an audio run worked side by side from one folder.
+
+---
+
 ## SPI link (simulator, runs unattended)
 
 PRU0 is an SPI controller and PRU1 an SPI peripheral, both bit-banged and
@@ -276,7 +357,8 @@ is needed, so it can run on its own laptop or screen next to the board
 demos.
 
 The code is in pru-simulator, branch `feat/spi-pru-link` (PR #108). Until
-the PR is merged, check out that branch.
+the PR is merged, use branch `electronica2026-demos` (see the top of this
+page).
 
 ### Run (two clicks)
 1. Start the dashboard from the pru-simulator folder:
@@ -339,6 +421,9 @@ frames in a loop. While it plays, every SPI control except **Pause** and
 
 The wiring can stay as it is.
 
+The simulator demos (D and SPI link) do not touch the board; see "SPI link
+and audio on two screens" for switching between them.
+
 ---
 
 ## Optional: show the simulator first
@@ -372,6 +457,8 @@ python ui/server.py      # then open http://localhost:8080
   `i2c_io/readme.md`, `visualizer/readme.md`
 - Demo B: open-pru `examples/electronica2026/uart_rx_frame/uart_rx/readme.md`
 - Demo C: open-pru `examples/electronica2026/uart_print/uart_print/readme.md`
+- Demo D: pru-simulator `source/pdm/README.md` (branch `feat/pdm-audio-demo`,
+  PR #106), and `docs/reports/2026-11-03-pdm-audio-demo-report.md`
 - SPI link: pru-simulator `docs/spi_link.md` (branch `feat/spi-pru-link`,
   PR #108), and `docs/handoff/2026-11-05-spi-sequence-play.md`
 - How each demo was ported: the `docs/porting_report.md` in each project

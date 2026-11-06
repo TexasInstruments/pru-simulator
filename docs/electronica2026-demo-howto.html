@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>electronica 2026 Booth Demos</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* Layout: sticky left index of the demos, one reading column; each demo keeps
+   one signal colour (like a scope channel) from the overview cards down to its
+   section stripe and step markers. */
+:root {
+  --ink: #17212b;
+  --muted: #5b6875;
+  --paper: #f6f7f8;
+  --card: #ffffff;
+  --line: #d9dee3;
+  --accent: #c8102e;
+  --demo-a: #1f6fd1;
+  --demo-b: #b86a00;
+  --demo-c: #0f8a7a;
+  --demo-spi: #7a4cc2;
+  --demo-d: #b8327a;
+  --warn-bg: #fff4e0;
+  --warn-line: #e0a030;
+  --note-bg: #eef3f8;
+  --code-bg: #eef1f4;
+  --font-display: "IBM Plex Sans Condensed", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "IBM Plex Sans", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "IBM Plex Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ink: #e4e8ec; --muted: #9aa6b2; --paper: #12171c; --card: #1a2128; --line: #2e3842;
+    --accent: #ff5a6e; --demo-a: #5ea2ff; --demo-b: #f0a542; --demo-c: #3fc7b3; --demo-spi: #b28cf0; --demo-d: #f07ab4;
+    --warn-bg: #2e2412; --warn-line: #b8862c; --note-bg: #1c2733; --code-bg: #222b34;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --ink: #e4e8ec; --muted: #9aa6b2; --paper: #12171c; --card: #1a2128; --line: #2e3842;
+  --accent: #ff5a6e; --demo-a: #5ea2ff; --demo-b: #f0a542; --demo-c: #3fc7b3; --demo-spi: #b28cf0; --demo-d: #f07ab4;
+  --warn-bg: #2e2412; --warn-line: #b8862c; --note-bg: #1c2733; --code-bg: #222b34;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 16px; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body {
+  margin: 0; background: var(--paper); color: var(--ink);
+  font: 16px/1.6 var(--font-body);
+}
+a { color: inherit; text-decoration-color: var(--line); text-underline-offset: 3px; }
+a:hover { text-decoration-color: currentColor; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+
+.shell { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 48px;
+  max-width: 1240px; margin: 0 auto; padding: 32px 24px 80px; }
+
+/* Index */
+nav.index { position: sticky; top: 24px; align-self: start; font-size: 14px; }
+nav.index .brand { font: 600 13px/1.3 var(--font-display); letter-spacing: .08em;
+  text-transform: uppercase; color: var(--accent); margin-bottom: 12px; }
+nav.index ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+nav.index a { display: flex; align-items: center; gap: 10px; padding: 6px 10px;
+  border-radius: 6px; text-decoration: none; color: var(--muted); }
+nav.index a:hover { background: var(--card); color: var(--ink); }
+nav.index .sep { height: 1px; background: var(--line); margin: 8px 10px; }
+
+.badge { display: inline-grid; place-items: center; min-width: 24px; height: 24px; padding: 0 6px;
+  border-radius: 5px; font: 700 13px/1 var(--font-display); color: #fff; background: var(--c, var(--muted));
+  flex: none; }
+.c-a { --c: var(--demo-a); } .c-b { --c: var(--demo-b); }
+.c-c { --c: var(--demo-c); } .c-spi { --c: var(--demo-spi); } .c-d { --c: var(--demo-d); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); flex: none; margin: 0 8px; }
+
+/* Type */
+main { max-width: 860px; min-width: 0; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; line-height: 1.2; margin: 0; }
+h1 { font-size: 40px; font-weight: 700; letter-spacing: -.01em; }
+h2 { font-size: 28px; font-weight: 700; }
+h3 { font-size: 19px; font-weight: 600; margin-top: 28px; color: var(--ink); }
+p, ul, ol { margin: 0; }
+.prose > * + * { margin-top: 14px; }
+.prose p, .prose li { max-width: 68ch; }
+.lede { font-size: 18px; color: var(--muted); max-width: 62ch; }
+.kicker { font: 600 13px/1 var(--font-display); letter-spacing: .1em; text-transform: uppercase; color: var(--accent); }
+code, kbd, .mono { font-family: var(--font-mono); font-size: .88em; }
+code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+.ui { font-weight: 600; white-space: nowrap; border-bottom: 1px dotted var(--muted); }
+kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; background: var(--card); }
+strong { font-weight: 600; }
+
+header.top { display: grid; gap: 14px; padding-bottom: 28px; border-bottom: 1px solid var(--line); }
+
+/* Sections */
+section.block { padding-top: 48px; display: grid; gap: 16px; }
+section.demo { border-left: 4px solid var(--c); padding-left: 24px; margin-left: -28px; }
+section.demo > .head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+section.demo > .head .badge { height: 32px; min-width: 32px; font-size: 17px; }
+.tag { font: 500 12px/1 var(--font-body); color: var(--muted); border: 1px solid var(--line);
+  border-radius: 99px; padding: 4px 9px; }
+
+/* Overview cards */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; margin-top: 28px; }
+.card { background: var(--card); border: 1px solid var(--line); border-top: 4px solid var(--c);
+  border-radius: 8px; padding: 16px; display: grid; gap: 8px; align-content: start; text-decoration: none; }
+.card:hover { border-color: var(--c); }
+.card .title { display: flex; align-items: center; gap: 8px; font: 600 17px/1.2 var(--font-display); }
+.card p { font-size: 14px; color: var(--muted); }
+.card .role { font-size: 13px; font-weight: 600; color: var(--c); }
+
+/* Tables */
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+table { border-collapse: collapse; width: 100%; font-size: 14.5px; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; vertical-align: top; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+tr:last-child > td { border-bottom: 0; }
+thead th { font: 600 13px/1.3 var(--font-display); letter-spacing: .03em; text-transform: uppercase;
+  color: var(--muted); background: var(--paper); }
+tbody th { font-weight: 600; white-space: nowrap; color: var(--muted); }
+th.col-a { box-shadow: inset 0 -3px 0 var(--demo-a); color: var(--demo-a); }
+th.col-b { box-shadow: inset 0 -3px 0 var(--demo-b); color: var(--demo-b); }
+th.col-c { box-shadow: inset 0 -3px 0 var(--demo-c); color: var(--demo-c); }
+table.glance td, table.glance tbody th { min-width: 180px; }
+table.glance code { white-space: nowrap; overflow-wrap: normal; }
+table.glance td { min-width: 200px; }
+table.fix td:first-child { width: 40%; color: var(--ink); font-weight: 500; }
+table.fix thead th:first-child::before { content: "\25B8  "; }
+td.na { color: var(--muted); font-style: italic; }
+
+/* Steps */
+ol.steps { list-style: none; padding: 0; counter-reset: s; display: grid; gap: 12px; }
+ol.steps > li { counter-increment: s; position: relative; padding-left: 40px; max-width: 72ch; }
+ol.steps > li::before { content: counter(s); position: absolute; left: 0; top: 0;
+  width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
+  font: 700 13px/1 var(--font-display); color: var(--c, var(--ink));
+  border: 2px solid var(--c, var(--line)); background: var(--card); }
+ol.steps ul { margin-top: 6px; padding-left: 18px; display: grid; gap: 4px; }
+ul.plain { padding-left: 20px; display: grid; gap: 6px; }
+
+/* Callouts */
+.callout { border-radius: 8px; padding: 12px 16px; display: grid; gap: 6px; max-width: 76ch; }
+.callout.warn { background: var(--warn-bg); border-left: 4px solid var(--warn-line); }
+.callout.note { background: var(--note-bg); border-left: 4px solid var(--c, var(--muted)); }
+.callout .label { font: 600 12px/1 var(--font-display); letter-spacing: .08em; text-transform: uppercase; }
+
+/* Expected result */
+.good { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 14px 18px; }
+.good ul { list-style: none; padding: 0; display: grid; gap: 8px; }
+.good li { padding-left: 26px; position: relative; max-width: 72ch; }
+.good li::before { content: "\2713"; position: absolute; left: 0; color: var(--c, var(--demo-c)); font-weight: 700; }
+
+/* Code */
+.code { position: relative; }
+pre { margin: 0; background: var(--code-bg); border-radius: 8px; padding: 14px 16px;
+  overflow-x: auto; font: 14px/1.5 var(--font-mono); }
+pre code { background: none; padding: 0; font-size: inherit; }
+.copy { position: absolute; top: 8px; right: 8px; font: 500 12px var(--font-body); color: var(--muted);
+  background: var(--card); border: 1px solid var(--line); border-radius: 5px; padding: 3px 9px; cursor: pointer; }
+.copy:hover { color: var(--ink); border-color: var(--muted); }
+
+.wire-note { color: var(--muted); font-size: 14.5px; }
+footer { margin-top: 64px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+
+@media (max-width: 900px) {
+  .shell { grid-template-columns: minmax(0, 1fr); gap: 24px; padding: 20px 16px 64px; }
+  nav.index { position: static; }
+  nav.index ol { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+  nav.index .sep { display: none; }
+  section.demo { margin-left: 0; padding-left: 16px; }
+  h1 { font-size: 32px; }
+}
+@media print {
+  nav.index, .copy { display: none; }
+  .shell { display: block; padding: 0; }
+  body { background: #fff; font-size: 11pt; }
+  section.block { break-inside: auto; padding-top: 24px; }
+  section.demo { break-before: page; }
+  .table-wrap { overflow: visible; }
+}
+</style>
+</head>
+<body>
+<div class="shell">
+
+<nav class="index" aria-label="Contents">
+  <div class="brand">Booth guide</div>
+  <ol>
+    <li><a href="#overview"><span class="dot"></span>Overview</a></li>
+    <li><a href="#picoscope"><span class="dot"></span>PicoScope at a glance</a></li>
+    <li><a href="#wiring"><span class="dot"></span>Wiring</a></li>
+    <li><a href="#before"><span class="dot"></span>Before the booth opens</a></li>
+    <li class="sep" aria-hidden="true"></li>
+    <li><a href="#demo-a"><span class="badge c-a">A</span>I2C IO expander</a></li>
+    <li><a href="#demo-b"><span class="badge c-b">B</span>UART RX frames</a></li>
+    <li><a href="#demo-c"><span class="badge c-c">C</span>UART print</a></li>
+    <li><a href="#demo-d"><span class="badge c-d">D</span>PDM audio (simulator)</a></li>
+    <li><a href="#spi"><span class="badge c-spi">SPI</span>SPI link (simulator)</a></li>
+    <li class="sep" aria-hidden="true"></li>
+    <li><a href="#switching"><span class="dot"></span>Switching between demos</a></li>
+    <li><a href="#simulator"><span class="dot"></span>Show the simulator first</a></li>
+    <li><a href="#more"><span class="dot"></span>More detail</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<header class="top" id="overview">
+  <span class="kicker">electronica 2026 · LP-AM243 · ICSSG0 PRU0</span>
+  <h1>Booth demos: how to run</h1>
+  <p class="lede">For booth staff. Three PRU demos run on the AM243x LaunchPad (LP-AM243), each with its own PicoScope setup. Two more, PDM audio and the SPI link, run in the simulator alone, with no board and no PicoScope.</p>
+
+  <div class="cards">
+    <a class="card c-a" href="#demo-a">
+      <span class="title"><span class="badge c-a">A</span>I2C IO expander</span>
+      <p>A PRU bit-bangs 1 Mbit/s I2C. One LED runs along 8 LEDs, the PicoScope decodes the bus, and a PC window lights the same LED.</p>
+      <span class="role">PicoScope: logic analyzer (D0/D1)</span>
+    </a>
+    <a class="card c-b" href="#demo-b">
+      <span class="title"><span class="badge c-b">B</span>UART RX frames</span>
+      <p>A PRU receives 4 Mbaud UART frames. <code>HelloWorld!</code> fills the PRU memory, shown in CCS.</p>
+      <span class="role">PicoScope: signal generator (AWG)</span>
+    </a>
+    <a class="card c-c" href="#demo-c">
+      <span class="title"><span class="badge c-c">C</span>UART print</span>
+      <p>A PRU sends <code>Hello 2026</code> as 115200 baud UART, every 1.87 ms. The PicoScope decodes the text.</p>
+      <span class="role">PicoScope: logic analyzer (D0)</span>
+    </a>
+    <a class="card c-d" href="#demo-d">
+      <span class="title"><span class="badge c-d">D</span>PDM audio</span>
+      <p>PRU1 synthesises two PDM microphones from audio clips, PRU0 decodes them into 16 kHz audio. Two live spectrograms show speech and a chirp.</p>
+      <span class="role">Simulator only</span>
+    </a>
+    <a class="card c-spi" href="#spi">
+      <span class="title"><span class="badge c-spi">SPI</span>SPI link</span>
+      <p>PRU0 and PRU1 talk SPI in the simulator, frame by frame, in a loop. No board, no PicoScope.</p>
+      <span class="role">Simulator only, runs unattended</span>
+    </a>
+  </div>
+
+  <div class="callout note">
+    <span class="label">One board demo at a time</span>
+    <p>Demos A, B and C all use ICSSG0 PRU0. To switch, load the other demo's R5F program (see <a href="#switching">Switching between demos</a>).</p>
+  </div>
+
+  <p>The source code is in the open-pru repository, under <code>examples/electronica2026/</code>. Until the PRs are merged, each demo exists only on its own branch.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Demo</th><th>Folder</th><th>open-pru branch / PR</th></tr></thead>
+      <tbody>
+        <tr><td><span class="badge c-a">A</span></td><td><code>i2c_io_expander/</code> (<code>i2c_io/</code> firmware, <code>visualizer/</code> PC window)</td><td><code>dev_tley_electronica2026_i2c_io</code>, PR #188</td></tr>
+        <tr><td><span class="badge c-b">B</span></td><td><code>uart_rx_frame/uart_rx/</code></td><td><code>dev_tley_electronica2026_uart_rx</code>, PR #189</td></tr>
+        <tr><td><span class="badge c-c">C</span></td><td><code>uart_print/uart_print/</code></td><td><code>dev_tley_electronica2026_uart_print</code>, PR #190</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout note">
+    <span class="label">Simulator demos: one branch</span>
+    <p>Demo D and the SPI link are in pru-simulator. Until their PRs are merged, use the branch <code>electronica2026-demos</code> on the demo laptop: it merges the SPI branch (<code>feat/spi-pru-link</code>, PR #108) and the audio branch (<code>feat/pdm-audio-demo</code>, PR #106) into <code>main</code>, which already has the simulator versions of Demos A, B and C. This branch exists only locally on the demo laptop; it is not pushed.</p>
+  </div>
+</header>
+
+<!-- ============================================================ -->
+<section class="block" id="picoscope">
+  <h2>PicoScope settings at a glance</h2>
+  <div class="table-wrap">
+    <table class="glance">
+      <thead><tr><th>Setting</th><th class="col-a">A · I2C IO expander</th><th class="col-b">B · UART RX</th><th class="col-c">C · UART print</th></tr></thead>
+      <tbody>
+        <tr><th>Used for</th><td>Capture and decode</td><td>Send the test signal</td><td>Capture and decode</td></tr>
+        <tr><th>Inputs</th><td><strong>D0 = SCL, D1 = SDA</strong> (digital)</td><td class="na">none needed</td><td><strong>D0 = UART TX</strong> (digital, same wire as Demo A's SCL)</td></tr>
+        <tr><th>Output</th><td class="na">none</td><td><strong>AWG</strong> output → BP.31</td><td class="na">none</td></tr>
+        <tr><th>Signal generator</th><td><strong>Off</strong></td><td><strong>Arbitrary</strong>, CSV <code>helloworld_4mbaud_awg.csv</code>, <strong>20 kHz</strong>, amplitude <strong>1 V</strong>, offset <strong>+1 V</strong></td><td><strong>Off</strong></td></tr>
+        <tr><th>Trigger</th><td><strong>Pulse width</strong> on D0 (SCL), positive pulse <strong>&gt; 1 µs</strong>, mode <strong>Repeat</strong>, about 20 % pre-trigger</td><td class="na">not needed</td><td><strong>Pulse width</strong> on D0, positive pulse <strong>&gt; 500 µs</strong>, mode <strong>Repeat</strong>, about 10 % pre-trigger</td></tr>
+        <tr><th>Serial decoder</th><td><strong>I2C</strong>, Data = D1, Clock = D0, <strong>Fast-mode Plus (1 Mbit/s)</strong>. The visualizer adds it if missing.</td><td class="na">none</td><td><strong>UART/RS-232</strong> on D0, <strong>115200</strong> baud, 8 data bits, no parity, 1 stop bit, LSB first, idle high</td></tr>
+        <tr><th>Timebase</th><td>About 100 µs across the screen (one I2C frame lasts 29 µs)</td><td>any</td><td>About 1 ms across the screen (the string lasts 871 µs)</td></tr>
+        <tr><th>MCP server (beta)</th><td><strong>On</strong>, port <strong>manual 18123</strong> (the LED window needs it)</td><td class="na">not needed</td><td class="na">not needed</td></tr>
+        <tr><th>What good looks like</th><td>One decoded frame per capture: <code>23 W 01 xx</code>, xx walks 01 → 80</td><td>CCS shows <code>HelloWorld!</code> repeating in PRU memory</td><td><code>Hello 2026</code> decoded in every capture, no framing errors</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout note">
+    <span class="label">Tip</span>
+    <p>Once each setup works, save it as a PicoScope settings file (for example <code>demoA_i2c</code>, <code>demoB_uart</code> and <code>demoC_uart_tx</code>), so switching later is just "open settings".</p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section class="block" id="wiring">
+  <h2>Wiring (all demos, can stay connected)</h2>
+  <div class="prose">
+    <p>All wires can stay connected. Demo A does not touch BP.31, Demo B does not touch BP.32/33, and Demo C uses only BP.33, the wire that already goes to PicoScope D0 for Demo A.</p>
+    <p>The LaunchPad headers are labelled with <strong>BoosterPack (BP) pin numbers</strong>. There is no "J4.10" or "J4.8"; use the BP numbers below.</p>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Signal</th><th>LaunchPad pin</th><th>Connect to</th><th>Demo</th></tr></thead>
+      <tbody>
+        <tr><td>SCL / UART TX</td><td><strong>BP.33</strong> (J4)</td><td>TCA9538 SCL, PicoScope <strong>D0</strong></td><td><span class="badge c-a">A</span> <span class="badge c-c">C</span></td></tr>
+        <tr><td>SDA</td><td><strong>BP.32</strong> (J4)</td><td>TCA9538 SDA, PicoScope <strong>D1</strong></td><td><span class="badge c-a">A</span></td></tr>
+        <tr><td>3V3</td><td>BP.1 (J1)</td><td>TCA9538 VCC</td><td><span class="badge c-a">A</span></td></tr>
+        <tr><td>UART RX</td><td><strong>BP.31</strong> (J4)</td><td>PicoScope <strong>AWG</strong> output (centre)</td><td><span class="badge c-b">B</span></td></tr>
+        <tr><td>GND</td><td>BP.20 (J2)</td><td>TCA9538 GND, PicoScope digital GND, AWG ground</td><td><span class="badge c-a">A</span> <span class="badge c-b">B</span> <span class="badge c-c">C</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="wire-note">TCA9538 board: A1 = A0 = high (address 0x23), RESET high, LEDs with series resistors on P0 to P7. No I2C pull-ups needed. During Demo C the TCA9538 sees the UART signal on its SCL pin; ignore the LEDs then.</p>
+</section>
+
+<!-- ============================================================ -->
+<section class="block" id="before">
+  <h2>Before the booth opens (once per PC)</h2>
+  <ol class="steps">
+    <li><strong>CCS 21</strong> with both projects of each demo imported. CCS copies the source files into its workspace on import, so after the import the projects no longer depend on which open-pru branch is checked out.
+      <ul>
+        <li><span class="badge c-a">A</span> <code>i2c_io_am243x-lp_icss_g0_pru0_fw_ti-pru-cgt</code> and <code>i2c_io_am243x-lp_r5fss0-0_freertos_ti-arm-clang</code></li>
+        <li><span class="badge c-b">B</span> <code>uart_rx_am243x-lp_icss_g0_pru0_fw_ti-pru-cgt</code> and <code>uart_rx_am243x-lp_r5fss0-0_freertos_ti-arm-clang</code></li>
+        <li><span class="badge c-c">C</span> <code>uart_print_am243x-lp_icss_g0_pru0_fw_ti-pru-cgt</code> and <code>uart_print_am243x-lp_r5fss0-0_freertos_ti-arm-clang</code></li>
+        <li>Build each <strong>PRU project first</strong>, then its R5F project.</li>
+      </ul>
+    </li>
+    <li><strong>PicoScope 7</strong> (7.2.30 or later) with the <strong>MCP server</strong> feature switched on, for Demo A's LED window. It is hidden behind a flag; see <code>i2c_io_expander/visualizer/readme.md</code> › "PicoScope 7 setup", step 1. A PicoScope update resets the flag.</li>
+    <li><strong>LED window</strong> (Demo A) built once: <code>cd i2c_io_expander/visualizer &amp;&amp; cargo build --release</code>.</li>
+    <li><strong>pru-simulator</strong> (Demo D, SPI link, and <a href="#simulator">show the simulator first</a>): check out branch <code>electronica2026-demos</code> and run <code>pip install -r requirements.txt</code> once.</li>
+    <li><strong>AWG file</strong> (Demo B): copy <code>uart_rx_frame/uart_rx/test/helloworld_4mbaud_awg.csv</code> to a folder <strong>outside the repository</strong> (for example <code>~/booth/</code>) and import it from there. A PicoScope save onto the repository file once replaced it with zeros.</li>
+  </ol>
+</section>
+
+<!-- ============================================================ -->
+<section class="block demo c-a" id="demo-a">
+  <div class="head"><span class="badge c-a">A</span><h2>I2C IO expander</h2><span class="tag">PicoScope as logic analyzer</span></div>
+
+  <h3>PicoScope setup</h3>
+  <ol class="steps">
+    <li>Signal generator: <strong>Off</strong>.</li>
+    <li>Digital inputs: enable <strong>D0</strong> (SCL) and <strong>D1</strong> (SDA).</li>
+    <li>Trigger: <strong>Pulse width</strong>, source <strong>D0</strong>, positive pulse <strong>longer than 1 µs</strong>, mode <strong>Repeat</strong>, pre-trigger about 20 %. SCL only stays high that long in the 100 ms pause between frames, so every capture starts with one frame.</li>
+    <li>Timebase: about 100 µs across the screen.</li>
+    <li><span class="ui">Preferences → MCP server (beta)</span>: <strong>On for current session</strong>, port <strong>manual 18123</strong>.</li>
+    <li>Serial decoder: <strong>I2C</strong>, Data = <strong>D1</strong>, Clock = <strong>D0</strong>, <strong>Fast-mode Plus (1 Mbit/s)</strong>. If you skip this, the LED window adds one named <code>TCA9538</code>.</li>
+  </ol>
+
+  <h3>Run</h3>
+  <ol class="steps">
+    <li>In CCS, load and run the R5F program <code>i2c_io_am243x-lp_r5fss0-0_freertos_ti-arm-clang</code>. The UART console prints <code>I2C IO expander: ICSSG0 PRU0 running</code>.</li>
+    <li>Start the LED window:
+      <div class="code"><pre><code>cd examples/electronica2026/i2c_io_expander/visualizer
+./target/release/i2c_led_visualizer</code></pre><button class="copy" type="button">Copy</button></div>
+      <p>(<code>cargo run --release</code> also works; run <code>source ~/.cargo/env</code> first if <code>cargo</code> is not found.) Place it next to PicoScope; <kbd>F11</kbd> = fullscreen.</p>
+    </li>
+  </ol>
+
+  <h3>What good looks like</h3>
+  <div class="good"><ul>
+    <li><strong>LEDs:</strong> one LED runs P0 → P7, one step every 100 ms (0.8 s per round).</li>
+    <li><strong>PicoScope:</strong> one frame per capture, decoded as <code>23 W 01 xx</code>, with xx walking 01, 02, 04 … 80. The SCL period is about 1 µs.</li>
+    <li><strong>LED window:</strong> status <code>last frame: addr 0x23 · reg 0x01 · data 0x08</code> (the value changes), with the same LED lit as on the board.</li>
+  </ul></div>
+
+  <h3>If something is wrong</h3>
+  <div class="table-wrap"><table class="fix">
+    <thead><tr><th>You see</th><th>Do this</th></tr></thead>
+    <tbody>
+      <tr><td>Window says <code>waiting for PicoScope 7 …</code></td><td>The PicoScope MCP server is off or on another port. Check <span class="ui">Preferences → MCP server</span>: On, port 18123. Run <code>ss -ltnp | grep PicoScope.GTK</code> to find the port; pass <code>--url http://127.0.0.1:&lt;port&gt;/mcp</code>.</td></tr>
+      <tr><td>No "MCP server" entry in Preferences</td><td>The hidden flag is off (for example after a PicoScope update). See <a href="#before">setup step 2</a>.</td></tr>
+      <tr><td>Window says <code>waiting for I2C frames …</code> or <code>no I2C frames</code></td><td>The board is not running, or D0/D1 are swapped or not enabled. Check the PicoScope screen first.</td></tr>
+      <tr><td>LED window sometimes holds, then jumps</td><td>Normal. PicoScope itself pauses now and then, and the window mirrors it.</td></tr>
+      <tr><td>PicoScope shows several frames or a jumping picture</td><td>The trigger is not set as above (pulse width on D0, &gt; 1 µs, Repeat).</td></tr>
+      <tr><td>No LEDs, but the PicoScope decodes fine</td><td>TCA9538 power, address pins (A0 = A1 = high) or RESET. The firmware does not check ACK, so a missing chip does not stop the bus.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ============================================================ -->
+<section class="block demo c-b" id="demo-b">
+  <div class="head"><span class="badge c-b">B</span><h2>UART RX frames</h2><span class="tag">PicoScope as signal generator</span></div>
+
+  <div class="callout note"><span class="label">Important</span>
+    <p>This receiver is timed for a 4 Mbaud sender that is exact or slightly slow. The AWG file is exact.</p></div>
+
+  <h3>PicoScope setup</h3>
+  <p>Set the values <strong>in this order</strong>, because the allowed offset range depends on the amplitude:</p>
+  <ol class="steps">
+    <li>Signal generator: waveform <strong>Arbitrary</strong>. Import <code>helloworld_4mbaud_awg.csv</code> from the copy outside the repository, and <strong>apply it in the editor</strong> before you close it.</li>
+    <li><strong>Amplitude 1 V</strong> (set this first).</li>
+    <li><strong>Offset +1 V</strong>. The output now swings between 0 V and 2 V.</li>
+    <li><strong>Frequency 20 kHz.</strong> Check the unit: <strong>kHz, not MHz.</strong> At 20 MHz the output looks like a sine wave and nothing is received.</li>
+  </ol>
+  <div class="callout warn"><span class="label">⚠ Protect the input</span>
+    <p><strong>Do not connect BP.31 while the settings are wrong.</strong> With offset 0 V the output goes below 0 V, which the LaunchPad input is not rated for.</p></div>
+
+  <h3>Run (the start order matters)</h3>
+  <p>The firmware has no frame sync. It cuts frames every 11 bytes from the first start bit it sees, so the line must be idle when the PRU starts.</p>
+  <ol class="steps">
+    <li>Switch the signal generator to <strong>DC, +2 V</strong> (line idle high).</li>
+    <li>In CCS, load and run the R5F program <code>uart_rx_am243x-lp_r5fss0-0_freertos_ti-arm-clang</code>. The UART console prints <code>UART RX frame: ICSSG0 PRU0 running, frames at PRU0 DRAM0 (0x30000000)</code>.</li>
+    <li>Switch the signal generator to <strong>Arbitrary</strong> (the settings above).</li>
+  </ol>
+
+  <h3>Show the result in CCS</h3>
+  <p>Open a <span class="ui">Memory Browser</span>:</p>
+  <div class="good"><ul>
+    <li><strong>Received frames:</strong> address <strong>0x30000000</strong> from the R5F, or address <strong>0</strong> in <strong>Data_Memory</strong> of the PRU0 debug view. Set format <strong>Packed Char</strong>. It shows <code>He ll oW or ld !H el lo Wo rl d! …</code>, which is <code>HelloWorld!</code> repeating, starting with <code>H</code> at the first byte.</li>
+    <li><strong>Frame count:</strong> 16-bit value at <strong>0x30000FFC</strong>. It goes up by about 20,000 per second, so it rolls over every few seconds. It only needs to change between two refreshes.</li>
+    <li><strong>Error flag:</strong> byte at <strong>0x30000FFE</strong>. It must be <strong>0</strong>.</li>
+  </ul></div>
+
+  <h3>If something is wrong</h3>
+  <div class="table-wrap"><table class="fix">
+    <thead><tr><th>You see</th><th>Do this</th></tr></thead>
+    <tbody>
+      <tr><td>AWG output looks like a sine</td><td>The frequency is in MHz. Set <strong>20 kHz</strong>. If it still looks wrong, import the CSV again and apply it in the editor.</td></tr>
+      <tr><td>Offset cannot be set to +1 V</td><td>Lower the amplitude to 1 V first.</td></tr>
+      <tr><td>Text shifted, for example <code>elloWorld!H</code>, and 0x30000FFE = 1</td><td>The PRU started in the middle of a frame. Restart: DC +2 V, run the R5F program again, then Arbitrary.</td></tr>
+      <tr><td>Memory all zeros, count not moving</td><td>The AWG is off or not connected to BP.31, or there is no ground connection to BP.20.</td></tr>
+      <tr><td>Error flag 1, but the text looks right</td><td>The flag is sticky. It may have been set during the DC → Arbitrary switch. Restart with the start order above.</td></tr>
+      <tr><td>Wrong bytes, at random</td><td>2 V is at the bottom of the 3.3 V input-high range. Check the ground lead. If needed, add a level shifter (for example SN74LVC1T45, VCCA = 1.8 V, VCCB = 3.3 V).</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ============================================================ -->
+<section class="block demo c-c" id="demo-c">
+  <div class="head"><span class="badge c-c">C</span><h2>UART print</h2><span class="tag">PicoScope as logic analyzer</span></div>
+  <p class="prose">PRU0 bit-bangs a UART transmitter: 115200 baud, 8N1, on BP.33. It sends <code>Hello 2026</code>, keeps the line high for 1 ms, and sends it again, forever. There is no receiver on the board; the PicoScope is the receiver.</p>
+
+  <h3>PicoScope setup</h3>
+  <ol class="steps">
+    <li>Signal generator: <strong>Off</strong>.</li>
+    <li>Digital inputs: enable <strong>D0</strong>. D1 can stay on; Demo C does not use it.</li>
+    <li>Serial decoder: <strong>UART/RS-232</strong> on <strong>D0</strong>, <strong>115200</strong> baud, 8 data bits, no parity, 1 stop bit, LSB first, idle high.</li>
+    <li>Trigger: <strong>Pulse width</strong>, source <strong>D0</strong>, positive pulse <strong>longer than 500 µs</strong>, mode <strong>Repeat</strong>, pre-trigger about 10 %. The only high level that long is the 1 ms gap after each string, so every capture starts at the first character. Inside the string the line is never high for more than 78 µs.</li>
+    <li>Timebase: about 1 ms across the screen. The string lasts 871 µs.</li>
+  </ol>
+  <div class="callout note"><span class="label">No digital inputs?</span>
+    <p>Channel A on BP.33 works the same way (DC, ±5 V, decoder and trigger on A, threshold about 1.65 V).</p></div>
+
+  <h3>Run</h3>
+  <ol class="steps">
+    <li>In CCS, load and run the R5F program <code>uart_print_am243x-lp_r5fss0-0_freertos_ti-arm-clang</code>. The UART console prints <code>UART print: ICSSG0 PRU0 running, 115200 8N1 TX on PRG0_PRU0_GPO0 (BP.33)</code>.</li>
+  </ol>
+  <p>The start order does not matter: the transmitter repeats, and the trigger waits for the gap.</p>
+
+  <h3>What good looks like</h3>
+  <div class="good"><ul>
+    <li><strong>PicoScope:</strong> every capture decodes as <code>48 65 6C 6C 6F 20 32 30 32 36</code>, shown as <code>Hello 2026</code>, with no framing errors. One character lasts about 87 µs; the string repeats every 1.87 ms.</li>
+    <li><strong>CCS Memory Browser:</strong> address <strong>0x30000000</strong>, format <strong>Packed Char</strong>, shows <code>Hello 2026</code> followed by a 0 byte. The PRU reads the text from there on every pass.</li>
+  </ul></div>
+
+  <h3>Optional: change the text live</h3>
+  <p>Because the PRU reads the string from memory on every pass, you can type a new one in the CCS Memory Browser at 0x30000000. The PicoScope shows it from the next pass on (within 2 ms).</p>
+  <ul class="plain">
+    <li>End the text with a <strong>0 byte</strong>, or the PRU keeps sending what follows in memory.</li>
+    <li>At most 255 bytes.</li>
+    <li>Not yet tried on hardware. If it does not work, reload the R5F program to get <code>Hello 2026</code> back.</li>
+  </ul>
+
+  <h3>If something is wrong</h3>
+  <div class="table-wrap"><table class="fix">
+    <thead><tr><th>You see</th><th>Do this</th></tr></thead>
+    <tbody>
+      <tr><td>Flat line on D0</td><td>The R5F program is not running, or a different demo is loaded. Reload <code>uart_print_am243x-lp_r5fss0-0_freertos_ti-arm-clang</code>.</td></tr>
+      <tr><td>Signal there, but the decoder shows garbage or framing errors</td><td>Check the decoder: 115200 baud, 8N1, idle high, LSB first. The decoder must be on D0 (or on A, if you use channel A).</td></tr>
+      <tr><td>Capture starts in the middle of the text</td><td>The trigger is not set as above (pulse width on D0, positive, &gt; 500 µs).</td></tr>
+      <tr><td>All characters decode, but slightly off in time</td><td>Normal: the PRU sends 0.37 % slow (114,780 baud). That is well within UART tolerance.</td></tr>
+      <tr><td>Wrong baud rate, about 172 kbaud</td><td>The PRU clock is not 200 MHz. Do a system reset and reload the R5F program; it sets 200 MHz.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ============================================================ -->
+<section class="block demo c-d" id="demo-d">
+  <div class="head"><span class="badge c-d">D</span><h2>PDM audio</h2><span class="tag">Simulator only</span></div>
+  <p class="prose">PRU1 synthesises two PDM microphones from audio clips (two 2nd-order sigma-delta modulators, 3.072 MHz PDM clock). PRU0 decodes them through the ICSS sigma-delta hardware (SINC3 filter, then a 63-tap FIR) into 16 kHz PCM. The dashboard's <span class="ui">Audio</span> view shows both channels as live spectrograms. Every PRU cycle is simulated, so the picture builds up slowly: about 1.5 ms of audio per second.</p>
+
+  <h3>Run</h3>
+  <ol class="steps">
+    <li>Start the dashboard from the pru-simulator folder (branch <code>electronica2026-demos</code>):
+      <div class="code"><pre><code>python3 ui/server.py      # then open http://127.0.0.1:8080/</code></pre><button class="copy" type="button">Copy</button></div>
+    </li>
+    <li>Open the <span class="ui">Audio</span> tab.</li>
+    <li>Pick <span class="ui">Gen L</span> <code>speech_librivox.wav</code> and <span class="ui">Gen R</span> <code>chirp_lin_100_7000.wav</code>. <span class="ui">Swap L↔R</span> exchanges them.</li>
+    <li>Click <span class="ui">Run</span>. The first setup sets both PRU clocks to 200 MHz and shows a notice; that is expected.</li>
+    <li>Click <span class="ui">Booth</span> for the large view: only the clip pickers, Run/Stop and the two spectrograms. <span class="ui">Exit booth</span> or <kbd>Esc</kbd> leaves it.</li>
+  </ol>
+
+  <h3>What good looks like</h3>
+  <div class="good"><ul>
+    <li>The first spectrogram column appears after about 11 s (it needs 16 ms of audio). After that a new column (8 ms of audio) follows about every 5 s.</li>
+    <li><strong>Left:</strong> speech formants. <strong>Right:</strong> the chirp ridge climbing from 100 Hz to 7 kHz.</li>
+    <li>The progress bar moves and <span class="ui">Simulation speed</span> reads about 1.5 ms audio / s.</li>
+    <li>The 450 ms speech clip takes about 5 minutes. The 250 ms chirp ends after about 2 min 50 s, so the right side stays blank from then on while the left keeps going. Then the run stops; click <span class="ui">Run</span> to start again from 0.</li>
+  </ul></div>
+
+  <h3>Talking points</h3>
+  <ul class="plain">
+    <li><strong>Two PRU cores, one data line:</strong> both microphones share one PDM data line. The left mic is valid on the rising clock edge, the right mic on the falling edge, like a real stereo PDM pair.</li>
+    <li><strong>Exact clock:</strong> 3.072 MHz from a 200 MHz core is 65 + 5/48 cycles per period. PRU1 mixes short and long periods so there is no drift, only 5 ns jitter.</li>
+    <li><strong>Headroom:</strong> the PRU0 receiver needs at most 1009 of the 6250 cycles per sample window for 2 channels (16 %). 8 channels are estimated at about 64 %.</li>
+    <li><strong>Every cycle simulated:</strong> that is why it is slow. The same receiver code was then ported to the LP-AM243 (open-pru PR #191).</li>
+  </ul>
+
+  <h3>If something is wrong</h3>
+  <div class="table-wrap"><table class="fix">
+    <thead><tr><th>You see</th><th>Do this</th></tr></thead>
+    <tbody>
+      <tr><td>The tab says "Running in another tab" and Run is greyed out</td><td>A second browser tab only watches. Use the tab that started the run, or close the other one.</td></tr>
+      <tr><td>The page was reloaded and the run stopped</td><td>Normal. The spectrograms come back from the server; click <span class="ui">Run</span> to continue without a gap.</td></tr>
+      <tr><td><span class="ui">Reset</span> is greyed out</td><td>Reset only works while the run is stopped. Click <span class="ui">Stop</span> first.</td></tr>
+      <tr><td>The pictures start again from 0</td><td>Someone used the Simulator view (Load, Reset, a scenario, a clock change) or set up the SPI demo. That hands the simulator back; the next <span class="ui">Run</span> sets the audio demo up again from 0.</td></tr>
+      <tr><td>No new column for a long time</td><td>Check <span class="ui">Simulation speed</span>. At about 1.5 ms audio / s a column takes about 5 s. A slower laptop takes longer.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3 id="two-screens">SPI link and audio on two screens</h3>
+  <p>One dashboard runs one simulator: setting up the SPI demo ends the audio run, and an audio <span class="ui">Run</span> ends the SPI demo. To show both at the same time, start a second dashboard on another port and open it on the second screen:</p>
+  <div class="code"><pre><code>python3 ui/server.py --port 8081      # then open http://127.0.0.1:8081/</code></pre><button class="copy" type="button">Copy</button></div>
+  <div class="callout note"><span class="label">Checked</span>
+    <p>On the development PC, the SPI test sequence and an audio run worked side by side on two dashboards from one folder.</p></div>
+</section>
+
+<!-- ============================================================ -->
+<section class="block demo c-spi" id="spi">
+  <div class="head"><span class="badge c-spi">SPI</span><h2>SPI link</h2><span class="tag">Simulator, runs unattended</span></div>
+  <p class="prose">PRU0 is an SPI controller and PRU1 an SPI peripheral, both bit-banged and wired pin to pin in TI's pru-simulator. Visitors watch frames go across a scope bit by bit: walking 1, walking 0, 0xA5 / 0x5A and 00 / FF, about 7 s per frame and about 30 s per loop, repeating. No board or PicoScope is needed, so it can run on its own laptop or screen next to the board demos.</p>
+  <p>The code is in pru-simulator, branch <code>feat/spi-pru-link</code> (PR #108). Until the PR is merged, use branch <code>electronica2026-demos</code> (see <a href="#overview">the top of this page</a>).</p>
+
+  <h3>Run (two clicks)</h3>
+  <ol class="steps">
+    <li>Start the dashboard from the pru-simulator folder:
+      <div class="code"><pre><code>python -m ui.server      # then open http://localhost:8080</code></pre><button class="copy" type="button">Copy</button></div>
+    </li>
+    <li>Go to <span class="ui">I/O &amp; Devices → SPI</span>.</li>
+    <li>Click <span class="ui">Set up SPI demo</span>.</li>
+    <li>Click <span class="ui">▶ Play</span>.</li>
+  </ol>
+  <p>Play runs the SPI test sequence once (about a second), then replays its frames in a loop. While it plays, every SPI control except <span class="ui">Pause</span> and <span class="ui">Speed</span> is greyed out, so a visitor clicking around cannot stop it.</p>
+
+  <h3>What good looks like</h3>
+  <div class="good"><ul>
+    <li>A row of 21 green ✓ chips above the frame strip. The 4 loop frames have a thicker green border, and the one playing is outlined in yellow.</li>
+    <li>The line above the frame strip names the step, for example <code>Step 6/21 · rw:walking1 · READ/WRITE (03) @ 0x41 · pattern walking1</code>.</li>
+    <li>The scope trace draws left to right, the byte boxes fill in as each byte completes, and the PRU1 RX and PRU0 RX panels fill byte by byte. The compare badge reads <strong>Transferring…</strong>, then <strong>16/16 bytes match both ways</strong> at the end of each frame.</li>
+    <li><span class="ui">Speed</span>: <em>booth</em> is the default. <em>slow</em> halves the pace and <em>fast</em> triples it.</li>
+  </ul></div>
+
+  <h3>Talking points</h3>
+  <ul class="plain">
+    <li><strong>Real pin trace:</strong> what is drawn is the simulator's recorded pins (/CS, CLK, MOSI, MISO), not an animation.</li>
+    <li><strong>Two PRU cores:</strong> PRU0 drives SPI CLK at 25 MHz on a 200 MHz core (5 ns per cycle). PRU1 follows every clock edge.</li>
+    <li><strong>Timing table:</strong> below the scope, with the AM243 datasheet values marked. The tightest margin (MISO setup) is flagged.</li>
+    <li><strong>Tested up to 50 MHz:</strong> the link was swept from 10 to 50 MHz in both SPI modes. 50 MHz works at a 300 MHz core.</li>
+  </ul>
+
+  <h3>If something is wrong</h3>
+  <div class="table-wrap"><table class="fix">
+    <thead><tr><th>You see</th><th>Do this</th></tr></thead>
+    <tbody>
+      <tr><td>The pane shows only <span class="ui">Set up SPI demo</span>, and the frames and chips are gone</td><td>Someone used the top toolbar (Config, loading another example, …), which ends the SPI demo. Click <span class="ui">Set up SPI demo</span>, then <span class="ui">▶ Play</span>.</td></tr>
+      <tr><td>The loop is not moving and the button reads <span class="ui">▶ Play</span></td><td>It was paused, or someone changed a setting after pausing. Click <span class="ui">▶ Play</span>.</td></tr>
+      <tr><td>A red ✗ chip</td><td>That step failed. The loop still plays it, so visitors see the real result. Hover over the chip for the reason, and note it for the team.</td></tr>
+      <tr><td><span class="ui">Play</span> pressed, but nothing happens for a long time</td><td>Click <span class="ui">❚❚ Pause</span>, then <span class="ui">▶ Play</span> again. If that does not help, reload the page (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd>) and do the two clicks again.</td></tr>
+      <tr><td>The page cannot connect</td><td>The dashboard is not running. Start <code>python -m ui.server</code> again.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ============================================================ -->
+<section class="block" id="switching">
+  <h2>Switching between demos</h2>
+  <ol class="steps">
+    <li>Stop the current demo:
+      <ul>
+        <li><span class="badge c-a">A</span> close the LED window.</li>
+        <li><span class="badge c-b">B</span> set the signal generator to <strong>Off</strong> or <strong>DC +2 V</strong>.</li>
+        <li><span class="badge c-c">C</span> nothing to stop.</li>
+      </ul>
+    </li>
+    <li>In PicoScope, switch to the other demo's settings (open the saved settings file, or use the <a href="#picoscope">table at the top</a>).</li>
+    <li>In CCS, do a <strong>system reset</strong> of the board, or power-cycle it. Then load and run the other demo's <strong>R5F</strong> program. It loads its own PRU0 firmware.</li>
+    <li>For Demo B, keep the start order: <strong>DC +2 V → run R5F → Arbitrary</strong>.</li>
+  </ol>
+  <p>The wiring can stay as it is.</p>
+  <p>The simulator demos (<span class="badge c-d">D</span> and <span class="badge c-spi">SPI</span>) do not touch the board; see <a href="#two-screens">SPI link and audio on two screens</a> for switching between them.</p>
+</section>
+
+<!-- ============================================================ -->
+<section class="block" id="simulator">
+  <h2>Optional: show the simulator first</h2>
+  <p>All three demos started in TI's pru-simulator. To show that step:</p>
+  <div class="code"><pre><code>pip install -r requirements.txt
+python ui/server.py      # then open http://localhost:8080</code></pre><button class="copy" type="button">Copy</button></div>
+  <ul class="plain">
+    <li><span class="badge c-a">A</span> Load <code>source/i2c_tca9538_running_led.asm</code>, click <span class="ui">Attach TCA9538 @ 0x23</span>, set the step interval to 0.01 s and click Run. One LED walks P0 → P7 in the I2C · TCA9538 panel (<code>getting_started.md</code>, Example 10).</li>
+    <li><span class="badge c-b">B</span> Load <code>source/uart_rx_11frame.asm</code> and use <span class="ui">IO panel → UART RX Inject</span> with <code>HelloWorld!</code> (<code>getting_started.md</code>, Example 6). <strong>The PRU0 clock must be 200 MHz</strong> (speed selector). At other clocks nothing is received.</li>
+    <li><span class="badge c-c">C</span> Load <code>source/uart_print.asm</code>, set the Signal Graph window to 2048, click <span class="ui">● REC</span> and <span class="ui">Run</span>, then <span class="ui">▶ Decode</span> in the IO panel's UART Decoder. It shows <code>Hello 2026</code> (<code>getting_started.md</code>, Example 11). The simulator source sends the string once and halts; the board version repeats it.</li>
+  </ul>
+</section>
+
+<!-- ============================================================ -->
+<section class="block" id="more">
+  <h2>More detail</h2>
+  <ul class="plain">
+    <li><span class="badge c-a">A</span> open-pru <code>examples/electronica2026/i2c_io_expander/readme.md</code>, <code>i2c_io/readme.md</code>, <code>visualizer/readme.md</code></li>
+    <li><span class="badge c-b">B</span> open-pru <code>examples/electronica2026/uart_rx_frame/uart_rx/readme.md</code></li>
+    <li><span class="badge c-c">C</span> open-pru <code>examples/electronica2026/uart_print/uart_print/readme.md</code></li>
+    <li><span class="badge c-d">D</span> pru-simulator <code>source/pdm/README.md</code> (branch <code>feat/pdm-audio-demo</code>, PR #106), and <code>docs/reports/2026-11-03-pdm-audio-demo-report.md</code></li>
+    <li><span class="badge c-spi">SPI</span> pru-simulator <code>docs/spi_link.md</code> (branch <code>feat/spi-pru-link</code>, PR #108), and <code>docs/handoff/2026-11-05-spi-sequence-play.md</code></li>
+    <li>How each demo was ported: the <code>docs/porting_report.md</code> in each project</li>
+    <li>Session notes: <code>docs/handoff/2026-11-02-*.md</code> and <code>docs/handoff/2026-11-03-*.md</code> (PR #102)</li>
+  </ul>
+</section>
+
+<footer>HTML version of <code>docs/electronica2026-demo-howto.md</code> in pru-simulator. The Markdown file is the source; change both together.</footer>
+
+</main>
+</div>
+<script>
+document.querySelectorAll('.copy').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    var text = btn.parentElement.querySelector('code').textContent;
+    var done = function (label) { btn.textContent = label; setTimeout(function () { btn.textContent = 'Copy'; }, 1500); };
+    try {
+      navigator.clipboard.writeText(text).then(function () { done('Copied'); }, function () { done('Select and copy'); });
+    } catch (e) { done('Select and copy'); }
+  });
+});
+</script>
+</body>
+</html>
