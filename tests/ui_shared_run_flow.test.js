@@ -167,6 +167,7 @@ test('Step in an observer stops the shared run before advancing once', () => {
 test('a delayed target update cannot cancel a new pending Run', () => {
   const d = dashboard();
   d.context.availableCores = ['pru0','pru1','rtu0','rtu1'];
+  d.context.renderIoBlocks = () => {};
   d.context.PruCores = {ORDER:['pru0','pru1','rtu0','rtu1'],normalize:selection => selection};
   d.context.applyCoreSelection = selection => { d.context.coreSelection = selection; };
   const start = app.indexOf('function showAvailableCores(');

@@ -55,12 +55,29 @@ function createCoresDeck(root, handlers) {
     for (const type of ['use','show','solo']) if (target.dataset[type]) { handlers.action({type,core:target.dataset[type]}); return; }
     if (target.dataset.action) { handlers.action({type:target.dataset.action}); return; }
   });
+  // Dragging only previews the rate; the (reloading) change is applied on release.
   root.addEventListener('input',event => {
     const slider = event.target.closest('.cores-clock-slider'); if (!slider) return;
     const choices = slider._choices; if (!choices || !choices.length) return;
     const mhz = choices[Number(slider.value)];
+    if (mhz === undefined) return;
+    slider._dragging = true;
+    slider.closest('.cores-clock-single').querySelector('[data-core-rate]').textContent = `${mhz} MHz`;
+  });
+  root.addEventListener('change',event => {
+    const slider = event.target.closest('.cores-clock-slider'); if (!slider) return;
+    slider._dragging = false;
+    const choices = slider._choices; if (!choices || !choices.length) return;
+    const mhz = choices[Number(slider.value)];
     if (mhz !== undefined && typeof handlers.setClock === 'function') handlers.setClock(mhz);
   });
+  // A drag that ends on its starting value fires no change event; stop previewing then.
+  const endDrag = event => {
+    const slider = event.target.closest && event.target.closest('.cores-clock-slider'); if (!slider) return;
+    setTimeout(() => { slider._dragging = false; }, 0);
+  };
+  root.addEventListener('pointerup',endDrag);
+  root.addEventListener('pointercancel',endDrag);
   document.addEventListener('pointerdown',event => {
     if (!root.contains(event.target)) {
       open(false);
@@ -107,15 +124,19 @@ function createCoresDeck(root, handlers) {
       }
       const singleRow = root.querySelector('.cores-clock-single');
       if (singleRow) {
-        singleRow.querySelector('[data-core-rate]').textContent = clocks.mhz ? `${clocks.mhz} MHz` : '— MHz';
         const disabled = running || busy || selection.used.length === 0;
         const slider = singleRow.querySelector('.cores-clock-slider');
+        // A state update must not move the thumb or label while the user drags.
+        const dragging = !!(slider && slider._dragging);
+        if (!dragging) singleRow.querySelector('[data-core-rate]').textContent = clocks.mhz ? `${clocks.mhz} MHz` : '— MHz';
         if (slider && clocks.choices_mhz && clocks.choices_mhz.length) {
           slider._choices = clocks.choices_mhz;
           slider.min = 0;
           slider.max = clocks.choices_mhz.length - 1;
-          const idx = clocks.choices_mhz.indexOf(clocks.mhz);
-          slider.value = idx >= 0 ? idx : 0;
+          if (!dragging) {
+            const idx = clocks.choices_mhz.indexOf(clocks.mhz);
+            slider.value = idx >= 0 ? idx : 0;
+          }
           slider.disabled = disabled;
         }
         const ticks = singleRow.querySelector('.cores-clock-ticks');

@@ -18,6 +18,7 @@ function dashboard(cores) {
   vm.runInContext(`function applyCoreSelection(next) {
     coreSelection = next; currentCore = next.focus;
   }`, context);
+  context.renderIoBlocks = () => {};
   for (const name of ['loadCoreChoices', 'showAvailableCores']) {
     const fn = app.match(new RegExp(`(?:async )?function ${name}\\(\\) \\{[\\s\\S]*?\\n\\}|function ${name}\\(cores\\) \\{[\\s\\S]*?\\n\\}`));
     assert.ok(fn, `${name} is implemented`);
@@ -53,7 +54,7 @@ test('failed target discovery preserves the current selection', async () => {
 test('each visible register pane shows its own CRC state', () => {
   const field = { dataset: { paneReadout: 'carry' }, textContent: '' };
   const ui = vm.createContext({
-    currentCore: 'pru0', devicePanelCore: 'pru0', ioCore: 'pru0',
+    currentCore: 'pru0', devicePanelCore: 'pru0',
     coreSelection: { shown: ['pru0', 'rtu1'] },
     mcBreakpoints: {}, updateMCRegisters() {}, updateMCSource() {},
     updatePins() {}, updateDevicePanel() {},
@@ -79,12 +80,13 @@ test('target replacement clears stale inspectors without requesting a removed co
     persistCoreSelection() {}, renderCorePanes() {}, syncDeviceCoreSelect() {},
     paintCoreState() {}, updateCoresControl() {}, sendAction(action) { actions.push(action); },
   });
+  ui.renderIoBlocks = () => {};
   for (const name of ['applyCoreSelection', 'syncGpioLoopback']) {
     vm.runInContext(app.match(new RegExp(`function ${name}\\([^\\n]*\\) \\{[\\s\\S]*?\\n\\}`))[0], ui);
   }
   await ui.loadCoreChoices();
   assert.equal(ui.currentCore, 'pru0');
-  assert.equal(button.active, false);
+  assert.equal(button.active, true, 'per-core I/O blocks are not reset by a focus change');
   assert.equal(ui.sourceList.textContent, '');
   assert.equal(ui._lastSourceKey, '');
   assert.deepEqual(Array.from(ui.prevRegisters), Array(32).fill('0x00000000'));
@@ -95,34 +97,13 @@ test('GPIO loopback buttons follow the selected cores actual mask', () => {
   const buttons = [0, 1, 2, 3, 4].map(group => ({ dataset: { group: String(group) }, active: true }));
   for (const button of buttons) button.classList = { toggle(name, value) { button.active = value; } };
   const context = vm.createContext({ document: { querySelectorAll: () => buttons } });
-  const fn = app.match(/function syncGpioLoopback\(io\) \{[\s\S]*?\n\}/);
+  const fn = app.match(/function syncGpioLoopback\(io, core\) \{[\s\S]*?\n\}/);
   assert.ok(fn, 'loopback controls must synchronize from server state');
   vm.runInContext(fn[0], context);
-  context.syncGpioLoopback({ gpio_loopback_mask: 0xF0 });
+  context.syncGpioLoopback({ gpio_loopback_mask: 0xF0 }, 'pru0');
   assert.deepEqual(buttons.map(button => button.active), [false, true, false, false, false]);
-  context.syncGpioLoopback({ gpio_loopback_mask: 0 });
+  context.syncGpioLoopback({ gpio_loopback_mask: 0 }, 'pru0');
   assert(buttons.every(button => !button.active));
-});
-
-test('loopback clicks target the core displayed by the pins panel', () => {
-  const actions = [];
-  const context = vm.createContext({
-    multiCoreMode: true, currentCore: 'pru0', ioCore: 'pru1',
-    sendAction(action) { actions.push(action); },
-  });
-  vm.runInContext(app.match(/function onLoopbackToggle\(btn\) \{[\s\S]*?\n\}/)[0], context);
-  const button = { dataset: { group: '1' }, classList: {
-    contains() { return false; }, toggle() {},
-  } };
-  context.onLoopbackToggle(button);
-  assert.deepEqual(actions.map(action => [action.action, action.core]), [
-    ['set_loopback', 'pru1'], ['get_state', 'pru1'],
-  ]);
-  actions.length = 0;
-  context.multiCoreMode = false;
-  context.onLoopbackToggle(button);
-  assert(actions.every(action => action.core === 'pru1'));
-  assert.equal(actions.length, 2);
 });
 
 test('clicking Use on a core also marks it as shown', () => {
@@ -276,59 +257,146 @@ test('collapse state persists in localStorage', () => {
   assert.ok(!loaded.has('registers'), 'registers not in set');
 });
 
-// ---- I/O panel core selector -------------------------------------------------
+// ---- I/O Pins: one block per PRU core ----------------------------------------
 
-test('I/O core selector defaults to first used core', () => {
-  // Simulate the ioCore initialization logic from app.js top-level
-  let ioCore = null;
-  const coreSelection = { used: ['pru0', 'rtu0'], shown: ['pru0', 'rtu0'], focus: 'pru0' };
-  try { ioCore = null; /* no localStorage in test */ } catch (_) {}
-  if (!ioCore || !coreSelection.used.includes(ioCore)) ioCore = coreSelection.used[0] ?? 'pru0';
-  assert.equal(ioCore, 'pru0', 'ioCore defaults to first used core');
-});
-
-test('clicking an I/O core chip switches ioCore and requests updated pins', () => {
-  // Simulate the chip click handler logic from renderCorePanes
-  let ioCore = 'pru0';
-  const coreStates = {
-    pru0: { io: { gpo_pins: [], gpi_pins: [] } },
-    rtu0: { io: { gpo_pins: [], gpi_pins: [] } },
-  };
-  const renderCalls = [];
-  const updatePinsCalls = [];
-  const syncLoopbackCalls = [];
-
-  function renderCorePanes() { renderCalls.push(ioCore); }
-  function updatePins(io, core) { updatePinsCalls.push(core); }
-  function syncGpioLoopback(io) { syncLoopbackCalls.push(io); }
-
-  // Simulate clicking the 'rtu0' chip (ioCore is currently 'pru0')
-  const core = 'rtu0';
-  if (ioCore !== core) {
-    ioCore = core;
-    renderCorePanes();
-    const st = coreStates[ioCore];
-    if (st) { updatePins(st.io, ioCore); syncGpioLoopback(st.io || {}); }
+class Node {
+  constructor(tag, registry) {
+    this.tag = tag; this.registry = registry; this.children = []; this.dataset = {};
+    this.listeners = {}; this.attrs = {}; this.className = ''; this.textContent = '';
+    this.value = ''; this.hidden = false; this._classes = new Set(); this._id = '';
+    this.style = { setProperty() {} };
+    this.classList = {
+      toggle: (name, on) => { if (on) this._classes.add(name); else this._classes.delete(name); },
+      contains: name => this._classes.has(name),
+    };
   }
+  get id() { return this._id; }
+  set id(value) { this._id = value; if (value) this.registry.set(value, this); }
+  set innerHTML(_) { this.children = []; }
+  appendChild(child) { child.parent = this; this.children.push(child); return child; }
+  replaceChildren(...kids) { this.children = []; kids.forEach(kid => this.appendChild(kid)); }
+  setAttribute(name, value) { this.attrs[name] = value; }
+  addEventListener(type, fn) { this.listeners[type] = fn; }
+  click() { this.listeners.click(); }
+  descendants() { return this.children.flatMap(child => [child, ...child.descendants()]); }
+}
 
-  assert.equal(ioCore, 'rtu0', 'ioCore switched to rtu0');
-  assert.equal(renderCalls.length, 1, 'renderCorePanes called once');
-  assert.deepEqual(updatePinsCalls, ['rtu0'], 'updatePins called with new ioCore');
-  assert.equal(syncLoopbackCalls.length, 1, 'syncGpioLoopback called');
+const plain = value => JSON.parse(JSON.stringify(value));
+
+function ioDashboard(cores = ['pru0', 'pru1', 'rtu0', 'rtu1', 'txpru0']) {
+  const registry = new Map(), actions = [];
+  const host = new Node('div', registry); host.id = 'io-blocks';
+  const error = new Node('div', registry); error.id = 'gpio-drive-error';
+  const context = vm.createContext({
+    availableCores: cores, coreStates: {}, currentCore: 'pru0', devicePanelCore: 'pru0',
+    coreSelection: { shown: ['pru0'] }, mcBreakpoints: {}, updateMCRegisters() {}, updateMCSource() {},
+    updateDevicePanel() {}, updateUI() {}, sendAction: action => actions.push(action),
+    document: {
+      activeElement: null,
+      createElement: tag => new Node(tag, registry),
+      getElementById: id => registry.get(id) || null,
+      querySelectorAll: selector => {
+        const match = selector.match(/^#(\S+) \.lb-btn$/);
+        const root = match && registry.get(match[1]);
+        return root ? root.descendants().filter(node => node.className === 'lb-btn') : [];
+      },
+    },
+  });
+  vm.runInContext(`const IO_PIN_COUNT = 20;
+    const IO_LOOPBACK_RANGES = ['3:0', '7:4', '11:8', '15:12', '19:16'];
+    const IO_MUX_OPTIONS = [['0', 'GPIO'], ['1', 'Peripheral Interface'], ['3', 'SD']];`, context);
+  for (const name of ['ioEl', 'ioSection', 'buildPinGrid', 'buildGpioDirectionControls', 'buildIoBlock',
+    'renderIoBlocks', 'updateGpioDirections', 'updateIoMux', 'updatePins', 'handleGpiClick',
+    'syncGpioLoopback', 'onLoopbackToggle', 'paintCoreState']) {
+    const fn = app.match(new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`));
+    assert.ok(fn, `${name} is implemented`);
+    vm.runInContext(fn[0], context);
+  }
+  context.renderIoBlocks();
+  const pin = (kind, core, i) => registry.get(`pin-${kind}-${core}-${i}`);
+  const high = (kind, core, i) => pin(kind, core, i).classList.contains('high');
+  return { context, registry, actions, host, pin, high };
+}
+
+const gpioState = (core, gpo, gpi, extra = {}) => ({ core, pc: 0, carry: 0, registers: [], instructions: [],
+  io: { gpo_pins: gpo, gpi_pins: gpi, mux_sel: 0, mode: 'gpio', gpo_drive_mask: 0, gpio_loopback_mask: 0, ...extra } });
+
+test('I/O Pins renders one labelled block per PRU core and none for RTU or TX_PRU', () => {
+  const d = ioDashboard();
+  assert.deepEqual(d.host.children.map(block => block.dataset.core), ['pru0', 'pru1']);
+  assert.deepEqual(d.host.children.map(block => block.children[0].textContent), ['PRU0', 'PRU1']);
+  for (const core of ['pru0', 'pru1']) {
+    assert.ok(d.pin('gpo', core, 19), `${core} GPO row`);
+    assert.ok(d.pin('gpi', core, 19), `${core} GPI row`);
+  }
+  assert.equal(d.registry.get('io-block-rtu0'), undefined);
+  assert.equal(d.registry.get('io-block-txpru0'), undefined);
+  assert.equal(d.registry.get('io-core-chips'), undefined, 'no core selector');
 });
 
-test('GPI click targets ioCore, not currentCore', () => {
-  const actions = [];
-  const context = vm.createContext({
-    currentCore: 'pru0', ioCore: 'rtu0',
-    sendAction(action) { actions.push(action); },
-  });
-  vm.runInContext(app.match(/function handleGpiClick\(pinIndex, pinEl\) \{[\s\S]*?\n\}/)[0], context);
-  const pinEl = { classList: { contains() { return false; } } };
-  context.handleGpiClick(5, pinEl);
-  assert.equal(actions.length, 1);
-  assert.equal(actions[0].action, 'set_input');
-  assert.equal(actions[0].core, 'rtu0', 'GPI click sends to ioCore, not currentCore');
-  assert.equal(actions[0].pin, 5);
-  assert.equal(actions[0].value, 1);
+test('a processor with only PRU0 gets a single block; no PRU cores gets none', () => {
+  assert.deepEqual(ioDashboard(['pru0', 'rtu0']).host.children.map(b => b.dataset.core), ['pru0']);
+  assert.equal(ioDashboard(['rtu0']).host.children.length, 0);
+});
+
+test('both cores pins render, and a PRU1 state message does not repaint PRU0', () => {
+  const d = ioDashboard();
+  d.context.paintCoreState(gpioState('pru0', [1, 0], [0, 1], { gpio_loopback_mask: 0xF }));
+  d.context.paintCoreState(gpioState('pru1', [0, 1], [1, 0]));
+  assert.equal(d.high('gpo', 'pru0', 0), true);
+  assert.equal(d.high('gpi', 'pru0', 1), true);
+  assert.equal(d.high('gpo', 'pru1', 1), true);
+  assert.equal(d.high('gpi', 'pru1', 0), true);
+  // A later PRU1 message must not change anything in PRU0's block.
+  d.context.paintCoreState(gpioState('pru1', [0, 0], [0, 0]));
+  assert.equal(d.high('gpo', 'pru0', 0), true, 'PRU0 GPO kept');
+  assert.equal(d.high('gpi', 'pru0', 1), true, 'PRU0 GPI kept');
+  assert.equal(d.high('gpo', 'pru1', 1), false, 'PRU1 GPO cleared');
+  const lb = core => d.registry.get(`loopback-strip-${core}`).children.map(b => b.classList.contains('active'));
+  assert.deepEqual(lb('pru0'), [true, false, false, false, false]);
+  assert.deepEqual(lb('pru1'), [false, false, false, false, false]);
+});
+
+test('state for a core without a block (RTU) is ignored by the I/O Pins panel', () => {
+  const d = ioDashboard();
+  d.context.paintCoreState(gpioState('pru0', [1], [1]));
+  assert.doesNotThrow(() => d.context.paintCoreState(gpioState('rtu0', [0], [0])));
+  assert.equal(d.high('gpo', 'pru0', 0), true);
+});
+
+test('GPI clicks, loopback, drive and GP mux act on the block core, not the focus core', () => {
+  const d = ioDashboard();
+  d.context.currentCore = 'pru0';
+  d.pin('gpi', 'pru1', 5).click();
+  assert.deepEqual(plain(d.actions.pop()), { action: 'set_input', core: 'pru1', pin: 5, value: 1 });
+  d.pin('gpi', 'pru0', 2).click();
+  assert.deepEqual(plain(d.actions.pop()), { action: 'set_input', core: 'pru0', pin: 2, value: 1 });
+  d.actions.length = 0;
+  const strip = d.registry.get('loopback-strip-pru1');
+  strip.children[1].click();
+  assert.deepEqual(d.actions.map(a => [a.action, a.core]), [['set_loopback', 'pru1'], ['get_state', 'pru1']]);
+  assert.equal(d.actions[0].group, 1);
+  assert.equal(d.actions[0].enabled, true);
+  assert.equal(strip.children[0].title, 'Loop GPO[3:0] back to GPI[3:0]');
+  d.actions.length = 0;
+  const mux = d.registry.get('io-mux-sel-pru1');
+  mux.value = '3'; mux.listeners.change();
+  assert.deepEqual(plain(d.actions), [{ action: 'gpcfg_write', core: 'pru1', mux_sel: 3 }]);
+  d.actions.length = 0;
+  d.registry.get('gpio-drive-controls-pru1').children[4].click();
+  assert.deepEqual(plain(d.actions), [{ action: 'set_gpio_drive_mask', core: 'pru1', pin: 4 }]);
+});
+
+test('rebuilding the blocks repaints them from the per-core state cache', () => {
+  const d = ioDashboard(['pru0']);
+  d.context.coreStates.pru0 = gpioState('pru0', [1], [0]);
+  d.context.coreStates.pru1 = gpioState('pru1', [0, 1], [0, 0]);
+  d.context.availableCores = ['pru0', 'pru1', 'rtu0'];
+  d.context.renderIoBlocks();
+  assert.deepEqual(d.host.children.map(block => block.dataset.core), ['pru0', 'pru1']);
+  assert.equal(d.high('gpo', 'pru0', 0), true);
+  assert.equal(d.high('gpo', 'pru1', 1), true);
+  d.context.availableCores = ['pru0'];                       // another processor
+  d.context.renderIoBlocks();
+  assert.deepEqual(d.host.children.map(block => block.dataset.core), ['pru0']);
 });

@@ -22,7 +22,7 @@ function tab() {
     sendAction:request => requests.push(request), persistCoreSelection() {}, renderCorePanes() {},
     selectEditorCore() {}, syncDeviceCoreSelect() {}, updateCoresControl() {}, paintCoreState() {},
     mcFreshRegs:() => [], sourceList:{replaceChildren() {}}, initSpadState() {},
-    syncGpioLoopback() {}, updateCtableForCore() {},
+    syncGpioLoopback() {}, updateCtableForCore() {}, lastAppliedCores:null, simRunning:false, runPending:null, prevExecutionOwner:false,
   });
   vm.runInContext(cores,context);
   load(context,'applyCoreSelection'); load(context,'receiveExecution');
@@ -68,7 +68,7 @@ test('Reset Layout preserves shared execution cores and does not stop a run', ()
   const t = tab(); let reset;
   Object.assign(t.context, {
     document:{getElementById() {}, addEventListener(name,fn) { if (name === 'pru-cores-reset') reset = fn; }},
-    createCoresDeck:() => ({}), changeGroupClock() {},
+    createCoresDeck:() => ({}), setClockDirect() {},
   });
   load(t.context,'initCoresControl');
   t.context.receiveExecution(session({running:true,owner:false}));
@@ -86,8 +86,8 @@ test('manual CORES Use actions add and remove shared membership from either tab'
   const a = tab(), b = tab();
   for (const t of [a,b]) {
     Object.assign(t.context, {
-      document:{getElementById() {}, addEventListener() {}}, changeGroupClock() {},
-      createCoresDeck(_root,handlers) { t.click = handlers.action; return {shake() {}}; },
+      document:{getElementById() {}, addEventListener() {}}, setClockDirect() {},
+      createCoresDeck(_root,handlers) { t.click = handlers.action; return {shake() {}, pulse() {}}; },
     });
     load(t.context,'initCoresControl');
     t.context.initCoresControl();
@@ -107,8 +107,8 @@ test('Use cannot change local execution membership before shared state arrives',
   const t = tab();
   t.context.executionReady = false;
   Object.assign(t.context, {
-    document:{getElementById() {},addEventListener() {}}, changeGroupClock() {},
-    createCoresDeck(_root,handlers) { t.click = handlers.action; return {shake() {}}; },
+    document:{getElementById() {},addEventListener() {}}, setClockDirect() {},
+    createCoresDeck(_root,handlers) { t.click = handlers.action; return {shake() {}, pulse() {}}; },
   });
   load(t.context,'initCoresControl'); t.context.initCoresControl();
   for (const action of [{type:'use',core:'pru1'},{type:'use-all'}]) t.click(action);

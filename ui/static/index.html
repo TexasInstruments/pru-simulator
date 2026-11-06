@@ -266,13 +266,17 @@
 
     .processor-badge {
       margin-left: 6px;
-      padding: 1px 6px;
+      padding: 1px 4px;
+      min-height: 0;
       border-radius: 4px;
+      border: 0;
       background: var(--btn);
       color: var(--text-dim);
       font-size: 0.75em;
       font-weight: 600;
     }
+    #controls select.processor-badge { min-height: 22px; }
+    .processor-badge:disabled { opacity: 0.6; cursor: default; }
 
     #controls select { min-height: 30px; }
     .toolbar-group button {
@@ -297,9 +301,9 @@
     #iep-clock-custom-form[hidden] { display: none; }
     #iep-clock-custom { width: 90px; }
     #iep-clock-error, #gpio-drive-error { color: var(--halted); font-size: 12px; }
-    #gpio-drive-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; }
-    #gpio-drive-controls button { font: inherit; padding: 6px 4px; white-space: nowrap; }
-    #gpio-drive-controls button[aria-pressed="true"] { color: var(--green); }
+    .gpio-drive-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; }
+    .gpio-drive-controls button { font: inherit; padding: 6px 4px; white-space: nowrap; }
+    .gpio-drive-controls button[aria-pressed="true"] { color: var(--green); }
     #iep-clock-select,
     #sim-interval {
       background: var(--panel-inset);
@@ -806,6 +810,16 @@
       color: var(--text);
     }
 
+    /* One block per PRU core, stacked; the core colour labels each block. */
+    #io-blocks { display: flex; flex-direction: column; gap: 14px; }
+    .io-block { padding-left: 8px; border-left: 3px solid var(--core-color); }
+    .io-block-title {
+      color: var(--core-color);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.1em;
+      margin-bottom: 6px;
+    }
     .pin-grid { display: flex; flex-wrap: wrap; gap: 5px; }
     .pin {
       width: 32px;
@@ -1628,7 +1642,7 @@
   <div id="controls">
     <div id="toolbar-main">
     <div class="toolbar-group toolbar-context" role="group" aria-label="Target selection">
-      <span class="logo" title="PRU Simulator v0.4.0">PRU SIM</span><span class="processor-badge" id="processor-badge" hidden></span>
+      <span class="logo" title="PRU Simulator v0.4.0">PRU SIM</span><select class="processor-badge" id="processor-select" title="Target processor. Changing it reloads the simulator and clears loaded programs." aria-label="Target processor" hidden></select>
 
       <div id="cores-control"></div>
       <label class="toolbar-rate-pill">
@@ -1841,41 +1855,10 @@ Example:
 
       <!-- IO panel -->
       <div class="panel" id="io-panel">
-        <div class="panel-title" data-panel-id="io"><span>I/O Pins</span><span class="shown-core-chips" id="io-core-chips"></span></div>
+        <div class="panel-title" data-panel-id="io"><span>I/O Pins</span></div>
         <div class="panel-body">
-          <div class="io-section io-mux-row" id="io-mux-row">
-            <span class="io-mux-label">GP Mux (GPCFG):</span>
-            <select id="io-mux-sel" class="io-mux-sel">
-              <option value="0">0 — GPIO</option>
-              <option value="1">1 — Peripheral Interface</option>
-              <option value="3">3 — SD (Sigma-Delta)</option>
-            </select>
-            <span class="io-mux-note" id="io-mux-note"></span>
-          </div>
-          <div class="io-section">
-            <div class="io-section-title">GPO (R30) — Output</div>
-            <div class="pin-grid" id="gpo-grid"></div>
-          </div>
-          <div class="io-section">
-            <div class="io-section-title">GPI (R31) — Input (click to toggle)</div>
-            <div class="pin-grid" id="gpi-grid"></div>
-          </div>
-          <div class="io-section io-settings">
-            <div class="io-section-title">Loopback (GPO[n] → GPI[n])</div>
-            <div class="lb-strip" id="loopback-strip">
-              <button class="lb-btn" data-group="0" title="Loop GPO[3:0] back to GPI[3:0]">3:0</button>
-              <button class="lb-btn" data-group="1" title="Loop GPO[7:4] back to GPI[7:4]">7:4</button>
-              <button class="lb-btn" data-group="2" title="Loop GPO[11:8] back to GPI[11:8]">11:8</button>
-              <button class="lb-btn" data-group="3" title="Loop GPO[15:12] back to GPI[15:12]">15:12</button>
-              <button class="lb-btn" data-group="4" title="Loop GPO[19:16] back to GPI[19:16]">19:16</button>
-            </div>
-          </div>
-          <div class="io-section io-settings">
-            <div class="io-section-title">GPIO output enable — Drive / Release</div>
-            <div id="gpio-drive-controls" role="group" aria-label="GPIO output enable"></div>
-            <div id="gpio-drive-error" role="alert" hidden></div>
-          </div>
-
+          <div id="io-blocks"></div>
+          <div id="gpio-drive-error" role="alert" hidden></div>
         </div>
       </div>
 
@@ -2090,9 +2073,10 @@ Example:
       <section class="help-section">
         <div class="help-heading">IO Panel</div>
         <table class="help-table">
-          <tr><td><b>GPO pins</b></td><td>Live R30 bit indicators — updated every step</td></tr>
-          <tr><td><b>Loopback strip</b></td><td>Five toggles. Each wires one 4-bit group of GPO identity-mapped to the SAME group of GPI (GPO[n] → GPI[n]).</td></tr>
-          <tr><td><b>GPI pins</b></td><td>R31 bit indicators — click any pin to drive it high/low when SD is disabled</td></tr>
+          <tr><td><b>PRU0 / PRU1 blocks</b></td><td>The I/O Pins panel shows every GPO and GPI signal at once, one labelled block per PRU core (coloured like the core). RTU and TX_PRU cores have no block. Each block has its own pins, GP Mux, loopback strip and GPIO output enable, and always acts on its own core.</td></tr>
+          <tr><td><b>GPO pins</b></td><td>Live R30 bit indicators for that block's core — updated every step</td></tr>
+          <tr><td><b>Loopback strip</b></td><td>Five toggles per block. Each wires one 4-bit group of that core's GPO identity-mapped to the SAME group of its GPI (GPO[n] → GPI[n]).</td></tr>
+          <tr><td><b>GPI pins</b></td><td>R31 bit indicators — click any pin in a block to drive that core's pin high/low when SD is disabled</td></tr>
           <tr><td><b>UART Record / Stop recording</b></td><td>Start or stop the shared Signal Graph capture. Run firmware while recording, then Decode GPO0.</td></tr>
           <tr><td><b>▶ Decode</b></td><td>UART decode of recorded GPO0 transitions (8N1, auto-detect baud); shows hex + ASCII bytes</td></tr>
           <tr><td><b>Clear</b></td><td>Clear UART decode output</td></tr>
