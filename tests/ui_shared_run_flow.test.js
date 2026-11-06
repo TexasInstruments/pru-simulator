@@ -144,7 +144,7 @@ test('loading an example cannot cancel Run requested before the load reply arriv
   d.context.document.querySelector = () => null;
   const start = app.indexOf('async function applyScenario(');
   vm.runInContext(app.slice(start, app.indexOf('function buildMCRegTable(',start)),d.context);
-  d.context.sendAction({action:'scenario_load',name:'SSI multi-core (emulator + reader)'});
+  d.context.sendAction({action:'scenario_load',name:'SSI (encoder PRU + reader)'});
   d.context.btnRun.click();
   await d.context.applyScenario({cores:['pru0','pru1'],lead:'pru0',firmware:{},ui:{}});
   acknowledgeStart(d); d.tick();
@@ -167,6 +167,7 @@ test('Step in an observer stops the shared run before advancing once', () => {
 test('a delayed target update cannot cancel a new pending Run', () => {
   const d = dashboard();
   d.context.availableCores = ['pru0','pru1','rtu0','rtu1'];
+  d.context.renderIoBlocks = () => {};
   d.context.PruCores = {ORDER:['pru0','pru1','rtu0','rtu1'],normalize:selection => selection};
   d.context.applyCoreSelection = selection => { d.context.coreSelection = selection; };
   const start = app.indexOf('function showAvailableCores(');

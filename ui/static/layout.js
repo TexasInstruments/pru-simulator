@@ -42,6 +42,16 @@ let panelPool   = null;
 let hiddenPanelIds = new Set();
 const modePanelIds = { sc: [] };
 const PANEL_VISIBILITY_KEY = "pru-panel-visibility-";
+const CORE_VISIBILITY_KEY  = "pru-core-visibility-";
+const PANEL_COLLAPSED_KEY  = "pru-panel-collapsed-";
+
+// ---- Per-core visibility + collapse state ----------------------------------
+// coreVisibility[panelId][core] = true (visible) / false (hidden in that pane)
+let coreVisibility = {};
+let collapsedPanelIds = new Set();
+
+// Panels that render per-core content (circles shown in their title bar)
+const MULTI_CORE_PANELS = new Set(['source', 'registers']);
 
 // ---- localStorage helpers --------------------------------------------------
 
@@ -110,6 +120,53 @@ function sanitizeHiddenPanels(mode) {
   if (visibleIds.length === 0 && modePanelIds[mode]?.length > 0) {
     hiddenPanelIds.delete(modePanelIds[mode][0]);
   }
+}
+
+// ---- Core visibility per-panel helpers ------------------------------------
+
+function loadCoreVisibility(mode) {
+  try {
+    const raw = localStorage.getItem(`${CORE_VISIBILITY_KEY}${mode}`);
+    return raw ? JSON.parse(raw) : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveCoreVisibility(mode) {
+  try {
+    localStorage.setItem(`${CORE_VISIBILITY_KEY}${mode}`, JSON.stringify(coreVisibility));
+  } catch (e) { /* quota exceeded — ignore */ }
+}
+
+function getCoreVisibility(panelId, core) {
+  return coreVisibility[panelId]?.[core] !== false; // default true
+}
+
+function setCoreVisibility(panelId, core, visible) {
+  if (!coreVisibility[panelId]) coreVisibility[panelId] = {};
+  coreVisibility[panelId][core] = visible;
+  saveCoreVisibility(currentMode);
+  render(currentTree);
+  notifyLayoutChanged();
+}
+
+// ---- Panel collapse persistence helpers ------------------------------------
+
+function loadCollapsedPanels(mode) {
+  try {
+    const raw = localStorage.getItem(`${PANEL_COLLAPSED_KEY}${mode}`);
+    const ids = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(ids) ? ids.filter(id => typeof id === 'string') : []);
+  } catch (e) {
+    return new Set();
+  }
+}
+
+function saveCollapsedPanels(mode) {
+  try {
+    localStorage.setItem(`${PANEL_COLLAPSED_KEY}${mode}`, JSON.stringify(Array.from(collapsedPanelIds)));
+  } catch (e) { /* quota exceeded — ignore */ }
 }
 
 function notifyLayoutChanged() {
@@ -188,9 +245,15 @@ function renderNode(node) {
         btn.title = 'Collapse / Expand';
         btn.addEventListener('click', (e) => {
           e.stopPropagation();
-          togglePanelCollapse(panel);
+          togglePanelCollapse(panel, node.panelId);
         });
         titleEl.appendChild(btn);
+      }
+      // Apply persisted collapse state (only add — removal is user-driven via togglePanelCollapse)
+      if (collapsedPanelIds.has(node.panelId) && !panel.classList.contains('panel-collapsed')) {
+        panel.classList.add('panel-collapsed');
+        const btn = panel.querySelector('.panel-collapse-btn');
+        if (btn) btn.textContent = '+';
       }
     }
     return leaf;
@@ -525,6 +588,8 @@ function initLayout(mode) {
   currentTree = loadLayout(currentMode) || defaultTree(currentMode);
   hiddenPanelIds = loadHiddenPanels(currentMode);
   sanitizeHiddenPanels(currentMode);
+  coreVisibility = loadCoreVisibility(currentMode);
+  collapsedPanelIds = loadCollapsedPanels(currentMode);
   render(currentTree);
   notifyLayoutChanged();
 }
@@ -542,6 +607,10 @@ function resetLayout() {
   currentTree = defaultTree(currentMode);
   hiddenPanelIds.clear();
   saveHiddenPanels(currentMode);
+  coreVisibility = {};
+  saveCoreVisibility(currentMode);
+  collapsedPanelIds.clear();
+  saveCollapsedPanels(currentMode);
   render(currentTree);
   notifyLayoutChanged();
 }
@@ -550,7 +619,7 @@ function resetLayout() {
 
 const COLLAPSED_TITLE_HEIGHT = 26; // px — just the title bar
 
-function togglePanelCollapse(panel) {
+function togglePanelCollapse(panel, panelId) {
   const tileChild = panel.closest('.tile-child');
   if (!tileChild) return;
   const btn = panel.querySelector('.panel-collapse-btn');
@@ -561,11 +630,13 @@ function togglePanelCollapse(panel) {
     tileChild.dataset.prevFlex = tileChild.style.flex || '';
     tileChild.style.flex = `0 0 ${COLLAPSED_TITLE_HEIGHT}px`;
     if (btn) btn.textContent = '+';
+    if (panelId) { collapsedPanelIds.add(panelId); saveCollapsedPanels(currentMode); }
   } else {
     // Restore previous flex value
     const prev = tileChild.dataset.prevFlex;
     tileChild.style.flex = prev || '1';
     delete tileChild.dataset.prevFlex;
     if (btn) btn.textContent = '−';
+    if (panelId) { collapsedPanelIds.delete(panelId); saveCollapsedPanels(currentMode); }
   }
 }

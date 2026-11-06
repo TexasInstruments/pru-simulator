@@ -28,12 +28,11 @@ def _read32(sim, addr):
     return int.from_bytes(sim.memory_read(addr, 4), "little")
 
 
-def _clocked_sim(tmp_path, *, pru="200", pru1="250", iep="300"):
+def _clocked_sim(tmp_path, *, pru="200", iep="300"):
     config = tmp_path / "clock.cfg"
     config.write_text(
         "[device]\n"
         f"pru_clock_mhz = {pru}\n"
-        f"pru1_clock_mhz = {pru1}\n"
         f"iep_clock_mhz = {iep}\n"
         "\n[DRAM0]\nbase = 0x00000000\nsize = 0x2000\n"
         "read_latency = 2\nwrite_latency = 1\njitter = 0\n"
@@ -88,13 +87,13 @@ def test_capture_and_64_bit_register_pairs_stay_memory_mapped():
 
 
 def test_peer_cores_advance_one_exact_shared_timeline_and_clock_can_switch(tmp_path):
-    sim = _clocked_sim(tmp_path, pru="200", pru1="250", iep="300")
+    sim = _clocked_sim(tmp_path, pru="200", iep="300")
     for core in ("pru0", "pru1", "rtu0"):
         _load_loop(sim, core)
     _write32(sim, IEP_BASE + GLOBAL_CFG, 0x11)
 
     sim.step("pru0", 100)   # 500 ns -> 150 external-clock ticks
-    sim.step("pru1", 125)   # same 500 ns; peer time is not counted twice
+    sim.step("pru1", 100)   # same 500 ns; peer time is not counted twice
     assert sim.iep.count == 150
     assert sim.iep.now_ns == Fraction(500)
 
@@ -110,7 +109,7 @@ def test_peer_cores_advance_one_exact_shared_timeline_and_clock_can_switch(tmp_p
 
 
 def test_rational_core_clock_preserves_exact_iep_cadence(tmp_path):
-    sim = _clocked_sim(tmp_path, pru="250", pru1="200.1", iep="250")
+    sim = _clocked_sim(tmp_path, pru="200.1", iep="250")
     _load_loop(sim, "pru1")
     _write32(sim, IEP_BASE + GLOBAL_CFG, 0x11)
 
@@ -121,7 +120,7 @@ def test_rational_core_clock_preserves_exact_iep_cadence(tmp_path):
 
 
 def test_repeated_global_cfg_firmware_writes_preserve_rational_tick_phase(tmp_path):
-    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
+    sim = _clocked_sim(tmp_path, pru="250", iep="200")
     sim.iep.set_clock_mhz("200")
     sim.iep.global_cfg = 0x11
     assert sim.load(
@@ -204,7 +203,7 @@ def test_iep_clock_source_and_rate_transitions_reset_tick_phase():
 
 
 def test_repeated_iepclk_firmware_writes_preserve_tick_phase(tmp_path):
-    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
+    sim = _clocked_sim(tmp_path, pru="250", iep="200")
     sim.iep.set_clock_mhz("200")
     sim.iep.global_cfg = 0x11
     assert sim.load("pru0", "ldi32 r0, 0x26030\nldi r1, 0\n"
@@ -238,7 +237,7 @@ def test_inactive_external_clock_change_preserves_ocp_phase():
 
 
 def test_lbbo_and_wait_stalls_reach_the_cycle_observer(tmp_path):
-    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
+    sim = _clocked_sim(tmp_path, pru="250", iep="200")
     assert sim.load(
         "pru0",
         "ldi r0, 0\n"
@@ -277,7 +276,7 @@ def test_rtu1_uses_slice_one_local_dram_mapping():
 def test_step_paced_many_tracks_time_and_applies_perif_guard_only_when_enabled(
     tmp_path,
 ):
-    sim = _clocked_sim(tmp_path, pru="250", pru1="200", iep="300")
+    sim = _clocked_sim(tmp_path, pru="250", iep="300")
     for core in ("pru0", "pru1", "rtu1"):
         _load_loop(sim, core)
     _write32(sim, IEP_BASE + GLOBAL_CFG, 0x11)
@@ -285,12 +284,12 @@ def test_step_paced_many_tracks_time_and_applies_perif_guard_only_when_enabled(
     sim.step_paced_many("pru0", ["pru1", "rtu1"], 10)
 
     assert sim.cores["pru0"].counters.cycles == 10
-    assert sim.cores["pru1"].counters.cycles == 8
-    assert sim.cores["rtu1"].counters.cycles == 8
+    assert sim.cores["pru1"].counters.cycles == 10
+    assert sim.cores["rtu1"].counters.cycles == 10
     assert sim.iep.count == 12
     assert sim._perif["pru0"]._now_ns > 0  # clock runs with mux disabled
 
-    guarded = _clocked_sim(tmp_path, pru="250", pru1="200", iep="300")
+    guarded = _clocked_sim(tmp_path, pru="250", iep="300")
     for core in ("pru0", "pru1"):
         _load_loop(guarded, core)
         guarded.gpcfg_write(core, 1)
@@ -302,7 +301,7 @@ def test_step_paced_many_tracks_time_and_applies_perif_guard_only_when_enabled(
 
 
 def test_step_paced_many_catches_up_after_lead_memory_stalls(tmp_path):
-    sim = _clocked_sim(tmp_path, pru="250", pru1="200", iep="300")
+    sim = _clocked_sim(tmp_path, pru="250", iep="300")
     assert sim.load("pru0", "ldi r0, 0\nlbbo &r1, r0, 0, 4\nnop\njmp 1\n") == []
     _load_loop(sim, "pru1")
 
@@ -316,12 +315,12 @@ def test_step_paced_many_catches_up_after_lead_memory_stalls(tmp_path):
     )
     assert sim.cores["pru0"].counters.stall_cycles == 2
     assert lead == Fraction(16)
-    assert follow == Fraction(20)
-    assert lead <= follow <= lead + Fraction(5)  # at most one 200 MHz cycle
+    assert follow == Fraction(16)
+    assert lead <= follow <= lead + Fraction(4)  # at most one 250 MHz cycle
 
 
 def test_step_paced_many_counts_follower_wbs_stalls_as_elapsed_time(tmp_path):
-    sim = _clocked_sim(tmp_path, pru="250", pru1="200", iep="300")
+    sim = _clocked_sim(tmp_path, pru="250", iep="300")
     _load_loop(sim, "pru0")
     assert sim.load("pru1", "wbs 0\nnop\njmp 1\n") == []
     sim.set_input("pru1", 0, False)
@@ -336,7 +335,7 @@ def test_step_paced_many_counts_follower_wbs_stalls_as_elapsed_time(tmp_path):
     )
     assert lead == follow == Fraction(40)
     assert sim.cores["pru1"].pc == 0
-    assert sim.cores["pru1"].counters.stall_cycles == 8
+    assert sim.cores["pru1"].counters.stall_cycles == 10
 
     sim.set_input("pru1", 0, True)
     sim.step_paced_many("pru0", ["pru1"], 1)
@@ -349,11 +348,11 @@ def test_step_paced_many_counts_follower_wbs_stalls_as_elapsed_time(tmp_path):
     )
     assert sim.cores["pru1"].pc == 1
     assert lead == Fraction(44)
-    assert lead <= follow <= lead + Fraction(5)
+    assert lead <= follow <= lead + Fraction(4)
 
 
 def test_single_core_reset_rejoins_global_time_and_hardware_reset_restarts_it(tmp_path):
-    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
+    sim = _clocked_sim(tmp_path, pru="250", iep="200")
     _load_loop(sim, "pru0")
     _write32(sim, IEP_BASE + GLOBAL_CFG, 0x11)
     sim.step("pru0", 10)
@@ -452,7 +451,7 @@ def test_simulator_rejects_nonfinite_guards_before_execution(guard):
 
 
 def test_direct_core_reset_notifies_shared_timeline(tmp_path):
-    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
+    sim = _clocked_sim(tmp_path, pru="250", iep="200")
     _load_loop(sim, "pru0")
     sim.step("pru0")
     assert sim.iep.now_ns == 4
@@ -462,7 +461,7 @@ def test_direct_core_reset_notifies_shared_timeline(tmp_path):
 
 
 def test_backward_cycle_jump_is_absorbed_not_added_to_shared_time(tmp_path):
-    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
+    sim = _clocked_sim(tmp_path, pru="250", iep="200")
     _load_loop(sim, "pru0")
     sim.step("pru0", 20)
     assert sim.iep.now_ns == 80
@@ -519,7 +518,7 @@ def test_omitted_external_clock_defaults_to_the_trm_200_mhz_for_any_core_rate(tm
 
 
 def test_reset_default_inc_counts_nanoseconds_at_250mhz_core_200mhz_iep(tmp_path):
-    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
+    sim = _clocked_sim(tmp_path, pru="250", iep="200")
     _load_loop(sim, "pru0")
     # Read-modify-write of the 0x550 reset value, as firmware does: DEFAULT_INC stays 5.
     _write32(sim, IEP_BASE + GLOBAL_CFG, _read32(sim, IEP_BASE + GLOBAL_CFG) | 1)
@@ -613,13 +612,13 @@ def test_bulk_compare_reset_every_tick_is_bounded(monkeypatch):
 
 
 def test_250mhz_core_200mhz_iep_stalled_firmware_and_cmp0(tmp_path):
-    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
+    sim = _clocked_sim(tmp_path, pru="250", iep="200")
     sim.iep.global_cfg = 0x11
     assert sim.load("pru0", "ldi32 r0, 0x2E000\nldi r1, 0x11\nloop: sbbo &r1, r0, 0, 4\nqba loop\n") == []
     assert sim.step("pru0", 302)["cycles"] == 452
     # 452 cycles at 250 MHz are 1808 ns, which is 361 ticks of the 200 MHz IEP.
     assert sim.iep.count == 361
-    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
+    sim = _clocked_sim(tmp_path, pru="250", iep="200")
     _load_loop(sim, "pru0")
     sim.iep.global_cfg = 0x11
     sim.iep.compare[0] = 50
@@ -630,7 +629,7 @@ def test_250mhz_core_200mhz_iep_stalled_firmware_and_cmp0(tmp_path):
 
 
 def test_direct_reset_stalled_instruction_preserves_peer_time(tmp_path):
-    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="250")
+    sim = _clocked_sim(tmp_path, pru="250", iep="250")
     _load_loop(sim, "pru1")
     assert sim.load("pru0", "lbbo &r1, r0, 0, 4\njmp 0") == []
     sim.step("pru1", 10)
@@ -641,7 +640,7 @@ def test_direct_reset_stalled_instruction_preserves_peer_time(tmp_path):
 
 
 def test_rtu1_constants_write_and_clock_are_slice_local(tmp_path):
-    sim = _clocked_sim(tmp_path, pru="250", pru1="200", iep="250")
+    sim = _clocked_sim(tmp_path, pru="200", iep="250")
     baseline = sim.cores["pru0"].constant_table.resolve(26)
     sim.cores["rtu1"].constant_table.set(26, 0x1234)
     assert sim.cores["pru0"].constant_table.resolve(26) == baseline
@@ -653,7 +652,7 @@ def test_rtu1_constants_write_and_clock_are_slice_local(tmp_path):
 
 
 def test_batched_pacing_reports_actual_lead_steps_on_capped_catchup(tmp_path):
-    sim = _clocked_sim(tmp_path, pru="250", pru1="250", iep="200")
+    sim = _clocked_sim(tmp_path, pru="250", iep="200")
     for core in ("pru0", "pru1"):
         _load_loop(sim, core)
     sim.step("pru0", 10000)
@@ -689,7 +688,7 @@ def test_batched_pacing_reports_lead_steps_on_stuck_follower(tmp_path, monkeypat
 
 
 def test_paced_retry_finishes_the_old_target_before_advancing_lead(tmp_path):
-    sim = _clocked_sim(tmp_path, pru="200", pru1="200", iep="200")
+    sim = _clocked_sim(tmp_path, pru="200", iep="200")
     sim.memory.regions[0].read_latency = 2500
     assert sim.load("pru0", "lbbo &r2, r0, 0, 4\nqba 0") == []
     assert sim.load("pru1", "qba 0") == []
@@ -710,7 +709,7 @@ def test_paced_retry_finishes_the_old_target_before_advancing_lead(tmp_path):
 
 
 def test_paced_retry_keeps_all_follower_targets_when_mux_changes(tmp_path):
-    sim = _clocked_sim(tmp_path, pru="200", pru1="200", iep="200")
+    sim = _clocked_sim(tmp_path, pru="200", iep="200")
     sim.memory.regions[0].read_latency = 2500
     assert sim.load("pru0", "lbbo &r2, r0, 0, 4\nqba 0") == []
     for core in ("pru1", "rtu0"):
@@ -736,7 +735,7 @@ def test_paced_retry_keeps_all_follower_targets_when_mux_changes(tmp_path):
 
 @pytest.mark.parametrize("reset", ["lead", "follower", "hardware"])
 def test_reset_discards_unfinished_pacing_targets(tmp_path, reset):
-    sim = _clocked_sim(tmp_path, pru="200", pru1="200", iep="200")
+    sim = _clocked_sim(tmp_path, pru="200", iep="200")
     for core in ("pru0", "pru1"):
         assert sim.load(core, "qba 0") == []
     sim.step("pru0", 5000)
@@ -751,7 +750,7 @@ def test_reset_discards_unfinished_pacing_targets(tmp_path, reset):
 
 def test_step_back_restores_an_unfinished_pacing_target(tmp_path, monkeypatch):
     from ui import server
-    sim = _clocked_sim(tmp_path, pru="200", pru1="200", iep="200")
+    sim = _clocked_sim(tmp_path, pru="200", iep="200")
     sim.memory.regions[0].read_latency = 2500
     assert sim.load("pru0", "lbbo &r2, r0, 0, 4\nqba 0") == []
     assert sim.load("pru1", "qba 0") == []
@@ -767,7 +766,7 @@ def test_step_back_restores_an_unfinished_pacing_target(tmp_path, monkeypatch):
 
 
 def test_other_follower_selection_does_not_discard_a_pending_retry(tmp_path):
-    sim = _clocked_sim(tmp_path, pru="200", pru1="200", iep="200")
+    sim = _clocked_sim(tmp_path, pru="200", iep="200")
     sim.memory.regions[0].read_latency = 2500
     assert sim.load("pru0", "lbbo &r2, r0, 0, 4\nqba 0") == []
     for core in ("pru1", "rtu0"):

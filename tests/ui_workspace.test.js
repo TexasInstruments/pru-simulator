@@ -300,3 +300,47 @@ run(`PANEL_REGISTRY.registers = testPanel;
   togglePanelCollapse(testPanel);
   if (testPanel.closest('.tile-child').style.flex !== '40') throw new Error('expand size');`);
 console.log('Workspace navigation, theme, events, panel persistence and hidden-sibling resizing pass');
+
+// An invalid saved theme is ignored (the theme follows the OS); the OS listener falls back
+// to addListener/removeListener on browsers without MediaQueryList.addEventListener.
+{
+  const loadWorkspace = (savedTheme, mq) => {
+    const store = new Map(storage);
+    if (savedTheme === undefined) store.delete('pru-workspace-theme'); else store.set('pru-workspace-theme', savedTheme);
+    const events = [];
+    const themeEl = elements.get('workspace-theme');
+    themeEl.value = undefined; themeEl.listeners = {};
+    const sandbox = vm.createContext({ document,
+      window: { addEventListener() {}, matchMedia: () => mq },
+      requestAnimationFrame: fn => { rafQueue.push(fn); },
+      CustomEvent: context.CustomEvent,
+      localStorage: { getItem: key => store.get(key), setItem: (key, value) => store.set(key, value), removeItem: key => store.delete(key) } });
+    for (const file of ['chrome.js', 'layout.js']) vm.runInContext(readFileSync(new URL(`../ui/static/${file}`, import.meta.url), 'utf8'), sandbox);
+    sandbox.PanelElement = Element;
+    vm.runInContext(`PANEL_REGISTRY.source = new PanelElement(); PANEL_REGISTRY.editor = new PanelElement();
+      modePanelIds.sc = ['source', 'editor']; currentTree = SC_DEFAULT_TREE; render = () => {};`, sandbox);
+    vm.runInContext(readFileSync(new URL('../ui/static/workspace.js', import.meta.url), 'utf8'), sandbox);
+    return { themeEl, store, events };
+  };
+  const legacyMq = light => { const m = { matches: light, added: [], removed: [],
+    addListener: fn => m.added.push(fn), removeListener: fn => m.removed.push(fn) }; return m; };
+
+  const lightOs = loadWorkspace('blue', legacyMq(true));
+  assert.equal(lightOs.themeEl.value, 'light', 'an invalid saved theme is ignored and the OS preference applies');
+  assert.equal(document.documentElement.dataset.theme, 'light');
+  const darkOs = loadWorkspace('blue', legacyMq(false));
+  assert.equal(darkOs.themeEl.value, 'dark');
+  assert.equal(loadWorkspace('contrast', legacyMq(true)).themeEl.value, 'contrast', 'a valid saved theme still wins');
+
+  // No addEventListener on the media query: addListener registers the OS listener,
+  // and choosing a theme removes it through removeListener.
+  const mq = legacyMq(false);
+  const ws = loadWorkspace(undefined, mq);
+  assert.equal(mq.added.length, 1, 'older browsers register through addListener');
+  mq.added[0]({ matches: true });
+  assert.equal(ws.themeEl.value, 'light', 'the OS change is followed while no theme is saved');
+  ws.themeEl.listeners.click();
+  assert.equal(mq.removed.length, 1, 'older browsers unregister through removeListener');
+  assert.equal(mq.removed[0], mq.added[0]);
+  assert.equal(ws.store.get('pru-workspace-theme'), 'contrast');
+}

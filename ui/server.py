@@ -24,13 +24,11 @@ from fastapi.staticfiles import StaticFiles
 from simulator import Simulator
 from mcp_server.server import PRUSimulatorMCP
 from core.branch import LoopState
-from perif.gpcfg import MUX_SD
+from core.peripheral_view import io_mode, read_crc, read_mac, read_spad
 from pru_io.device_profiles import discover_device_profiles
 from pru_io.scenarios import SCENARIOS, apply_scenario, ssi_demo_state, set_ssi_demo_position
 from pru_io.ssi_encoder_model import SSIEncoderModel
 from ui.live_sessions import DashboardConnection
-from xfr.crc_accelerator import CRCAccelerator
-from xfr.xfr_bus import SPAD_BANK0, SPAD_BANK1, SPAD_BANK2, IPC_SPAD
 
 app = FastAPI(title="PRU Simulator Dashboard")
 
@@ -45,7 +43,11 @@ _trailing_publish = None  # timer that publishes a withheld state if the owner g
 
 # Use project root for config resolution
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-config_path = os.path.join(PROJECT_ROOT, "memory.cfg")
+config_path = os.path.join(PROJECT_ROOT, "memory.cfg")   # the active config
+# The user's own config: the processor selector never overwrites it. Every
+# other processor runs from a copy under RUNTIME_DIR (gitignored, session-only).
+HOME_CONFIG_PATH = config_path
+RUNTIME_DIR = os.path.join(PROJECT_ROOT, ".pru_runtime")
 SOURCE_DIR = pathlib.Path(PROJECT_ROOT) / "source"
 
 
@@ -348,28 +350,31 @@ async def put_source_file(path: str, request: Request):
     return {"ok": True}
 
 
-def _replace_config(text: str) -> Simulator:
-    """Build a Simulator from *text*, then make *text* the content of config_path.
+def _replace_config(text: str, path: str | None = None) -> Simulator:
+    """Build a Simulator from *text*, then make *text* the content of *path*
+    (default: the active config_path).
 
-    The text is validated through a temp file beside config_path (so lookups
+    The text is validated through a temp file beside *path* (so lookups
     relative to the config directory resolve the same way) and only replaces
-    config_path once the Simulator built; a bad config leaves the file as it was."""
+    *path* once the Simulator built; a bad config leaves the file as it was."""
+    path = config_path if path is None else path
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(
         prefix=".memory-", suffix=".cfg.tmp",
-        dir=os.path.dirname(os.path.abspath(config_path)),
+        dir=os.path.dirname(os.path.abspath(path)),
     )
     try:
         with os.fdopen(fd, "w") as f:
             f.write(text)
-        if os.path.exists(config_path):
-            shutil.copymode(config_path, tmp_path)
+        if os.path.exists(path):
+            shutil.copymode(path, tmp_path)
         try:
             new_sim = Simulator(config_path=tmp_path)
         except Exception as e:
-            # Parser errors quote the file name; report config_path, not the temp file.
-            msg = str(e).replace(repr(tmp_path)[1:-1], repr(config_path)[1:-1])
-            raise ValueError(msg.replace(tmp_path, config_path)) from e
-        os.replace(tmp_path, config_path)
+            # Parser errors quote the file name; report path, not the temp file.
+            msg = str(e).replace(repr(tmp_path)[1:-1], repr(path)[1:-1])
+            raise ValueError(msg.replace(tmp_path, path)) from e
+        os.replace(tmp_path, path)
         return new_sim
     finally:
         if os.path.exists(tmp_path):
@@ -447,17 +452,24 @@ def _set_ini_value(text: str, section: str, key: str, value: str) -> str:
     return text[:match.start()] + header + new_body + text[match.end():]
 
 
+def _drop_ini_key(text: str, section: str, key: str) -> str:
+    """Remove every line configparser reads as *key* in [section]: any case,
+    optional leading whitespace, '=' or ':' delimiter."""
+    section_re = re.compile(
+        r"(\[" + re.escape(section) + r"\]\r?\n)(.*?)(?=\n\[|\Z)", re.DOTALL
+    )
+    match = section_re.search(text)
+    if match is None:
+        return text
+    key_re = re.compile(r"^[ \t]*" + re.escape(key) + r"[ \t]*[=:].*(?:\r?\n|\Z)",
+                        re.MULTILINE | re.IGNORECASE)
+    body = key_re.sub("", match.group(2))
+    return text[:match.start(2)] + body + text[match.end(2):]
+
+
 def _clock_speed_state() -> dict:
     return {
         "mhz": sim._pru_clock_mhz,
-        "groups": [
-            {"id": group, "mhz": mhz,
-             "cores": [name for name in members if name in sim.cores]}
-            for group, mhz, members in (
-                (0, sim._pru_clock_mhz, ("pru0", "rtu0")),
-                (1, sim._pru1_clock_mhz, ("pru1", "rtu1")),
-            )
-        ],
         "choices_mhz": sorted(ALLOWED_CLOCK_MHZ),
     }
 
@@ -476,6 +488,13 @@ async def put_clock_speed(request: Request):
         return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
     if not isinstance(body, dict):
         return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+    unknown = sorted(set(body) - {"mhz"})
+    if unknown:
+        return JSONResponse(
+            {"error": f"unknown field(s) {unknown}; only 'mhz' is accepted, "
+                      "all PRU cores share one frequency"},
+            status_code=422,
+        )
     mhz = body.get("mhz")
     if (isinstance(mhz, bool) or not isinstance(mhz, (int, float))
             or mhz not in ALLOWED_CLOCK_MHZ):
@@ -483,31 +502,122 @@ async def put_clock_speed(request: Request):
             {"error": f"mhz must be one of {sorted(ALLOWED_CLOCK_MHZ)}"},
             status_code=400,
         )
-    group = body.get("group")
-    if "group" in body and (isinstance(group, bool) or not isinstance(group, (int, float))
-                            or group not in (0, 1)):
-        return JSONResponse({"error": "group must be 0 or 1"}, status_code=400)
     async with _config_lock:
         try:
             with open(config_path, "r") as f:
                 text = f.read()
-            if group == 0:
-                cfg = configparser.ConfigParser()
-                cfg.read_string(text, source=config_path)
-                # An omitted second clock inherits the first. Pin its old rate
-                # before changing the first so the other cores keep their rate.
-                if not cfg.has_option("device", "pru1_clock_mhz") and mhz != sim._pru1_clock_mhz:
-                    text = _set_ini_value(text, "device", "pru1_clock_mhz", str(sim._pru1_clock_mhz))
-            if group is None or group == 0:
-                text = _set_ini_value(text, "device", "pru_clock_mhz", str(mhz))
-            if group is None or group == 1:
-                text = _set_ini_value(text, "device", "pru1_clock_mhz", str(mhz))
+            text = _set_ini_value(text, "device", "pru_clock_mhz", str(mhz))
+            # The per-core key is gone; drop a stale line so the config still loads.
+            text = _drop_ini_key(text, "device", "pru1_clock_mhz")
             sim = _replace_config(text)
             _apply_iep_override()
             _clear_history()
             _stop_execution()
             _publish_updates()
             return {"ok": True}
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+
+
+CONFIG_DIR = os.path.join(PROJECT_ROOT, "config")
+
+
+def _read_target(path) -> str | None:
+    cfg = configparser.ConfigParser()
+    try:
+        cfg.read(path, encoding="utf-8")
+        return cfg.get("device", "target").split("#", 1)[0].strip()
+    except (configparser.Error, OSError, UnicodeDecodeError):
+        return None
+
+
+def _processor_configs() -> dict[str, str]:
+    """Map each processor name to the config it runs from: the home config
+    (memory.cfg) for its own target, config/memory_<target>.cfg for the rest."""
+    found = {}
+    for path in sorted(pathlib.Path(CONFIG_DIR).glob("memory_*.cfg")):
+        target = _read_target(path)
+        # memory_<target>.cfg only; other variants (e.g. memory_pif_eth_rx.cfg) are demos.
+        if target is not None and path.stem.lower() == f"memory_{target.lower()}":
+            found[target] = str(path)
+    home_target = _read_target(HOME_CONFIG_PATH)
+    if home_target:
+        found[home_target] = HOME_CONFIG_PATH
+    return dict(sorted(found.items()))
+
+
+def _runtime_copy_path(configured: str) -> str:
+    """Stage a preset into RUNTIME_DIR (with the constants files the simulator
+    looks up beside its config) and return the runtime copy's path."""
+    os.makedirs(RUNTIME_DIR, exist_ok=True)
+    for constants in pathlib.Path(CONFIG_DIR).glob("constants_*.cfg"):
+        shutil.copy2(constants, RUNTIME_DIR)
+    return os.path.join(RUNTIME_DIR, os.path.basename(configured))
+
+
+def _processor_state() -> dict:
+    return {"processor": sim.target, "choices": list(_processor_configs())}
+
+
+@app.get("/config/processor")
+async def get_processor():
+    return _processor_state()
+
+
+@app.put("/config/processor")
+async def put_processor(request: Request):
+    global sim, config_path
+    try:
+        body = await request.json()
+    except (ValueError, UnicodeDecodeError):
+        return JSONResponse({"error": "body must be a JSON object"}, status_code=422)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "body must be a JSON object"}, status_code=422)
+    unknown = sorted(set(body) - {"processor"})
+    configs = _processor_configs()
+    processor = body.get("processor")
+    if unknown or not isinstance(processor, str) or processor not in configs:
+        return JSONResponse(
+            {"error": f"body must be {{'processor': one of {list(configs)}}}"},
+            status_code=422,
+        )
+    async with _config_lock:
+        try:
+            source = configs[processor]
+            with open(source, "r", encoding="utf-8") as f:
+                text = f.read()
+            # Keep the chosen core frequency when it is a supported preset.
+            current = sim._pru_clock_mhz
+            if current in ALLOWED_CLOCK_MHZ:
+                text = _set_ini_value(text, "device", "pru_clock_mhz", f"{current:g}")
+            if os.path.abspath(source) == os.path.abspath(HOME_CONFIG_PATH):
+                # Back home: memory.cfg is never rewritten. If the carried clock
+                # matches it, use it directly; otherwise keep the carried clock in
+                # a runtime copy so the active config and the simulator agree.
+                home_cfg = configparser.ConfigParser()
+                home_cfg.read(source, encoding="utf-8")
+                home_clock = float(home_cfg.get("device", "pru_clock_mhz", fallback="200"))
+                unchanged = home_clock == current or current not in ALLOWED_CLOCK_MHZ
+                scratch = _runtime_copy_path(source) + ".scratch"
+                try:
+                    new_sim = _replace_config(text, scratch)
+                finally:
+                    if os.path.exists(scratch):
+                        os.remove(scratch)
+                if unchanged:
+                    new_path = HOME_CONFIG_PATH
+                else:
+                    new_path = _runtime_copy_path("memory_home.cfg")
+                    _replace_config(text, new_path)
+            else:
+                new_path = _runtime_copy_path(source)
+                new_sim = _replace_config(text, new_path)
+            sim, config_path = new_sim, new_path
+            _apply_iep_override()
+            _clear_history()
+            _stop_execution()
+            _publish_updates()
+            return {"ok": True, **_processor_state()}
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=400)
 
@@ -998,6 +1108,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({
                     "type": "device_profiles",
                     "profiles": discover_device_profiles(),
+                    "processor": sim.target,
                 })
             elif action == "scenario_list":
                 await websocket.send_json({
@@ -1096,69 +1207,19 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 def _read_mac(core) -> dict:
-    """Return MAC accelerator status for the given PRUCore."""
-    acc = core.accelerators.get(0)
-    if acc is None:
-        return {"mode": False, "acc_carry": False}
-    return {"mode": acc.mac_mode, "acc_carry": acc.acc_carry}
+    return read_mac(core)
 
 
 def _read_crc(core) -> dict:
-    """Return CRC accelerator status for the given PRUCore."""
-    acc = core.accelerators.get(CRCAccelerator.DEVICE_ID)
-    if acc is None:
-        return {"mode": "—", "value": "—"}
-    if acc.crc32_mode:
-        mode = "CRC32"
-        value = f"{acc.crc_reg:08X}"
-    else:
-        mode = "CRC16-MOD" if acc.mod_en else "CRC16"
-        value = f"{acc.crc_reg:04X}"
-    return {"mode": mode, "value": value}
+    return read_crc(core)
 
 
 def _read_spad(sim_obj) -> dict:
-    """Return scratchpad contents as hex words per bank.
-
-    Banks 0/1/2 hold R0–R29 (30 words); IPC holds R2–R9 (8 words).  A bank
-    whose device id is not a broadside id on the target (IPC on ICSS-M) is
-    left out, since firmware cannot reach it.
-    """
-    result = {}
-    for device_id, key, count in [
-        (SPAD_BANK0, "bank0", 30),
-        (SPAD_BANK1, "bank1", 30),
-        (SPAD_BANK2, "bank2", 30),
-        (IPC_SPAD,   "ipc",   8),
-    ]:
-        if device_id not in sim_obj.capabilities.broadside_ids:
-            continue
-        raw = sim_obj.xfr._pads[device_id].data
-        result[key] = [
-            f"0x{int.from_bytes(raw[i*4:i*4+4], 'little'):08X}"
-            for i in range(count)
-        ]
-    return result
+    return read_spad(sim_obj)
 
 
 def _io_mode(core, sd_data=None, perif_data=None, mux_sel=None) -> str:
-    """Which IO view owns the pads: "perif", "sd" or "gpio".
-
-    The SD view switches on the GPCFG mux select (same as Peripheral mode) so
-    the IO window shows Sigma-Delta as soon as the mode is configured, not only
-    once firmware asserts sd_en (R30 bit 25).
-    """
-    if sd_data is None:
-        sd_data = sim.sd_state(core)
-    if perif_data is None:
-        perif_data = sim.perif_state(core)
-    if mux_sel is None:
-        mux_sel = sim.gpcfg_state(core)["mux_sel"]
-    if bool(perif_data and perif_data.get("enabled")):
-        return "perif"
-    if mux_sel == MUX_SD or bool(sd_data and sd_data.get("sd_en")):
-        return "sd"
-    return "gpio"
+    return io_mode(sim, core, sd_data, perif_data, mux_sel)
 
 
 # One Signal Graph sample per this many instructions, outside peripheral mode.
@@ -1359,6 +1420,7 @@ def _state(core, at_breakpoint=False, captured=False):
         "type": "state",
         "available_cores": list(sim.cores),
         "clocks": _clock_speed_state(),
+        "processor": sim.target,
         "core": core,
         "pc": c.pc,
         "halted": c.halted,

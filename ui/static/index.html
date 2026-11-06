@@ -264,6 +264,20 @@
       cursor: help;
     }
 
+    .processor-badge {
+      margin-left: 6px;
+      padding: 1px 4px;
+      min-height: 0;
+      border-radius: 4px;
+      border: 0;
+      background: var(--btn);
+      color: var(--text-dim);
+      font-size: 0.75em;
+      font-weight: 600;
+    }
+    #controls select.processor-badge { min-height: 22px; }
+    .processor-badge:disabled { opacity: 0.6; cursor: default; }
+
     #controls select { min-height: 30px; }
     .toolbar-group button {
       min-height: 30px;
@@ -287,9 +301,9 @@
     #iep-clock-custom-form[hidden] { display: none; }
     #iep-clock-custom { width: 90px; }
     #iep-clock-error, #gpio-drive-error { color: var(--halted); font-size: 12px; }
-    #gpio-drive-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; }
-    #gpio-drive-controls button { font: inherit; padding: 6px 4px; white-space: nowrap; }
-    #gpio-drive-controls button[aria-pressed="true"] { color: var(--green); }
+    .gpio-drive-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; }
+    .gpio-drive-controls button { font: inherit; padding: 6px 4px; white-space: nowrap; }
+    .gpio-drive-controls button[aria-pressed="true"] { color: var(--green); }
     #iep-clock-select,
     #sim-interval {
       background: var(--panel-inset);
@@ -796,6 +810,16 @@
       color: var(--text);
     }
 
+    /* One block per PRU core, stacked; the core colour labels each block. */
+    #io-blocks { display: flex; flex-direction: column; gap: 14px; }
+    .io-block { padding-left: 8px; border-left: 3px solid var(--core-color); }
+    .io-block-title {
+      color: var(--core-color);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.1em;
+      margin-bottom: 6px;
+    }
     .pin-grid { display: flex; flex-wrap: wrap; gap: 5px; }
     .pin {
       width: 32px;
@@ -1190,6 +1214,9 @@
     #ctable-table .ct-addr:hover { background: var(--highlight); color: var(--text); }
     #ctable-table tr.ct-dep .ct-name,
     #ctable-table tr.ct-dep .ct-idx { color: var(--accent); }
+    .ct-legend { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--text-dim); padding:4px 8px; }
+    .ct-legend-chip { width:10px; height:10px; border-radius:2px; }
+    .ct-legend-dep { background:var(--accent); }
 
     /* ---- Memory fill modal ---------------------------------------------------------------------- */
     #fill-card { width: 460px; max-width: 95vw; }
@@ -1615,7 +1642,7 @@
   <div id="controls">
     <div id="toolbar-main">
     <div class="toolbar-group toolbar-context" role="group" aria-label="Target selection">
-      <span class="logo" title="PRU Simulator v0.4.0">PRU SIM</span>
+      <span class="logo" title="PRU Simulator v0.4.0">PRU SIM</span><select class="processor-badge" id="processor-select" title="Target processor. Changing it reloads the simulator and clears loaded programs." aria-label="Target processor" hidden></select>
 
       <div id="cores-control"></div>
       <label class="toolbar-rate-pill">
@@ -1693,7 +1720,7 @@
   </div>
 
 
-  <!-- Global error band (shown above main for both SC and MC modes) -->
+  <!-- Global error band -->
   <div id="error-band" style="display:none;"></div>
 
   <!-- Core memory fault (Simulator view): the same fault is listed in I/O & Devices > Events -->
@@ -1763,6 +1790,7 @@ Example:
         </div>
         <div id="ctable-divider" class="inner-divider-h" style="display:none;"></div>
         <div id="ctable-section">
+          <div class="ct-legend"><span class="ct-legend-chip ct-legend-dep"></span>per-core (C10, C11, C22)</div>
           <table id="ctable-table">
             <tbody id="ctable-tbody"></tbody>
           </table>
@@ -1827,42 +1855,10 @@ Example:
 
       <!-- IO panel -->
       <div class="panel" id="io-panel">
-        <div class="panel-title" data-panel-id="io">I/O Pins</div>
+        <div class="panel-title" data-panel-id="io"><span>I/O Pins</span></div>
         <div class="panel-body">
-          <div class="io-section io-mux-row" id="io-mux-row">
-            <span class="io-mux-label">GP Mux (GPCFG):</span>
-            <select id="io-mux-sel" class="io-mux-sel">
-              <option value="0">0 — GPIO</option>
-              <option value="1">1 — Peripheral Interface</option>
-              <option value="3">3 — SD (Sigma-Delta)</option>
-            </select>
-            <span class="io-mux-note" id="io-mux-note"></span>
-          </div>
-          <div class="io-section">
-            <div class="io-section-title">GPO (R30) — Output</div>
-            <div class="pin-grid" id="gpo-grid"></div>
-          </div>
-          <div class="io-section">
-            <div class="io-section-title">GPI (R31) — Input (click to toggle)</div>
-            <div class="pin-grid" id="gpi-grid"></div>
-          </div>
-          <div class="io-section io-settings">
-            <div class="io-section-title">Loopback — GPO to GPI</div>
-            <div class="lb-strip" id="loopback-strip">
-              <span class="lb-label">&#x21A9; Loopback</span>
-              <button class="lb-btn" data-group="0">3:0</button>
-              <button class="lb-btn" data-group="1">7:4</button>
-              <button class="lb-btn" data-group="2">11:8</button>
-              <button class="lb-btn" data-group="3">15:12</button>
-              <button class="lb-btn" data-group="4">19:16</button>
-            </div>
-          </div>
-          <div class="io-section io-settings">
-            <div class="io-section-title">GPIO output enable — Drive / Release</div>
-            <div id="gpio-drive-controls" role="group" aria-label="GPIO output enable"></div>
-            <div id="gpio-drive-error" role="alert" hidden></div>
-          </div>
-
+          <div id="io-blocks"></div>
+          <div id="gpio-drive-error" role="alert" hidden></div>
         </div>
       </div>
 
@@ -1902,10 +1898,10 @@ Example:
 
       <!-- Memory Graph panel (memory waveform visualization) -->
       <div class="panel" id="mem-graph-panel">
-        <div class="panel-title" data-panel-id="mem-graph">Memory Graph</div>
+        <div class="panel-title" data-panel-id="mem-graph" title="Memory Graph: analog scope that plots values read from configured memory addresses over time. Each memory channel is one {address, length} pair sampled per simulation step (up to 8 channels).">Memory Graph</div>
         <div class="panel-body">
           <div class="graph-header">
-            <span class="graph-section-title">Memory Channels</span>
+            <span class="graph-section-title" title="Each channel samples a memory range (address + length) and plots the values over time.">Memory Channels</span>
             <button id="graph-mem-refresh-btn" class="graph-btn" title="Read memory now">↻</button>
             <button id="mgraph-taller-btn" class="graph-btn" title="Taller">▲</button>
             <button id="mgraph-shorter-btn" class="graph-btn" title="Shorter">▼</button>
@@ -2043,8 +2039,9 @@ Example:
           <tr><td><b>SIM</b></td><td>Toggle timed simulation mode</td></tr>
           <tr><td><b>Reset</b></td><td>Soft reset — registers and PC to 0, plus this core's Peripheral Interface status/FIFOs</td></tr>
           <tr><td><b>HW Reset</b></td><td>Hard reset — clears SPAD, XFR config, and every core's Peripheral Interface state (FIFOs, overrun/underrun, RX valid/overflow, busy); perif config registers, GP Mux and loopback settings are kept</td></tr>
-          <tr><td><b>CORES</b></td><td>Use selects execution cores; Show splits the shared Source and Registers panels. One frequency applies to PRU0 + RTU0; the other applies to PRU1 + RTU1. This simulator pairing may change. Telemetry selects the inspection and assembly target.</td></tr>
+          <tr><td><b>CORES</b></td><td>Use selects execution cores; Show splits the shared Source and Registers panels. The PRU core frequency applies to all cores within the PRU subsystem. Telemetry selects the inspection and assembly target.</td></tr>
           <tr><td><b>Config</b></td><td>Edit simulator configuration (JSON)</td></tr>
+          <tr><td><b>Memory Graph</b></td><td>Scope-style plot of values at configured memory addresses</td></tr>
           <tr><td><b>⊞ Reset Layout</b></td><td>Restore default panel layout</td></tr>
         </table>
       </section>
@@ -2064,6 +2061,7 @@ Example:
         <div class="help-heading">Registers Panel</div>
         <table class="help-table">
           <tr><td><b>C-Table</b></td><td>Show / hide the PRU constant table (C0–C31)</td></tr>
+          <tr><td><b>C-Table red rows</b></td><td>Per-core entries (C10, C11, C22) — address changes with focused core</td></tr>
           <tr><td><b>SPAD: B0 B1 B2</b></td><td>Toggle Scratch-Pad Bank 0/1/2 columns alongside registers (XFR device 10/11/12)</td></tr>
           <tr><td><b>SPAD: IPC</b></td><td>Toggle IPC_SP scratch-pad columns R2–R9 (XFR device 15)</td></tr>
           <tr><td><b>XFR: SHF</b></td><td>Toggle XFR_SHIFT_EN bit (ICSSG_SPP_REG[1])</td></tr>
@@ -2075,9 +2073,10 @@ Example:
       <section class="help-section">
         <div class="help-heading">IO Panel</div>
         <table class="help-table">
-          <tr><td><b>GPO pins</b></td><td>Live R30 bit indicators — updated every step</td></tr>
-          <tr><td><b>Loopback strip</b></td><td>Five toggle buttons below the GPO and GPI rows; each wires a 4-bit group (3:0, 7:4, …) of GPO directly to GPI combinatorially</td></tr>
-          <tr><td><b>GPI pins</b></td><td>R31 bit indicators — click any pin to drive it high/low when SD is disabled</td></tr>
+          <tr><td><b>PRU0 / PRU1 blocks</b></td><td>The I/O Pins panel shows every GPO and GPI signal at once, one labelled block per PRU core (coloured like the core). RTU and TX_PRU cores have no block. Each block has its own pins, GP Mux, loopback strip and GPIO output enable, and always acts on its own core.</td></tr>
+          <tr><td><b>GPO pins</b></td><td>Live R30 bit indicators for that block's core — updated every step</td></tr>
+          <tr><td><b>Loopback strip</b></td><td>Five toggles per block. Each wires one 4-bit group of that core's GPO identity-mapped to the SAME group of its GPI (GPO[n] → GPI[n]).</td></tr>
+          <tr><td><b>GPI pins</b></td><td>R31 bit indicators — click any pin in a block to drive that core's pin high/low when SD is disabled</td></tr>
           <tr><td><b>UART Record / Stop recording</b></td><td>Start or stop the shared Signal Graph capture. Run firmware while recording, then Decode GPO0.</td></tr>
           <tr><td><b>▶ Decode</b></td><td>UART decode of recorded GPO0 transitions (8N1, auto-detect baud); shows hex + ASCII bytes</td></tr>
           <tr><td><b>Clear</b></td><td>Clear UART decode output</td></tr>
@@ -2103,7 +2102,6 @@ Example:
           <tr><td><b>Drag panel title</b></td><td>Split any panel by dragging its title to another panel edge</td></tr>
           <tr><td><b>Drag divider</b></td><td>Resize adjacent panels</td></tr>
           <tr><td><b>Collapse (−/+)</b></td><td>Click the button at the top-right of any panel to collapse/expand</td></tr>
-          <tr><td><b>SC / MC mode</b></td><td>Single-core and multi-core layouts saved independently</td></tr>
         </table>
       </section>
     </div>
@@ -2169,7 +2167,7 @@ Example:
           </div>
           <div class="runtime-device-actions">
             <button class="runtime-device-button btn-17" type="button" data-scenario="SSI encoder (single core)" disabled><span class="text-container"><span class="text">Set up reader + encoder model</span></span></button>
-            <button class="runtime-device-button btn-17" type="button" data-scenario="SSI multi-core (emulator + reader)" disabled><span class="text-container"><span class="text">Set up reader + encoder PRU</span></span></button>
+            <button class="runtime-device-button btn-17" type="button" data-scenario="SSI (encoder PRU + reader)" disabled><span class="text-container"><span class="text">Set up reader + encoder PRU</span></span></button>
           </div>
           <p class="runtime-device-help">Encoder model: PRU0 reads a software device. Encoder PRU: PRU0 reads encoder code on PRU1. Both use the settings above and set the reader timing automatically.</p>
           <div id="ssi-demo-result" hidden>

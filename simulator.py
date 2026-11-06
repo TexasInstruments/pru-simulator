@@ -170,9 +170,13 @@ class Simulator:
         self.vbus_memory = MemoryBus()
         dev = self._get_device_config(config_path)
         pru_clock = dev.get("pru_clock_mhz", "200")
-        pru1_clock = dev.get("pru1_clock_mhz", pru_clock)
+        if "pru1_clock_mhz" in dev:
+            raise ValueError(
+                "[device] pru1_clock_mhz has been removed: all PRU cores use one "
+                "frequency, set it with pru_clock_mhz")
         iep_clock = dev.get("iep_clock_mhz", IEP_DEFAULT_CLOCK_MHZ)
         target = dev.get("target", "AM243x").split("#", 1)[0].strip()
+        self.target: str = target
         self.capabilities = get_device_capabilities(target)
         core_names = (["pru0", "rtu0", "pru1", "rtu1"] if self.capabilities.rtu
                       else ["pru0", "pru1"])
@@ -235,16 +239,12 @@ class Simulator:
         for name, core in self.cores.items():
             core.io_port.bind_device_bus(self.device_bus, name)
 
-        # PRU0/RTU0 use the first configured rate; PRU1/RTU1 use the second.
+        # Every core runs at the one configured rate.
         pru_clock_mhz = float(pru_clock)
-        pru1_clock_mhz = float(pru1_clock)
         self._pru_clock_mhz = pru_clock_mhz
-        self._pru1_clock_mhz = pru1_clock_mhz
-        core_clocks = {"pru0": pru_clock_mhz, "rtu0": pru_clock_mhz,
-                       "pru1": pru1_clock_mhz, "rtu1": pru1_clock_mhz}
-        for name, core in self.cores.items():
-            core.clock_mhz = core_clocks[name]
-            core.io_port.sd_filter = SigmaDeltaFilter(pru_clock_mhz=core_clocks[name])
+        for core in self.cores.values():
+            core.clock_mhz = pru_clock_mhz
+            core.io_port.sd_filter = SigmaDeltaFilter(pru_clock_mhz=pru_clock_mhz)
 
         # Wire SD registers into memory bus (pru0 owns the register region)
         pru0_sd = self.cores["pru0"].io_port.sd_filter
@@ -272,7 +272,7 @@ class Simulator:
         self._perif = {}
         for name in core_order:
             core = self.cores[name]
-            perif = PeripheralInterface(pru_clock_mhz=core_clocks[name],
+            perif = PeripheralInterface(pru_clock_mhz=pru_clock_mhz,
                                         uart_clock_mhz=uart_clock_mhz)
             perif.registers = PerifRegisters(perif_bases[name])
             perif.build_channels()
@@ -291,14 +291,7 @@ class Simulator:
         self.memory.add_region(GpcfgRegion(self._gpcfg))
 
         # IEP0 timer. Shared by all cores on the ICSSG, like the real peripheral.
-        core_clock_rates = {
-            "pru0": pru_clock,
-            "rtu0": pru_clock,
-            "pru1": pru1_clock,
-            "rtu1": pru1_clock,
-        }
-        core_clock_rates = {name: rate for name, rate in core_clock_rates.items()
-                            if name in self.cores}
+        core_clock_rates = {name: pru_clock for name in self.cores}
         self.iep = IepTimer(
             clock_mhz=iep_clock,
             ocp_clock_mhz=pru_clock,
@@ -387,8 +380,8 @@ class Simulator:
 
         Uses constants_<target>.cfg (e.g. constants_am261x.cfg) and falls back
         to constants_am243x.cfg when the target has no file of its own.  AM243x,
-        AM261x and AM263x each have a named file (AM263x's carries the AM261x
-        values: same ICSS-M).  A
+        AM261x, AM263x and AM62x each have a named file (AM263x's and AM62x's carry
+        the AM261x values; AM62x is unverified on hardware).  A
         root-level config (memory.cfg) finds the file in its config/
         subdirectory; a preset inside config/ finds it alongside.
         """
@@ -480,12 +473,13 @@ class Simulator:
         }
 
     def step_paced(self, lead: str, follow: str, count: int = 1,
-                   guard_ns: float = 20.0) -> dict:
+                   guard_ns: float = 20.0, stop=None) -> dict:
         """Step *lead* and pace *follow* by elapsed core time."""
-        return self.step_paced_many(lead, [follow], count=count, guard_ns=guard_ns)
+        return self.step_paced_many(lead, [follow], count=count, guard_ns=guard_ns,
+                                    stop=stop)
 
     def step_paced_many(self, lead: str, followers: list[str], count: int = 1,
-                        guard_ns: float = 20.0) -> dict:
+                        guard_ns: float = 20.0, stop=None) -> dict:
         """Step a lead core and catch each follower up by exact elapsed time.
 
         When both cores have enabled PERIF blocks, *guard_ns* keeps the follower
@@ -496,6 +490,9 @@ class Simulator:
         Each follower catch-up is limited to 1000 instructions per lead step.
         The result records the selected targets, actual lead_steps and incomplete work;
         subsequent calls finish those targets before executing another lead step.
+        *stop*, if given, is called as ``stop(follower)`` before each follower
+        instruction; a truthy result ends the catch-up with reason "stopped" and
+        keeps the targets pending, like any other incomplete catch-up.
         """
         if isinstance(guard_ns, bool) or not isinstance(guard_ns, (int, float)):
             raise ValueError("guard_ns must be a number")
@@ -523,6 +520,10 @@ class Simulator:
                     and not follow_pru.halted
                     and follow_pru.pc < len(follow_pru.instructions)
                 ):
+                    if stop is not None and stop(follower):
+                        return {"complete": False, "reason": "stopped",
+                                "follower": follower, "targets": dict(targets),
+                                "lead_steps": lead_steps}
                     if steps >= _MAX_CATCHUP_STEPS:
                         return {"complete": False, "reason": "pacing_incomplete",
                                 "follower": follower, "targets": dict(targets),

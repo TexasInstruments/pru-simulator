@@ -280,10 +280,9 @@ clocks.
 
 ## Manual 300 MHz run (test only)
 
-An omitted `pru_clock_mhz` uses **200 MHz**; an omitted `pru1_clock_mhz`
-inherits that first rate. The shipped `memory.cfg` explicitly selects 250 MHz
-for both rates. The external IEP defaults independently to 200 MHz. SSI tests
-cover multiple core rates using temporary configurations. A 300 MHz run is a
+An omitted `pru_clock_mhz` uses **200 MHz**, and every core runs at that one
+rate. The shipped `memory.cfg` explicitly selects 250 MHz. The external IEP defaults independently to 200 MHz. SSI tests
+run at several core rates using temporary configurations. A 300 MHz run is a
 manual test choice; do not change the shipped config for it.
 
 Pick one way to switch, and switch back afterwards:
@@ -293,8 +292,8 @@ Pick one way to switch, and switch back afterwards:
   `memory.cfg` is never touched.
 * **Dashboard.** The core speed selector (300) rewrites `memory.cfg` in place.
   Restore your previous selection before committing.
-* **Editing `memory.cfg` by hand.** Set both `pru_clock_mhz` and
-  `pru1_clock_mhz`, then restore your previous values the same way.
+* **Editing `memory.cfg` by hand.** Set `pru_clock_mhz`, then
+  restore your previous value the same way.
 
 The reader needs a longer bit period at 300 MHz. Its bit period is about four
 cycles per `clock_delay_loops` plus eight, and the encoder model enforces
@@ -319,7 +318,6 @@ with tempfile.TemporaryDirectory(prefix="ssi-300-") as temporary:
     sidecar.mkdir()
     data = (project / "memory.cfg").read_bytes()
     data = data.replace(b"pru_clock_mhz = 250", b"pru_clock_mhz = 300", 1)
-    data = data.replace(b"pru1_clock_mhz = 250", b"pru1_clock_mhz = 300", 1)
     config = temporary / "memory.cfg"
     config.write_bytes(data)
     shutil.copy2(project / "config" / "constants_am243x.cfg",

@@ -25,6 +25,7 @@ let executionStartPending = null;
 let executionReady = false;
 let prevExecutionOwner = false;   // tracks last known owner state for transition detection
 let lastAppliedCores = null;       // tracks last cores value passed to applyCoreSelection
+let processorChanging = false;   // a processor switch (PUT /config/processor) is in flight
 
 // ---- Core selection: execution membership is separate from inspection -------
 let availableCores = [...PruCores.ORDER];
@@ -40,7 +41,7 @@ const mcFreshRegs = () => new Array(32).fill("0x00000000");
 const mcPrevRegs = Object.fromEntries(PruCores.ORDER.map(core => [core, mcFreshRegs()]));
 const mcLastSourceKey = Object.fromEntries(PruCores.ORDER.map(core => [core, '']));
 const mcBreakpoints = Object.fromEntries(PruCores.ORDER.map(core => [core, new Set()]));
-let clockState = { groups: [], choices_mhz: [] };
+let clockState = { mhz: 0, choices_mhz: [] };
 let clockChanging = false;
 let coresDeck = null;
 
@@ -97,8 +98,10 @@ const asmSource     = document.getElementById("asm-source");
 const sourceList    = document.getElementById("source-list");
 const regTbody      = document.getElementById("reg-tbody");
 const regCarry      = document.getElementById("reg-carry");
-const gpoGrid       = document.getElementById("gpo-grid");
-const gpiGrid       = document.getElementById("gpi-grid");
+// The focus panes are detached when their core is hidden; keep the references
+// so a later render can attach them again.
+const sourceFocusPane   = document.getElementById("source-focus-pane");
+const registerFocusPane = document.getElementById("register-focus-pane");
 const statusBadge   = document.getElementById("status-badge");
 const wsStatus      = document.getElementById("ws-status");
 const cntCycles     = document.getElementById("cnt-cycles");
@@ -321,7 +324,7 @@ btnXfrShift.addEventListener("click", () => {
   sendAction({ action: "set_xfr_shift", core: currentCore, enabled: nowEnabled });
 });
 
-// Toggle a SPAD bank column on/off (single-core panel)
+// Toggle a SPAD bank column on/off
 document.querySelectorAll(".spad-btn[data-bank]").forEach(btn => {
   btn.addEventListener("click", () => {
     const key = btn.dataset.bank;
@@ -338,16 +341,16 @@ document.querySelectorAll(".spad-btn[data-bank]").forEach(btn => {
   });
 });
 
-function buildPinGrid(container, count, cssClass, clickHandler) {
+function buildPinGrid(container, count, cssClass, clickHandler, core) {
   container.innerHTML = "";
   for (let i = 0; i < count; i++) {
     const pin = document.createElement("div");
     pin.className = `pin ${cssClass}`;
-    pin.id = `pin-${cssClass}-${i}`;
-    pin.title = `${cssClass.toUpperCase()} ${i}`;
+    pin.id = `pin-${cssClass}-${core}-${i}`;
+    pin.title = `${core.toUpperCase()} ${cssClass.toUpperCase()} ${i}`;
     pin.textContent = i;
     if (clickHandler) {
-      pin.addEventListener("click", () => clickHandler(i, pin));
+      pin.addEventListener("click", () => clickHandler(i, pin, core));
     }
     container.appendChild(pin);
   }
@@ -356,9 +359,7 @@ function buildPinGrid(container, count, cssClass, clickHandler) {
 function initUI() {
   initSpadState();
   buildRegTable();
-  buildPinGrid(gpoGrid, 20, "gpo", null);
-  buildGpioDirectionControls();
-  buildPinGrid(gpiGrid, 20, "gpi", handleGpiClick);
+  renderIoBlocks();
   initLayout('sc');
   initCoresControl();
   initEditorTabs();
@@ -387,11 +388,10 @@ function connect() {
     } catch (e) {
       showErrors(["Could not load core choices: " + String(e)]);
     }
-    if (multiCoreMode) {
-      for (const core of executionCores()) sendAction({ action: "get_state", core });
-    } else {
-      sendAction({ action: "get_state", core: currentCore });
-    }
+    const stateCores = new Set(multiCoreMode ? executionCores() : [currentCore]);
+    // Every I/O block (PRU0, PRU1) needs its own core's state to paint its pins.
+    for (const core of availableCores) if (core === 'pru0' || core === 'pru1') stateCores.add(core);
+    for (const core of stateCores) sendAction({ action: "get_state", core });
     sendAction({ action: "device_discover" });
     sendAction({ action: "scenario_list" });
     sendAction({ action: "subscribe_capture", enabled: signalGraph.recording });
@@ -424,6 +424,7 @@ function connect() {
       const msg = JSON.parse(event.data);
       if (msg.type === "state") {
         maybeRefreshCtable();
+        if (msg.processor) showProcessor(msg.processor);
         if (msg.available_cores) showAvailableCores(msg.available_cores);
         if (msg.execution) receiveExecution(msg.execution);
         if (msg.run_id === runPending) runPending = null;
@@ -452,6 +453,7 @@ function connect() {
         }
       } else if (msg.type === "device_profiles") {
         populateSsiPresets(msg.profiles);
+        if (msg.processor) showProcessor(msg.processor);
       } else if (msg.type === "scenarios") {
         populateScenarios(msg.scenarios);
       } else if (msg.type === "scenario_loaded") {
@@ -575,8 +577,8 @@ function updateUI(state, fromCache = false) {
   // Source listing
   updateSource(state.instructions, state.pc, state.labels || {});
 
-  // IO pins
-  updatePins(state.io, state.core);
+  // The I/O Pins blocks are painted per core by paintCoreState. SD, Peripheral
+  // Interface, I2C and Devices follow the focus core: updateUI only runs for it.
   updateSDPanel(state.io);
   updatePerifPanel(state.io);
   updateI2CPanel(state.io);
@@ -757,47 +759,160 @@ function updateSource(instructions, pc, labels) {
   renderBpBar("", currentCore, clientBreakpoints);
 }
 
-function buildGpioDirectionControls() {
-  const container = document.getElementById('gpio-drive-controls');
-  for (let pin = 0; pin < 20; pin++) {
+// ---- I/O Pins: one block per PRU core ----------------------------------------
+// Every block owns its pins, GP mux, loopback strip and drive controls, and
+// addresses its own core. A state message repaints only the block of the core that
+// sent it; coreStates[core] is the per-core cache used to repaint a rebuilt block.
+const IO_PIN_COUNT = 20;
+const IO_LOOPBACK_RANGES = ['3:0', '7:4', '11:8', '15:12', '19:16'];
+const IO_MUX_OPTIONS = [['0', '0 — GPIO'], ['1', '1 — Peripheral Interface'], ['3', '3 — SD (Sigma-Delta)']];
+
+function ioEl(tag, className, text) {
+  const element = document.createElement(tag);
+  if (className) element.className = className;
+  if (text !== undefined) element.textContent = text;
+  return element;
+}
+
+function ioSection(title, extraClass) {
+  const section = ioEl('div', 'io-section' + (extraClass ? ` ${extraClass}` : ''));
+  section.appendChild(ioEl('div', 'io-section-title', title));
+  return section;
+}
+
+function buildGpioDirectionControls(container, core) {
+  for (let pin = 0; pin < IO_PIN_COUNT; pin++) {
     const button = document.createElement('button');
     button.type = 'button';
     button.addEventListener('click', () => {
       document.getElementById('gpio-drive-error').hidden = true;
-      sendAction({ action: 'set_gpio_drive_mask', core: container.dataset.core || currentCore,
-        pin });
+      sendAction({ action: 'set_gpio_drive_mask', core, pin });
     });
     container.appendChild(button);
   }
 }
 
-function updateGpioDirections(io, core = currentCore) {
-  const container = document.getElementById('gpio-drive-controls');
-  const mask = io.gpo_drive_mask || 0;
+function buildIoBlock(core) {
+  const block = ioEl('section', 'io-block');
+  block.id = `io-block-${core}`;
+  block.dataset.core = core;
+  block.style.setProperty('--core-color', `var(--core-${core})`);
+  block.appendChild(ioEl('div', 'io-block-title', core.toUpperCase()));
+
+  const mux = ioEl('div', 'io-section io-mux-row');
+  mux.appendChild(ioEl('span', 'io-mux-label', 'GP Mux (GPCFG):'));
+  const select = ioEl('select', 'io-mux-sel');
+  select.id = `io-mux-sel-${core}`;
+  select.setAttribute('aria-label', `${core.toUpperCase()} GP Mux`);
+  for (const [value, label] of IO_MUX_OPTIONS) {
+    const option = ioEl('option', '', label);
+    option.value = value;
+    select.appendChild(option);
+  }
+  select.addEventListener('change', () => {
+    sendAction({ action: 'gpcfg_write', core, mux_sel: parseInt(select.value, 10) || 0 });
+  });
+  mux.appendChild(select);
+  const note = ioEl('span', 'io-mux-note');
+  note.id = `io-mux-note-${core}`;
+  mux.appendChild(note);
+  block.appendChild(mux);
+
+  const gpo = ioSection('GPO (R30) — Output');
+  const gpoGrid = ioEl('div', 'pin-grid');
+  buildPinGrid(gpoGrid, IO_PIN_COUNT, 'gpo', null, core);
+  gpo.appendChild(gpoGrid);
+  block.appendChild(gpo);
+
+  const gpi = ioSection('GPI (R31) — Input (click to toggle)');
+  const gpiGrid = ioEl('div', 'pin-grid');
+  buildPinGrid(gpiGrid, IO_PIN_COUNT, 'gpi', handleGpiClick, core);
+  gpi.appendChild(gpiGrid);
+  block.appendChild(gpi);
+
+  const loopback = ioSection('Loopback (GPO[n] → GPI[n])', 'io-settings');
+  const strip = ioEl('div', 'lb-strip');
+  strip.id = `loopback-strip-${core}`;
+  IO_LOOPBACK_RANGES.forEach((range, group) => {
+    const button = ioEl('button', 'lb-btn', range);
+    button.type = 'button';
+    button.dataset.group = String(group);
+    button.dataset.core = core;
+    button.title = `Loop GPO[${range}] back to GPI[${range}]`;
+    button.addEventListener('click', () => onLoopbackToggle(button));
+    strip.appendChild(button);
+  });
+  loopback.appendChild(strip);
+  block.appendChild(loopback);
+
+  const drive = ioSection('GPIO output enable — Drive / Release', 'io-settings');
+  const controls = ioEl('div', 'gpio-drive-controls');
+  controls.id = `gpio-drive-controls-${core}`;
+  controls.setAttribute('role', 'group');
+  controls.setAttribute('aria-label', `${core.toUpperCase()} GPIO output enable`);
+  buildGpioDirectionControls(controls, core);
+  paintGpioDirections(controls, 0, core);  // labels before the first state arrives
+  drive.appendChild(controls);
+  block.appendChild(drive);
+  return block;
+}
+
+// Only PRU0 and PRU1 have a block here; the RTU and TX_PRU cores never get one.
+function renderIoBlocks() {
+  const host = document.getElementById('io-blocks');
+  if (!host) return;
+  const cores = availableCores.filter(core => core === 'pru0' || core === 'pru1');
+  const key = cores.join(',');
+  if (host.dataset.cores === key) return;
+  host.dataset.cores = key;
+  host.replaceChildren(...cores.map(buildIoBlock));
+  for (const core of cores) if (coreStates[core]) updatePins(coreStates[core].io, core);
+}
+
+function updateGpioDirections(io, core) {
+  const container = document.getElementById(`gpio-drive-controls-${core}`);
+  if (container) paintGpioDirections(container, io.gpo_drive_mask || 0, core);
+}
+
+function paintGpioDirections(container, mask, core) {
   container.dataset.mask = String(mask);
-  container.dataset.core = core;
   [...container.children].forEach((button, pin) => {
     const driving = !!(mask & (1 << pin));
     button.textContent = `${pin}: ${driving ? 'Drive' : 'Release'}`;
     button.setAttribute('aria-pressed', String(driving));
-    button.setAttribute('aria-label', `GPIO ${pin}: ${driving ? 'driving; release pin' : 'released; drive pin'}`);
+    button.setAttribute('aria-label', `${core.toUpperCase()} GPIO ${pin}: ${driving ? 'driving; release pin' : 'released; drive pin'}`);
   });
 }
 
-function updatePins(io, core = currentCore) {
-  if (!io) return;
+// Keep one block's GP-mux selector in sync (unless the user is interacting with it).
+function updateIoMux(io, core) {
+  const select = document.getElementById(`io-mux-sel-${core}`);
+  const note = document.getElementById(`io-mux-note-${core}`);
+  if (select && document.activeElement !== select) {
+    select.value = io.mux_sel != null ? String(io.mux_sel) : '0';
+  }
+  if (note) {
+    note.textContent = io.mode === 'gpio' ? 'mode: gpio'
+      : `mode: ${io.mode} (controls in I/O & Devices › Peripherals)`;
+  }
+}
+
+// Paint the block of `core` from that core's own state; other blocks are untouched.
+function updatePins(io, core) {
+  if (!io || !document.getElementById(`io-block-${core}`)) return;
   updateGpioDirections(io, core);
-  syncGpioLoopback(io);
+  syncGpioLoopback(io, core);
+  updateIoMux(io, core);
 
   (io.gpo_pins || []).forEach((val, i) => {
-    const pin = document.getElementById(`pin-gpo-${i}`);
+    const pin = document.getElementById(`pin-gpo-${core}-${i}`);
     if (pin) {
       pin.classList.toggle("high", !!val);
     }
   });
 
   (io.gpi_pins || []).forEach((val, i) => {
-    const pin = document.getElementById(`pin-gpi-${i}`);
+    const pin = document.getElementById(`pin-gpi-${core}-${i}`);
     if (pin) {
       pin.classList.toggle("high", !!val);
     }
@@ -968,21 +1083,6 @@ function _fifoHex(arr) {
 function updatePerifPanel(io) {
   const sec = document.getElementById('perif-interface');
   if (!sec) return;
-
-  // RTU cores have no GPCFG GP-mux (TRM) — hide the mux row for them.
-  const muxRow = document.getElementById('io-mux-row');
-  if (muxRow) muxRow.style.display = currentCore.startsWith('rtu') ? 'none' : '';
-
-  // Keep the GP-mux selector in sync (unless the user is interacting with it).
-  const muxSel = document.getElementById('io-mux-sel');
-  const muxNote = document.getElementById('io-mux-note');
-  if (muxSel && document.activeElement !== muxSel) {
-    muxSel.value = (io && io.mux_sel != null) ? String(io.mux_sel) : '0';
-  }
-  if (muxNote) {
-    muxNote.textContent = !io ? '' : (io.mode === 'gpio' ? 'mode: gpio'
-      : `mode: ${io.mode} (controls in I/O & Devices \u203a Peripherals)`);
-  }
 
   const active = !!io && io.mode === 'perif';
   setPeripheralActive('periph-pi-card', active, _MUX_NAMES[io && io.mode] || 'GPIO');
@@ -2624,7 +2724,7 @@ document.getElementById('iep-clock-custom-form').addEventListener('submit', even
 });
 // ---- end IEP counter clock selector ----
 
-// ---- Group clock configuration ----------------------------------------------
+// ---- Clock configuration ----------------------------------------------------
 async function loadClockSpeed() {
   try {
     const res = await fetch("/config/clock_speed");
@@ -2635,32 +2735,98 @@ async function loadClockSpeed() {
 }
 loadClockSpeed();
 
-async function changeGroupClock(group, direction) {
+// A reload (clock or processor change) clears every loaded program: drop the cached
+// per-core views and ask the server for fresh ones.
+async function refreshAfterReload() {
+  for (const core of availableCores) { delete coreStates[core]; mcLastSourceKey[core] = ''; }
+  _lastSourceKey = ''; sourceList.replaceChildren();
+  document.querySelectorAll('.core-extra-pane .source-list').forEach(list => list.replaceChildren());
+  graphSetRecording(false); graphResizeWindow(signalGraph.windowSize); drawGraph();
+  flashStatus('RELOADED — reload programs', 'reloaded');
+  refreshMemory(); refreshMemory2(); loadRegions();
+  sendAction({action:'device_discover'});
+  for (const core of availableCores) sendAction({action:'get_state',core});
+  await loadClockSpeed();
+}
+
+async function setClockDirect(mhz) {
   if (running || simRunning || runPending !== null || clockChanging) return;
-  const entry = clockState.groups.find(item => item.id === group);
-  if (!entry || !entry.cores.some(core => coreSelection.used.includes(core))) return;
-  const choices = clockState.choices_mhz;
-  const next = direction > 0 ? choices.find(rate => rate > entry.mhz)
-    : [...choices].reverse().find(rate => rate < entry.mhz);
-  if (next === undefined) return;
+  if (coreSelection.used.length === 0) return;
+  if (mhz === clockState.mhz) return;
   clockChanging = true; updateCoresControl();
   try {
     const res = await fetch('/config/clock_speed', { method: 'PUT',
-      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({group, mhz:next}) });
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({mhz}) });
     const result = await res.json();
-    if (!res.ok || !result.ok) throw new Error(result.error || 'Could not set the group clock');
-    for (const core of availableCores) { delete coreStates[core]; mcLastSourceKey[core] = ''; }
-    _lastSourceKey = ''; sourceList.replaceChildren();
-    document.querySelectorAll('.core-extra-pane .source-list').forEach(list => list.replaceChildren());
-    graphSetRecording(false); graphResizeWindow(signalGraph.windowSize); drawGraph();
-    flashStatus('RELOADED — reload programs', 'reloaded');
-    refreshMemory(); refreshMemory2(); loadRegions();
-    sendAction({action:'device_discover'});
-    for (const core of availableCores) sendAction({action:'get_state',core});
-    await loadClockSpeed();
+    if (!res.ok || !result.ok) throw new Error(result.error || 'Could not set the clock');
+    await refreshAfterReload();
   } catch (error) { showErrors([String(error)]); }
   finally { clockChanging = false; updateCoresControl(); }
 }
+
+// ---- Processor selector -------------------------------------------------------
+function showProcessor(name, choices) {
+  const select = document.getElementById('processor-select');
+  if (!select) return;
+  const names = choices || [...select.options].map(option => option.value);
+  if (!names.includes(name)) names.push(name);
+  if (choices || select.options.length !== names.length) {
+    select.replaceChildren(...names.map(value => {
+      const option = document.createElement('option');
+      option.value = value; option.textContent = value;
+      return option;
+    }));
+  }
+  select.value = name;
+  select.dataset.current = name;
+  select.hidden = false;
+  syncProcessorEnabled();
+}
+
+// The processor switch reloads the simulator: not while it runs or a switch is in flight.
+function syncProcessorEnabled() {
+  const select = document.getElementById('processor-select');
+  if (select) select.disabled = processorChanging || running || simRunning || sharedExecution.running;
+}
+
+async function loadProcessor() {
+  try {
+    const res = await fetch('/config/processor');
+    if (!res.ok) throw new Error(`Processor settings: ${res.status}`);
+    const info = await res.json();
+    showProcessor(info.processor, info.choices);
+  } catch (error) { showErrors([String(error)]); }
+}
+
+async function setProcessor(name) {
+  const select = document.getElementById('processor-select');
+  const previous = select.dataset.current;
+  if (name === previous || processorChanging) return;
+  if (running || simRunning || sharedExecution.running) { select.value = previous; return; }
+  if (!confirm(`Switching to ${name} reloads the simulator and clears loaded programs. Continue?`)) {
+    select.value = previous; return;
+  }
+  processorChanging = true; updateCoresControl();
+  let switched = false;
+  try {
+    const res = await fetch('/config/processor', { method: 'PUT',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({processor: name}) });
+    const result = await res.json();
+    if (!res.ok || !result.ok) throw new Error(result.error || 'Could not set the processor');
+    switched = true;
+    showProcessor(result.processor, result.choices);
+    // The core set can differ per processor: rebuild the deck, panes and I/O blocks.
+    await loadCoreChoices();
+    await refreshAfterReload();
+  } catch (error) {
+    // The server already switched once the PUT succeeded: keep showing it.
+    if (!switched) select.value = previous;
+    showErrors([String(error)]);
+  } finally { processorChanging = false; syncProcessorEnabled(); updateCoresControl(); }
+}
+
+document.getElementById('processor-select')?.addEventListener('change', event => setProcessor(event.target.value));
+loadProcessor();
 
 // ---- Help modal ------------------------------------------------------------
 const btnHelp      = document.getElementById("btn-help");
@@ -2767,35 +2933,31 @@ btnSim.addEventListener("click", () => {
 
 // ---- GPI pin click --------------------------------------------------------
 
-function handleGpiClick(pinIndex, pinEl) {
+function handleGpiClick(pinIndex, pinEl, core) {
   // Toggle: determine current state from CSS class
   const isHigh = pinEl.classList.contains("high");
   const newVal = isHigh ? 0 : 1;
-  const targetCore = currentCore;
-  sendAction({ action: "set_input", core: targetCore, pin: pinIndex, value: newVal });
+  sendAction({ action: "set_input", core, pin: pinIndex, value: newVal });
 }
 
-// ---- Loopback strip -------------------------------------------------------
+// ---- Loopback strips (one per PRU block) ------------------------------------
 
-function syncGpioLoopback(io) {
+function syncGpioLoopback(io, core) {
   const mask = io.gpio_loopback_mask || 0;
-  document.querySelectorAll('#loopback-strip .lb-btn').forEach(button => {
+  document.querySelectorAll(`#io-block-${core} .lb-btn`).forEach(button => {
     const groupMask = 0xF << (Number(button.dataset.group) * 4);
     button.classList.toggle('active', (mask & groupMask) === groupMask);
   });
 }
 
 function onLoopbackToggle(btn) {
+  const core = btn.dataset.core;
   const group = parseInt(btn.dataset.group, 10);
   const enabled = !btn.classList.contains('active');
   btn.classList.toggle('active', enabled);
-  sendAction({ action: 'set_loopback', core: currentCore, group, enabled });
-  sendAction({ action: 'get_state', core: currentCore });
+  sendAction({ action: 'set_loopback', core, group, enabled });
+  sendAction({ action: 'get_state', core });
 }
-
-document.querySelectorAll('#loopback-strip .lb-btn').forEach(btn => {
-  btn.addEventListener('click', () => onLoopbackToggle(btn));
-});
 
 function sendDeviceAction(action) {
   clearDeviceError();
@@ -3828,6 +3990,7 @@ function showAvailableCores(cores) {
   cores = PruCores.ORDER.filter(core => cores.includes(core));
   if (JSON.stringify(availableCores) === JSON.stringify(cores)) return;
   availableCores = PruCores.ORDER.filter(core => cores.includes(core));
+  renderIoBlocks();
   applyCoreSelection(PruCores.normalize(coreSelection, availableCores), true);
 }
 
@@ -3923,7 +4086,7 @@ for (const button of scenarioButtons) {
 async function applyScenario(scenario) {
   const generation = ++scenarioGeneration;
   applyCoreSelection(PruCores.normalize({used:scenario.cores, shown:scenario.cores,
-    focus:scenario.lead, pinned:coreSelection.pinned}, availableCores), true);
+    focus:scenario.lead}, availableCores), true);
   devicePanelCore = scenario.lead;
   syncDeviceCoreSelect();
   for (const core of scenario.cores) sendAction({ action: "get_state", core });
@@ -4056,7 +4219,6 @@ function updateMCUI(state) {
     cntInstrs.textContent = state.instruction_count;
     cntIpc.textContent    = state.ipc.toFixed(3);
     cntPc.textContent     = state.pc;
-    updatePins(state.io);
     updateSDPanel(state.io);
     updateI2CPanel(state.io);
     // Update SPAD columns in PRU0 MC reg panel
@@ -4204,16 +4366,26 @@ function initCoresControl() {
       if (action.type === 'use' && JSON.stringify(next.used) === JSON.stringify(coreSelection.used)) {
         coresDeck.shake(action.core);
       }
-      applyCoreSelection(next);
+      if (action.type === 'use' && !coreSelection.used.includes(action.core) && next.used.includes(action.core)) {
+        // Using a core reveals it: clear the per-panel hidden overrides too.
+        for (const panelId of ['source', 'registers']) {
+          if (typeof getCoreVisibility === 'function' && !getCoreVisibility(panelId, action.core)) setCoreVisibility(panelId, action.core, true);
+        }
+        applyCoreSelection(PruCores.transition(next, {type:'show', core:action.core}, availableCores));
+        coresDeck.pulse(action.core);
+      } else {
+        applyCoreSelection(next);
+      }
       if (action.type === 'solo' && next.used.includes(action.core)) selectEditorCore(action.core);
     },
-    clock: changeGroupClock,
+    setClock: setClockDirect,
   });
   renderCorePanes(); syncDeviceCoreSelect(); updateCoresControl();
   document.addEventListener('pru-cores-reset', () => {
     const first = coreSelection.used[0];
-    applyCoreSelection({...coreSelection, shown:[first], focus:first, pinned:false});
+    applyCoreSelection({...coreSelection, shown:[first], focus:first});
   });
+  document.addEventListener('pru-layout-changed', () => renderCorePanes());
 }
 
 function applyCoreSelection(next, fromSession = false) {
@@ -4233,7 +4405,6 @@ function applyCoreSelection(next, fromSession = false) {
     selectEditorCore(currentCore);
     prevRegisters = mcFreshRegs(); _lastSourceKey = '';
     sourceList.replaceChildren(); initSpadState();
-    syncGpioLoopback({});
     devicePanelCore = currentCore;
     updateCtableForCore();
   }
@@ -4245,6 +4416,18 @@ function applyCoreSelection(next, fromSession = false) {
   for (const core of new Set([...next.used, devicePanelCore])) sendAction({action:'get_state',core});
 }
 
+// Show or hide one core in one panel group. Hiding the focus core moves focus to
+// another core still visible in that panel, through the normal selection path.
+function setPaneCoreVisible(panelId, core, visible) {
+  if (typeof setCoreVisibility !== 'function') return;
+  let nextFocus = null;
+  if (!visible && core === currentCore) {
+    nextFocus = coreSelection.shown.find(c => c !== core && getCoreVisibility(panelId, c)) || null;
+  }
+  setCoreVisibility(panelId, core, visible);
+  if (nextFocus) applyCoreSelection(PruCores.transition(coreSelection, {type:'focus', core:nextFocus}, availableCores));
+}
+
 function paneHeading(pane, core, kind) {
   let heading = pane.querySelector('.core-pane-heading');
   if (!heading) { heading = document.createElement('div'); heading.className = 'core-pane-heading'; pane.prepend(heading); }
@@ -4254,8 +4437,9 @@ function paneHeading(pane, core, kind) {
     const name = document.createElement('b'); name.textContent = core.toUpperCase();
     const value = document.createElement('span'); value.dataset.paneReadout = kind;
     const close = document.createElement('button'); close.type = 'button'; close.textContent = '×';
-    close.setAttribute('aria-label', `Hide ${core.toUpperCase()} in Source and Registers`);
-    close.addEventListener('click', () => applyCoreSelection(PruCores.transition(coreSelection, {type:'show',core}, availableCores)));
+    const panelId = kind === 'pc' ? 'source' : 'registers';
+    close.setAttribute('aria-label', `Hide ${core.toUpperCase()} in ${panelId === 'source' ? 'Source' : 'Registers'}`);
+    close.addEventListener('click', () => setPaneCoreVisible(panelId, core, false));
     heading.append(name, value, close);
   }
   pane.dataset.core = core;
@@ -4265,46 +4449,86 @@ function paneHeading(pane, core, kind) {
 function renderCorePanes() {
   const sources = document.getElementById('source-panes');
   const registers = document.getElementById('reg-body');
-  const sourceFocus = document.getElementById('source-focus-pane');
-  const registerFocus = document.getElementById('register-focus-pane');
-  for (const container of [sources, registers]) {
-    container.dataset.count = String(coreSelection.shown.length);
-    for (const extra of container.querySelectorAll('.core-extra-pane')) {
-      if (!coreSelection.shown.includes(extra.dataset.core) || extra.dataset.core === currentCore) extra.remove();
-    }
+  const sourceFocus = sourceFocusPane;
+  const registerFocus = registerFocusPane;
+
+  // Determine visibility per panel per core (default true when no entry)
+  const srcVis  = core => typeof getCoreVisibility === 'function' ? getCoreVisibility('source', core) : true;
+  const regVis  = core => typeof getCoreVisibility === 'function' ? getCoreVisibility('registers', core) : true;
+
+  // Effective shown lists after applying per-core visibility.
+  // All cores (including focus core) are subject to the user's toggle.
+  const shownSrc = coreSelection.shown.filter(c => srcVis(c));
+  const shownReg = coreSelection.shown.filter(c => regVis(c));
+
+  sources.dataset.count   = String(shownSrc.length);
+  registers.dataset.count = String(shownReg.length);
+  // More than one core in use keeps every pane labelled, even when only one is visible.
+  const multi = coreSelection.shown.length > 1 ? '1' : '0';
+  sources.dataset.multi = multi; registers.dataset.multi = multi;
+
+  for (const extra of sources.querySelectorAll('.core-extra-pane')) {
+    if (!coreSelection.shown.includes(extra.dataset.core) || extra.dataset.core === currentCore || !srcVis(extra.dataset.core)) extra.remove();
   }
+  for (const extra of registers.querySelectorAll('.core-extra-pane')) {
+    if (!coreSelection.shown.includes(extra.dataset.core) || extra.dataset.core === currentCore || !regVis(extra.dataset.core)) extra.remove();
+  }
+
   for (const core of coreSelection.shown) {
     if (core === currentCore) {
-      paneHeading(sourceFocus, core, 'pc'); paneHeading(registerFocus, core, 'carry');
-      sources.appendChild(sourceFocus); registers.appendChild(registerFocus);
+      if (srcVis(core)) { paneHeading(sourceFocus, core, 'pc'); sources.appendChild(sourceFocus); }
+      else if (sourceFocus.parentNode === sources) sources.removeChild(sourceFocus);
+      if (regVis(core)) { paneHeading(registerFocus, core, 'carry'); registers.appendChild(registerFocus); }
+      else if (registerFocus.parentNode === registers) registers.removeChild(registerFocus);
       continue;
     }
-    let source = document.getElementById(`core-source-${core}`);
-    if (!source) {
-      source = document.createElement('section'); source.className = 'core-pane core-extra-pane'; source.id = `core-source-${core}`;
-      source.innerHTML = `<div class="core-scroll"><ul class="source-list" id="mc-${core}-source-list"></ul></div>`;
-      source.addEventListener('dblclick', e => {
-        const line = e.target.closest('li[data-address]');
-        if (line) sendAction({action:'toggle_breakpoint',core,addr:Number(line.dataset.address)});
-      });
-      mcLastSourceKey[core] = '';
+    // Source pane
+    if (srcVis(core)) {
+      let source = document.getElementById(`core-source-${core}`);
+      if (!source) {
+        source = document.createElement('section'); source.className = 'core-pane core-extra-pane'; source.id = `core-source-${core}`;
+        source.innerHTML = `<div class="core-scroll"><ul class="source-list" id="mc-${core}-source-list"></ul></div>`;
+        source.addEventListener('dblclick', e => {
+          const line = e.target.closest('li[data-address]');
+          if (line) sendAction({action:'toggle_breakpoint',core,addr:Number(line.dataset.address)});
+        });
+        mcLastSourceKey[core] = '';
+      }
+      paneHeading(source, core, 'pc'); sources.appendChild(source);
     }
-    paneHeading(source, core, 'pc'); sources.appendChild(source);
-    let reg = document.getElementById(`core-register-${core}`);
-    if (!reg) {
-      reg = document.createElement('section'); reg.className = 'core-pane core-extra-pane'; reg.id = `core-register-${core}`;
-      reg.innerHTML = `<div class="core-scroll"><table class="reg-table"><tbody id="mc-${core}-reg-tbody"></tbody></table></div>`;
-      paneHeading(reg, core, 'carry'); registers.appendChild(reg);
-      mcPrevRegs[core] = mcFreshRegs(); buildMCRegTable(core);
-    } else { paneHeading(reg, core, 'carry'); registers.appendChild(reg); }
+    // Register pane
+    if (regVis(core)) {
+      let reg = document.getElementById(`core-register-${core}`);
+      if (!reg) {
+        reg = document.createElement('section'); reg.className = 'core-pane core-extra-pane'; reg.id = `core-register-${core}`;
+        reg.innerHTML = `<div class="core-scroll"><table class="reg-table"><tbody id="mc-${core}-reg-tbody"></tbody></table></div>`;
+        paneHeading(reg, core, 'carry'); registers.appendChild(reg);
+        mcPrevRegs[core] = mcFreshRegs(); buildMCRegTable(core);
+      } else { paneHeading(reg, core, 'carry'); registers.appendChild(reg); }
+    }
   }
+
   for (const id of ['source-core-chips','register-core-chips']) {
+    const panelId = id === 'source-core-chips' ? 'source' : 'registers';
+    const visFn   = id === 'source-core-chips' ? srcVis : regVis;
     const chips = document.getElementById(id); chips.replaceChildren();
     for (const core of coreSelection.shown) {
-      const chip = document.createElement('span'); chip.className = 'core-chip'; chip.textContent = core.toUpperCase();
-      chip.style.setProperty('--core-color', `var(--core-${core})`); chips.appendChild(chip);
+      const visible = visFn(core);
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = `core-chip${visible ? ' visible' : ' hidden'}`;
+      chip.textContent = core.toUpperCase();
+      chip.style.setProperty('--core-color', `var(--core-${core})`);
+      chip.title = `${visible ? 'Hide' : 'Show'} ${core.toUpperCase()} in this panel`;
+      chip.setAttribute('aria-pressed', String(visible));
+      chip.addEventListener('click', (e) => {
+        e.stopPropagation();
+        setPaneCoreVisible(panelId, core, !visible);
+      });
+      chips.appendChild(chip);
     }
   }
+
   document.getElementById('carry-row').hidden = coreSelection.shown.length > 1;
 }
 
@@ -4319,6 +4543,8 @@ function paintCoreState(state, fromCache = false) {
     }
     if (core === devicePanelCore) updateDevicePanel(state.io, core);
   }
+  // Each I/O Pins block paints only from its own core's state, focus or not.
+  updatePins(state.io, core);
   for (const pane of document.querySelectorAll('.core-pane')) {
     if (pane.dataset.core !== core) continue;
     const field = pane.querySelector('[data-pane-readout]');
@@ -4335,6 +4561,8 @@ function updateCoreState(state) {
 }
 
 function updateCoresControl() {
+  const processorSelect = document.getElementById('processor-select');
+  if (processorSelect) processorSelect.disabled = processorChanging || running || simRunning || sharedExecution.running;
   if (!coresDeck) return;
   coresDeck.update({selection:coreSelection, available:availableCores, states:coreStates,
     clocks:clockState, running:running || simRunning || sharedExecution.running, busy:!executionReady || clockChanging || runPending !== null});
@@ -4615,14 +4843,9 @@ document.getElementById("uart-clear-btn").addEventListener("click", () => {
 })();
 
 // ---- GP Mux mode selector (GPCFG.PRU_GP_MUX_SEL) ---------------------------
+// The selectors live in the I/O Pins blocks (see buildIoBlock). These links sit
+// in the Peripherals tab, which follows the focus core, so they write to it.
 (function () {
-  const sel = document.getElementById("io-mux-sel");
-  if (!sel) return;
-  sel.addEventListener("change", () => {
-    const mux = parseInt(sel.value, 10) || 0;
-    sendAction({ action: "gpcfg_write", core: currentCore, mux_sel: mux });
-  });
-  // Peripherals-tab links: switch the GP mux (the selector follows the next state).
   for (const [id, mux] of [["sd-switch-gpio", 0], ["sd-switch-sd", 3], ["pi-switch-pi", 1]]) {
     document.getElementById(id)?.addEventListener("click", (e) => {
       e.preventDefault();

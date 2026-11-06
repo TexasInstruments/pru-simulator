@@ -114,7 +114,7 @@ function inspector() {
   const noop = () => {};
   const context = vm.createContext({
     currentCore: 'pru0', devicePanelCore: 'pru0', availableCores: ['pru0','pru1'],
-    coreSelection: { used: ['pru0','pru1'], shown: ['pru0'], focus: 'pru0', pinned: false }, coreStates: {},
+    coreSelection: { used: ['pru0','pru1'], shown: ['pru0'], focus: 'pru0' }, coreStates: {},
     signalGraph: { recording: true, windowSize: 100, buf: [], head: 0, fill: 0, memChannels: [{ addr: 0, count: 1, format: 'uint8' }] },
     GRAPH_MEM_BPS: { uint8: 1 }, cntCycles: {}, cntStalls: {}, cntInstrs: {}, cntIpc: {}, cntPc: {}, btnXfrShift: {},
     document: { querySelectorAll: () => [], getElementById: () => null }, window: {},

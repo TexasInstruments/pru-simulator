@@ -107,8 +107,9 @@ const section = id => {
   return html.slice(start, next < 0 ? undefined : next);
 };
 const ioPanel = html.slice(html.indexOf('id="io-panel"'), html.indexOf('id="signal-graph-panel"'));
-for (const id of ['io-mux-sel', 'gpo-grid', 'gpi-grid', 'loopback-strip'])
-  assert.ok(ioPanel.includes(`id="${id}"`), `Simulator I/O Pins keeps ${id}`);
+// The pins are built per PRU core by app.js into #io-blocks; there is no core selector.
+assert.ok(ioPanel.includes('id="io-blocks"'), 'Simulator I/O Pins hosts the per-core blocks');
+assert.ok(!ioPanel.includes('io-core-chips'), 'I/O Pins has no core selector');
 for (const id of ['uart-decoder', 'uart-rx-inject', 'sd-interface', 'perif-interface',
   'i2c-attach-strip', 'i2c-attach-btn', 'device-runtime-panel', 'i2c-interface'])
   assert.ok(!ioPanel.includes(`id="${id}"`), `${id} left the Simulator I/O Pins panel`);
@@ -217,5 +218,5 @@ console.log('Chrome helpers, glider, fault badge and markup contract pass');
 
 // Actual target capabilities prune membership and visibility after a target reload.
 assert.deepEqual(plain(context.PruCores.normalize(selection, ['pru0', 'pru1', 'rtu0'])), {
-  used: ['pru1', 'rtu0'], shown: ['pru1'], focus: 'pru1', pinned: false,
+  used: ['pru1', 'rtu0'], shown: ['pru1'], focus: 'pru1',
 });
