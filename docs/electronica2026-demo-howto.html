@@ -23,6 +23,7 @@
   --demo-c: #0f8a7a;
   --demo-spi: #7a4cc2;
   --demo-d: #b8327a;
+  --demo-e: #5d7a1f;
   --warn-bg: #fff4e0;
   --warn-line: #e0a030;
   --note-bg: #eef3f8;
@@ -35,14 +36,14 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --ink: #e4e8ec; --muted: #9aa6b2; --paper: #12171c; --card: #1a2128; --line: #2e3842;
-    --accent: #ff5a6e; --demo-a: #5ea2ff; --demo-b: #f0a542; --demo-c: #3fc7b3; --demo-spi: #b28cf0; --demo-d: #f07ab4;
+    --accent: #ff5a6e; --demo-a: #5ea2ff; --demo-b: #f0a542; --demo-c: #3fc7b3; --demo-spi: #b28cf0; --demo-d: #f07ab4; --demo-e: #a8c95a;
     --warn-bg: #2e2412; --warn-line: #b8862c; --note-bg: #1c2733; --code-bg: #222b34;
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
   --ink: #e4e8ec; --muted: #9aa6b2; --paper: #12171c; --card: #1a2128; --line: #2e3842;
-  --accent: #ff5a6e; --demo-a: #5ea2ff; --demo-b: #f0a542; --demo-c: #3fc7b3; --demo-spi: #b28cf0; --demo-d: #f07ab4;
+  --accent: #ff5a6e; --demo-a: #5ea2ff; --demo-b: #f0a542; --demo-c: #3fc7b3; --demo-spi: #b28cf0; --demo-d: #f07ab4; --demo-e: #a8c95a;
   --warn-bg: #2e2412; --warn-line: #b8862c; --note-bg: #1c2733; --code-bg: #222b34;
   color-scheme: dark;
 }
@@ -75,7 +76,7 @@ nav.index .sep { height: 1px; background: var(--line); margin: 8px 10px; }
   border-radius: 5px; font: 700 13px/1 var(--font-display); color: #fff; background: var(--c, var(--muted));
   flex: none; }
 .c-a { --c: var(--demo-a); } .c-b { --c: var(--demo-b); }
-.c-c { --c: var(--demo-c); } .c-spi { --c: var(--demo-spi); } .c-d { --c: var(--demo-d); }
+.c-c { --c: var(--demo-c); } .c-spi { --c: var(--demo-spi); } .c-d { --c: var(--demo-d); } .c-e { --c: var(--demo-e); }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); flex: none; margin: 0 8px; }
 
 /* Type */
@@ -133,7 +134,7 @@ table.fix thead th:first-child::before { content: "\25B8  "; }
 td.na { color: var(--muted); font-style: italic; }
 
 /* Pin map */
-:root { --clash-bg: #fde8eb; --clash-ink: #a0102a; --pdm: #4a5a6a; }
+:root { --clash-bg: #fde8eb; --clash-ink: #a0102a; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --clash-bg: #3a1a20; --clash-ink: #ff8a9a; } }
 :root[data-theme="dark"] { --clash-bg: #3a1a20; --clash-ink: #ff8a9a; }
 table.pins { font-size: 13.5px; }
@@ -145,9 +146,11 @@ table.pins td.u { box-shadow: inset 3px 0 0 var(--c); }
 table.pins td.clash { background: var(--clash-bg); color: var(--clash-ink); font-weight: 600; }
 table.pins td.ok { color: var(--muted); }
 table.pins tr.hot td:first-child { color: var(--clash-ink); }
-th.col-pdm { box-shadow: inset 0 -3px 0 var(--pdm); }
+th.col-pdm { box-shadow: inset 0 -3px 0 var(--demo-e); color: var(--demo-e); }
 th.col-spi { box-shadow: inset 0 -3px 0 var(--demo-spi); color: var(--demo-spi); }
-.c-pdm { --c: var(--pdm); }
+.c-pdm { --c: var(--demo-e); }
+.group-label { font: 600 12px/1 var(--font-display); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin-top: 22px; }
+.group-label + .cards { margin-top: 10px; }
 .legend { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; color: var(--muted); }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .swatch { width: 14px; height: 14px; border-radius: 3px; background: var(--clash-bg); border: 1px solid var(--clash-ink); }
@@ -220,6 +223,7 @@ footer { margin-top: 64px; padding-top: 20px; border-top: 1px solid var(--line);
     <li><a href="#demo-b"><span class="badge c-b">B</span>UART RX frames</a></li>
     <li><a href="#demo-c"><span class="badge c-c">C</span>UART print</a></li>
     <li><a href="#demo-d"><span class="badge c-d">D</span>PDM audio (simulator)</a></li>
+    <li><a href="#demo-e"><span class="badge c-e">E</span>PDM audio over Ethernet</a></li>
     <li><a href="#spi"><span class="badge c-spi">SPI</span>SPI link (simulator)</a></li>
     <li class="sep" aria-hidden="true"></li>
     <li><a href="#switching"><span class="dot"></span>Switching between demos</a></li>
@@ -233,8 +237,9 @@ footer { margin-top: 64px; padding-top: 20px; border-top: 1px solid var(--line);
 <header class="top" id="overview">
   <span class="kicker">electronica 2026 · LP-AM243 · ICSSG0 PRU0</span>
   <h1>Booth demos: how to run</h1>
-  <p class="lede">For booth staff. Three PRU demos run on the AM243x LaunchPad (LP-AM243), each with its own PicoScope setup. Two more, PDM audio and the SPI link, run in the simulator alone, with no board and no PicoScope.</p>
+  <p class="lede">For booth staff. Four PRU demos run on the AM243x LaunchPad (LP-AM243); A, B and C each have their own PicoScope setup, and E streams audio to a PC over Gigabit Ethernet. Two more, PDM audio and the SPI link, run in the simulator alone, with no board and no PicoScope.</p>
 
+  <p class="group-label">On the board</p>
   <div class="cards">
     <a class="card c-a" href="#demo-a">
       <span class="title"><span class="badge c-a">A</span>I2C IO expander</span>
@@ -251,6 +256,14 @@ footer { margin-top: 64px; padding-top: 20px; border-top: 1px solid var(--line);
       <p>A PRU sends <code>Hello 2026</code> as 115200 baud UART, every 1.87 ms. The PicoScope decodes the text.</p>
       <span class="role">PicoScope: logic analyzer (D0)</span>
     </a>
+    <a class="card c-e" href="#demo-e">
+      <span class="title"><span class="badge c-e">E</span>PDM audio over Ethernet</span>
+      <p>Eight audio channels go from a PC into the board over Gigabit Ethernet, through a real PDM chain on five PRU cores, and back. Input and output spectrograms side by side, in real time.</p>
+      <span class="role">PC + Ethernet cable, no PicoScope</span>
+    </a>
+  </div>
+  <p class="group-label">In the simulator</p>
+  <div class="cards">
     <a class="card c-d" href="#demo-d">
       <span class="title"><span class="badge c-d">D</span>PDM audio</span>
       <p>PRU1 synthesises two PDM microphones from audio clips, PRU0 decodes them into 16 kHz audio. Two live spectrograms show speech and a chirp.</p>
@@ -265,7 +278,7 @@ footer { margin-top: 64px; padding-top: 20px; border-top: 1px solid var(--line);
 
   <div class="callout note">
     <span class="label">One board demo at a time</span>
-    <p>Demos A, B and C all use ICSSG0 PRU0. To switch, load the other demo's R5F program (see <a href="#switching">Switching between demos</a>).</p>
+    <p>Demos A, B, C and E all use ICSSG0 PRU0 (E also ICSSG0 RTU1 and PRU1, and ICSSG1 for Ethernet). To switch, see <a href="#switching">Switching between demos</a>.</p>
   </div>
 
   <p>The source code is in the open-pru repository, under <code>examples/electronica2026/</code>. Until the PRs are merged, each demo exists only on its own branch.</p>
@@ -276,6 +289,7 @@ footer { margin-top: 64px; padding-top: 20px; border-top: 1px solid var(--line);
         <tr><td><span class="badge c-a">A</span></td><td><code>i2c_io_expander/</code> (<code>i2c_io/</code> firmware, <code>visualizer/</code> PC window)</td><td><code>dev_tley_electronica2026_i2c_io</code>, PR #188</td></tr>
         <tr><td><span class="badge c-b">B</span></td><td><code>uart_rx_frame/uart_rx/</code></td><td><code>dev_tley_electronica2026_uart_rx</code>, PR #189</td></tr>
         <tr><td><span class="badge c-c">C</span></td><td><code>uart_print/uart_print/</code></td><td><code>dev_tley_electronica2026_uart_print</code>, PR #190</td></tr>
+        <tr><td><span class="badge c-e">E</span></td><td><code>pdm_audio_eth/</code> (<code>pdm_audio_eth/</code> firmware, <code>pc_app/</code> PC program), built on <code>pdm_audio/</code></td><td><code>dev_tley_electronica2026_pdm_audio_eth</code>, PR #191</td></tr>
       </tbody>
     </table>
   </div>
@@ -304,6 +318,7 @@ footer { margin-top: 64px; padding-top: 20px; border-top: 1px solid var(--line);
       </tbody>
     </table>
   </div>
+  <p class="wire-note"><span class="badge c-e">E</span> Demo E does not need the PicoScope. To show the PDM clock, put a digital input on BP.11 or BP.7 (3.072 MHz), ground on BP.20.</p>
   <div class="callout note">
     <span class="label">Tip</span>
     <p>Once each setup works, save it as a PicoScope settings file (for example <code>demoA_i2c</code>, <code>demoB_uart</code> and <code>demoC_uart_tx</code>), so switching later is just "open settings".</p>
@@ -312,9 +327,10 @@ footer { margin-top: 64px; padding-top: 20px; border-top: 1px solid var(--line);
 
 <!-- ============================================================ -->
 <section class="block" id="wiring">
-  <h2>Wiring (all demos, can stay connected)</h2>
+  <h2>Wiring for Demos A, B and C (can stay connected)</h2>
   <div class="prose">
-    <p>All wires can stay connected. Demo A does not touch BP.31, Demo B does not touch BP.32/33, and Demo C uses only BP.33, the wire that already goes to PicoScope D0 for Demo A.</p>
+    <p>Demo E needs nine jumpers instead, and one of them clashes with Demo A; see the <a href="#pins">BoosterPack pin map</a>.</p>
+    <p>All wires for Demos A, B and C can stay connected. Demo A does not touch BP.31, Demo B does not touch BP.32/33, and Demo C uses only BP.33, the wire that already goes to PicoScope D0 for Demo A.</p>
     <p>The LaunchPad headers are labelled with <strong>BoosterPack (BP) pin numbers</strong>. There is no "J4.10" or "J4.8"; use the BP numbers below.</p>
   </div>
   <div class="table-wrap">
@@ -338,15 +354,15 @@ footer { margin-top: 64px; padding-top: 20px; border-top: 1px solid var(--line);
   <div class="prose">
     <p>Every pin any demo uses, by BoosterPack number. Two more setups share the header with Demos A, B and C:</p>
     <ul class="plain">
-      <li><strong>PDM loopback (board):</strong> the 8-channel PDM demo from open-pru (<code>examples/electronica2026/pdm_audio/</code>, PR #191; also the base of the PDM-over-Ethernet demo). Nine jumpers connect PRU1 outputs to PRU0 SD inputs. <a href="#demo-d">Demo D</a> is the simulator version of this demo.</li>
+      <li><strong>E · PDM loopback:</strong> nine jumpers connect PRU1 outputs to PRU0 SD inputs. The same jumpers serve <a href="#demo-e">Demo E</a> and open-pru <code>pdm_audio</code> (the 8-channel PDM demo without Ethernet, checked in the CCS memory browser), both in PR #191. Demo E's Ethernet uses the RJ45 <strong>J18</strong>, no header pins. <a href="#demo-d">Demo D</a> is the simulator version.</li>
       <li><strong>SPI link:</strong> runs in the simulator only. The SPI pane's pin table plans these LP pins for a later board version; nothing is wired today.</li>
     </ul>
     <p>All pads are ICSSG0 (<code>PRG0_…</code>). "out" = the demo drives the pin, "in" = it only reads it.</p>
   </div>
-  <div class="legend"><span><span class="swatch"></span>Clash with Demo A: two push-pull outputs on one wire</span><span><span class="badge c-a">A</span><span class="badge c-b">B</span><span class="badge c-c">C</span> board demos</span><span><span class="badge c-pdm">PDM</span> 8-ch loopback</span><span><span class="badge c-spi">SPI</span> planned only</span></div>
+  <div class="legend"><span><span class="swatch"></span>Clash with Demo A: two push-pull outputs on one wire</span><span><span class="badge c-a">A</span><span class="badge c-b">B</span><span class="badge c-c">C</span> board demos</span><span><span class="badge c-e">E</span> PDM 8-ch loopback</span><span><span class="badge c-spi">SPI</span> planned only</span></div>
   <div class="table-wrap">
     <table class="pins">
-      <thead><tr><th>BP pin</th><th>PRU pad</th><th class="col-a">A · I2C</th><th class="col-b">B · UART RX</th><th class="col-c">C · UART print</th><th class="col-pdm">PDM loopback (board)</th><th class="col-spi">SPI link (planned)</th><th>Clash</th></tr></thead>
+      <thead><tr><th>BP pin</th><th>PRU pad</th><th class="col-a">A · I2C</th><th class="col-b">B · UART RX</th><th class="col-c">C · UART print</th><th class="col-pdm">E · PDM loopback</th><th class="col-spi">SPI link (planned)</th><th>Clash</th></tr></thead>
       <tbody>
         <tr><td>BP.1</td><td>3V3</td><td class="u c-a">TCA9538 VCC</td><td></td><td></td><td></td><td></td><td></td></tr>
         <tr><td>BP.7</td><td>PRU0_GPO16</td><td></td><td></td><td></td><td class="u c-pdm">clock in (GPI16, SD8_CLK), from BP.11</td><td class="u c-spi">PRU0 CLK out</td><td class="">PDM / SPI</td></tr>
@@ -423,6 +439,7 @@ footer { margin-top: 64px; padding-top: 20px; border-top: 1px solid var(--line);
     </li>
     <li><strong>PicoScope 7</strong> (7.2.30 or later) with the <strong>MCP server</strong> feature switched on, for Demo A's LED window. It is hidden behind a flag; see <code>i2c_io_expander/visualizer/readme.md</code> › "PicoScope 7 setup", step 1. A PicoScope update resets the flag.</li>
     <li><strong>LED window</strong> (Demo A) built once: <code>cd i2c_io_expander/visualizer &amp;&amp; cargo build --release</code>.</li>
+    <li><strong>Demo E:</strong> PC program, network card and CCS projects; see <a href="#demo-e-once">Demo E › Once per PC</a>.</li>
     <li><strong>pru-simulator</strong> (Demo D, SPI link, and <a href="#simulator">show the simulator first</a>): check out branch <code>electronica2026-demos</code> and run <code>pip install -r requirements.txt</code> once.</li>
     <li><strong>AWG file</strong> (Demo B): copy <code>uart_rx_frame/uart_rx/test/helloworld_4mbaud_awg.csv</code> to a folder <strong>outside the repository</strong> (for example <code>~/booth/</code>) and import it from there. A PicoScope save onto the repository file once replaced it with zeros.</li>
   </ol>
@@ -622,6 +639,89 @@ footer { margin-top: 64px; padding-top: 20px; border-top: 1px solid var(--line);
 </section>
 
 <!-- ============================================================ -->
+<section class="block demo c-e" id="demo-e">
+  <div class="head"><span class="badge c-e">E</span><h2>PDM audio over Ethernet</h2><span class="tag">Board + PC, no PicoScope</span></div>
+  <p class="prose">The board version of <a href="#demo-d">Demo D</a>, with eight channels and Ethernet. A Linux PC sends eight audio channels to the board over Gigabit Ethernet. On the board they go through a real PDM chain: eight sigma-delta modulators, PDM clock and data on the header pins, eight SD decoders. Then they come back to the PC, which shows input and output spectrograms side by side, in real time. The simulator needs about 11 minutes for one second of this audio.</p>
+  <div class="callout note"><span class="label">Full guide</span>
+    <p>This section is the booth short form. The full guide, with the one-time PC setup and every test command, is open-pru <code>examples/electronica2026/pdm_audio_eth/pdm_audio_eth/docs/demo_howto.md</code> (branch <code>dev_tley_electronica2026_pdm_audio_eth</code>, PR #191).</p></div>
+
+  <h3>What you need</h3>
+  <ul class="plain">
+    <li>The LP-AM243 with the <strong>nine PDM jumpers</strong> (see the <a href="#pins">pin map</a>), power on J10, XDS110 USB to the PC.</li>
+    <li>An <strong>Ethernet cable from the PC straight to the RJ45 J18</strong> (ICSSG1 port 1). No switch. The other RJ45 is not used.</li>
+    <li>A Linux PC with a Gigabit network card for the board only (development PC: Realtek RTL8125, <code>enp129s0</code>; replace the name if yours differs, <code>ip -br link</code> lists them).</li>
+  </ul>
+  <p>The commands use two shell variables; set them once per terminal:</p>
+  <div class="code"><pre><code>export DEMO=~/GitHub/open-pru/examples/electronica2026/pdm_audio_eth
+export PDM=$DEMO/pc_app/target/release/pdm-eth</code></pre><button class="copy" type="button">Copy</button></div>
+
+  <h3 id="demo-e-once">Once per PC</h3>
+  <ol class="steps">
+    <li><strong>PC program:</strong>
+      <div class="code"><pre><code>cd $DEMO/pc_app
+cargo build --release
+sudo setcap cap_net_raw,cap_net_admin+ep $PDM</code></pre><button class="copy" type="button">Copy</button></div>
+      <p><code>pdm-eth</code> sends raw Ethernet frames and needs these two capabilities. <strong>Every <code>cargo build</code> removes them; run the <code>setcap</code> line again after each build.</strong> <code>getcap $PDM</code> must print <code>cap_net_admin,cap_net_raw=ep</code>.</p>
+    </li>
+    <li><strong>Keep Ubuntu off the demo cable:</strong> <code>sudo nmcli device set enp129s0 managed no</code>.</li>
+    <li><strong>CCS:</strong> import the six projects (five PRU firmwares, one R5F; list in the full guide, section 4). Build the <strong>five PRU projects first</strong>, then the R5F project <code>pdm_audio_eth_am243x-lp_r5fss0-0_freertos_ti-arm-clang</code>. CCS copies the sources at import: after a change, re-import <strong>and build</strong>, or CCS loads the old image.</li>
+    <li>CPU isolation (full guide, section 2.3) is only needed for the 64-byte throughput test, not for the audio.</li>
+  </ol>
+  <div class="callout warn"><span class="label">Board, before power-up</span>
+    <p>SW6 in the default position (LD17 off), no BoosterPack plugged in, boot switches on NO BOOT.</p></div>
+
+  <h3>Run</h3>
+  <ol class="steps">
+    <li>Power the board. In CCS, connect to <strong><code>MAIN_Cortex_R5_0_0</code></strong>, load the R5F <code>.out</code> and run it. The R5F starts all five PRU cores itself.</li>
+    <li>The console (XDS110 UART, 115200 8N1) prints:
+      <div class="code"><pre><code>PDM audio eth: link 1000 FD on ICSSG1 port 1 after 3610 ms, board MAC 02:00:5d:4d:00:01
+PDM audio: ICSSG0 RTU1, PRU1, PRU0 running; 8 channels, clips at 0x700c0000 (16384 frames), PCM header at 0x30010000</code></pre></div>
+      <p>The link time varies (about 3.6 s).</p>
+    </li>
+    <li>Optional link check: <code>$PDM test --iface enp129s0</code> prints six <strong>PASS</strong> lines (link, ping, and throughput both ways).</li>
+    <li>Start the window:
+      <div class="code"><pre><code>$PDM gui --iface enp129s0</code></pre><button class="copy" type="button">Copy</button></div>
+    </li>
+    <li>In the side panel's <span class="ui">Sources</span> table, pick a source per channel. A good sequence: ch0 <strong>speech + music</strong>, ch1 <strong>music</strong>, then switch the view between ch0, ch1 and a tone channel (ch3) with the channel buttons.</li>
+  </ol>
+
+  <h3>What good looks like</h3>
+  <div class="good"><ul>
+    <li><strong>Top pane:</strong> the selected channel's input as the PC sends it. <strong>Middle:</strong> the board's output after the PDM round trip. <strong>Strip:</strong> input minus output in dB.</li>
+    <li><strong>Side panel:</strong> 56 to 60 fps, frames/s out 500 and in 250, board audio latency about <strong>1.08 ms</strong> (read it on a speech, music or noise channel), buffered ahead 0.50 s, lost / dup / resync <strong>0</strong>, UNDERRUN / SD_OVF <strong>0</strong>.</li>
+    <li>A new source is heard about <strong>0.5 s</strong> later: the PC keeps the board's input buffer 0.5 s ahead.</li>
+    <li>Before you pick any source, the board plays its own booth clips (ch0 speech, ch1/ch2 chirps, ch3 to ch7 tones) and the input pane says "no input stream". That is normal.</li>
+  </ul></div>
+
+  <h3>Talking points</h3>
+  <ul class="plain">
+    <li><strong>Real time vs simulation:</strong> the same eight-channel PDM chain needs about 11 minutes per second of audio in the pru-simulator (Demo D). Here it runs in real time, with Gigabit Ethernet both ways.</li>
+    <li><strong>PRUs only in the data path:</strong> the R5F sets things up, then idles. RTU1 runs eight sigma-delta modulators, PRU1 drives the PDM clock and data pins, PRU0 decodes eight SD channels into 16 kHz PCM, and ICSSG1's two PRUs receive and send the Ethernet frames.</li>
+    <li><strong>Board-run numbers:</strong> audio latency 1.08 ms; a 600 s capture with no lost frame; 64-byte frames from the board at 98 % of Gigabit line rate; output equals input through the chain to -85 dB or better.</li>
+    <li><strong>Next step:</strong> eight real PDM MEMS microphones in place of the jumpers and modulators (PRU1 drives their clock, PRU0 reads them as today), and a GPU stage on the PC for speaker separation and noise and echo cancelling.</li>
+  </ul>
+
+  <h3>If something is wrong</h3>
+  <div class="table-wrap"><table class="fix">
+    <thead><tr><th>You see</th><th>Do this</th></tr></thead>
+    <tbody>
+      <tr><td><code>raw socket on enp129s0 needs CAP_NET_RAW</code></td><td>The capabilities are gone after a build. Run the <code>setcap</code> line again; check with <code>getcap $PDM</code>.</td></tr>
+      <tr><td><code>pdm-eth: command not found</code></td><td>It is not on <code>PATH</code>. Use <code>$PDM</code> or the full path.</td></tr>
+      <tr><td>Console says <code>link DOWN</code>, <code>ethtool</code> shows no link</td><td>Cable not in J18, board not running, or the network card is down (<code>ip link set enp129s0 up</code>).</td></tr>
+      <tr><td>No latency line in the side panel</td><td>No source picked yet: the latency needs a stream from the PC.</td></tr>
+      <tr><td>Latency shows "-" or jumps</td><td>A pure tone matches at many delays. Select a speech, music or noise channel.</td></tr>
+      <tr><td>One channel flat or noise, the counters fine</td><td>That channel's data jumper.</td></tr>
+      <tr><td>Channels 4 to 7 flat, 0 to 3 fine</td><td>SW6 not in the default position (LD17 on), or a BoosterPack is plugged in.</td></tr>
+      <tr><td>No audio, counters frozen</td><td>A single PRU core was restarted from CCS. Run the R5F again; RTU1 and PRU1 must start together.</td></tr>
+      <tr><td>Numbers do not change after a firmware edit</td><td>CCS loaded the old image. Re-import <strong>and build</strong>.</td></tr>
+      <tr><td>The window stops redrawing while a file dialog is open</td><td>By design; the audio keeps running.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout warn"><span class="label">Restart and reset</span>
+    <p>Always restart through the R5F (run the R5F program again), never a single PRU core. Reset = <strong>SW1 (MCU PORZ)</strong>, then reconnect CCS and run the R5F again. Before another demo, see <a href="#from-pdm">From the PDM loopback to another demo</a>.</p></div>
+</section>
+
+<!-- ============================================================ -->
 <section class="block demo c-spi" id="spi">
   <div class="head"><span class="badge c-spi">SPI</span><h2>SPI link</h2><span class="tag">Simulator, runs unattended</span></div>
   <p class="prose">PRU0 is an SPI controller and PRU1 an SPI peripheral, both bit-banged and wired pin to pin in TI's pru-simulator. Visitors watch frames go across a scope bit by bit: walking 1, walking 0, 0xA5 / 0x5A and 00 / FF, about 7 s per frame and about 30 s per loop, repeating. No board or PicoScope is needed, so it can run on its own laptop or screen next to the board demos.</p>
@@ -676,13 +776,14 @@ footer { margin-top: 64px; padding-top: 20px; border-top: 1px solid var(--line);
         <li><span class="badge c-a">A</span> close the LED window.</li>
         <li><span class="badge c-b">B</span> set the signal generator to <strong>Off</strong> or <strong>DC +2 V</strong>.</li>
         <li><span class="badge c-c">C</span> nothing to stop.</li>
+        <li><span class="badge c-e">E</span> close the <code>pdm-eth</code> window.</li>
       </ul>
     </li>
     <li>In PicoScope, switch to the other demo's settings (open the saved settings file, or use the <a href="#picoscope">table at the top</a>).</li>
     <li>In CCS, do a <strong>system reset</strong> of the board, or power-cycle it. Then load and run the other demo's <strong>R5F</strong> program. It loads its own PRU0 firmware.</li>
     <li>For Demo B, keep the start order: <strong>DC +2 V → run R5F → Arbitrary</strong>.</li>
   </ol>
-  <p>The wiring can stay as it is.</p>
+  <p>The wiring of Demos A, B and C can stay as it is. Leaving Demo E (or the PDM loopback): press SW1 first and rewire as in <a href="#from-pdm">From the PDM loopback to another demo</a>.</p>
   <p>The simulator demos (<span class="badge c-d">D</span> and <span class="badge c-spi">SPI</span>) do not touch the board; see <a href="#two-screens">SPI link and audio on two screens</a> for switching between them.</p>
 </section>
 
@@ -708,7 +809,8 @@ python ui/server.py      # then open http://localhost:8080</code></pre><button c
     <li><span class="badge c-c">C</span> open-pru <code>examples/electronica2026/uart_print/uart_print/readme.md</code></li>
     <li><span class="badge c-d">D</span> pru-simulator <code>source/pdm/README.md</code> (branch <code>feat/pdm-audio-demo</code>, PR #106), and <code>docs/reports/2026-11-03-pdm-audio-demo-report.md</code></li>
     <li><span class="badge c-spi">SPI</span> pru-simulator <code>docs/spi_link.md</code> (branch <code>feat/spi-pru-link</code>, PR #108), and <code>docs/handoff/2026-11-05-spi-sequence-play.md</code></li>
-    <li><span class="badge c-pdm">PDM</span> open-pru <code>examples/electronica2026/pdm_audio/pdm_audio/readme.md</code> (jumper table, reset rule) and <code>pdm_audio_eth/pdm_audio_eth/docs/demo_howto.md</code> (PR #191)</li>
+    <li><span class="badge c-e">E</span> open-pru <code>examples/electronica2026/pdm_audio_eth/pdm_audio_eth/docs/demo_howto.md</code> (full guide: PC setup, CPU isolation, test, capture and stream commands), <code>docs/test_report.md</code> (board results) and <code>readme.md</code>, PR #191</li>
+    <li>PDM loopback: open-pru <code>examples/electronica2026/pdm_audio/pdm_audio/readme.md</code> (jumper table, reset rule)</li>
     <li>How each demo was ported: the <code>docs/porting_report.md</code> in each project</li>
     <li>Session notes: <code>docs/handoff/2026-11-02-*.md</code> and <code>docs/handoff/2026-11-03-*.md</code> (PR #102)</li>
   </ul>

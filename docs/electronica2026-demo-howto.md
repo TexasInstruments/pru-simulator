@@ -1,20 +1,21 @@
 # electronica 2026 booth demos: how to run
 
-This page is for booth staff. It covers the three PRU demos on the AM243x
+This page is for booth staff. It covers the four PRU demos on the AM243x
 LaunchPad (LP-AM243) and two demos that run in the simulator only (PDM
-audio and the SPI link). Each board demo needs the PicoScope set up differently, so
-that setup gets its own section for each demo, and a side-by-side table
-comes first.
+audio and the SPI link). Demos A, B and C each need the PicoScope set up
+differently, so that setup gets its own section for each demo, and a
+side-by-side table comes first.
 
 | Demo | What visitors see | PicoScope is used as |
 | ---- | ----------------- | -------------------- |
 | **A. I2C IO expander** | A PRU bit-bangs 1 Mbit/s I2C. One LED runs along 8 LEDs, the PicoScope decodes the bus, and a PC window lights the same LED. | **Logic analyzer** (digital inputs D0/D1) |
 | **B. UART RX frames** | A PRU receives 4 Mbaud UART frames. `HelloWorld!` fills the PRU memory, shown in CCS. | **Signal generator** (AWG output) |
 | **C. UART print** | A PRU sends `Hello 2026` as 115200 baud UART, every 1.87 ms. The PicoScope decodes the text. | **Logic analyzer** (digital input D0) |
+| **E. PDM audio over Ethernet** | Eight audio channels go from a PC into the board over Gigabit Ethernet, through a real PDM chain on five PRU cores, and back. The PC shows input and output spectrograms side by side, in real time. | **Not needed** (optional: the PDM clock on a digital input) |
 
-All three demos run on the same board, but **only one at a time**: all use
-ICSSG0 PRU0. To switch, load the other demo's R5F program (see "Switching
-between demos").
+All four run on the same board, but **only one at a time**: all use ICSSG0
+PRU0 (Demo E also ICSSG0 RTU1 and PRU1, and ICSSG1 for Ethernet). To switch,
+see "Switching between demos".
 
 The source code is in the open-pru repository, under
 `examples/electronica2026/`:
@@ -24,6 +25,7 @@ The source code is in the open-pru repository, under
 | A | `i2c_io_expander/` (`i2c_io/` firmware, `visualizer/` PC window) | `dev_tley_electronica2026_i2c_io`, PR #188 |
 | B | `uart_rx_frame/uart_rx/` | `dev_tley_electronica2026_uart_rx`, PR #189 |
 | C | `uart_print/uart_print/` | `dev_tley_electronica2026_uart_print`, PR #190 |
+| E | `pdm_audio_eth/` (`pdm_audio_eth/` firmware, `pc_app/` PC program), built on `pdm_audio/` | `dev_tley_electronica2026_pdm_audio_eth`, PR #191 |
 
 Until the PRs are merged, each demo exists only on its own branch.
 
@@ -58,15 +60,21 @@ pushed.
 | MCP server (beta) | **On**, port **manual 18123** (the LED window needs it) | not needed | not needed |
 | What good looks like | One decoded frame per capture: `23 W 01 xx`, xx walks 01 → 80 | CCS shows `HelloWorld!` repeating in PRU memory | `Hello 2026` decoded in every capture, no framing errors |
 
+Demo E does not need the PicoScope. To show the PDM clock, put a digital
+input on BP.11 or BP.7 (3.072 MHz), ground on BP.20.
+
 **Tip:** once each setup works, save it as a PicoScope settings file
 (for example `demoA_i2c`, `demoB_uart` and `demoC_uart_tx`), so switching later is just
 "open settings".
 
 ---
 
-## Wiring (all demos, can stay connected)
+## Wiring for Demos A, B and C (can stay connected)
 
-All wires can stay connected. Demo A does not touch BP.31, Demo B does not
+Demo E needs nine jumpers instead, and one of them clashes with Demo A; see
+"BoosterPack pin map" below.
+
+All wires for Demos A, B and C can stay connected. Demo A does not touch BP.31, Demo B does not
 touch BP.32/33, and Demo C uses only BP.33, the wire that already goes to
 PicoScope D0 for Demo A.
 
@@ -92,17 +100,18 @@ sees the UART signal on its SCL pin; ignore the LEDs then.
 Every pin any demo uses, by BoosterPack number. Two more setups share the
 header with Demos A, B and C:
 
-- **PDM loopback (board):** the 8-channel PDM demo from open-pru
-  (`examples/electronica2026/pdm_audio/`, PR #191; also the base of the
-  PDM-over-Ethernet demo). Nine jumpers connect PRU1 outputs to PRU0 SD
-  inputs. Demo D above is the simulator version of this demo.
+- **E · PDM loopback:** nine jumpers connect PRU1 outputs to PRU0 SD
+  inputs. The same jumpers serve Demo E and open-pru `pdm_audio` (the
+  8-channel PDM demo without Ethernet, checked in the CCS memory browser),
+  both in PR #191. Demo E's Ethernet uses the RJ45 **J18**, no header pins.
+  Demo D is the simulator version.
 - **SPI link:** runs in the simulator only. The SPI pane's pin table plans
   these LP pins for a later board version; nothing is wired today.
 
 All pads are ICSSG0 (`PRG0_...`). "out" = the demo drives the pin, "in" =
 it only reads it.
 
-| BP pin | PRU pad | A · I2C | B · UART RX | C · UART print | PDM loopback (board) | SPI link (planned) | Clash |
+| BP pin | PRU pad | A · I2C | B · UART RX | C · UART print | E · PDM loopback | SPI link (planned) | Clash |
 | ------ | ------- | ------- | ----------- | -------------- | -------------------- | ------------------ | ----- |
 | BP.1 | 3V3 | TCA9538 VCC | | | | | |
 | BP.7 | PRU0_GPO16 | | | | clock in (GPI16, SD8_CLK), from BP.11 | PRU0 CLK out | PDM / SPI |
@@ -193,10 +202,12 @@ before another demo.
    A PicoScope update resets the flag.
 3. **LED window** (Demo A) built once:
    `cd i2c_io_expander/visualizer && cargo build --release`.
-4. **pru-simulator** (Demo D, SPI link, and "show the simulator first"):
+4. **Demo E:** PC program, network card and CCS projects; see "Demo E ›
+   Once per PC".
+5. **pru-simulator** (Demo D, SPI link, and "show the simulator first"):
    check out branch `electronica2026-demos` and run
    `pip install -r requirements.txt` once.
-5. **AWG file** (Demo B): copy
+6. **AWG file** (Demo B): copy
    `uart_rx_frame/uart_rx/test/helloworld_4mbaud_awg.csv` to a folder
    **outside the repository** (for example `~/booth/`) and import it from
    there. A PicoScope save onto the repository file once replaced it with
@@ -435,6 +446,128 @@ an audio run worked side by side from one folder.
 
 ---
 
+## Demo E: PDM audio over Ethernet (board + PC)
+
+The board version of Demo D, with eight channels and Ethernet. A Linux PC
+sends eight audio channels to the board over Gigabit Ethernet. On the board
+they go through a real PDM chain: eight sigma-delta modulators, PDM clock and
+data on the header pins, eight SD decoders. Then they come back to the PC,
+which shows input and output spectrograms side by side, in real time. The
+simulator needs about 11 minutes for one second of this audio.
+
+This section is the booth short form. The full guide, with the one-time PC
+setup and every test command, is open-pru
+`examples/electronica2026/pdm_audio_eth/pdm_audio_eth/docs/demo_howto.md`
+(branch `dev_tley_electronica2026_pdm_audio_eth`, PR #191).
+
+### What you need
+- The LP-AM243 with the **nine PDM jumpers** (see "BoosterPack pin map"),
+  power on J10, XDS110 USB to the PC.
+- An **Ethernet cable from the PC straight to the RJ45 J18** (ICSSG1 port
+  1). No switch. The other RJ45 is not used.
+- A Linux PC with a Gigabit network card for the board only (development
+  PC: Realtek RTL8125, `enp129s0`; replace the name if yours differs,
+  `ip -br link` lists them).
+
+The commands use two shell variables; set them once per terminal:
+
+```
+export DEMO=~/GitHub/open-pru/examples/electronica2026/pdm_audio_eth
+export PDM=$DEMO/pc_app/target/release/pdm-eth
+```
+
+### Once per PC
+1. **PC program:**
+   ```
+   cd $DEMO/pc_app
+   cargo build --release
+   sudo setcap cap_net_raw,cap_net_admin+ep $PDM
+   ```
+   `pdm-eth` sends raw Ethernet frames and needs these two capabilities.
+   **Every `cargo build` removes them; run the `setcap` line again after
+   each build.** `getcap $PDM` must print `cap_net_admin,cap_net_raw=ep`.
+2. **Keep Ubuntu off the demo cable:**
+   `sudo nmcli device set enp129s0 managed no`.
+3. **CCS:** import the six projects (five PRU firmwares, one R5F; list in
+   the full guide, section 4). Build the **five PRU projects first**, then
+   the R5F project `pdm_audio_eth_am243x-lp_r5fss0-0_freertos_ti-arm-clang`.
+   CCS copies the sources at import: after a change, re-import **and
+   build**, or CCS loads the old image.
+4. CPU isolation (full guide, section 2.3) is only needed for the 64-byte
+   throughput test, not for the audio.
+
+**Board, before power-up:** SW6 in the default position (LD17 off), no
+BoosterPack plugged in, boot switches on NO BOOT.
+
+### Run
+1. Power the board. In CCS, connect to **`MAIN_Cortex_R5_0_0`**, load the
+   R5F `.out` and run it. The R5F starts all five PRU cores itself.
+2. The console (XDS110 UART, 115200 8N1) prints:
+   ```
+   PDM audio eth: link 1000 FD on ICSSG1 port 1 after 3610 ms, board MAC 02:00:5d:4d:00:01
+   PDM audio: ICSSG0 RTU1, PRU1, PRU0 running; 8 channels, clips at 0x700c0000 (16384 frames), PCM header at 0x30010000
+   ```
+   The link time varies (about 3.6 s).
+3. Optional link check: `$PDM test --iface enp129s0` prints six **PASS**
+   lines (link, ping, and throughput both ways).
+4. Start the window:
+   ```
+   $PDM gui --iface enp129s0
+   ```
+5. In the side panel's **Sources** table, pick a source per channel. A good
+   sequence: ch0 **speech + music**, ch1 **music**, then switch the view
+   between ch0, ch1 and a tone channel (ch3) with the channel buttons.
+
+### What good looks like
+- **Top pane:** the selected channel's input as the PC sends it.
+  **Middle:** the board's output after the PDM round trip. **Strip:** input
+  minus output in dB.
+- **Side panel:** 56 to 60 fps, frames/s out 500 and in 250, board audio
+  latency about **1.08 ms** (read it on a speech, music or noise channel),
+  buffered ahead 0.50 s, lost / dup / resync **0**, UNDERRUN / SD_OVF **0**.
+- A new source is heard about **0.5 s** later: the PC keeps the board's
+  input buffer 0.5 s ahead.
+- Before you pick any source, the board plays its own booth clips (ch0
+  speech, ch1/ch2 chirps, ch3 to ch7 tones) and the input pane says "no
+  input stream". That is normal.
+
+### Talking points
+- **Real time vs simulation:** the same eight-channel PDM chain needs about
+  11 minutes per second of audio in the pru-simulator (Demo D). Here it runs
+  in real time, with Gigabit Ethernet both ways.
+- **PRUs only in the data path:** the R5F sets things up, then idles. RTU1
+  runs eight sigma-delta modulators, PRU1 drives the PDM clock and data
+  pins, PRU0 decodes eight SD channels into 16 kHz PCM, and ICSSG1's two
+  PRUs receive and send the Ethernet frames.
+- **Board-run numbers:** audio latency 1.08 ms; a 600 s capture with no lost
+  frame; 64-byte frames from the board at 98 % of Gigabit line rate; output
+  equals input through the chain to -85 dB or better.
+- **Next step:** eight real PDM MEMS microphones in place of the jumpers and
+  modulators (PRU1 drives their clock, PRU0 reads them as today), and a GPU
+  stage on the PC for speaker separation and noise and echo cancelling.
+
+### If something is wrong
+
+| You see | Do this |
+| ------- | ------- |
+| `raw socket on enp129s0 needs CAP_NET_RAW` | The capabilities are gone after a build. Run the `setcap` line again; check with `getcap $PDM`. |
+| `pdm-eth: command not found` | It is not on `PATH`. Use `$PDM` or the full path. |
+| Console says `link DOWN`, `ethtool` shows no link | Cable not in J18, board not running, or the network card is down (`ip link set enp129s0 up`). |
+| No latency line in the side panel | No source picked yet: the latency needs a stream from the PC. |
+| Latency shows "-" or jumps | A pure tone matches at many delays. Select a speech, music or noise channel. |
+| One channel flat or noise, the counters fine | That channel's data jumper. |
+| Channels 4 to 7 flat, 0 to 3 fine | SW6 not in the default position (LD17 on), or a BoosterPack is plugged in. |
+| No audio, counters frozen | A single PRU core was restarted from CCS. Run the R5F again; RTU1 and PRU1 must start together. |
+| Numbers do not change after a firmware edit | CCS loaded the old image. Re-import **and build**. |
+| The window stops redrawing while a file dialog is open | By design; the audio keeps running. |
+
+**Restart and reset:** always restart through the R5F (run the R5F program
+again), never a single PRU core. Reset = **SW1 (MCU PORZ)**, then reconnect
+CCS and run the R5F again. Before another demo, see "From the PDM loopback
+to another demo".
+
+---
+
 ## SPI link (simulator, runs unattended)
 
 PRU0 is an SPI controller and PRU1 an SPI peripheral, both bit-banged and
@@ -501,13 +634,16 @@ frames in a loop. While it plays, every SPI control except **Pause** and
    - Demo A: close the LED window.
    - Demo B: set the signal generator to **Off** or **DC +2 V**.
    - Demo C: nothing to stop.
+   - Demo E: close the `pdm-eth` window.
 2. In PicoScope, switch to the other demo's settings (open the saved
    settings file, or use the table at the top).
 3. In CCS, do a **system reset** of the board, or power-cycle it. Then load
    and run the other demo's **R5F** program. It loads its own PRU0 firmware.
 4. For Demo B, keep the start order: **DC +2 V → run R5F → Arbitrary**.
 
-The wiring can stay as it is.
+The wiring of Demos A, B and C can stay as it is. Leaving Demo E (or the
+PDM loopback): press SW1 first and rewire as in "From the PDM loopback to
+another demo".
 
 The simulator demos (D and SPI link) do not touch the board; see "SPI link
 and audio on two screens" for switching between them.
@@ -549,8 +685,11 @@ python ui/server.py      # then open http://localhost:8080
   PR #106), and `docs/reports/2026-11-03-pdm-audio-demo-report.md`
 - SPI link: pru-simulator `docs/spi_link.md` (branch `feat/spi-pru-link`,
   PR #108), and `docs/handoff/2026-11-05-spi-sequence-play.md`
-- PDM loopback (board): open-pru `examples/electronica2026/pdm_audio/pdm_audio/readme.md`
-  (jumper table, reset rule) and `pdm_audio_eth/pdm_audio_eth/docs/demo_howto.md` (PR #191)
+- Demo E: open-pru `examples/electronica2026/pdm_audio_eth/pdm_audio_eth/docs/demo_howto.md`
+  (full guide: PC setup, CPU isolation, test, capture and stream commands),
+  `docs/test_report.md` (board results) and `readme.md`, PR #191
+- PDM loopback: open-pru `examples/electronica2026/pdm_audio/pdm_audio/readme.md`
+  (jumper table, reset rule)
 - How each demo was ported: the `docs/porting_report.md` in each project
 - Session notes: `docs/handoff/2026-11-02-*.md` and
   `docs/handoff/2026-11-03-*.md` (PR #102)
