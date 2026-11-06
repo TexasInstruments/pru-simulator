@@ -369,6 +369,18 @@ class PRUSimulatorMCP:
                 out["breakpoint_core"] = breakpoint_core
             return out
 
+        follow_core = self.sim.cores[follow]
+        follow_hit: list = []
+
+        def follow_stop(_name: str) -> bool:
+            # The follow core runs many instructions per lead step (a slow lead
+            # instruction lets it run ahead), so check it before each one.
+            if follow_core.pc in follow_core.breakpoints:
+                follow_hit.append(("breakpoint", follow))
+            elif condition_core == follow and met():
+                follow_hit.append((met_reason, None))
+            return bool(follow_hit)
+
         lead_steps = 0
         for _ in range(max_steps):
             if met():
@@ -377,8 +389,13 @@ class PRUSimulatorMCP:
                 core = self.sim.cores[name]
                 if core.pc in core.breakpoints:
                     return result("breakpoint", lead_steps, name)
-            pacing = self.sim.step_paced(lead, follow, 1, guard_ns=guard_ns)
+            follow_hit.clear()
+            pacing = self.sim.step_paced(lead, follow, 1, guard_ns=guard_ns,
+                                         stop=follow_stop)
             lead_steps += pacing["lead_steps"]
+            if pacing.get("reason") == "stopped":
+                reason, bp_core = follow_hit[0]
+                return result(reason, lead_steps, bp_core)
             stop = self._pacing_stop(lead, follow, pacing, lead_steps)
             if stop is not None:
                 return stop

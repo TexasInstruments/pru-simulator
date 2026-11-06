@@ -307,3 +307,15 @@ def test_put_clock_speed_removes_a_stale_pru1_line(clock_config):
     assert "pru1_clock_mhz" not in text
     assert "pru_clock_mhz = 300" in text
     assert srv.sim._pru_clock_mhz == 300
+
+
+@pytest.mark.parametrize("legacy", ["PRU1_CLOCK_MHZ = 250", "pru1_clock_mhz : 250",
+                                    "  pru1_clock_mhz = 250"])
+def test_put_clock_speed_drops_legacy_key_in_any_spelling(clock_config, legacy):
+    # First in the section: an indented key is only an option there, otherwise
+    # configparser reads it as a continuation of the previous value.
+    path = clock_config("target = AM243x\npru_clock_mhz = 200\n")
+    path.write_text(path.read_text().replace("[device]\n", f"[device]\n{legacy}\n"))
+    response = client.put("/config/clock_speed", json={"mhz": 300})
+    assert response.status_code == 200, response.text
+    assert "pru1_clock_mhz" not in path.read_text().lower()

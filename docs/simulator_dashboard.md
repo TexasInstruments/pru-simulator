@@ -108,7 +108,7 @@ and rebuilds the simulator exactly like a clock change (programs, devices and st
 history are reset). `memory.cfg` and the tracked `config/memory_*.cfg` are never
 overwritten: `GET /config`, `PUT /config` and `PUT /config/clock_speed` all act on the
 active copy while another processor is selected, and choosing the home processor again
-switches back to `memory.cfg`. The switch lasts for the session only: restarting the
+switches back to `memory.cfg` (or to `.pru_runtime/memory_home.cfg` when the carried clock differs from the one in `memory.cfg`, so the active config always matches the running simulator). The switch lasts for the session only: restarting the
 server always starts from `memory.cfg`.
 An unknown processor or extra field returns 422. The `state` and `device_profiles`
 websocket messages report the active `processor`.

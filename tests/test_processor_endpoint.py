@@ -188,3 +188,21 @@ def test_put_processor_switches_to_am62x(processor_config):
     assert srv.sim.target == "AM62x"
     assert list(srv.sim.cores) == ["pru0", "pru1"]
     assert client.get("/config/processor").json()["processor"] == "AM62x"
+
+
+def test_switching_home_keeps_the_carried_clock_active(processor_config):
+    import ui.server as srv
+
+    processor_config.write_text(processor_config.read_text().replace("225", "250"))
+    srv.sim = srv.Simulator(config_path=str(processor_config))
+    home_before = processor_config.read_bytes()
+    assert client.put("/config/processor", json={"processor": "AM261x"}).status_code == 200
+    assert client.put("/config/clock_speed", json={"mhz": 300}).status_code == 200
+    assert client.put("/config/processor", json={"processor": "AM243x"}).status_code == 200
+    assert srv.sim._pru_clock_mhz == 300
+    text = client.get("/config").text
+    assert "pru_clock_mhz = 300" in text
+    assert client.put("/config", content=text).status_code == 200
+    assert srv.sim._pru_clock_mhz == 300
+    assert client.get("/config/clock_speed").json()["mhz"] == 300
+    assert processor_config.read_bytes() == home_before

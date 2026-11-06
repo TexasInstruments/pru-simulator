@@ -145,3 +145,16 @@ test('the selector is disabled for the duration of the request', async () => {
   await pending;
   assert.equal(vm.runInContext('processorChanging', d.context), false);
 });
+
+test('a follow-up failure after a successful switch keeps the new processor shown', async () => {
+  const d = dashboard();
+  await d.context.loadProcessor();
+  d.context.loadCoreChoices = async () => { throw new Error('cores unavailable'); };
+  d.responses.push({ ok: true, json: async () => ({ ok: true, processor: 'AM263x',
+    choices: ['AM243x', 'AM261x', 'AM263x'] }) });
+  d.select.value = 'AM263x';
+  await d.select.listeners.change({ target: d.select });
+  assert.equal(d.select.value, 'AM263x', 'not reverted');
+  assert.equal(d.select.dataset.current, 'AM263x');
+  assert.match(d.errors.join('\n'), /cores unavailable/);
+});

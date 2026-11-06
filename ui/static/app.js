@@ -2807,17 +2807,20 @@ async function setProcessor(name) {
     select.value = previous; return;
   }
   processorChanging = true; updateCoresControl();
+  let switched = false;
   try {
     const res = await fetch('/config/processor', { method: 'PUT',
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({processor: name}) });
     const result = await res.json();
     if (!res.ok || !result.ok) throw new Error(result.error || 'Could not set the processor');
+    switched = true;
     showProcessor(result.processor, result.choices);
     // The core set can differ per processor: rebuild the deck, panes and I/O blocks.
     await loadCoreChoices();
     await refreshAfterReload();
   } catch (error) {
-    select.value = previous;
+    // The server already switched once the PUT succeeded: keep showing it.
+    if (!switched) select.value = previous;
     showErrors([String(error)]);
   } finally { processorChanging = false; syncProcessorEnabled(); updateCoresControl(); }
 }

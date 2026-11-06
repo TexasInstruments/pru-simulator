@@ -473,12 +473,13 @@ class Simulator:
         }
 
     def step_paced(self, lead: str, follow: str, count: int = 1,
-                   guard_ns: float = 20.0) -> dict:
+                   guard_ns: float = 20.0, stop=None) -> dict:
         """Step *lead* and pace *follow* by elapsed core time."""
-        return self.step_paced_many(lead, [follow], count=count, guard_ns=guard_ns)
+        return self.step_paced_many(lead, [follow], count=count, guard_ns=guard_ns,
+                                    stop=stop)
 
     def step_paced_many(self, lead: str, followers: list[str], count: int = 1,
-                        guard_ns: float = 20.0) -> dict:
+                        guard_ns: float = 20.0, stop=None) -> dict:
         """Step a lead core and catch each follower up by exact elapsed time.
 
         When both cores have enabled PERIF blocks, *guard_ns* keeps the follower
@@ -489,6 +490,9 @@ class Simulator:
         Each follower catch-up is limited to 1000 instructions per lead step.
         The result records the selected targets, actual lead_steps and incomplete work;
         subsequent calls finish those targets before executing another lead step.
+        *stop*, if given, is called as ``stop(follower)`` before each follower
+        instruction; a truthy result ends the catch-up with reason "stopped" and
+        keeps the targets pending, like any other incomplete catch-up.
         """
         if isinstance(guard_ns, bool) or not isinstance(guard_ns, (int, float)):
             raise ValueError("guard_ns must be a number")
@@ -516,6 +520,10 @@ class Simulator:
                     and not follow_pru.halted
                     and follow_pru.pc < len(follow_pru.instructions)
                 ):
+                    if stop is not None and stop(follower):
+                        return {"complete": False, "reason": "stopped",
+                                "follower": follower, "targets": dict(targets),
+                                "lead_steps": lead_steps}
                     if steps >= _MAX_CATCHUP_STEPS:
                         return {"complete": False, "reason": "pacing_incomplete",
                                 "follower": follower, "targets": dict(targets),

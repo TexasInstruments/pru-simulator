@@ -452,6 +452,21 @@ def _set_ini_value(text: str, section: str, key: str, value: str) -> str:
     return text[:match.start()] + header + new_body + text[match.end():]
 
 
+def _drop_ini_key(text: str, section: str, key: str) -> str:
+    """Remove every line configparser reads as *key* in [section]: any case,
+    optional leading whitespace, '=' or ':' delimiter."""
+    section_re = re.compile(
+        r"(\[" + re.escape(section) + r"\]\r?\n)(.*?)(?=\n\[|\Z)", re.DOTALL
+    )
+    match = section_re.search(text)
+    if match is None:
+        return text
+    key_re = re.compile(r"^[ \t]*" + re.escape(key) + r"[ \t]*[=:].*(?:\r?\n|\Z)",
+                        re.MULTILINE | re.IGNORECASE)
+    body = key_re.sub("", match.group(2))
+    return text[:match.start(2)] + body + text[match.end(2):]
+
+
 def _clock_speed_state() -> dict:
     return {
         "mhz": sim._pru_clock_mhz,
@@ -493,8 +508,7 @@ async def put_clock_speed(request: Request):
                 text = f.read()
             text = _set_ini_value(text, "device", "pru_clock_mhz", str(mhz))
             # The per-core key is gone; drop a stale line so the config still loads.
-            text = re.sub(r"^pru1_clock_mhz[ \t]*=.*(?:\r?\n|\Z)", "", text,
-                          flags=re.MULTILINE)
+            text = _drop_ini_key(text, "device", "pru1_clock_mhz")
             sim = _replace_config(text)
             _apply_iep_override()
             _clear_history()
@@ -577,15 +591,24 @@ async def put_processor(request: Request):
             if current in ALLOWED_CLOCK_MHZ:
                 text = _set_ini_value(text, "device", "pru_clock_mhz", f"{current:g}")
             if os.path.abspath(source) == os.path.abspath(HOME_CONFIG_PATH):
-                # Back home: memory.cfg stays the active path and is never rewritten;
-                # the simulator is built from a scratch copy that carries the clock.
-                new_path = HOME_CONFIG_PATH
+                # Back home: memory.cfg is never rewritten. If the carried clock
+                # matches it, use it directly; otherwise keep the carried clock in
+                # a runtime copy so the active config and the simulator agree.
+                home_cfg = configparser.ConfigParser()
+                home_cfg.read(source, encoding="utf-8")
+                home_clock = float(home_cfg.get("device", "pru_clock_mhz", fallback="200"))
+                unchanged = home_clock == current or current not in ALLOWED_CLOCK_MHZ
                 scratch = _runtime_copy_path(source) + ".scratch"
                 try:
                     new_sim = _replace_config(text, scratch)
                 finally:
                     if os.path.exists(scratch):
                         os.remove(scratch)
+                if unchanged:
+                    new_path = HOME_CONFIG_PATH
+                else:
+                    new_path = _runtime_copy_path("memory_home.cfg")
+                    _replace_config(text, new_path)
             else:
                 new_path = _runtime_copy_path(source)
                 new_sim = _replace_config(text, new_path)

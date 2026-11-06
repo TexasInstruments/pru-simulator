@@ -201,3 +201,30 @@ def test_pru_peripherals_reflects_gpcfg_mode_and_i2c():
     assert mcp.pru_peripherals()["io_mode"] == "sd"
     mcp.pru_i2c_attach(core="pru0", enabled=True)
     assert mcp.pru_peripherals()["i2c"] is not None
+
+
+# A slow lead instruction (MS_RAM load, 20+ cycles) lets the follower run
+# several fast instructions inside one lead step.
+def slow_lead_mcp(follow_src):
+    mcp = PRUSimulatorMCP(config_path=str(Path(__file__).parents[1] / "memory.cfg"))
+    lead_src = "ldi32 r4, 0x70000000\nlbbo &r5, r4, 0, 4\nnop\njmp 1"
+    assert mcp.pru_load(lead_src, core="pru0")["success"]
+    assert mcp.pru_load(follow_src, core="pru1")["success"]
+    return mcp
+
+
+def test_multicore_breakpoint_on_follow_core_inside_a_slow_lead_step():
+    mcp = slow_lead_mcp("nop\nnop\nnop\nnop\nnop\nnop\nnop\njmp 0")
+    mcp.pru_breakpoint(core="pru1", address=4)
+    result = mcp.pru_run_until_multicore(max_steps=100)
+    assert result["reason"] == "breakpoint"
+    assert result["breakpoint_core"] == "pru1"
+    assert result["follow"]["pc"] == 4 and not result["success"]
+
+
+def test_multicore_gpo_condition_set_then_cleared_by_follow_inside_a_slow_lead_step():
+    mcp = slow_lead_mcp("nop\nnop\nnop\nset r30, r30, 3\nnop\nclr r30, r30, 3\nhalt")
+    result = mcp.pru_run_until_multicore(
+        condition="gpo:3==1", condition_core="pru1", max_steps=100)
+    assert result["reason"] == "condition_met" and result["success"]
+    assert mcp.sim.io("pru1")["gpo_pins"][3] == 1
