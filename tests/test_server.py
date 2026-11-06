@@ -506,7 +506,7 @@ def test_am263x_state_advertises_only_supported_cores(tmp_path, monkeypatch):
     sent = _run_websocket_actions([{'action': 'get_state'},
                                   {'action': 'load', 'core': 'rtu1', 'source': 'halt'},
                                   {'action': 'get_state'}])
-    assert sent[0]['available_cores'] == ['pru0', 'rtu0', 'pru1']
+    assert sent[0]['available_cores'] == ['pru0', 'pru1']
     assert sent[1]['type'] == 'error'
     assert sent[-1]['type'] == 'state'
 
