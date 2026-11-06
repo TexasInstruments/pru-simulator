@@ -43,6 +43,9 @@ async def _exercise_stdio_tools():
                 "pru_device_state", "pru_device_events", "pru_device_faults",
                 "pru_load", "pru_step", "pru_run_until", "pru_status",
                 "pru_gpio_drive_mask",
+                "pru_run_until_multicore", "pru_disassemble", "pru_config",
+                "pru_peripherals", "pru_breakpoint_list", "pru_breakpoint_remove",
+                "pru_breakpoint_clear",
             }
             assert required <= by_name.keys()
             def property_schema(name, field):

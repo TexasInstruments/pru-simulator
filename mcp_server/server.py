@@ -16,6 +16,8 @@ from simulator import Simulator
 from pru_io.device_profiles import create_device, discover_device_profiles
 from pru_io.device_model import PUSH_PULL
 from mcp_server.vcd_export import export_pin_waveform
+from core.peripheral_view import io_mode, read_crc, read_mac, read_spad
+from pru_io.scenarios import ssi_demo_state
 
 
 def _require_int(name: str, value) -> None:
@@ -220,54 +222,174 @@ class PRUSimulatorMCP:
         if lead == follow:
             raise ValueError("lead and follow must name different cores")
 
-        def state(core: str) -> dict:
-            c = self.sim.cores[core]
-            return {
-                "core": core,
-                "pc": c.pc,
-                "cycles": c.counters.cycles,
-                "halted": c.halted,
-                "fault": dict(c.fault) if c.fault is not None else None,
-            }
-
         lead_steps = 0
         for _ in range(count):
             pacing = self.sim.step_paced(lead, follow, 1, guard_ns=guard_ns)
             lead_steps += pacing["lead_steps"]
-            lead_core = self.sim.cores[lead]
-            follow_core = self.sim.cores[follow]
-            if lead_core.fault is not None or follow_core.fault is not None:
-                return {
-                    "success": False,
-                    "reason": "core_fault",
-                    "lead_steps": lead_steps,
-                    "lead": state(lead),
-                    "follow": state(follow),
-                }
-            if not pacing["complete"]:
-                target_units = pacing["targets"][follow]
-                follow_units = self.sim.iep.core_time_units(
-                    follow, follow_core.counters.cycles
-                )
-                target_ns = float(self.sim.iep.time_units_to_ns(target_units))
-                follow_ns = float(self.sim.iep.time_units_to_ns(follow_units))
-                return {
-                    "success": False,
-                    "reason": pacing["reason"],
-                    "lead_steps": lead_steps,
-                    "target_ns": float(target_ns),
-                    "follow_ns": float(follow_ns),
-                    "lead": state(lead),
-                    "follow": state(follow),
-                }
+            stop = self._pacing_stop(lead, follow, pacing, lead_steps)
+            if stop is not None:
+                return stop
 
         return {
             "success": True,
             "reason": "stepped",
             "lead_steps": lead_steps,
-            "lead": state(lead),
-            "follow": state(follow),
+            "lead": self._core_state(lead),
+            "follow": self._core_state(follow),
         }
+
+    def _core_state(self, core: str) -> dict:
+        c = self.sim.cores[core]
+        return {
+            "core": core,
+            "pc": c.pc,
+            "cycles": c.counters.cycles,
+            "halted": c.halted,
+            "fault": dict(c.fault) if c.fault is not None else None,
+        }
+
+    def _pacing_stop(self, lead: str, follow: str, pacing: dict,
+                     lead_steps: int) -> dict | None:
+        """Failure result after a paced step (fault or incomplete pacing), else None."""
+        lead_core = self.sim.cores[lead]
+        follow_core = self.sim.cores[follow]
+        if lead_core.fault is not None or follow_core.fault is not None:
+            return {
+                "success": False,
+                "reason": "core_fault",
+                "lead_steps": lead_steps,
+                "lead": self._core_state(lead),
+                "follow": self._core_state(follow),
+            }
+        if not pacing["complete"]:
+            target_units = pacing["targets"][follow]
+            follow_units = self.sim.iep.core_time_units(
+                follow, follow_core.counters.cycles
+            )
+            target_ns = float(self.sim.iep.time_units_to_ns(target_units))
+            follow_ns = float(self.sim.iep.time_units_to_ns(follow_units))
+            return {
+                "success": False,
+                "reason": pacing["reason"],
+                "lead_steps": lead_steps,
+                "target_ns": float(target_ns),
+                "follow_ns": float(follow_ns),
+                "lead": self._core_state(lead),
+                "follow": self._core_state(follow),
+            }
+        return None
+
+    def _condition_checker(self, core: str, condition: str):
+        """Parse a run-until condition and return a zero-argument predicate.
+
+        Raises ValueError for a malformed condition before anything runs.
+        """
+        if not isinstance(condition, str):
+            raise ValueError("condition must be a string")
+        c = self.sim.cores[core]
+        try:
+            if condition == "halt":
+                return lambda: c.halted
+            if condition.startswith("cycles>"):
+                limit = int(condition[7:], 0)
+                return lambda: c.counters.cycles > limit
+            if condition.startswith("reg:"):
+                register, value = condition[4:].split("==", 1)
+                if not register.lower().startswith("r"):
+                    raise ValueError(f"Invalid register condition: {condition}")
+                index = int(register[1:])
+                if not 0 <= index < 32:
+                    raise ValueError(f"Invalid register condition: {condition}")
+                target = int(value, 0)
+                return lambda: c.registers.read_full(index) == target
+            if condition.startswith("mem:"):
+                address, value = condition[4:].split("!=", 1)
+                address = int(address, 0)
+                target = int(value, 0)
+                return lambda: int.from_bytes(
+                    self.sim.memory_read(address, 4), "little") != target
+            pin_prefix = next((prefix for prefix in ("pin:", "gpi:", "gpo:")
+                               if condition.startswith(prefix)), None)
+            if pin_prefix:
+                pin, value = condition[len(pin_prefix):].split("==", 1)
+                index = int(pin, 0)
+                target = int(value, 0)
+                if not 0 <= index < 20 or target not in (0, 1):
+                    raise ValueError(f"Invalid pin condition: {condition}")
+                kind = "gpo" if pin_prefix == "gpo:" else "gpi"
+                return lambda: self.sim.io(core)[f"{kind}_pins"][index] == target
+        except ValueError as exc:
+            if str(exc).startswith(("Invalid ", "Unsupported ")):
+                raise
+            raise ValueError(f"Invalid run condition {condition!r}: {exc}") from exc
+        raise ValueError(f"Unsupported run condition: {condition}")
+
+    def pru_run_until_multicore(self, lead: str = "pru0", follow: str = "pru1",
+                                condition: str = "halt", condition_core: str = "",
+                                max_steps: int = 10000, guard_ns: float = 0.0) -> dict:
+        """Run two time-paced cores until a condition, breakpoint or step limit.
+
+        Steps the lead one instruction at a time and paces the follow core as
+        pru_step_multicore does. ``condition`` uses the pru_run_until grammar
+        (halt, cycles>N, reg:rN==V, mem:ADDR!=V, pin:/gpi:/gpo:N==V) and is
+        evaluated on ``condition_core`` (default: lead); ``halt`` means that
+        core halted. Stops at a breakpoint on either core (breakpoint_core).
+        ``max_steps`` counts lead steps. reason: halted, condition_met,
+        breakpoint, max_steps, lead_halted (lead cannot advance), core_fault,
+        or a pacing reason.
+        """
+        _require_int("max_steps", max_steps)
+        if isinstance(guard_ns, bool) or not isinstance(guard_ns, (int, float)):
+            raise ValueError("guard_ns must be a number")
+        if isinstance(guard_ns, float) and not math.isfinite(guard_ns):
+            raise ValueError("guard_ns must be finite")
+        if max_steps < 0:
+            raise ValueError("max_steps must be non-negative")
+        if guard_ns < 0:
+            raise ValueError("guard_ns must be non-negative")
+        if lead == follow:
+            raise ValueError("lead and follow must name different cores")
+        for name in (lead, follow):
+            self.sim._get_core(name)
+        condition_core = condition_core or lead
+        self.sim._get_core(condition_core)
+        met = self._condition_checker(condition_core, condition)
+        met_reason = "halted" if condition == "halt" else "condition_met"
+        lead_core = self.sim.cores[lead]
+
+        def result(reason: str, lead_steps: int, breakpoint_core: str | None = None):
+            out = {
+                "success": reason in ("halted", "condition_met"),
+                "reason": reason,
+                "lead_steps": lead_steps,
+                "lead": self._core_state(lead),
+                "follow": self._core_state(follow),
+            }
+            if breakpoint_core is not None:
+                out["breakpoint_core"] = breakpoint_core
+            return out
+
+        lead_steps = 0
+        for _ in range(max_steps):
+            if met():
+                return result(met_reason, lead_steps)
+            for name in (lead, follow):
+                core = self.sim.cores[name]
+                if core.pc in core.breakpoints:
+                    return result("breakpoint", lead_steps, name)
+            pacing = self.sim.step_paced(lead, follow, 1, guard_ns=guard_ns)
+            lead_steps += pacing["lead_steps"]
+            stop = self._pacing_stop(lead, follow, pacing, lead_steps)
+            if stop is not None:
+                return stop
+            if pacing["lead_steps"] == 0 and (
+                    lead_core.halted or lead_core.pc >= len(lead_core.instructions)):
+                if met():
+                    return result(met_reason, lead_steps)
+                return result("lead_halted", lead_steps)
+        if met():
+            return result(met_reason, lead_steps)
+        return result("max_steps", lead_steps)
 
     def pru_run_until(self, core: str = "pru0", condition: str = "halt",
                       max_steps: int = 10000, max_cycles: int = 0) -> dict:
@@ -287,35 +409,7 @@ class PRUSimulatorMCP:
         c = self.sim.cores[core]
         start_cycles = c.counters.cycles
 
-        def condition_met() -> bool:
-            if condition == "halt":
-                return c.halted
-            if condition.startswith("cycles>"):
-                return c.counters.cycles > int(condition[7:], 0)
-            if condition.startswith("reg:"):
-                register, value = condition[4:].split("==", 1)
-                if not register.lower().startswith("r"):
-                    raise ValueError(f"Invalid register condition: {condition}")
-                index = int(register[1:])
-                if not 0 <= index < 32:
-                    raise ValueError(f"Invalid register condition: {condition}")
-                return c.registers.read_full(index) == int(value, 0)
-            if condition.startswith("mem:"):
-                address, value = condition[4:].split("!=", 1)
-                actual = int.from_bytes(self.sim.memory_read(int(address, 0), 4), "little")
-                return actual != int(value, 0)
-            pin_prefix = next((prefix for prefix in ("pin:", "gpi:", "gpo:")
-                               if condition.startswith(prefix)), None)
-            if pin_prefix:
-                pin, value = condition[len(pin_prefix):].split("==", 1)
-                index = int(pin, 0)
-                target = int(value, 0)
-                if not 0 <= index < 20 or target not in (0, 1):
-                    raise ValueError(f"Invalid pin condition: {condition}")
-                io_state = self.sim.io(core)
-                kind = "gpo" if pin_prefix == "gpo:" else "gpi"
-                return io_state[f"{kind}_pins"][index] == target
-            raise ValueError(f"Unsupported run condition: {condition}")
+        condition_met = self._condition_checker(core, condition)
 
         reason = None
         for _ in range(max_steps):
@@ -477,6 +571,128 @@ class PRUSimulatorMCP:
         _require_int("address", address)
         self.sim.cores[core].breakpoints.add(address)
         return {"id": len(self.sim.cores[core].breakpoints)}
+
+    def pru_breakpoint_list(self, core: str = "") -> dict:
+        """List breakpoints (word addresses) for one core, or all cores if core is empty."""
+        names = [core] if core else list(self.sim.cores)
+        for name in names:
+            self.sim._get_core(name)
+        return {"breakpoints": {n: sorted(self.sim.cores[n].breakpoints) for n in names}}
+
+    def pru_breakpoint_remove(self, core: str = "pru0", address: int = 0) -> dict:
+        """Remove the breakpoint at address on core; removed is false if none was set."""
+        _require_int("address", address)
+        breakpoints = self.sim._get_core(core).breakpoints
+        removed = address in breakpoints
+        breakpoints.discard(address)
+        return {"removed": removed, "breakpoints": sorted(breakpoints)}
+
+    def pru_breakpoint_clear(self, core: str = "") -> dict:
+        """Remove all breakpoints on one core, or on every core if core is empty."""
+        names = [core] if core else list(self.sim.cores)
+        cleared = 0
+        for name in names:
+            breakpoints = self.sim._get_core(name).breakpoints
+            cleared += len(breakpoints)
+            breakpoints.clear()
+        return {"cleared": cleared}
+
+    def pru_disassemble(self, core: str = "pru0", address: int = -1,
+                        before: int = 5, after: int = 10) -> dict:
+        """List loaded instructions around a word address (default: current PC).
+
+        Each entry has address, text, opcode, line (source line, 0 for ELF),
+        label (if any), is_pc and breakpoint. ELF programs are shown as
+        disassembly. The window is clamped to the loaded program.
+        """
+        _require_int("address", address)
+        _require_int("before", before)
+        _require_int("after", after)
+        if before < 0 or after < 0:
+            raise ValueError("before and after must be non-negative")
+        c = self.sim._get_core(core)
+        instructions = c.instructions
+        center = c.pc if address < 0 else address
+        labels: dict[int, str] = {}
+        for name, word in getattr(c._parser, "labels", {}).items():
+            labels.setdefault(word, name)
+        entries = []
+        if instructions:
+            first = min(max(0, center - before), len(instructions) - 1)
+            last = max(min(len(instructions) - 1, center + after), first)
+            for index in range(first, last + 1):
+                inst = instructions[index]
+                entry = {
+                    "address": inst.address,
+                    "text": inst.source_text,
+                    "opcode": inst.opcode,
+                    "line": inst.source_line,
+                    "is_pc": inst.address == c.pc,
+                    "breakpoint": inst.address in c.breakpoints,
+                }
+                if inst.address in labels:
+                    entry["label"] = labels[inst.address]
+                entries.append(entry)
+        return {
+            "core": core,
+            "pc": c.pc,
+            "program_length": len(instructions),
+            "instructions": entries,
+        }
+
+    def pru_config(self) -> dict:
+        """Return processor, shared PRU clock, IEP clock, available cores and config path."""
+        return {
+            "processor": self.sim.target,
+            "pru_clock_mhz": self.sim._pru_clock_mhz,
+            "iep_clock_mhz": float(self.sim.iep.active_clock_mhz),
+            "available_cores": list(self.sim.cores),
+            "config_path": self._config_path,
+        }
+
+    def pru_peripherals(self, core: str = "pru0") -> dict:
+        """Return peripheral state for a core, as the dashboard shows it.
+
+        io_mode (gpio/perif/sd) and gpcfg mux_sel; sd, perif and i2c blocks
+        when present (else null); perif loopback; IEP timer; MAC and CRC
+        accelerators; scratchpad banks; XFR shift enable; constant table
+        C0-C31; attached device bus (only when active).
+        """
+        c = self.sim._get_core(core)
+        sim = self.sim
+        sd_data = sim.sd_state(core)
+        perif_data = sim.perif_state(core)
+        mux_sel = sim.gpcfg_state(core)["mux_sel"]
+        iep = sim.iep
+        out = {
+            "core": core,
+            "io_mode": io_mode(sim, core, sd_data, perif_data, mux_sel),
+            "mux_sel": mux_sel,
+            "gpio_loopback_mask": c.io_port.loopback_mask,
+            "sd": sd_data,
+            "perif": perif_data,
+            "i2c": sim.i2c_state(core),
+            "perif_loopback": sim.loopback_state() if perif_data is not None else None,
+            "iep": {
+                "count": iep.count,
+                "clock_mhz": float(iep.active_clock_mhz),
+                "external_mhz": float(iep.external_clock_hz / 1_000_000),
+                "core_clock": bool(iep.iepclk & iep.IEPCLK_OCP_EN),
+                "global_cfg": iep.global_cfg,
+                "compare": list(iep.compare),
+                "capture": list(iep.capture),
+            },
+            "mac": read_mac(c),
+            "crc": read_crc(c),
+            "spad": read_spad(sim),
+            "xfr_shift_en": sim.xfr.xfr_shift_en,
+            "constant_table": sim.constant_table_view(core),
+            "device_bus": sim.device_state() if sim.device_bus.active else None,
+        }
+        demo = ssi_demo_state(sim)
+        if demo is not None:
+            out["ssi_demo"] = demo
+        return out
 
     def pru_uart_inject(
         self,
