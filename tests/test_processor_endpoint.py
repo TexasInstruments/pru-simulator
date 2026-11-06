@@ -31,7 +31,7 @@ def processor_config(tmp_path, monkeypatch):
 def test_get_processor_lists_the_per_target_configs(processor_config):
     data = client.get("/config/processor").json()
     assert data["processor"] == "AM243x"
-    assert set(data["choices"]) == {"AM243x", "AM261x", "AM263x"}
+    assert set(data["choices"]) == {"AM243x", "AM261x", "AM263x", "AM62x"}
 
 
 def test_put_processor_switches_target_and_keeps_a_valid_clock(processor_config):
@@ -176,3 +176,15 @@ def test_put_config_while_switched_writes_the_runtime_copy(repo_home):
     text = client.get("/config").text
     assert client.put("/config", content=text).status_code == 200
     assert repo_home.read_bytes() == home_before
+
+
+def test_put_processor_switches_to_am62x(processor_config):
+    # AM62x: copied from AM261x, not verified on hardware.
+    import ui.server as srv
+
+    assert "AM62x" in client.get("/config/processor").json()["choices"]
+    response = client.put("/config/processor", json={"processor": "AM62x"})
+    assert response.status_code == 200 and response.json()["processor"] == "AM62x"
+    assert srv.sim.target == "AM62x"
+    assert list(srv.sim.cores) == ["pru0", "pru1"]
+    assert client.get("/config/processor").json()["processor"] == "AM62x"

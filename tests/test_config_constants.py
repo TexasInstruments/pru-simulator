@@ -112,3 +112,15 @@ def test_config_without_constants_file_still_loads(tmp_path):
     cfg.write_text("[device]\ntarget = AM243x\n\n[DRAM0]\nbase = 0x0\nsize = 0x2000\n")
     sim = Simulator(str(cfg))
     assert sim.constant_table.resolve(0) == 0
+
+
+def test_am62x_preset_loads_like_am261x():
+    # AM62x: copied from AM261x, not verified on hardware.
+    am261x = Simulator(os.path.join(_REPO_ROOT, "config", "memory_am261x.cfg"))
+    sim = Simulator(os.path.join(_REPO_ROOT, "config", "memory_am62x.cfg"))
+    assert sim.target == "AM62x"
+    assert set(sim.cores) == set(am261x.cores)
+    for n in range(24):
+        assert sim.constant_table.resolve(n) == am261x.constant_table.resolve(n)
+    assert sim.constant_table.resolve(0) == 0x00020000
+    assert sim.constant_table.resolve(1) == 0x0002F000

@@ -380,8 +380,8 @@ class Simulator:
 
         Uses constants_<target>.cfg (e.g. constants_am261x.cfg) and falls back
         to constants_am243x.cfg when the target has no file of its own.  AM243x,
-        AM261x and AM263x each have a named file (AM263x's carries the AM261x
-        values: same ICSS-M).  A
+        AM261x, AM263x and AM62x each have a named file (AM263x's and AM62x's carry
+        the AM261x values; AM62x is unverified on hardware).  A
         root-level config (memory.cfg) finds the file in its config/
         subdirectory; a preset inside config/ finds it alongside.
         """

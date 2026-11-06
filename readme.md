@@ -7,7 +7,8 @@ simulator through an MCP server.
 ## Supported features
 
 The simulator models **AM243x/AM64x** (PRU_ICSSG) and **AM261x/AM263x**
-(PRU-ICSSM), all with V4 ISA. Integrated accelerators differ by target; see
+(PRU-ICSSM), all with V4 ISA. **AM62x** is also selectable; its profile is copied from
+AM261x and not verified on hardware. Integrated accelerators differ by target; see
 [device capabilities](docs/device_capabilities.md) for the hardware profiles,
 unsupported-transfer diagnostics and silicon evidence.
 
@@ -122,13 +123,14 @@ pru_simulator/
 
 ## Memory Configuration
 
-The simulator loads `memory.cfg` at startup. Three built-in configs are provided in `config/`:
+The simulator loads `memory.cfg` at startup. Four built-in configs are provided in `config/`:
 
 | File | Target | Notes |
 |---|---|---|
 | `memory_am243x.cfg` | AM243x | Default |
 | `memory_am263x.cfg` | AM263x | |
 | `memory_am261x.cfg` | AM261x | MSRAM burst timing measured on LP-AM261; selected by cfg file, not by target |
+| `memory_am62x.cfg` | AM62x | Copied from AM261x, not verified on hardware |
 
 Switch config by editing `memory.cfg` or copying one of the `config/` files over it.
 
@@ -178,7 +180,8 @@ value was not measured, and neither were register bits outside the fields above
 executing core's live table.
 
 AM263x has its own `config/constants_am263x.cfg`, with the same values as
-`constants_am261x.cfg` (same ICSS-M; measured on LP-AM261). C10 and C12-C14 are reserved in
+`constants_am261x.cfg` (same ICSS-M; measured on LP-AM261). AM62x has `config/constants_am62x.cfg`, also copied from
+AM261x and not verified on hardware. C10 and C12-C14 are reserved in
 the TRM; on an LP-AM261 the table holds non-zero pointers there (C10 0x2A000 on
 PRU0 / 0x2A200 on PRU1, C12 0x27000, C13 0x2C000, C14 0x24800) and the window
 behind each reads zero. The simulator shows those pointers and maps the reserved
