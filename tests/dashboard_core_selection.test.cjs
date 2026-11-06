@@ -306,7 +306,7 @@ function ioDashboard(cores = ['pru0', 'pru1', 'rtu0', 'rtu1', 'txpru0']) {
     const IO_LOOPBACK_RANGES = ['3:0', '7:4', '11:8', '15:12', '19:16'];
     const IO_MUX_OPTIONS = [['0', 'GPIO'], ['1', 'Peripheral Interface'], ['3', 'SD']];`, context);
   for (const name of ['ioEl', 'ioSection', 'buildPinGrid', 'buildGpioDirectionControls', 'buildIoBlock',
-    'renderIoBlocks', 'updateGpioDirections', 'updateIoMux', 'updatePins', 'handleGpiClick',
+    'renderIoBlocks', 'updateGpioDirections', 'paintGpioDirections', 'updateIoMux', 'updatePins', 'handleGpiClick',
     'syncGpioLoopback', 'onLoopbackToggle', 'paintCoreState']) {
     const fn = app.match(new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`));
     assert.ok(fn, `${name} is implemented`);
@@ -332,6 +332,22 @@ test('I/O Pins renders one labelled block per PRU core and none for RTU or TX_PR
   assert.equal(d.registry.get('io-block-rtu0'), undefined);
   assert.equal(d.registry.get('io-block-txpru0'), undefined);
   assert.equal(d.registry.get('io-core-chips'), undefined, 'no core selector');
+});
+
+test('drive buttons of every block are labelled before any state arrives', () => {
+  const d = ioDashboard();
+  for (const core of ['pru0', 'pru1']) {
+    const buttons = d.registry.get(`gpio-drive-controls-${core}`).children;
+    assert.equal(buttons.length, 20);
+    assert.equal(buttons[0].textContent, '0: Release', `${core} button 0`);
+    assert.equal(buttons[19].textContent, '19: Release', `${core} button 19`);
+  }
+});
+
+test('on connect the dashboard requests state for every I/O block core', () => {
+  const onopen = app.match(/ws\.onopen = async \(\) => \{[\s\S]*?\n  \};/);
+  assert.ok(onopen, 'ws.onopen found');
+  assert.match(onopen[0], /core === 'pru0' \|\| core === 'pru1'/);
 });
 
 test('a processor with only PRU0 gets a single block; no PRU cores gets none', () => {

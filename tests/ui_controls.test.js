@@ -44,7 +44,7 @@ function loadFunction(name) {
   vm.runInContext(app.slice(start, end), context);
 }
 for (const name of ['persistCoreSelection', 'applyCoreSelection', 'syncDeviceCoreSelect',
-  'syncGpioLoopback', 'showAvailableCores', 'showIepClock', 'buildGpioDirectionControls', 'updateGpioDirections']) loadFunction(name);
+  'syncGpioLoopback', 'showAvailableCores', 'showIepClock', 'buildGpioDirectionControls', 'updateGpioDirections', 'paintGpioDirections']) loadFunction(name);
 context.renderIoBlocks = () => {};   // I/O blocks are covered in dashboard_core_selection.test.cjs
 context.showAvailableCores(['pru0', 'rtu0', 'pru1']);
 assert.equal(context.currentCore, 'pru0');

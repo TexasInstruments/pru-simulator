@@ -388,11 +388,10 @@ function connect() {
     } catch (e) {
       showErrors(["Could not load core choices: " + String(e)]);
     }
-    if (multiCoreMode) {
-      for (const core of executionCores()) sendAction({ action: "get_state", core });
-    } else {
-      sendAction({ action: "get_state", core: currentCore });
-    }
+    const stateCores = new Set(multiCoreMode ? executionCores() : [currentCore]);
+    // Every I/O block (PRU0, PRU1) needs its own core's state to paint its pins.
+    for (const core of availableCores) if (core === 'pru0' || core === 'pru1') stateCores.add(core);
+    for (const core of stateCores) sendAction({ action: "get_state", core });
     sendAction({ action: "device_discover" });
     sendAction({ action: "scenario_list" });
     sendAction({ action: "subscribe_capture", enabled: signalGraph.recording });
@@ -852,6 +851,7 @@ function buildIoBlock(core) {
   controls.setAttribute('role', 'group');
   controls.setAttribute('aria-label', `${core.toUpperCase()} GPIO output enable`);
   buildGpioDirectionControls(controls, core);
+  paintGpioDirections(controls, 0, core);  // labels before the first state arrives
   drive.appendChild(controls);
   block.appendChild(drive);
   return block;
@@ -871,8 +871,10 @@ function renderIoBlocks() {
 
 function updateGpioDirections(io, core) {
   const container = document.getElementById(`gpio-drive-controls-${core}`);
-  if (!container) return;
-  const mask = io.gpo_drive_mask || 0;
+  if (container) paintGpioDirections(container, io.gpo_drive_mask || 0, core);
+}
+
+function paintGpioDirections(container, mask, core) {
   container.dataset.mask = String(mask);
   [...container.children].forEach((button, pin) => {
     const driving = !!(mask & (1 << pin));
