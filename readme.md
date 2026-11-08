@@ -37,48 +37,48 @@ Status per processor:
 - ❌ present in silicon, not currently simulated
 - N/A not present on that processor (per the [PRU Subsystem Features Comparison](https://www.ti.com/lit/sprac90) app note)
 
-| Category | Feature | AM243x | AM263x |
-|---|---|---|---|
-| Core | Full PRU ISA (ALU, branches, bit ops, LOOP, LBCO/SBCO, LBBO/SBBO, XIN/XOUT/XCHG, MVI) | ✅ | ✅ |
-| General PRU Specs | PRU cores | ✅ | ✅ |
-| General PRU Specs | RTU_PRU (Auxiliary PRU) cores | ✅ | N/A |
-| General PRU Specs | TX_PRU (Transmit PRU) cores | ❌ | N/A |
-| General PRU Specs | INTC | ❌ | ❌ |
-| Accelerators: Data Processing | MPY/MAC | ✅ | ✅ |
-| Accelerators: Data Processing | Scratchpad | ✅ | ✅ |
-| Accelerators: Data Processing | IPC Scratch Pad | ✅ | N/A |
-| Accelerators: Data Processing | Broadside RAM | ❌ | N/A |
-| Accelerators: Data Processing | BSWAP | ✅ | N/A |
-| Accelerators: Data Processing | CRC16/32 | ❌ | ❌ |
-| Accelerators: Data Processing | SUM32 | ❌ | N/A |
-| Accelerators: Data Processing | Task Manager | ❌ | N/A |
-| Accelerators: Data Processing | Spinlock | ❌ | N/A |
-| Accelerators: Data Processing | Filter Data Base (FDB) | ❌ | N/A |
-| Accelerators: Data Movement | XFR2VBUS | ❌ | ❌ |
-| Accelerators: Data Movement | PSI TX & RX | ❌ | N/A |
-| Accelerators: Data Movement | XFR2TR | ❌ | N/A |
-| Peripherals | Sigma-delta filter (3 ch, CIC accumulators, Fast Detect, pattern generators) | ✅ | ✅ |
-| Peripherals | Peripheral Interface / 3 ch EnDAT (protocol-agnostic serializer/deserializer, used for EnDat/BiSS/HDSL/line-code) | ✅ | ✅ |
-| Peripherals | UART | ❌ | ❌ |
-| Peripherals | eCAP | ❌ | ❌ |
-| Peripherals | IEP (Industrial Ethernet Peripheral: timer/compare/capture) | ✅ | ✅ |
-| Peripherals | MII_RT / MII_G_RT (RGMII) | ❌ | ❌ |
-| Peripherals | MDIO | ❌ | ❌ |
-| Peripherals | SGMII | ❌ | N/A |
-| Peripherals | PWM | ❌ | N/A |
+| Category | Feature | AM243x, AM64x | AM261x, AM263x | AM62x |
+|---|---|---|---|---|
+| Core | Full PRU ISA (ALU, branches, bit ops, LOOP, LBCO/SBCO, LBBO/SBBO, XIN/XOUT/XCHG, MVI) | ✅ | ✅ | ✅ |
+| General PRU Specs | PRU cores | ✅ | ✅ | ✅ |
+| General PRU Specs | RTU_PRU (Auxiliary PRU) cores | ✅ | N/A | N/A |
+| General PRU Specs | TX_PRU (Transmit PRU) cores | ❌ | N/A | N/A |
+| General PRU Specs | INTC | ❌ | ❌ | ❌ |
+| Accelerators: Data Processing | MPY/MAC | ✅ | ✅ | ✅ |
+| Accelerators: Data Processing | Scratchpad | ✅ | ✅ | ✅ |
+| Accelerators: Data Processing | IPC Scratch Pad | ✅ | N/A | N/A |
+| Accelerators: Data Processing | Broadside RAM | ❌ | N/A | N/A |
+| Accelerators: Data Processing | BSWAP | ✅ | N/A | N/A |
+| Accelerators: Data Processing | CRC16/32 | ❌ | ❌ | ❌ |
+| Accelerators: Data Processing | SUM32 | ❌ | N/A | N/A |
+| Accelerators: Data Processing | Task Manager | ❌ | N/A | N/A |
+| Accelerators: Data Processing | Spinlock | ❌ | N/A | N/A |
+| Accelerators: Data Processing | Filter Data Base (FDB) | ❌ | N/A | N/A |
+| Accelerators: Data Movement | XFR2VBUS | ❌ | ❌ | ❌ |
+| Accelerators: Data Movement | PSI TX & RX | ❌ | N/A | N/A |
+| Accelerators: Data Movement | XFR2TR | ❌ | N/A | N/A |
+| Peripherals | Sigma-delta filter (3 ch, CIC accumulators, Fast Detect, pattern generators) | ✅ | ✅ | N/A |
+| Peripherals | Peripheral Interface / 3 ch EnDAT (protocol-agnostic serializer/deserializer, used for EnDat/BiSS/HDSL/line-code) | ✅ | ✅ | N/A |
+| Peripherals | UART | ❌ | ❌ | ❌ |
+| Peripherals | eCAP | ❌ | ❌ | ❌ |
+| Peripherals | IEP (Industrial Ethernet Peripheral: timer/compare/capture) | ✅ | ✅ | ✅ |
+| Peripherals | MII_RT / MII_G_RT (RGMII) | ❌ | ❌ | N/A |
+| Peripherals | MDIO | ❌ | ❌ | N/A |
+| Peripherals | SGMII | ❌ | N/A | N/A |
+| Peripherals | PWM | ❌ | N/A | N/A |
 
 ### PRU I/O modes
 
-| Mode Class | Specific I/O Mode | Core Registers Used | Primary Use Case / Description | AM243x | AM263x |
-|---|---|---|---|---|---|
-| GPI (Input) | Direct Input Mode | `R31[31:0]` | Lowest latency direct pin sampling and software bit-banging | ✅ | ✅ |
-| GPI (Input) | 16-Bit Parallel Capture | `R31` | Captures 16 bits of parallel data synchronous to a sampling clock | ❌ | ❌ |
-| GPI (Input) | 28-Bit Shift In Mode | `R31` | Automatically deserializes incoming high-speed serial streams | ❌ | ❌ |
-| GPO (Output) | Direct Output Mode | `R30[31:0]` | Direct software-driven pin control for custom low-latency protocols | ✅ | ✅ |
-| GPO (Output) | Shift Out Mode | `R30` | Automatically serializes data written to the register over a clock pin | ❌ | ❌ |
-| Interface | Peripheral IF Mode | Slice Hardware Co-processor | Industrial motor position encoder feedback (EnDAT, BiSS-C, Tamagawa) | ✅ | ✅ |
-| Interface | SD Mode | Internal SDFM Blocks | Connects to external Sigma-Delta ADCs for isolated current/voltage sensing | ✅ | ✅ |
-| Interface | MII / RGMII Mode | ICSSG Real-Time Ethernet Switch | Real-time industrial communication hardware layer (EtherCAT, PROFINET, EtherNet/IP) | ❌ | ❌ |
+| Mode Class | Specific I/O Mode | Core Registers Used | Primary Use Case / Description | AM243x, AM64x | AM261x, AM263x | AM62x |
+|---|---|---|---|---|---|---|
+| GPI (Input) | Direct Input Mode | `R31[31:0]` | Lowest latency direct pin sampling and software bit-banging | ✅ | ✅ | ✅ |
+| GPI (Input) | 16-Bit Parallel Capture | `R31` | Captures 16 bits of parallel data synchronous to a sampling clock | ❌ | ❌ | ❌ |
+| GPI (Input) | 28-Bit Shift In Mode | `R31` | Automatically deserializes incoming high-speed serial streams | ❌ | ❌ | ❌ |
+| GPO (Output) | Direct Output Mode | `R30[31:0]` | Direct software-driven pin control for custom low-latency protocols | ✅ | ✅ | ✅ |
+| GPO (Output) | Shift Out Mode | `R30` | Automatically serializes data written to the register over a clock pin | ❌ | ❌ | ❌ |
+| Interface | Peripheral IF Mode | Slice Hardware Co-processor | Industrial motor position encoder feedback (EnDAT, BiSS-C, Tamagawa) | ✅ | ✅ | N/A |
+| Interface | SD Mode | Internal SDFM Blocks | Connects to external Sigma-Delta ADCs for isolated current/voltage sensing | ✅ | ✅ | N/A |
+| Interface | MII / RGMII Mode | ICSSG Real-Time Ethernet Switch | Real-time industrial communication hardware layer (EtherCAT, PROFINET, EtherNet/IP) | ❌ | ❌ | N/A |
 
 
 ## Requirements
@@ -102,7 +102,7 @@ Open `http://localhost:8080` in your browser.
 
 ```
 pru_simulator/
-├── config/             Memory layout configs (AM243x, AM263x)
+├── config/             Memory layout configs (AM243x, AM64x, AM261x, AM263x, AM62x)
 ├── core/               PRU ISA implementation (ALU, parser, disassembler, ELF loader, …)
 ├── mem/                Memory bus and region model
 ├── mcp_server/         MCP server for AI tool integration
@@ -123,11 +123,12 @@ pru_simulator/
 
 ## Memory Configuration
 
-The simulator loads `memory.cfg` at startup. Four built-in configs are provided in `config/`:
+The simulator loads `memory.cfg` at startup. Five built-in configs are provided in `config/`:
 
 | File | Target | Notes |
 |---|---|---|
 | `memory_am243x.cfg` | AM243x | Default |
+| `memory_am64x.cfg` | AM64x | Same PRU_ICSSG as AM243x (the A53 cores are not modeled); uses `constants_am243x.cfg` |
 | `memory_am263x.cfg` | AM263x | |
 | `memory_am261x.cfg` | AM261x | MSRAM burst timing measured on LP-AM261; selected by cfg file, not by target |
 | `memory_am62x.cfg` | AM62x | Copied from AM261x, not verified on hardware |
