@@ -31,7 +31,7 @@ def processor_config(tmp_path, monkeypatch):
 def test_get_processor_lists_the_per_target_configs(processor_config):
     data = client.get("/config/processor").json()
     assert data["processor"] == "AM243x"
-    assert set(data["choices"]) == {"AM243x", "AM261x", "AM263x", "AM62x"}
+    assert set(data["choices"]) == {"AM243x", "AM64x", "AM261x", "AM263x", "AM62x"}
 
 
 def test_put_processor_switches_target_and_keeps_a_valid_clock(processor_config):
@@ -188,6 +188,18 @@ def test_put_processor_switches_to_am62x(processor_config):
     assert srv.sim.target == "AM62x"
     assert list(srv.sim.cores) == ["pru0", "pru1"]
     assert client.get("/config/processor").json()["processor"] == "AM62x"
+
+
+def test_put_processor_switches_to_am64x(processor_config):
+    # AM64x: same PRU_ICSSG as AM243x; the A53 cores are not modeled.
+    import ui.server as srv
+
+    assert "AM64x" in client.get("/config/processor").json()["choices"]
+    response = client.put("/config/processor", json={"processor": "AM64x"})
+    assert response.status_code == 200 and response.json()["processor"] == "AM64x"
+    assert srv.sim.target == "AM64x"
+    assert list(srv.sim.cores) == ["pru0", "rtu0", "pru1", "rtu1"]
+    assert client.get("/config/processor").json()["processor"] == "AM64x"
 
 
 def test_switching_home_keeps_the_carried_clock_active(processor_config):
