@@ -12,7 +12,7 @@ def fresh_mcp() -> PRUSimulatorMCP:
 def test_multicore_batch_reports_actual_lead_steps_across_catchup_retries(tmp_path):
     config = tmp_path / "memory.cfg"
     config.write_text(
-        "[device]\npru_clock_mhz=200\npru1_clock_mhz=200\n"
+        "[device]\npru_clock_mhz=200\n"
         "[DRAM0]\nbase=0\nsize=0x2000\nread_latency=2500\n"
         "write_latency=1\njitter=0\n")
     mcp = PRUSimulatorMCP(str(config))
@@ -45,24 +45,6 @@ def test_multicore_default_advances_both_short_programs():
     assert result["lead"]["cycles"] > 0
     assert result["follow"]["cycles"] > 0
     assert result["success"] is True
-
-
-def test_multicore_uses_elapsed_time_when_core_clocks_differ(tmp_path):
-    config = tmp_path / "memory.cfg"
-    config.write_text(
-        "[device]\npru_clock_mhz = 250\npru1_clock_mhz = 200\niep_clock_mhz = 200\n",
-        encoding="utf-8",
-    )
-    mcp = PRUSimulatorMCP(config_path=str(config))
-    source = "nop\njmp 0"
-    assert mcp.pru_load(source, core="pru0")["success"]
-    assert mcp.pru_load(source, core="pru1")["success"]
-
-    result = mcp.pru_step_multicore(count=10)
-
-    assert result["success"] is True
-    assert result["lead"]["cycles"] == 10
-    assert result["follow"]["cycles"] == 8
 
 
 def test_multicore_rejects_same_lead_and_follow():

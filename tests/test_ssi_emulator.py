@@ -399,7 +399,7 @@ def test_emulator_rejects_zero_timeout_config(sim):
 
 @pytest.mark.parametrize("late_edge", ["rise", "fall"])
 def test_edge_observed_after_shared_timer_expiry_aborts_partial_frame(sim_config, late_edge):
-    sim = Simulator(sim_config(pru_clock_mhz=250, pru1_clock_mhz=250, iep_clock_mhz=200))
+    sim = Simulator(sim_config(pru_clock_mhz=250, iep_clock_mhz=200))
     emulator = SSIEmulatorRuntime(sim, resolution=8, position=0x25, monoflop_us=4)
     emulator.load()
     assert sim.load("pru1", "nop\njmp 0") == []

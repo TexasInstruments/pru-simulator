@@ -506,7 +506,7 @@ def test_iep_counts_stall_cycles_not_instructions(tmp_path):
 
 
 def test_two_cores_stepping_together_do_not_double_the_rate(tmp_path):
-    sim = _spin_sim(_cfg(tmp_path, pru_clock_mhz=250, pru1_clock_mhz=250,
+    sim = _spin_sim(_cfg(tmp_path, pru_clock_mhz=250,
                          iep_clock_mhz=250))
     _step_until_enabled(sim)
     start = sim.iep.count
@@ -517,7 +517,7 @@ def test_two_cores_stepping_together_do_not_double_the_rate(tmp_path):
 
 
 def test_paced_multicore_run_advances_at_the_iep_clock(tmp_path):
-    sim = _spin_sim(_cfg(tmp_path, pru_clock_mhz=250, pru1_clock_mhz=250,
+    sim = _spin_sim(_cfg(tmp_path, pru_clock_mhz=250,
                          iep_clock_mhz=250))
     _step_until_enabled(sim)
     start_count, start_ns = sim.iep.count, sim.iep.now_ns
@@ -542,8 +542,8 @@ def test_iep_clock_is_independent_of_the_pru_clock(tmp_path, core_mhz, iep_mhz,
     assert abs((sim.iep.count - start) - expected) <= 1
 
 
-def test_iep_clock_defaults_to_200_mhz_independently_of_the_pru0_clock(tmp_path):
-    sim = Simulator(config_path=_cfg(tmp_path, pru_clock_mhz=250, pru1_clock_mhz=200))
+def test_iep_clock_defaults_to_200_mhz_independently_of_the_core_clock(tmp_path):
+    sim = Simulator(config_path=_cfg(tmp_path, pru_clock_mhz=250))
     assert sim.iep.clock_mhz == 200
 
 

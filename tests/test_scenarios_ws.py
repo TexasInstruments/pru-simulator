@@ -12,7 +12,7 @@ from ui.server import app
 
 client = TestClient(app)
 SINGLE = "SSI encoder (single core)"
-MULTI = "SSI multi-core (emulator + reader)"
+MULTI = "SSI (encoder PRU + reader)"
 
 
 @pytest.fixture

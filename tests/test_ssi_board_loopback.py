@@ -88,7 +88,7 @@ def test_reader_receives_multiturn_preset_frames_from_emulator(
 ])
 def test_emulator_firmware_feeds_the_reader_at_300mhz(
         sim_config, preset, position, error, delay, frame):
-    config = sim_config(pru_clock_mhz=300, pru1_clock_mhz=300)
+    config = sim_config(pru_clock_mhz=300)
 
     mailbox, = run_board_loopback(preset, position, error, delay, config=config)
 
@@ -98,7 +98,7 @@ def test_emulator_firmware_feeds_the_reader_at_300mhz(
     assert mailbox["status"] == 0
 
 
-@pytest.mark.parametrize("reader_mhz", [200, 250, 300])
+@pytest.mark.parametrize("clock_mhz", [200, 250, 300])
 @pytest.mark.parametrize("preset, positions, error, frames", [
     ("RM08_12BIT_4MHZ", [0xABC, 0xABC, 0x123], 0, [0xABC, 0xABC, 0x123]),
     ("AFS_AFM60_MULTITURN_30BIT", [0x2ABCDEF1, 0x2ABCDEF1, 0x12345678], 5,
@@ -106,9 +106,8 @@ def test_emulator_firmware_feeds_the_reader_at_300mhz(
     ("TTK70", [0x15, 0x15, 0x6], 2, [0x7E, 0x7E, 0x16]),
 ])
 def test_board_loopback_receives_consecutive_frames_and_position_updates(
-        sim_config, reader_mhz, preset, positions, error, frames):
-    config = sim_config(pru_clock_mhz=250, pru1_clock_mhz=reader_mhz,
-                        iep_clock_mhz=200)
+        sim_config, clock_mhz, preset, positions, error, frames):
+    config = sim_config(pru_clock_mhz=clock_mhz, iep_clock_mhz=200)
     mailboxes = run_board_loopback(preset, positions[0], error, 40, config,
                                    frame_positions=positions)
     assert [mailbox["raw_frame_lo"] | mailbox["raw_frame_hi"] << 32
