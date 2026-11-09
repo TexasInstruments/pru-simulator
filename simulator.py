@@ -212,8 +212,6 @@ class Simulator:
             # pointer (ICTE direct read on an LP-AM261, both PRUs). The
             # window behind it, and behind C12-C14, reads zero: see
             # mem/icssm_absent.py.
-            # The legacy simulated RTU0 has no AM263x hardware equivalent;
-            # leave its common table unchanged rather than inventing a map.
             core_constants = {
                 "pru0": {10: 0x2A000, 11: 0x22000, 22: 0x8000},
                 "pru1": {10: 0x2A200, 11: 0x24000, 22: 0x9000},
