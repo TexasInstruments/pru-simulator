@@ -131,7 +131,7 @@ The simulator loads `memory.cfg` at startup. Five built-in configs are provided 
 | `memory_am64x.cfg` | AM64x | Same PRU_ICSSG as AM243x (the A53 cores are not modeled); uses `constants_am243x.cfg` |
 | `memory_am263x.cfg` | AM263x | |
 | `memory_am261x.cfg` | AM261x | MSRAM burst timing measured on LP-AM261; selected by cfg file, not by target |
-| `memory_am62x.cfg` | AM62x | Copied from AM261x, not verified on hardware |
+| `memory_am62x.cfg` | AM62x | Copied from AM261x; MS_RAM sized to the 64 KB OCRAM at 0x70000000 (SPRUIV7C). Timing not verified on hardware |
 
 Switch config by editing `memory.cfg` or copying one of the `config/` files over it.
 
@@ -160,9 +160,7 @@ Dashboard core and load selectors follow the configured target, including RTU1
 on AM243x/AM64x. Each core has an independent constant table. Fixed C10,
 C11 and C22 addresses follow the executing core on AM243x/AM64x (SPRUIM2J,
 Table 6-65, pp. 581–582); AM263x PRU0/PRU1 use their documented C11/C22
-addresses. Other configured entries are preserved. AM263x's legacy simulated
-RTU0 has no hardware counterpart and keeps the common table; this change does
-not add hardware support for that core. Correct address selection does not
+addresses. Other configured entries are preserved. Correct address selection does not
 implement the task manager, control or RAT register behavior. Accesses still
 require the corresponding memory region/model in the chosen configuration.
 C24-C31 follow the executing core's CTBIR0/1 and CTPPR0/1 registers (CTRL block
