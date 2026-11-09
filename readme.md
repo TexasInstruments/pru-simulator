@@ -49,14 +49,14 @@ Status per processor:
 | Accelerators: Data Processing | IPC Scratch Pad | ✅ | N/A | N/A |
 | Accelerators: Data Processing | Broadside RAM | ❌ | N/A | N/A |
 | Accelerators: Data Processing | BSWAP | ✅ | N/A | N/A |
-| Accelerators: Data Processing | CRC16/32 | ❌ | ❌ | ❌ |
+| Accelerators: Data Processing | CRC16/32 | ✅ | ✅ | ✅ |
 | Accelerators: Data Processing | SUM32 | ❌ | N/A | N/A |
 | Accelerators: Data Processing | Task Manager | ❌ | N/A | N/A |
 | Accelerators: Data Processing | Spinlock | ❌ | N/A | N/A |
 | Accelerators: Data Processing | Filter Data Base (FDB) | ❌ | N/A | N/A |
-| Accelerators: Data Movement | XFR2VBUS | ❌ | ❌ | ❌ |
-| Accelerators: Data Movement | PSI TX & RX | ❌ | N/A | N/A |
-| Accelerators: Data Movement | XFR2TR | ❌ | N/A | N/A |
+| Accelerators: Data Movement | XFR2VBUS¹ | ✅ | ✅ | ✅ |
+| Accelerators: Data Movement | PSI TX & RX | ✅ | N/A | N/A |
+| Accelerators: Data Movement | XFR2TR | ✅ | N/A | N/A |
 | Peripherals | Sigma-delta filter (3 ch, CIC accumulators, Fast Detect, pattern generators) | ✅ | ✅ | N/A |
 | Peripherals | Peripheral Interface / 3 ch EnDAT (protocol-agnostic serializer/deserializer, used for EnDat/BiSS/HDSL/line-code) | ✅ | ✅ | N/A |
 | Peripherals | UART | ❌ | ❌ | ❌ |
@@ -66,6 +66,8 @@ Status per processor:
 | Peripherals | MDIO | ❌ | ❌ | N/A |
 | Peripherals | SGMII | ❌ | N/A | N/A |
 | Peripherals | PWM | ❌ | N/A | N/A |
+
+¹ XFR2VBUS has no backing memory by default, so transfers fail until a region is added: `sim.vbus_memory.add_region(MemoryRegion(name, base, size, 4, 4, 0))` (`from mem.regions import MemoryRegion`).
 
 ### PRU I/O modes
 
