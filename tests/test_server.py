@@ -549,7 +549,8 @@ def test_ws_ssi_attach_then_load_current_abi_firmware_keeps_session(fresh_sim):
 
 
 @pytest.mark.parametrize("target,has_rtu1", [
-    ("AM243x", True), ("AM64x", True), ("AM263x", False),
+    ("AM243x", True), ("AM64x", True), ("AM261x", False),
+    ("AM263x", False), ("AM62x", False),
 ])
 def test_dashboard_core_choices_follow_the_live_target(tmp_path, monkeypatch, target, has_rtu1):
     import ui.server as srv
