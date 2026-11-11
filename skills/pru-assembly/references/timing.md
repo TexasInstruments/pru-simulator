@@ -1,6 +1,6 @@
 # PRU timing
 
-Use this file whenever code has a timing requirement. Examples assume a 200 MHz PRU clock (5 ns per cycle). Check your device's PRU clock: cycle counts stay the same, nanoseconds scale.
+Use this file whenever code has a timing requirement. Examples assume a 200 MHz PRU clock (5 ns per cycle). Check your device's PRU clock: cycle counts stay the same, nanoseconds scale. Never hardcode a clock: ask the user for it, and pass it to `simulate.py --clock-mhz` so its ns figures match.
 
 ## Contents
 

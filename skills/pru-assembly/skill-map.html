@@ -260,19 +260,23 @@ bad.asm: 2 error(s), 2 warning(s)          # exit 1</pre>
         <div><h4>run: end state</h4>
 <pre>$ simulate.py run uart_tx.asm --target am263x
 target:       am263x  core: pru0
+clock:        200 MHz (1 cycle = 5 ns)
 result:       PASS (halted)
-cycles:       34735 (stall 0, instructions 34735)
+cycles:       34735 = 173675 ns (stall 0, instructions 34735)
 halted:       True  pc: 20
-registers≠0:  r30=0x00000002</pre>
+nonzero regs: r30=0x00000002</pre>
         <p class="small">Stops at <code>halt</code> or a condition: <code>cycles&gt;=N</code>, <code>reg:rN==V</code>, <code>mem32:ADDR==V</code>, <code>gpi:N==V</code>, <code>gpo:N==V</code>.</p></div>
         <div><h4>edges: pin timing</h4>
 <pre>$ simulate.py edges uart_tx.asm \
     --target am263x --pin 1 --edges 6
 pin 1 edges (cycle, level):
   [(1,1),(8,0),(1744,1),(3480,0),(5216,1),(6952,0)]
+clock: 200 MHz (1 cycle = 5 ns)
 cycles between edges:
-  [7, 1736, 1736, 1736, 1736]</pre>
-        <p class="small">Runs until pin N changes, N times, and prints the cycle gaps.</p></div>
+  [7, 1736, 1736, 1736, 1736]
+ns between edges:
+  [35.0, 8680.0, 8680.0, 8680.0, 8680.0]</pre>
+        <p class="small">Runs until pin N changes, N times, and prints the cycle and ns gaps at the clock in use (<code>--clock-mhz</code> overrides the config).</p></div>
       </div>
       <p class="small">Exit 0 ok, 2 load error, 3 condition unmet or budget spent, 4 simulator error, 5 simulator not installed. Models AM243x and AM263x only, at one cycle per instruction.</p>
     </article>

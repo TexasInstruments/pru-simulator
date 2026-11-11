@@ -38,7 +38,8 @@ This skill's wrapper runs the simulator the same way every time and prints a sho
 ```bash
 python3 scripts/simulate.py run   firmware.asm --target am243x               # run to halt
 python3 scripts/simulate.py run   firmware.out --until 'reg:r0==0x55' --max-cycles 5000
-python3 scripts/simulate.py edges firmware.asm --pin 5 --edges 4           # cycles between pin changes
+python3 scripts/simulate.py edges firmware.asm --pin 5 --edges 4           # cycles and ns between pin changes
+python3 scripts/simulate.py edges firmware.asm --pin 5 --clock-mhz 250       # override the config's PRU clock
 ```
 
 Exit codes: 0 pass, 2 load error, 3 condition not met or budget exhausted, 4 simulator error, 5 not installed.

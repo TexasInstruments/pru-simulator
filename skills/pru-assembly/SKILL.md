@@ -10,7 +10,7 @@ metadata:
 
 # PRU assembly development
 
-PRU cores are small 32-bit RISC cores where almost every instruction takes one cycle (5 ns at 200 MHz). They exist for jobs a CPU running an OS can't time reliably. Mistakes fail silently: a reversed branch comparison loops forever, a zero byte count hangs the core, and a missing `HALT` lets it run into garbage. This skill keeps that risk down with a linter, a simulator run, an explicit cycle budget and fixed build steps.
+PRU cores are small 32-bit RISC cores where almost every instruction takes one cycle (5 ns at 200 MHz; the PRU clock depends on the device and configuration). They exist for jobs a CPU running an OS can't time reliably. Mistakes fail silently: a reversed branch comparison loops forever, a zero byte count hangs the core, and a missing `HALT` lets it run into garbage. This skill keeps that risk down with a linter, a simulator run, an explicit cycle budget and fixed build steps.
 
 ## Reference files
 
