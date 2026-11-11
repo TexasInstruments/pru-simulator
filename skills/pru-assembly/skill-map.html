@@ -108,14 +108,14 @@ footer { color: var(--muted); font-size: 0.82rem; }
 <header>
   <div class="eyebrow">Claude Code skill · skills/pru-assembly</div>
   <h1>PRU assembly skill: features and dependencies</h1>
-  <p class="lede">One <code>SKILL.md</code> that drives an 8-step workflow for TI PRU cores (PRU-ICSS, PRU_ICSSG, PRUSS), backed by 6 on-demand reference files, 3 scripts and 4 external tools. It triggers on PRU, ICSS, clpru, pasm, OpenPRU, pru-simulator, R30/R31 bit-banging and cycle-exact timing requests.</p>
+  <p class="lede">One <code>SKILL.md</code> that drives an 8-step workflow for TI PRU cores (PRU-ICSS, PRU_ICSSG, PRUSS), backed by 4 on-demand reference files, 2 scripts and 3 external tools. It triggers on PRU, ICSS, clpru, pasm, OpenPRU, pru-simulator, R30/R31 bit-banging and cycle-exact timing requests.</p>
 </header>
 
 <section>
   <nav class="legend" aria-label="Sections"><a href="#trigger">Triggers</a><a href="#scripts">Scripts</a><a href="#mcp">Simulator tools</a><a href="#example">Example prompt</a></nav>
   <h2>Dependency map</h2>
   <p>Claude reads <code>SKILL.md</code> first, loads a reference file only when the task needs it, and runs the scripts unchanged. Scripts in turn depend on tools outside the skill.</p>
-  <div class="scroll"><svg viewBox="0 0 1000 560" role="img" aria-label="Dependency map: SKILL.md links to six reference files and three scripts; scripts depend on Python, clpru and pru-simulator; pru-simulator exposes an MCP server.">
+  <div class="scroll"><svg viewBox="0 0 1000 560" role="img" aria-label="Dependency map: SKILL.md links to four reference files and two scripts; scripts depend on Python and pru-simulator; pru-simulator exposes an MCP server.">
     <defs>
       <marker id="a-ref" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" fill="var(--board)"/></marker>
       <marker id="a-scr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" fill="var(--copper)"/></marker>
@@ -127,12 +127,10 @@ footer { color: var(--muted); font-size: 0.82rem; }
 
     <!-- references -->
     <g>
-      <rect class="node n-ref" x="10" y="36" width="210" height="62" rx="4"/><text x="22" y="58" font-size="13" font-weight="600">isa-quick-ref.md</text><text class="sub" x="22" y="76">operands, branch table, core revs</text>
-      <rect class="node n-ref" x="10" y="112" width="210" height="62" rx="4"/><text x="22" y="134" font-size="13" font-weight="600">timing.md</text><text class="sub" x="22" y="152">cycle model, loop budgets</text>
-      <rect class="node n-ref" x="10" y="188" width="210" height="62" rx="4"/><text x="22" y="210" font-size="13" font-weight="600">soc-am335x.md</text><text class="sub" x="22" y="228">legacy PSSP, remoteproc names</text>
-      <rect class="node n-ref" x="10" y="264" width="210" height="62" rx="4"/><text x="22" y="286" font-size="13" font-weight="600">c-interop.md</text><text class="sub" x="22" y="304">C ABI, resource table, loaders</text>
-      <rect class="node n-ref" x="10" y="340" width="210" height="62" rx="4"/><text x="22" y="362" font-size="13" font-weight="600">simulator.md</text><text class="sub" x="22" y="380">install, MCP setup, tool list</text>
-      <rect class="node n-ref" x="10" y="416" width="210" height="62" rx="4"/><text x="22" y="438" font-size="13" font-weight="600">openpru.md</text><text class="sub" x="22" y="456">AM243x/AM64x/AM62x/AM26x repo</text>
+      <rect class="node n-ref" x="10" y="36" width="210" height="62" rx="4"/><text x="22" y="58" font-size="13" font-weight="600">timing.md</text><text class="sub" x="22" y="76">cycle model, loop budgets</text>
+      <rect class="node n-ref" x="10" y="112" width="210" height="62" rx="4"/><text x="22" y="134" font-size="13" font-weight="600">c-interop.md</text><text class="sub" x="22" y="152">where to start, C ABI registers</text>
+      <rect class="node n-ref" x="10" y="188" width="210" height="62" rx="4"/><text x="22" y="210" font-size="13" font-weight="600">simulator.md</text><text class="sub" x="22" y="228">install, MCP setup, tool list</text>
+      <rect class="node n-ref" x="10" y="264" width="210" height="62" rx="4"/><text x="22" y="286" font-size="13" font-weight="600">openpru.md</text><text class="sub" x="22" y="304">pointers into open-pru docs</text>
     </g>
 
     <!-- skill -->
@@ -143,38 +141,32 @@ footer { color: var(--muted); font-size: 0.82rem; }
     <text class="n-skill-t" x="375" y="284" font-size="11" text-anchor="middle">templates</text>
 
     <!-- skill to refs -->
-    <path class="edge e-ref" marker-end="url(#a-ref)" d="M290 225 C 255 225, 255 67, 222 67"/>
-    <path class="edge e-ref" marker-end="url(#a-ref)" d="M290 232 C 260 232, 255 143, 222 143"/>
-    <path class="edge e-ref" marker-end="url(#a-ref)" d="M290 240 C 265 240, 255 219, 222 219"/>
-    <path class="edge e-ref" marker-end="url(#a-ref)" d="M290 252 C 265 252, 255 295, 222 295"/>
-    <path class="edge e-ref" marker-end="url(#a-ref)" d="M290 260 C 260 260, 255 371, 222 371"/>
-    <path class="edge e-ref" marker-end="url(#a-ref)" d="M290 270 C 250 270, 255 447, 222 447"/>
+    <path class="edge e-ref" marker-end="url(#a-ref)" d="M290 225 C 260 225, 255 67, 222 67"/>
+    <path class="edge e-ref" marker-end="url(#a-ref)" d="M290 235 C 265 235, 255 143, 222 143"/>
+    <path class="edge e-ref" marker-end="url(#a-ref)" d="M290 245 C 265 245, 255 219, 222 219"/>
+    <path class="edge e-ref" marker-end="url(#a-ref)" d="M290 255 C 265 255, 255 295, 222 295"/>
 
     <!-- scripts -->
     <g>
       <rect class="node n-scr" x="520" y="60" width="200" height="62" rx="4"/><text x="532" y="82" font-size="13" font-weight="600">lint_pru.py</text><text class="sub" x="532" y="100">step 4 · errors + warnings</text>
-      <rect class="node n-scr" x="520" y="160" width="200" height="62" rx="4"/><text x="532" y="182" font-size="13" font-weight="600">build.sh</text><text class="sub" x="532" y="200">step 5 · clpru wrapper</text>
       <rect class="node n-scr" x="520" y="260" width="200" height="62" rx="4"/><text x="532" y="282" font-size="13" font-weight="600">simulate.py</text><text class="sub" x="532" y="300">steps 6–7 · run, edges</text>
     </g>
     <path class="edge e-scr" marker-end="url(#a-scr)" d="M460 215 C 490 215, 490 91, 518 91"/>
-    <path class="edge e-scr" marker-end="url(#a-scr)" d="M460 235 C 490 235, 490 191, 518 191"/>
-    <path class="edge e-scr" marker-end="url(#a-scr)" d="M460 255 C 490 255, 490 291, 518 291"/>
+    <path class="edge e-scr" marker-end="url(#a-scr)" d="M460 245 C 490 245, 490 291, 518 291"/>
 
     <!-- externals -->
     <g>
       <rect class="node n-ext" x="760" y="60" width="230" height="62" rx="4"/><text x="772" y="82" font-size="13" font-weight="600">Python 3</text><text class="sub" x="772" y="100">standard library only</text>
-      <rect class="node n-ext" x="760" y="160" width="230" height="62" rx="4"/><text x="772" y="182" font-size="13" font-weight="600">TI clpru (PRU-CGT)</text><text class="sub" x="772" y="200">env PRU_CGT</text>
       <rect class="node n-ext" x="760" y="250" width="230" height="62" rx="4"/><text x="772" y="272" font-size="13" font-weight="600">TI pru-simulator</text><text class="sub" x="772" y="290">env PRU_SIM_DIR · AM243x, AM263x</text>
       <rect class="node n-ext" x="760" y="338" width="230" height="62" rx="4"/><text x="772" y="360" font-size="13" font-weight="600">MCP server (pru_*)</text><text class="sub" x="772" y="378">needs Python mcp &lt; 2</text>
       <rect class="node n-ext" x="760" y="420" width="230" height="62" rx="4"/><text x="772" y="442" font-size="13" font-weight="600">MCU+ SDK (gmake)</text><text class="sub" x="772" y="460">step 8 · BUILD_MCUPLUS=y</text>
       <rect class="node n-ext" x="760" y="494" width="230" height="52" rx="4"/><text x="772" y="516" font-size="13" font-weight="600">open-pru repo</text><text class="sub" x="772" y="534">AGENTS.md, makefiles</text>
     </g>
     <path class="edge e-ext" marker-end="url(#a-ext)" d="M720 91 H758"/>
-    <path class="edge e-ext" marker-end="url(#a-ext)" d="M720 191 H758"/>
     <path class="edge e-ext" marker-end="url(#a-ext)" d="M720 291 H758"/>
     <path class="edge e-ext" marker-end="url(#a-ext)" d="M875 312 V336"/>
     <!-- doc-only hints -->
-    <path class="edge e-ref" marker-end="url(#a-ref)" d="M220 447 C 400 520, 600 520, 758 520"/>
+    <path class="edge e-ref" marker-end="url(#a-ref)" d="M220 295 C 400 520, 600 520, 758 520"/>
   </svg></div>
   <div class="legend">
     <span><i style="color:var(--board);border-top-style:dashed"></i>read on demand / documents</span>
@@ -187,11 +179,11 @@ footer { color: var(--muted); font-size: 0.82rem; }
   <h2>Workflow</h2>
   <p>Any task that produces or changes code ticks through this checklist. A failure returns to the step that owns it, never a patch around it.</p>
   <ol class="steps">
-    <li><h3>Confirm target</h3><small>Device, subsystem and core, toolchain, host side, timing in ns or cycles.</small><span class="tag">openpru.md · soc-am335x.md</span></li>
-    <li><h3>Plan registers and cycles</h3><small>Fill the register map and cycle budget templates before writing code.</small><span class="tag">timing.md · isa-quick-ref.md</span></li>
+    <li><h3>Confirm target</h3><small>Device, subsystem and core, toolchain, host side, timing in ns or cycles.</small><span class="tag">openpru.md</span></li>
+    <li><h3>Plan registers and cycles</h3><small>Fill the register map and cycle budget templates before writing code.</small><span class="tag">timing.md · OpenPRU cheat sheet</span></li>
     <li><h3>Write the code</h3><small>Conventions: lowercase mnemonics, <code>.set</code> constants, <code>m_</code> macros, <code>FN_</code> functions, cycle comments, end with <code>halt</code>.</small><span class="tag">c-interop.md if C is linked</span></li>
     <li><h3>Lint</h3><small>Column-1 mnemonics, immediate ranges, register fields, labels, missing halt, per-function register use, macros and includes, OpenPRU headers.</small><span class="tag">scripts/lint_pru.py</span></li>
-    <li><h3>Build</h3><small>OpenPRU makefiles, or <code>build.sh</code> for AM335x and standalone files. No flag changes.</small><span class="tag">scripts/build.sh · clpru</span><span class="loop">fail → step 3</span></li>
+    <li><h3>Build</h3><small>The project's own makefile or the OpenPRU runbook's build steps. No flag changes.</small><span class="tag">openpru.md · clpru</span><span class="loop">fail → step 3</span></li>
     <li><h3>Simulate</h3><small>Run to halt or a condition, check registers, memory and pins. Skip with a stated reason if unmodelled.</small><span class="tag">scripts/simulate.py run</span><span class="loop">wrong → step 3</span></li>
     <li><h3>Verify timing</h3><small>Compare each critical path to its budget. Under about 5% margin, recommend a hardware check.</small><span class="tag">simulate.py edges · timing.md</span><span class="loop">over budget → step 2</span></li>
     <li><h3>Build MCU+ project</h3><small>OpenPRU devices: <code>BUILD_MCUPLUS=y</code>, then <code>gmake -s</code>, so the R5F app embeds the PRU firmware. Flash only if asked. No deploy script.</small><span class="tag">openpru.md</span></li>
@@ -204,12 +196,10 @@ footer { color: var(--muted); font-size: 0.82rem; }
     <thead><tr><th>File</th><th>What it provides</th><th>Read when</th></tr></thead>
     <tbody>
       <tr><td>SKILL.md</td><td>Workflow, freedom table, register map and function header templates, coding conventions, six pitfalls, source-trust order</td><td>Always</td></tr>
-      <tr><td>isa-quick-ref.md</td><td>Operand limits, register fields and fixed-register users, QB comparison table, loop/call/halt, core revisions V3/V4, clpru vs pasm syntax</td><td>Writing or reviewing instructions</td></tr>
-      <tr><td>timing.md</td><td>1-cycle model, instruction costs, worked loop budget, measuring, what breaks determinism, a known error in OpenPRU's best_practices.md</td><td>Any timing requirement</td></tr>
-      <tr><td>c-interop.md</td><td>Register roles under the C ABI, C-to-assembly and assembly-to-C calls, remoteproc vs MCU+ loading, project layout</td><td>Mixing C and assembly</td></tr>
+      <tr><td>timing.md</td><td>1-cycle model, instruction costs, worked loop budget, measuring, what breaks determinism</td><td>Any timing requirement</td></tr>
+      <tr><td>c-interop.md</td><td>Where to start a mixed project (OpenPRU examples, PRU Academy), C ABI register roles</td><td>Mixing C and assembly</td></tr>
       <tr><td>simulator.md</td><td>What the simulator models and doesn't, install, <code>simulate.py</code>, MCP setup, 15 MCP tools, headless runner, verification pattern</td><td>Simulating or timing without hardware</td></tr>
-      <tr><td>openpru.md</td><td>Supported devices (V3/V4), the repo's AI-agent entry points, files worth reading, build, MCU+ and Linux host flows, easy-to-miss rules</td><td>AM243x, AM64x, AM62x, AM261x, AM263x, AM263Px</td></tr>
-      <tr><td>soc-am335x.md</td><td>Cores and clock, memory map, constants table, enabling off-subsystem access, R31 events, control registers, broadside IDs, remoteproc names</td><td>Legacy AM335x / BeagleBone</td></tr>
+      <tr><td>openpru.md</td><td>Routes to the repo\'s AGENTS.md, cheat sheet and best practices; lists what this skill adds</td><td>Any OpenPRU work</td></tr>
     </tbody>
   </table></div>
 </section>
@@ -228,9 +218,8 @@ footer { color: var(--muted); font-size: 0.82rem; }
     <thead><tr><th>Piece</th><th>Triggered by</th><th>Claude uses</th></tr></thead>
     <tbody>
       <tr><td>SKILL.md</td><td>Description match, or <code>/pru-assembly</code></td><td>Skill tool</td></tr>
-      <tr><td>references/*.md</td><td>The table in SKILL.md, by task: ISA question, timing requirement, C interop, simulator use, OpenPRU or AM335x target</td><td>Read tool</td></tr>
+      <tr><td>references/*.md</td><td>The table in SKILL.md, by task: timing requirement, C interop, simulator use, OpenPRU work</td><td>Read tool</td></tr>
       <tr><td>lint_pru.py</td><td>Step 4, after code is written</td><td>Bash</td></tr>
-      <tr><td>build.sh</td><td>Step 5, AM335x and standalone files only</td><td>Bash</td></tr>
       <tr><td>simulate.py</td><td>Steps 6 and 7</td><td>Bash</td></tr>
       <tr><td>MCU+ project build</td><td>Step 8, OpenPRU devices (<code>gmake -s</code>)</td><td>Bash</td></tr>
       <tr><td>pru_* MCP tools</td><td>Step-by-step debugging that a one-shot run can't answer</td><td>MCP tool calls</td></tr>
@@ -264,16 +253,6 @@ bad.asm: 2 error(s), 2 warning(s)          # exit 1</pre>
       <p class="small">Exit 0 clean, 1 errors, 2 usage. Examples of ranges it knows: ALU immediates 0–255, shifts and bit ops 0–31, <code>ldi</code> 0–65535, byte counts 1–124, <code>loop</code> 1–256. Every warning needs a fix or a one-line reason.</p>
     </article>
 
-    <article class="card wide">
-      <header><h3>build.sh</h3><span class="chip">step 5 · needs clpru</span></header>
-      <p>Compiles each source with <code>clpru</code>, then links with your linker command file. Run it unchanged; the AM335x target flags are fixed in the script.</p>
-      <div class="pipe"><span>find <code>$PRU_CGT/bin/clpru</code></span><i>→</i><span>compile each file to <code>obj/*.object</code></span><i>→</i><span>link with <code>libc.a</code></span><i>→</i><span>write <code>.out</code> and <code>.map</code></span></div>
-      <pre>$ PRU_CGT=/usr/share/ti/cgt-pru scripts/build.sh out/fw.out AM335x_PRU.cmd main.asm
-Compiling main.asm
-Linking out/fw.out
-Built out/fw.out (map: out/fw.map)</pre>
-      <p class="small">Fails fast with an install hint when <code>clpru</code> or the linker file is missing. Inside an OpenPRU checkout the repo makefiles replace it.</p>
-    </article>
 
     <article class="card wide">
       <header><h3>simulate.py</h3><span class="chip">steps 6–7 · needs pru-simulator</span></header>
@@ -338,9 +317,8 @@ cycles between edges:
   <div class="tw"><table>
     <thead><tr><th>Prompt</th><th>Skill parts used</th></tr></thead>
     <tbody>
-      <tr><td>"My loop should run 10 times but only runs once. It ends with <code>QBLT loop, r1, 10</code>."</td><td>Pitfall 1 and <code>isa-quick-ref.md</code>. QBLT branches when 10 &lt; r1, so the fix is <code>QBGT</code>. No script needed.</td></tr>
-      <tr><td>"Write PRU0 firmware for my BeagleBone Black that outputs 1 MHz on pr1_pru0_pru_r30_5."</td><td>AM335x path: <code>soc-am335x.md</code>, register map and cycle budget (100-cycle half period), lint, <code>build.sh</code>, simulate the loop logic, then stop at the built <code>.out</code> and tell you it needs loading.</td></tr>
-      <tr><td>"From my C firmware, call an assembly routine that sums 64 uint32 values in shared RAM."</td><td><code>c-interop.md</code>: argument and return in r14, return with <code>jmp r3.w2</code>, keep <code>lbbo</code> within 124 bytes, add a resource table.</td></tr>
+      <tr><td>"My loop should run 10 times but only runs once. It ends with <code>QBLT loop, r1, 10</code>."</td><td>Pitfall 1 and the OpenPRU cheat sheet. QBLT branches when 10 &lt; r1, so the fix is <code>QBGT</code>. No script needed.</td></tr>
+      <tr><td>"From my C firmware, call an assembly routine that sums 64 uint32 values in shared RAM."</td><td><code>c-interop.md</code>: start from <code>examples/empty_c</code>, argument and return in r14, return with <code>jmp r3.w2</code>.</td></tr>
       <tr><td>"In my open-pru checkout, create an AM243x project that toggles r30 bit 3 every 1 µs."</td><td><code>openpru.md</code>: read the repo's AGENTS.md first, lint with <code>--openpru</code>, verify the 200-cycle period with <code>simulate.py edges --target am243x</code>.</td></tr>
     </tbody>
   </table></div>
@@ -355,7 +333,6 @@ cycles between edges:
       <tr><td>AM243x, AM64x</td><td>PRU_ICSSG</td><td>pru, rtu_pru, tx_pru × 2</td><td>V4</td><td>OpenPRU</td><td>AM243x</td></tr>
       <tr><td>AM261x, AM263x, AM263Px</td><td>PRU-ICSSM</td><td>pru0, pru1</td><td>V3</td><td>OpenPRU</td><td>AM263x</td></tr>
       <tr><td>AM62x</td><td>PRUSS</td><td>pru0, pru1</td><td>V3</td><td>OpenPRU</td><td>no</td></tr>
-      <tr><td>AM335x (BeagleBone)</td><td>PRU-ICSS</td><td>pru0, pru1</td><td>V3</td><td>PSSP + build.sh</td><td>core logic only</td></tr>
     </tbody>
   </table></div>
   <p>Not simulated: INTC, UART, eCAP, CRC, broadside RAM, task manager, MII/MDIO, PWM, shift-in/out modes.</p>
@@ -367,7 +344,7 @@ cycles between edges:
   <div class="pit"><b>2 · Immediates.</b> Most are 0–255. Use <code>ldi</code> or <code>ldi32</code> for larger values.</div>
   <div class="pit"><b>3 · Zero byte count.</b> A zero length in <code>r0.bN</code> hangs the core for lbbo, sbbo, lbco, sbco, xin, xout.</div>
   <div class="pit"><b>4 · Broadside registers.</b> Multiplier owns r25–r29, broadside RAM owns r1–r9.</div>
-  <div class="pit"><b>5 · Address maps.</b> They differ per subsystem. Never reuse AM335x values on newer devices.</div>
+  <div class="pit"><b>5 · Address maps.</b> They differ per subsystem. Use the device's OpenPRU includes.</div>
   <div class="pit"><b>6 · C ABI.</b> r2 and r3.w2 belong to the compiler, and r3.w2–r13 must be preserved.</div>
 </section>
 

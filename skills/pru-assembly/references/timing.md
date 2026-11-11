@@ -65,7 +65,7 @@ python3 scripts/simulate.py run fw.asm --max-cycles 1200        # fails if the r
 
 Simulated counts are exact for register and pin code. Memory accesses use configured latencies, so treat those counts as estimates.
 
-**Cycle counter on hardware.** Every PRU has CONTROL (bit 3 enables counting) and CYCLE registers in its control block. The example uses the AM335x PRU0 base 0x22000 (PRU1: 0x24000). On OpenPRU devices, take the control-register base from `source/include/<device>/` instead.
+**Cycle counter on hardware.** Every PRU has CONTROL (bit 3 enables counting) and CYCLE registers in its control block. Take the control-register base for your device from `source/include/<device>/` in OpenPRU; the example below uses 0x22000 as a placeholder.
 
 ```
     LDI32 r10, 0x22000          ; PRU0 control base

@@ -19,7 +19,7 @@
 - **Not modelled:** INTC, UART, eCAP, CRC, broadside RAM, task manager, MII/MDIO, PWM, shift-in/shift-out I/O modes. Code that depends on these will load but not behave like hardware.
 - **Timing model:** one cycle per instruction, plus per-region memory latencies (and optional jitter) set in the `.cfg` file, for example `read_latency = 2`. Those latencies are configuration values, not measurements. Treat simulated cycle counts as exact for register-and-pin code and as estimates for code with memory accesses.
 - **Hardware validation:** TI checked the disassembler against clpru 2.3.3 output and ran a 97-test ISA firmware on real hardware and in the simulator with matching DRAM results.
-- **AM335x and other devices:** core logic that only uses registers and R30/R31 can run with `--target am263x` (also a V3 core). Addresses, constants-table entries and peripherals will not match.
+- **Other devices:** core logic that only uses registers and R30/R31 can run on the nearest modelled target. Addresses, constants-table entries and peripherals will not match.
 
 ## 2. Install
 
