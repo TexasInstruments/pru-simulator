@@ -12,6 +12,8 @@ Checks:
     E immediate    Literal immediate outside the operand's range (e.g. ADD with 300)
     E register     Invalid register or field (r32, r1.b4, r1.w3, r1.t32, C32)
     E label        Quick branch or LOOP to a label not defined in the file
+    E reserved     Label named like an instruction (LOOP, HALT, NOP ...); clpru rejects it
+    E number       Underscore inside a numeric literal (0xC3A5_9E17); clpru rejects it
     W extern       JMP/CALL/JAL to a symbol not defined here and not declared .global/.ref
     W r31event     Literal write to R31 without bit 5, which raises no event
     W nohalt       No HALT, no return (JMP r3.w2 / RET) and no final unconditional jump
@@ -22,8 +24,11 @@ Register use, per .asmfunc function (checks adapted from TI's internal PRULint r
                    function header (for example "Parameters: r14 = ...") count as inputs.
     W PRU-C003     Register written twice with no read between. Skipped for r25-r29 (the
                    multiplier) and across branches, labels and .if/.else.
-    W PRU-C004     (--c-abi) Function writes r4-r13 and never reads it; the C ABI needs
-                   r3.w2-r13 preserved (references/c-interop.md)
+    W PRU-C004     (--c-abi) Function writes r4-r13 without saving the incoming value before
+                   the first write and loading it back afterwards; the C ABI needs r3.w2-r13
+                   preserved (references/c-interop.md)
+    W PRU-X001     r28 or r29 written on the instruction right before a MAC read (xin 0): the
+                   MAC samples them one instruction late, so it uses the old value
 
 Macros and includes:
     W PRU-M001     Name in the instruction slot is neither an instruction nor a defined macro
@@ -82,6 +87,14 @@ REG_RE = re.compile(r"&?\br(\d+)(?:\.([bwt])(\d+))?\b", re.IGNORECASE)
 CONST_RE = re.compile(r"^C(\d+)$", re.IGNORECASE)
 IDENT_RE = re.compile(r"^[A-Za-z_$][\w$]*\??$")
 SAFE_EXPR_RE = re.compile(r"^[\d\sxXa-fA-F+\-*/()<>|&~^]+$")
+SET_RE = re.compile(r"^\.(set|equ)\b", re.IGNORECASE)
+STRING_RE = re.compile(r'"[^"]*"')
+UNDERSCORE_NUM_RE = re.compile(r"\b(?:0[xX][0-9A-Fa-f]*_[0-9A-Fa-f_]*|\d+_[\d_]*)")   # clpru rejects 0xC3A5_9E17
+# Every instruction mnemonic is a reserved identifier in clpru 2.3.3 (checked with -v4), as a label
+# definition or a branch target. ILOOP, CALL and RET are not; TSEN is, though it is not in MNEMONICS.
+RESERVED_LABELS = (MNEMONICS - {"ILOOP", "CALL", "RET"}) | {"TSEN"}
+MAC_ID = 0
+MAC_OPERAND_REGS = {28, 29}
 
 
 def strip_comment(line):
@@ -119,14 +132,21 @@ def evaluate(expr, symbols):
 def parse(path):
     """Return a list of (lineno, label, mnemonic, operands, raw) and the symbol tables."""
     rows, symbols, aliases, labels, externs, col1 = [], {}, {}, set(), set(), set()
-    includes = []
+    includes, timeline, underscored = [], [], []
     with open(path, encoding="utf-8", errors="replace") as fh:
         lines = fh.read().splitlines()
+
+    def define(n, name, value):
+        """Record a constant. The timeline lets a check see the value in force at its own line."""
+        symbols[name] = value
+        timeline.append((n, dict(symbols)))
 
     for n, raw in enumerate(lines, 1):
         line = strip_comment(raw)
         if not line.strip():
             continue
+        if UNDERSCORE_NUM_RE.search(STRING_RE.sub('""', line)):
+            underscored.append(n)
         label, rest = None, line
         if not line[0].isspace():
             head, _, tail = line.partition(" ")
@@ -135,14 +155,14 @@ def parse(path):
                 head, tail = head_tab, tail_tab
             if head.startswith("."):
                 head, tail = "", line      # a directive such as .asmfunc, not a label
-            elif head.upper() in MNEMONICS:
-                col1.add(n)
+            elif head.upper() in MNEMONICS and not SET_RE.match(tail.strip()):
+                col1.add(n)                # a mnemonic here is a label; "MAX .set 255" is a constant, not one
                 head, tail = "", line
             label, rest = (head.rstrip(":") or None), tail
-            if label and rest.strip().lower().startswith((".set", ".equ")):
+            if label and SET_RE.match(rest.strip()):
                 value = evaluate(rest.strip()[4:], symbols)
                 if value is not None:
-                    symbols[label] = value
+                    define(n, label, value)
                 rows.append((n, None, None, [], raw))
                 continue
             if label:
@@ -160,7 +180,7 @@ def parse(path):
         if upper in (".ASG", ".EVAL") and len(operands) == 2:
             value = evaluate(operands[0].strip('"'), symbols)
             if value is not None:
-                symbols[operands[1]] = value
+                define(n, operands[1], value)
             else:
                 aliases[operands[1]] = operands[0].strip('"')
         elif upper in (".GLOBAL", ".REF", ".DEF"):
@@ -168,7 +188,7 @@ def parse(path):
         elif upper in (".INCLUDE", ".COPY") and operands:
             includes.append(operands[0].strip('"'))
         rows.append((n, label, upper, operands, raw))
-    return rows, symbols, aliases, labels, externs, col1, includes, lines
+    return rows, symbols, aliases, labels, externs, col1, includes, lines, timeline, underscored
 
 
 def find_include(base, inc, search):
@@ -250,7 +270,7 @@ def reg_span(op, size):
     if not m or int(m.group(1)) > 31:
         return set()
     n, kind, idx = int(m.group(1)), (m.group(2) or "").lower(), int(m.group(3) or 0)
-    start = n * 4 + (idx if kind == "b" else idx * 2 if kind == "w" else 0)
+    start = n * 4 + (idx if kind in ("b", "w") else 0)   # .bN and .wN both start at byte N (w1 = bytes 1-2)
     if size is None or size < 1:
         return {n}
     return set(range(start // 4, min((start + size - 1) // 4, 31) + 1))
@@ -393,6 +413,29 @@ def header_checks(lines, blocks):
     return warnings
 
 
+STORES = {"SBBO", "SBCO", "XOUT", "SXOUT"}
+LOADS = {"LBBO", "LBCO", "XIN", "SXIN", "XCHG", "SXCHG"}
+
+
+def callee_saved_violations(rows, aliases, symbols):
+    """r4-r13 written in a function without a store of the incoming value before the first write
+    and a load back into it afterwards. Reading the new value is not enough: that doesn't restore it."""
+    first_write, saved, restored = {}, set(), set()
+    for _, _, mnem, operands, _ in rows:
+        if not mnem or mnem.startswith("."):
+            continue
+        ops = [aliases.get(o.lstrip("&"), o) for o in operands]
+        if mnem in STORES and len(ops) >= 4:
+            size = evaluate(ops[3], symbols)
+            saved |= {r for r in reg_span(ops[0], size) if r not in first_write}
+        for r in reg_access(mnem, ops, symbols)[2]:
+            if 4 <= r <= 13:
+                first_write.setdefault(r, mnem)
+                if mnem in LOADS and r in saved:
+                    restored.add(r)
+    return {r for r in first_write if r not in saved or r not in restored}
+
+
 def register_checks(lines, blocks, aliases, symbols, opaque, c_abi):
     """PRU-C001 uninitialized read, PRU-C003 discarded write, PRU-C004 (--c-abi) save-on-entry write."""
     warnings = []
@@ -440,17 +483,11 @@ def register_checks(lines, blocks, aliases, symbols, opaque, c_abi):
                 warnings.append((unset[0][0], "PRU-C001", f"{b['name']}: reads {', '.join(r for _, r in unset)} without "
                                  "writing them; if the caller supplies them, name them in the header"))
             if c_abi:
-                clobbered = set()
-                for _, _, m, o, _ in b["rows"]:
-                    if m and not m.startswith("."):
-                        for w in reg_access(m, [aliases.get(x.lstrip("&"), x) for x in o], symbols)[2]:
-                            if 4 <= w <= 13:
-                                clobbered.add(w)
-                clobbered -= read_all
-                if clobbered:
+                unsaved = callee_saved_violations(b["rows"], aliases, symbols)
+                if unsaved:
                     warnings.append((b["line"], "PRU-C004", f"{b['name']}: writes "
-                                     f"{', '.join(f'r{r}' for r in sorted(clobbered))} and never reads or saves "
-                                     "it; the C ABI needs r3.w2-r13 preserved"))
+                                     f"{', '.join(f'r{r}' for r in sorted(unsaved))} without saving the incoming value "
+                                     "first and loading it back afterwards; the C ABI needs r3.w2-r13 preserved"))
     return warnings
 
 
@@ -502,11 +539,13 @@ def macro_checks(files, unresolved):
 
 def lint(path, openpru=False, search=(), c_abi=False):
     files, unresolved = walk_includes(path, search)
-    rows, symbols, aliases, labels, externs, col1, includes, lines = files[0][1]
+    rows, symbols, aliases, labels, externs, col1, includes, lines, timeline, underscored = files[0][1]
+    inherited = {}
     for _, (_r, inc_symbols, inc_aliases, inc_labels, inc_externs, *_rest) in files[1:]:
         labels = labels | inc_labels | inc_externs
         for name, value in inc_symbols.items():
             symbols.setdefault(name, value)
+            inherited.setdefault(name, value)
         for name, value in inc_aliases.items():
             aliases.setdefault(name, value)
     errors, warnings = [], []
@@ -525,12 +564,36 @@ def lint(path, openpru=False, search=(), c_abi=False):
     def resolve_alias(op):
         return aliases.get(op.lstrip("&"), op)
 
+    def symbols_at(n):
+        """Constants as defined at line n, so a name reassigned later in the file doesn't change earlier checks."""
+        current = {}
+        for line_no, snapshot in timeline:
+            if line_no > n:
+                break
+            current = snapshot
+        return {**inherited, **current}
+
+    for n in underscored:
+        errors.append((n, "number", "underscore in a numeric literal; clpru rejects it (write 0xC3A59E17)"))
+
+    prev = None
     for n, label, mnem, operands, raw in rows:
         if n in col1:
             errors.append((n, "column1", f"'{mnem}' is in column 1 and will be read as a label; indent it"))
+        if label and mnem != ".MACRO" and label.upper() in RESERVED_LABELS:
+            errors.append((n, "reserved", f"label '{label}' is a reserved identifier in clpru; rename it (for example "
+                           f"{label.lower()}_top)"))
         if not mnem or mnem.startswith("."):
             continue
+        symbols = symbols_at(n)
         ops = [resolve_alias(o) for o in operands]
+        if mnem == "XIN" and len(ops) >= 3 and evaluate(ops[0], symbols) == MAC_ID and prev is not None:
+            hit = reg_access(prev[0], [resolve_alias(o) for o in prev[1]], symbols_at(prev[2]))[2] & MAC_OPERAND_REGS
+            if hit:
+                warnings.append((prev[2], "PRU-X001", f"r{min(hit)} is written on the instruction right before the MAC "
+                                 f"read at line {n}; the MAC samples r28/r29 one instruction late, so it multiplies "
+                                 "the old value. Put another instruction between them"))
+        prev = (mnem, operands, n)
 
         if mnem == "HALT" or (mnem == "JMP" and ops and ops[0].lower() == "r3.w2") or mnem == "RET":
             has_end = True
@@ -581,19 +644,29 @@ def lint(path, openpru=False, search=(), c_abi=False):
 
 def main(argv):
     args, search, c_abi, paths = argv[1:], [], False, []
+    if "-h" in args or "--help" in args:
+        print(__doc__.strip())
+        return 0
     openpru = "--openpru" in args
+    usage = "\n".join(__doc__.strip().splitlines()[2:4])
     i = 0
     while i < len(args):
-        if args[i] == "-I" and i + 1 < len(args):
+        if args[i] == "-I":
+            if i + 1 >= len(args):
+                print(f"-I needs a folder\n{usage}", file=sys.stderr)
+                return 2
             search.append(args[i + 1])
             i += 1
-        elif args[i] == "--c-abi":
-            c_abi = True
-        elif not args[i].startswith("-"):
+        elif args[i] in ("--c-abi", "--openpru"):
+            c_abi = c_abi or args[i] == "--c-abi"
+        elif args[i].startswith("-"):
+            print(f"unknown option {args[i]}\n{usage}", file=sys.stderr)
+            return 2
+        else:
             paths.append(args[i])
         i += 1
     if not paths:
-        print("\n".join(__doc__.strip().splitlines()[2:4]), file=sys.stderr)
+        print(usage, file=sys.stderr)
         return 2
     total_errors = 0
     for path in paths:
