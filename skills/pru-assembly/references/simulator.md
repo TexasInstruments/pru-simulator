@@ -14,7 +14,7 @@
 
 ## 1. What it can and can't tell you
 
-- **Targets:** AM243x (PRU_ICSSG, V4) and AM263x (PRU-ICSS, V3), selected by `config/memory_am243x.cfg` or `config/memory_am263x.cfg`. The default `memory.cfg` is AM243x.
+- **Targets:** AM243x (PRU_ICSSG) and AM263x (PRU-ICSSM), selected by `config/memory_am243x.cfg` or `config/memory_am263x.cfg`. The default `memory.cfg` is AM243x.
 - **Modelled:** the full ISA (ALU, branches, `loop`, `lbco`/`sbco`/`lbbo`/`sbbo`, `xin`/`xout`/`xchg`, `mvi*`), MAC, scratchpad, BSWAP (ICSSG), IEP, sigma-delta filter, the Peripheral Interface, direct GPI/GPO, multi-core runs, and GPO→GPI loopback.
 - **Not modelled:** INTC, UART, eCAP, CRC, broadside RAM, task manager, MII/MDIO, PWM, shift-in/shift-out I/O modes. Code that depends on these will load but not behave like hardware.
 - **Timing model:** one cycle per instruction, plus per-region memory latencies (and optional jitter) set in the `.cfg` file, for example `read_latency = 2`. Those latencies are configuration values, not measurements. Treat simulated cycle counts as exact for register-and-pin code and as estimates for code with memory accesses.
