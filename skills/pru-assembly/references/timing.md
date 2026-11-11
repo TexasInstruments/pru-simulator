@@ -9,11 +9,10 @@ Use this file whenever code has a timing requirement. Examples assume a 200 MHz 
 3. Budgeting a loop: worked example
 4. Measuring: simulator first, then hardware
 5. What breaks determinism
-6. Known error in OpenPRU's best_practices.md
 
 ## 1. The cycle model
 
-The PRU has no cache and no branch prediction. Most instructions, including taken and untaken branches, take exactly one cycle. OpenPRU's `best_practices.md` gets this wrong in one place; see section 6. That makes hand counting reliable for code that stays inside registers and pin I/O. Anything that touches memory needs measuring.
+The PRU has no cache and no branch prediction. Most instructions, including taken and untaken branches, take exactly one cycle. That makes hand counting reliable for code that stays inside registers and pin I/O. Anything that touches memory needs measuring.
 
 ## 2. Instruction costs
 
@@ -33,7 +32,7 @@ When you report a budget, mark each figure as counted or measured.
 
 Verified in pru-simulator (AM243x and AM263x configs): `scripts/simulate.py edges` reports 100, 100, 100 cycles between pin edges.
 
-Goal: a 1 MHz square wave on output bit 5. The period is 1000 ns, so each half period is 100 ns = 100 cycles.
+Goal: a 1 MHz square wave on output bit 5. The period is 1000 ns, so each half period is 500 ns = 100 cycles at 5 ns per cycle.
 
 ```
 ; ---- Cycle budget ----
@@ -90,9 +89,3 @@ The result includes the cost of the enabling store and the reading load. Time an
 - Accesses to shared RAM or the other core's RAM while the other PRU is using it.
 - Polling loops (`WBS`, `QBBC` to self), whose duration depends on the external signal. Budget the work after the event, not the wait.
 - Code paths with different lengths on each branch. Pad the shorter branch if both must take the same time.
-
-## 6. Known error in OpenPRU's best_practices.md
-
-The "Timing Assumptions" pitfall example in `best_practices.md` says a taken `qbne` costs 2 cycles, making a `sub` + `qbne` delay loop 3 cycles per iteration. That is a bug in the document. `qbne` takes 1 cycle whether or not the branch is taken, so the loop costs 2 cycles per iteration, which matches the file's own `m_delay_cycles` macro and pru-simulator.
-
-Don't copy the 3-cycle figure into budgets. OpenPRU uses `best_practices.md` as context for automated PR review, so if a review comment cites it, point out the error.

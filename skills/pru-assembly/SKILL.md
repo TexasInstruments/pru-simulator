@@ -4,8 +4,8 @@ description: Write, review, debug, simulate and build assembly for TI PRU cores 
 compatibility: TI PRU Code Generation Tools (clpru) 2.3.x; Python 3.9+ for the linter and simulator; optional TI pru-simulator (MCP server or headless runner); Linux remoteproc or MCU+ SDK on the target.
 metadata:
   version: "0.2.2"
-  sources: "TexasInstruments/open-pru @ 36ad470 (2026-08-19), instruction cheat sheet @ 58cbf1a8 (2026-10-29); TexasInstruments/pru-simulator @ a17fd62 (2026-10-01, v0.2.6)"
-  tested-with: "Not yet tested. Run evals/evals.json on every model you use and record them here (e.g. claude-opus-5-5, claude-sonnet-5-5)."
+  sources: "TexasInstruments/open-pru main (docs and AGENTS.md); TexasInstruments/pru-simulator main (readme.md, docs/device_capabilities.md)"
+  tested-with: "Not yet tested."
 ---
 
 # PRU assembly development
@@ -53,7 +53,7 @@ PRU task progress
 
 **5. Build.** Use the project's own makefile or the OpenPRU runbook's build steps (`references/openpru.md`). Don't change compiler flags or invent workarounds; after a few failed fix attempts, stop and report the build output. If the build fails, return to step 3.
 
-**6. Simulate.** If the target is AM243x or AM263x, or the code is core logic that doesn't depend on device addresses, run it in pru-simulator with `scripts/simulate.py` (`references/simulator.md`). Check the end state: registers, memory and pins match what the code should produce. If the simulator isn't installed or can't model the code (INTC, UART, eCAP, CRC and others aren't simulated), skip this step and say why. If the result is wrong, return to step 3.
+**6. Simulate.** If the target is AM243x or AM263x, or the code is core logic that doesn't depend on device addresses, run it in pru-simulator with `scripts/simulate.py` (`references/simulator.md`). Check the end state: registers, memory and pins match what the code should produce. If the simulator isn't installed or can't model the code (check its `readme.md` feature tables; an unmodelled accelerator ID only warns, so a PASS proves nothing for it), skip this step and say why. If the result is wrong, return to step 3.
 
 **7. Verify timing.** Compare each critical path against its budget using `references/timing.md`. Use simulator cycle counts where available (`simulate.py edges` for pin timing) and hand counts otherwise, and report numbers ("half period 100 cycles = 500 ns, budget 500 ns, simulated"). If any path is over budget, return to step 2. When margin is under about 5%, recommend confirming on hardware.
 
@@ -105,7 +105,8 @@ Every function and macro gets a header recording what OpenPRU's guidelines requi
    Every branch takes 1 cycle, taken or not.
 2. **Most immediates are limited to 0–255.** `add r1, r1, 300` is invalid. Load larger values with `ldi` (16-bit) or `ldi32` (32-bit, 2 cycles) first.
 3. **A zero byte count in `r0.bN` hangs the PRU.** Guard any register-supplied length for `lbbo`, `sbbo`, `lbco`, `sbco`, `xin` or `xout`.
-4. **Broadside units own fixed registers.** The multiplier uses r25–r29 and broadside RAM uses r1–r9. Keep them out of your register map while those units are in use.
+4. **Broadside units have their own register conventions.** The MAC uses r25–r29, and each XFR device (for example XFR2TR) defines its own registers; the scratchpad can use any. Check the device's TRM table and keep those registers out of your register map while the unit is in use.
+   **The MAC samples r28/r29 one instruction late** (measured on LP-AM261, modelled in the simulator). A write to r28 or r29 directly before `xin 0, &r26, 4` multiplies the old value, so put another instruction (for example a `nop`) between them.
 5. **Addresses differ between subsystems.** Memory maps, constants tables and peripherals differ between PRU-ICSS, PRU_ICSSG and PRUSS. Use the device's OpenPRU includes, never values copied from another device.
 6. **The C ABI owns some registers.** When C is linked in, r2 and r3.w2 belong to the compiler and r3.w2–r13 must be preserved (`references/c-interop.md`).
 

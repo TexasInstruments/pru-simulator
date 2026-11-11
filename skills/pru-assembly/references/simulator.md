@@ -1,6 +1,6 @@
 # TI pru-simulator
 
-`github.com/TexasInstruments/pru-simulator` is a cycle-counting PRU simulator with a browser dashboard, an MCP server and a headless JSON runner. Details here were checked at commit a17fd62 (v0.2.6, 2026-10-01).
+`github.com/TexasInstruments/pru-simulator` is a cycle-counting PRU simulator with a browser dashboard, an MCP server and a headless JSON runner. The simulator changes quickly. Its `readme.md` (supported-features tables) and `docs/device_capabilities.md` are the source of truth for what is modelled; check them in the user's checkout instead of relying on this file.
 
 ## Contents
 
@@ -14,10 +14,10 @@
 
 ## 1. What it can and can't tell you
 
-- **Targets:** AM243x (PRU_ICSSG) and AM263x (PRU-ICSSM), selected by `config/memory_am243x.cfg` or `config/memory_am263x.cfg`. The default `memory.cfg` is AM243x.
-- **Modelled:** the full ISA (ALU, branches, `loop`, `lbco`/`sbco`/`lbbo`/`sbbo`, `xin`/`xout`/`xchg`, `mvi*`), MAC, scratchpad, BSWAP (ICSSG), IEP, sigma-delta filter, the Peripheral Interface, direct GPI/GPO, multi-core runs, and GPO→GPI loopback.
-- **Not modelled:** INTC, UART, eCAP, CRC, broadside RAM, task manager, MII/MDIO, PWM, shift-in/shift-out I/O modes. Code that depends on these will load but not behave like hardware.
-- **Timing model:** one cycle per instruction, plus per-region memory latencies (and optional jitter) set in the `.cfg` file, for example `read_latency = 2`. Those latencies are configuration values, not measurements. Treat simulated cycle counts as exact for register-and-pin code and as estimates for code with memory accesses.
+- **Targets:** selected by the `config/memory_<target>.cfg` files (`ls config/`). `simulate.py --target` takes the target name. The default `memory.cfg` is AM243x.
+- **What is modelled** differs per target and grows with each release. Read the "PRU features" table in the simulator's `readme.md` and `docs/device_capabilities.md`. Don't assume a peripheral or accelerator is present or absent from memory.
+- **Unmodelled accelerator transfers do not fail.** An `xin`/`xout`/`xchg` to a device ID the simulator doesn't model (or that the target doesn't have) logs a warning, reads return zeros, writes are discarded, and the run continues. A PASS therefore proves nothing about code that uses such an ID. Look for these warnings in the run output; if any appear, say the accelerator was not simulated. In the simulator, `core.strict_unsupported_xfr = True` makes such a transfer raise instead.
+- **Timing model:** one cycle per instruction, plus per-region memory latencies (and optional jitter) set in the `.cfg` file. Some presets are calibrated on silicon (for example LP-AM261 local RAM and MSRAM, AM243x MSRAM); the `.cfg` header comments say which. Uncalibrated figures are configuration values, not measurements. Known gaps: shared-RAM contention between cores, and anything outside the ICSS. Treat simulated cycle counts as exact for register-and-pin code and as estimates for code with memory accesses.
 - **Hardware validation:** TI checked the disassembler against clpru 2.3.3 output and ran a 97-test ISA firmware on real hardware and in the simulator with matching DRAM results.
 - **Other devices:** core logic that only uses registers and R30/R31 can run on the nearest modelled target. Addresses, constants-table entries and peripherals will not match.
 
