@@ -5,7 +5,6 @@ compatibility: TI PRU Code Generation Tools (clpru) 2.3.x; Python 3.9+ for the l
 metadata:
   version: "0.2.2"
   sources: "TexasInstruments/open-pru main (docs and AGENTS.md); TexasInstruments/pru-simulator main (readme.md, docs/device_capabilities.md)"
-  tested-with: "Not yet tested."
 ---
 
 # PRU assembly development
@@ -43,7 +42,7 @@ PRU task progress
 - [ ] 8. MCU+ project builds (flash only if asked and on target hardware)
 ```
 
-**1. Confirm the target.** You need the device, the subsystem and core (for example ICSSG0 PRU1, ICSS-M0 PRU0), the toolchain, the host side (MCU+ R5F, Linux remoteproc, or none) and the timing requirement in ns or cycles. Infer what you can from the user's files and ask only for what changes the code. The device decides addresses, constants-table entries and available instructions, so ask for it if it can't be inferred. Pure instruction-set questions don't need one.
+**1. Confirm the target, then stop.** You need the device, the subsystem and core (for example ICSSG0 PRU1, ICSS-M0 PRU0), the toolchain, the host side (MCU+ R5F, Linux remoteproc, or none) and the timing requirement in ns or cycles. Infer what you can from the user's files, then HALT: present the full target information to the user, together with every existing project or example you plan to use as a starting point, and wait for them to confirm it or point you at the resources they want used as a template. Don't write code before they answer. The device decides addresses, constants-table entries and available instructions. Pure instruction-set questions don't need this.
 
 **2. Plan registers and cycles.** Before writing code, fill in the register map template below and estimate cycles for each timing-critical path. Most PRU bugs are prevented here: routines clobbering each other's registers, and loops that miss their budget.
 
@@ -53,9 +52,9 @@ PRU task progress
 
 **5. Build.** Use the project's own makefile or the OpenPRU runbook's build steps (`references/openpru.md`). Don't change compiler flags or invent workarounds; after a few failed fix attempts, stop and report the build output. If the build fails, return to step 3.
 
-**6. Simulate.** If the target is AM243x or AM263x, or the code is core logic that doesn't depend on device addresses, run it in pru-simulator with `scripts/simulate.py` (`references/simulator.md`). Check the end state: registers, memory and pins match what the code should produce. If the simulator isn't installed or can't model the code (check its `readme.md` feature tables; an unmodelled accelerator ID only warns, so a PASS proves nothing for it), skip this step and say why. If the result is wrong, return to step 3.
+**6. Simulate.** If the target is one the simulator models (`ls config/` in the simulator checkout), or the code is core logic that doesn't depend on device addresses, run it in pru-simulator with `scripts/simulate.py` (`references/simulator.md`). Check the end state: registers, memory and pins match what the code should produce. If the simulator isn't installed or can't model the code (check its `readme.md` feature tables; an unmodelled accelerator ID only warns, so a PASS proves nothing for it), skip this step and say why. If the result is wrong, return to step 3.
 
-**7. Verify timing.** Compare each critical path against its budget using `references/timing.md`. Use simulator cycle counts where available (`simulate.py edges` for pin timing) and hand counts otherwise, and report numbers ("half period 100 cycles = 500 ns, budget 500 ns, simulated"). If any path is over budget, return to step 2. When margin is under about 5%, recommend confirming on hardware.
+**7. Verify timing.** Compare each critical path against its budget using `references/timing.md`. Use simulator cycle counts where available (`simulate.py edges` for pin timing) and hand counts otherwise, and report numbers (for example: "half period 100 cycles @ 5ns/cycle = 500 ns, budget 500 ns, simulated"). If any path is over budget, return to step 2. When margin is under about 5%, recommend confirming on hardware.
 
 **8. Build the MCU+ project.** For OpenPRU devices, build the project with its MCU+ SDK host code (`BUILD_MCUPLUS=y` in `imports.mak`, then `gmake -s` in the project directory) so the R5F application embeds the PRU firmware. Follow the OpenPRU runbook (`references/openpru.md`). Only flash or load onto hardware when the user asks. There is no deploy script: don't hand-write sysfs or loader commands.
 

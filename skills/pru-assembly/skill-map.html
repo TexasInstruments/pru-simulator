@@ -128,7 +128,7 @@ footer { color: var(--muted); font-size: 0.82rem; }
     <g>
       <rect class="node n-ref" x="10" y="36" width="210" height="62" rx="4"/><text x="22" y="58" font-size="13" font-weight="600">timing.md</text><text class="sub" x="22" y="76">cycle model, loop budgets</text>
       <rect class="node n-ref" x="10" y="112" width="210" height="62" rx="4"/><text x="22" y="134" font-size="13" font-weight="600">c-interop.md</text><text class="sub" x="22" y="152">where to start, C ABI registers</text>
-      <rect class="node n-ref" x="10" y="188" width="210" height="62" rx="4"/><text x="22" y="210" font-size="13" font-weight="600">simulator.md</text><text class="sub" x="22" y="228">install, MCP setup, tool list</text>
+      <rect class="node n-ref" x="10" y="188" width="210" height="62" rx="4"/><text x="22" y="210" font-size="13" font-weight="600">simulator.md</text><text class="sub" x="22" y="228">install, simulate.py, MCP pointer</text>
       <rect class="node n-ref" x="10" y="264" width="210" height="62" rx="4"/><text x="22" y="286" font-size="13" font-weight="600">openpru.md</text><text class="sub" x="22" y="304">pointers into open-pru docs</text>
     </g>
 
@@ -197,7 +197,7 @@ footer { color: var(--muted); font-size: 0.82rem; }
       <tr><td>SKILL.md</td><td>Workflow, freedom table, register map and function header templates, coding conventions, six pitfalls, source-trust order</td><td>Always</td></tr>
       <tr><td>timing.md</td><td>1-cycle model, instruction costs, worked loop budget, measuring, what breaks determinism</td><td>Any timing requirement</td></tr>
       <tr><td>c-interop.md</td><td>Where to start a mixed project (OpenPRU examples, PRU Academy), C ABI register roles</td><td>Mixing C and assembly</td></tr>
-      <tr><td>simulator.md</td><td>What the simulator models and doesn't, install, <code>simulate.py</code>, MCP setup, 15 MCP tools, headless runner, verification pattern</td><td>Simulating or timing without hardware</td></tr>
+      <tr><td>simulator.md</td><td>What the simulator models and doesn't, install, <code>simulate.py</code>, pointer to the simulator's MCP guide, headless runner, verification pattern</td><td>Simulating or timing without hardware</td></tr>
       <tr><td>openpru.md</td><td>Routes to the repo\'s AGENTS.md, cheat sheet and best practices; lists what this skill adds</td><td>Any OpenPRU work</td></tr>
     </tbody>
   </table></div>
@@ -285,7 +285,7 @@ ns between edges:
 
 <section id="mcp">
   <h2>The simulator tools</h2>
-  <p>The <code>pru_*</code> tools come from the pru-simulator MCP server (set up per <code>references/simulator.md</code>). They keep a core alive between calls, so Claude can stop, look and continue, which <code>simulate.py</code> cannot do.</p>
+  <p>The <code>pru_*</code> tools come from the pru-simulator MCP server (set up per the simulator's <code>docs/mcp_server.md</code>). They keep a core alive between calls, so Claude can stop, look and continue, which <code>simulate.py</code> cannot do.</p>
   <div class="grid">
     <div class="card"><h3>Load</h3><ul><li><code>pru_load</code>: assemble source text onto a core</li><li><code>pru_elf_load</code>: load a clpru <code>.out</code></li><li><code>pru_reset</code>: clear a core</li></ul></div>
     <div class="card"><h3>Run</h3><ul><li><code>pru_step</code>: N instructions</li><li><code>pru_run_until</code>: halt, cycles, register, memory or pin condition</li><li><code>pru_step_multicore</code>: two cores in lockstep</li><li><code>pru_breakpoint</code></li></ul></div>

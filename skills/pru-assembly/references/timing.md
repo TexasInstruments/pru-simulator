@@ -21,10 +21,11 @@ The PRU has no cache and no branch prediction. Most instructions, including take
 | ALU ops, `MOV`, `LDI`, `SET`, `CLR`, `QB*`, `JMP`, `JAL` | 1 | Count by hand |
 | Read `r31`, write `r30` | 1 | Count by hand |
 | `LDI32` | 2 (two instructions) | Count by hand |
-| `LOOP` | 1 cycle setup, then no per-iteration overhead | Count by hand |
+| `LOOP` | 1 cycle setup, then no per-iteration overhead (measured in pru-simulator: `loop` over a 1-instruction body, 5 iterations, costs 1 + 5 cycles; a `sub` + `qbne` loop costs 2 per iteration). TI's cheat sheet says only that setup takes one cycle and the loop is non-interruptible | Simulated; confirm on hardware |
+| Loads and stores to a location outside the PRU subsystem (for example DDR or other SoC memory and peripherals) | Non-deterministic | Keep out of timed paths |
 | `LBBO`/`SBBO`/`LBCO`/`SBCO` to PRU-local RAM | Several cycles, growing with byte count | Measure |
-| Loads and stores to DDR, L3 or SoC peripherals | Tens of cycles or more, variable | Keep out of timed paths |
 | `XIN`/`XOUT` broadside | Short and fixed per device | Measure once |
+| Loads and stores to memory, peripherals or accelerators inside the PRU subsystem | Deterministic; measurable on hardware. Excludes arbitration delay, which the simulator does not model (section 5) | Measure |
 
 When you report a budget, mark each figure as counted or measured.
 
@@ -55,7 +56,7 @@ To solve for the delay: fixed overhead = 4 cycles, loop = 2 cycles per iteration
 
 ## 4. Measuring: simulator first, then hardware
 
-**Simulator.** For AM243x and AM263x code, or register-and-pin code on any device (`references/simulator.md`):
+**Simulator.** For a target the simulator models, or register-and-pin code on any device (`references/simulator.md`):
 
 ```bash
 python3 scripts/simulate.py edges fw.asm --pin 5 --edges 4     # cycles between pin changes
@@ -86,6 +87,7 @@ The result includes the cost of the enabling store and the reading load. Time an
 ## 5. What breaks determinism
 
 - Memory accesses outside the PRU subsystem, which contend with the ARM and DMA for the bus.
+- **Arbitration delay** when several initiators access the same memory, peripheral or accelerator. The simulator does not model it, so a simulated cycle count excludes it. TI's documentation of arbitration delay is still in progress, and hardware measurements are pending; the most current write-up is the FAQ at https://e2e.ti.com/support/processors-group/processors/f/processors-forum/1625253/faq-pru-arbitration-delay. Until then, treat a simulated count for any shared-memory or shared-peripheral access as a lower bound.
 - Accesses to shared RAM or the other core's RAM while the other PRU is using it.
 - Polling loops (`WBS`, `QBBC` to self), whose duration depends on the external signal. Budget the work after the event, not the wait.
 - Code paths with different lengths on each branch. Pad the shorter branch if both must take the same time.

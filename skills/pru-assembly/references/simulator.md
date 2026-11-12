@@ -7,10 +7,9 @@
 1. What it can and can't tell you
 2. Install
 3. Fastest path: scripts/simulate.py
-4. MCP server setup for Claude Code
-5. MCP tools
-6. Headless runner
-7. A verification pattern
+4. MCP server
+5. Headless runner
+6. A verification pattern
 
 ## 1. What it can and can't tell you
 
@@ -46,39 +45,13 @@ Exit codes: 0 pass, 2 load error, 3 condition not met or budget exhausted, 4 sim
 
 The simulator's assembler reports only the first error it meets. Run `scripts/lint_pru.py` first, which reports all of them.
 
-## 4. MCP server setup for Claude Code
+## 4. MCP server
 
-The server reads `memory.cfg` relative to its working directory, so start it from the repo:
+Set up and use the MCP server from the simulator's own `docs/mcp_server.md`; this skill doesn't copy it. Its tool table can lag the implementation (tracked in simulator issue #101), so list the tools the server actually exposes instead of trusting a fixed list. The server reads `memory.cfg` relative to its working directory, so start it from the simulator checkout.
 
-```bash
-claude mcp add --transport stdio --scope user pru-simulator -- \
-  bash -c 'cd /path/to/pru-simulator && exec python mcp_server/server.py'
-claude mcp list        # should show pru-simulator as connected
-```
+For a one-shot run or a pin-timing check, `scripts/simulate.py` is enough. Use the MCP tools when you need to stop, look at registers or memory, and continue.
 
-The repo's own `docs/mcp_server.md` shows an equivalent JSON entry with a `cwd` field. Its tool table predates several tools listed below.
-
-## 5. MCP tools
-
-| Tool | Key parameters | Use |
-| --- | --- | --- |
-| `pru_load` | `source`, `core`, `include_paths` | Assemble and load source text |
-| `pru_elf_load` | `core`, `path` or `b64` | Load a clpru-built `.out` (TI PRU ELF32) |
-| `pru_step` | `core`, `count` | Execute N instructions |
-| `pru_step_multicore` | `lead`, `follow`, `count`, `guard_ns` | Step two cores in lockstep |
-| `pru_run_until` | `core`, `condition`, `max_steps`, `max_cycles` | Run until a condition or budget |
-| `pru_registers` | `core` | All 32 registers plus carry |
-| `pru_memory` | `addr`, `length` | Read memory (hex and ASCII); there is no write tool |
-| `pru_io` | `core` | GPO and GPI pin states |
-| `pru_set_input` | `core`, `pin`, `value` | Drive a GPI pin |
-| `pru_vcd_export` | `path`, `core`, `max_steps`, `pins`, `include_gpi` | Run and write a VCD waveform |
-| `pru_uart_inject` | `source`, `payload`, `baudrate`, … | UART RX test harness (expects the frame counter in r20 and an error flag at DRAM0 0x0FFE, as in `source/uart_rx_11frame.asm`) |
-| `pru_i2c_attach` | `core`, `enabled`, `address` | Attach a TCA9538 I2C expander model on bits 0/1 |
-| `pru_reset`, `pru_breakpoint`, `pru_status` | | Reset a core, add a breakpoint, snapshot all cores |
-
-`pru_run_until` conditions: `halt`, `cycles>N`, `reg:rN==V`, `mem:ADDR!=V` (32-bit, inequality only), `gpi:N==V` and `gpo:N==V` for pins 0–19 (`pin:` is an alias for `gpi:`). Cycle counts in results are cumulative since the last reset, so subtract two results to time a stretch of code.
-
-## 6. Headless runner
+## 5. Headless runner
 
 For CI or scripted checks, from the simulator repo:
 
@@ -89,7 +62,7 @@ python -m tools.headless_runner --json --elf build/fw.out --until 'reg:r0==0x55'
 
 It prints exactly one JSON object. Exit codes: 2 load error, 3 condition unmet or budget exhausted, 4 internal error. Its condition syntax differs slightly from the MCP tool: `cycles>=N` and `mem32:ADDR==V`. Use `--config` to choose a target and `--include` for include directories.
 
-## 7. A verification pattern
+## 6. A verification pattern
 
 1. Lint, then load. Fix every load error before looking at behaviour.
 2. Run to `halt` (or to a pin or register condition for forever-loops) with a budget slightly above the expected cycle count. Exhausting the budget means the code is slower than planned or stuck.
