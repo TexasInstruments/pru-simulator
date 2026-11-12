@@ -21,7 +21,7 @@ The PRU has no cache and no branch prediction. Most instructions, including take
 | ALU ops, `MOV`, `LDI`, `SET`, `CLR`, `QB*`, `JMP`, `JAL` | 1 | Count by hand |
 | Read `r31`, write `r30` | 1 | Count by hand |
 | `LDI32` | 2 (two instructions) | Count by hand |
-| `LOOP` | 1 cycle setup, then no per-iteration overhead (measured in pru-simulator: `loop` over a 1-instruction body, 5 iterations, costs 1 + 5 cycles; a `sub` + `qbne` loop costs 2 per iteration). TI's cheat sheet says only that setup takes one cycle and the loop is non-interruptible | Simulated; confirm on hardware |
+| `LOOP` | 1 cycle setup, then no per-iteration overhead (measured in pru-simulator: `loop` over a 1-instruction body, 5 iterations, costs 1 + 5 cycles; the same body as an `add` + `sub` + `qbne` branch loop costs 3 per iteration). TI's cheat sheet says only that setup takes one cycle and the loop is non-interruptible | Simulated; confirm on hardware |
 | Loads and stores to a location outside the PRU subsystem (for example DDR or other SoC memory and peripherals) | Non-deterministic | Keep out of timed paths |
 | `LBBO`/`SBBO`/`LBCO`/`SBCO` to PRU-local RAM | Several cycles, growing with byte count | Measure |
 | `XIN`/`XOUT` broadside | Short and fixed per device | Measure once |
