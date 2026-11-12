@@ -1,7 +1,7 @@
 """Silicon capabilities, distinct from which features the simulator implements.
 
 Broadside IDs without a ``0x`` prefix in the TRM tables are decimal.
-AM261x/AM263x use V4 ISA too; ICSSM differs in integrated hardware, not ISA.
+AM261x/AM263x (ICSSM) are V3 per the OpenPRU instruction cheat sheet; ICSSG is V4.
 See docs/device_capabilities.md for sources and modelling limits.
 """
 
@@ -32,7 +32,7 @@ _ICSSG_IDS = _ICSSM_IDS | frozenset({
 # icssg_pwm=False on AM261x: SPRUJB6B 7.3.1.2 lists the integrated PWM module
 # as not supported.
 _ICSSG = DeviceCapabilities("V4", _ICSSG_IDS, True, True, True)
-_ICSSM = DeviceCapabilities("V4", _ICSSM_IDS, False, False, False)
+_ICSSM = DeviceCapabilities("V3", _ICSSM_IDS, False, False, False)
 _TARGETS = {"am243x": _ICSSG, "am64x": _ICSSG,
             "am261x": _ICSSM, "am263x": _ICSSM,
             # AM62x: copied from AM261x, not verified on hardware
