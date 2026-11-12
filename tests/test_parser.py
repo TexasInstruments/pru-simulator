@@ -267,12 +267,10 @@ class TestForwardReferences:
         assert len(label_operands) == 1
         assert label_operands[0].resolved_addr == 2
 
-    def test_unresolved_label_gets_minus_one(self):
+    def test_unresolved_label_is_load_error(self):
         src = "qba unknown_label\n"
-        instrs = parse(src)
-        label_op = instrs[0].operands[0]
-        assert isinstance(label_op, Label)
-        assert label_op.resolved_addr == -1
+        with pytest.raises(SyntaxError, match="undefined operand symbol 'unknown_label'"):
+            parse(src)
 
 
 # ---------------------------------------------------------------------------
@@ -388,7 +386,8 @@ class TestQuickBranchReach:
 
     def test_undefined_label_not_reported_as_range(self):
         # An unresolved label is a different problem; don't mis-report it.
-        parse("qba nowhere")
+        with pytest.raises(SyntaxError, match="undefined operand symbol 'nowhere'"):
+            parse("qba nowhere")
 
 
 @pytest.mark.parametrize("opcode", ["WBS", "WBC"])

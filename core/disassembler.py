@@ -254,12 +254,12 @@ def _decode_format2(word, addr, symbols):
         opcode = mode_names.get(mode, f'XFR{mode}')
 
         if byte_len_raw <= 123:
-            byte_count = byte_len_raw + 1
-            len_str = str(byte_count)
+            byte_count = Immediate(byte_len_raw + 1)
+            len_str = str(byte_len_raw + 1)
         else:
-            r0_field = ['r0.b0', 'r0.b1', 'r0.b2', 'r0.b3'][byte_len_raw - 124]
-            len_str = r0_field
-            byte_count = byte_len_raw  # placeholder
+            # Codes 124-127 name byte 0-3 of R0 as the run-time byte count.
+            byte_count = Register(0, (byte_len_raw - 124) * 8, 8)
+            len_str = f'r0.b{byte_len_raw - 124}'
 
         reg_str = f'r{reg_num}'
         if reg_byte > 0:
@@ -270,20 +270,20 @@ def _decode_format2(word, addr, symbols):
             text = f'ZERO &{reg_str}, {len_str}'
             return Instruction(address=addr, opcode='ZERO',
                                operands=[Register(reg_num, reg_byte * 8, 8 if reg_byte else 32),
-                                         Immediate(byte_count)],
+                                         byte_count],
                                source_line=0, source_text=text)
         if mode == 1 and device_id == 254:
             text = f'FILL &{reg_str}, {len_str}'
             return Instruction(address=addr, opcode='FILL',
                                operands=[Register(reg_num, reg_byte * 8, 8 if reg_byte else 32),
-                                         Immediate(byte_count)],
+                                         byte_count],
                                source_line=0, source_text=text)
 
         text = f'{opcode} {device_id}, &{reg_str}, {len_str}'
         return Instruction(address=addr, opcode=opcode,
                            operands=[Immediate(device_id),
                                      Register(reg_num, reg_byte * 8, 8 if reg_byte else 32),
-                                     Immediate(byte_count)],
+                                     byte_count],
                            source_line=0, source_text=text)
 
     elif subop == 8:
@@ -451,10 +451,9 @@ def _decode_burst_len(word):
     lo = (word >> 7) & 1      # bit[7]
     raw = (hi << 4) | (mid << 1) | lo
     if raw <= 123:
-        return raw + 1, str(raw + 1)
-    else:
-        r0_fields = ['r0.b0', 'r0.b1', 'r0.b2', 'r0.b3']
-        return raw, r0_fields[raw - 124]
+        return Immediate(raw + 1), str(raw + 1)
+    # Codes 124-127 name byte 0-3 of R0 as the run-time byte count.
+    return Register(0, (raw - 124) * 8, 8), f'r0.b{raw - 124}'
 
 
 def _decode_format6ab(word, addr, symbols):
@@ -479,7 +478,7 @@ def _decode_format6ab(word, addr, symbols):
                            operands=[Register(rx_num, rx_byte * 8, 8 if rx_byte else 32),
                                      Register(rb_num, 0, 32),
                                      _decode_reg(ro_sel, ro_num),
-                                     Immediate(burst_val)],
+                                     burst_val],
                            source_line=0, source_text=text)
     else:
         imm_off = (word >> 16) & 0xFF
@@ -488,7 +487,7 @@ def _decode_format6ab(word, addr, symbols):
                            operands=[Register(rx_num, rx_byte * 8, 8 if rx_byte else 32),
                                      Register(rb_num, 0, 32),
                                      Immediate(imm_off),
-                                     Immediate(burst_val)],
+                                     burst_val],
                            source_line=0, source_text=text)
 
 
@@ -514,7 +513,7 @@ def _decode_format6cd(word, addr, symbols):
                            operands=[Register(rx_num, rx_byte * 8, 8 if rx_byte else 32),
                                      Immediate(cb_num),
                                      _decode_reg(ro_sel, ro_num),
-                                     Immediate(burst_val)],
+                                     burst_val],
                            source_line=0, source_text=text)
     else:
         imm_off = (word >> 16) & 0xFF
@@ -523,7 +522,7 @@ def _decode_format6cd(word, addr, symbols):
                            operands=[Register(rx_num, rx_byte * 8, 8 if rx_byte else 32),
                                      Immediate(cb_num),
                                      Immediate(imm_off),
-                                     Immediate(burst_val)],
+                                     burst_val],
                            source_line=0, source_text=text)
 
 

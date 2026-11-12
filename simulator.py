@@ -5,15 +5,23 @@ reading memory, and querying I/O state.
 """
 
 import configparser
+import copy
+import math
 import os
+import logging
 import re
+from fractions import Fraction
 
 from core.pru_core import PRUCore
+from core.device_capabilities import get_device_capabilities
+from mem.icssm_absent import icssg_only_regions, MODES as _ICSSG_ONLY_MODES, READ_ZERO
 from mem.memory_bus import MemoryBus
 from mem.regions import MemoryRegion
-from perif.iep import IepTimer, IEP_SIZE
-from mem.constant_table import ConstantTable
+from perif.iep import IepTimer, IEP_SIZE, IEP_DEFAULT_CLOCK_MHZ
+from mem.constant_table import (
+    ConstantTable, CTRL_REG_COUNT, CTRL_REG_OFFSET, PROGRAMMABLE_FIRST)
 from xfr.xfr_bus import XFRBus
+from pru_io.device_model import DeviceBus, DeviceModel
 from pru_io.io_port import IOPort
 from pru_io.sd_filter import SigmaDeltaFilter
 from pru_io.sd_registers import SDRegisters
@@ -24,6 +32,10 @@ from perif.gpcfg import GpcfgRegisters, MUX_PERIF
 from perif.loopback import Loopback
 
 _GPCFG_INDEX = {"pru0": 0, "pru1": 1}   # rtu0 has no GPCFG GP-mux (TRM)
+_MAX_CATCHUP_STEPS = 1000
+
+
+logger = logging.getLogger(__name__)
 
 
 class SDRegisterRegion(MemoryRegion):
@@ -95,34 +107,142 @@ class IepRegisterRegion(MemoryRegion):
         self._iep.write(addr - self.base_addr, data)
 
 
+class IepClockRegisterRegion(MemoryRegion):
+    """ICSS CFG IEPCLK word at C4 + 0x30; bit 0 selects the OCP clock."""
+
+    BASE_ADDR = 0x00026030
+
+    def __init__(self, iep: IepTimer):
+        super().__init__("ICSS_IEPCLK", self.BASE_ADDR, 4, 2, 1, 0)
+        self._iep = iep
+
+    def read(self, addr: int, length: int) -> bytes:
+        self._check_bounds(addr, length)
+        local = addr - self.base_addr
+        return self._iep.iepclk.to_bytes(4, "little")[local : local + length]
+
+    def write(self, addr: int, data: bytes) -> None:
+        self._check_bounds(addr, length=len(data))
+        local = addr - self.base_addr
+        value = bytearray(self._iep.iepclk.to_bytes(4, "little"))
+        value[local : local + len(data)] = data
+        self._iep.write_iepclk(int.from_bytes(value, "little"))
+
+
+class ConstantTableRegisterRegion(MemoryRegion):
+    """CTBIR0, CTBIR1, CTPPR0, CTPPR1 of one core's CTRL block (+0x20..+0x2F).
+
+    A write from firmware (SBBO/SBCO) or the host updates that core's
+    constant table at once; a read returns the stored value.
+    """
+
+    def __init__(self, name: str, ctrl_base: int, table: ConstantTable):
+        super().__init__(name, ctrl_base + CTRL_REG_OFFSET, 4 * CTRL_REG_COUNT, 2, 1, 0)
+        self._table = table
+
+    def read(self, addr: int, length: int) -> bytes:
+        self._check_bounds(addr, length)
+        image = b"".join(v.to_bytes(4, "little") for v in self._table.ctrl)
+        local = addr - self.base_addr
+        return image[local : local + length]
+
+    def write(self, addr: int, data: bytes) -> None:
+        self._check_bounds(addr, length=len(data))
+        image = bytearray(b"".join(v.to_bytes(4, "little") for v in self._table.ctrl))
+        local = addr - self.base_addr
+        image[local : local + len(data)] = data
+        for reg in range(CTRL_REG_COUNT):
+            self._table.write_ctrl(
+                reg, int.from_bytes(image[4 * reg : 4 * reg + 4], "little"))
+
+
 class Simulator:
-    """Orchestrates two PRU cores (PRU0, RTU0) sharing a memory bus and XFR bus."""
+    """Orchestrates ICSSG cores sharing memory, XFR, and one IEP timer."""
 
     def __init__(self, config_path: str = "memory.cfg"):
         self.xfr = XFRBus()
         self.memory = self._load_memory(config_path)
         self.constant_table = self._load_constants(config_path)
-        io_pru0 = IOPort()
-        io_rtu0 = IOPort()
-        io_pru1 = IOPort()
-        self.cores: dict[str, PRUCore] = {
-            "pru0": PRUCore("PRU0", self.memory, self.xfr, io_pru0, self.constant_table),
-            "rtu0": PRUCore("RTU0", self.memory, self.xfr, io_rtu0, self.constant_table),
-            "pru1": PRUCore("PRU1", self.memory, self.xfr, io_pru1, self.constant_table,
-                            dram_swap=True),
-        }
-
-        # Wire SD filters to each core's IOPort (PRU1 runs on its own clock)
+        # XFR2VBUS reaches SoC CBASS0/MSMC memory, a single external bus
+        # shared by every core's accelerator instances (TRM 6.4.6.3.1) —
+        # mirrors how self.memory above is already shared across cores. No
+        # region is registered by default; see PRUCore.vbus_memory.
+        self.vbus_memory = MemoryBus()
         dev = self._get_device_config(config_path)
-        pru_clock_mhz = float(dev.get("pru_clock_mhz", "200"))
-        pru1_clock_mhz = float(dev.get("pru1_clock_mhz", str(pru_clock_mhz)))
-        self._pru_clock_mhz = pru_clock_mhz
-        self._pru1_clock_mhz = pru1_clock_mhz
-        core_clocks = {"pru0": pru_clock_mhz, "rtu0": pru_clock_mhz,
-                       "pru1": pru1_clock_mhz}
+        pru_clock = dev.get("pru_clock_mhz", "200")
+        if "pru1_clock_mhz" in dev:
+            raise ValueError(
+                "[device] pru1_clock_mhz has been removed: all PRU cores use one "
+                "frequency, set it with pru_clock_mhz")
+        iep_clock = dev.get("iep_clock_mhz", IEP_DEFAULT_CLOCK_MHZ)
+        target = dev.get("target", "AM243x").split("#", 1)[0].strip()
+        self.target: str = target
+        self.capabilities = get_device_capabilities(target)
+        core_names = (["pru0", "rtu0", "pru1", "rtu1"] if self.capabilities.rtu
+                      else ["pru0", "pru1"])
+        self.cores: dict[str, PRUCore] = {
+            name: PRUCore(name.upper(), self.memory, self.xfr, IOPort(),
+                          copy.deepcopy(self.constant_table),
+                          dram_swap=name.endswith("1"),
+                          vbus_memory=self.vbus_memory, target=target)
+            for name in core_names
+        }
+        # The ICSSG-only blocks are absent on ICSS-M; silicon reads them as 0
+        # (see mem/icssm_absent.py).  ``strict`` makes an access raise instead.
+        icssg_only = dev.get("icssg_only_blocks", READ_ZERO).split("#", 1)[0].strip().lower()
+        if icssg_only not in _ICSSG_ONLY_MODES:
+            raise ValueError(
+                f"Unknown icssg_only_blocks {icssg_only!r}; "
+                f"expected one of {', '.join(_ICSSG_ONLY_MODES)}")
+        if not self.capabilities.rtu:
+            for region in icssg_only_regions(target, icssg_only):
+                self.memory.add_region(region)
+
+        # SPRUIM2J Table 6-65: these fixed entries depend on the executing
+        # core. A shared sidecar cannot provide all four sets of addresses.
+        if target.lower() in ("am243x", "am64x"):
+            core_constants = {
+                "pru0": {10: 0x2A000, 11: 0x22000, 22: 0x8000},
+                "rtu0": {10: 0x2A100, 11: 0x23000, 22: 0x8000},
+                "pru1": {10: 0x2A200, 11: 0x24000, 22: 0x9000},
+                "rtu1": {10: 0x2A300, 11: 0x23800, 22: 0x9000},
+            }
+        else:
+            # C10 is RESERVED in SPRUJB6 Table 7-40, but silicon holds a
+            # pointer (ICTE direct read on an LP-AM261, both PRUs). The
+            # window behind it, and behind C12-C14, reads zero: see
+            # mem/icssm_absent.py.
+            core_constants = {
+                "pru0": {10: 0x2A000, 11: 0x22000, 22: 0x8000},
+                "pru1": {10: 0x2A200, 11: 0x24000, 22: 0x9000},
+            }
+        for name, entries in core_constants.items():
+            self.cores[name].constant_table.load_from_dict(entries)
+
+        # CTBIR0/1 and CTPPR0/1 sit at +0x20 of each core's CTRL block and
+        # drive C24-C31 of that core. TX_PRU cores are not simulated.
+        if target.lower() in ("am243x", "am64x"):
+            ctrl_bases = {"pru0": 0x22000, "rtu0": 0x23000,
+                          "pru1": 0x24000, "rtu1": 0x23800}
+        else:
+            ctrl_bases = {"pru0": 0x22000, "pru1": 0x24000}
+        self._ctrl_bases = ctrl_bases
+        for name, base in ctrl_bases.items():
+            self.memory.add_region(ConstantTableRegisterRegion(
+                f"{name.upper()}_CTRL_CT", base, self.cores[name].constant_table))
+
+        # One resolver owns generic external devices and cross-core GPIO nets.
+        # It is inert until a device or wire is attached.
+        self.device_bus = DeviceBus()
         for name, core in self.cores.items():
-            core.clock_mhz = core_clocks[name]
-            core.io_port.sd_filter = SigmaDeltaFilter(pru_clock_mhz=core_clocks[name])
+            core.io_port.bind_device_bus(self.device_bus, name)
+
+        # Every core runs at the one configured rate.
+        pru_clock_mhz = float(pru_clock)
+        self._pru_clock_mhz = pru_clock_mhz
+        for core in self.cores.values():
+            core.clock_mhz = pru_clock_mhz
+            core.io_port.sd_filter = SigmaDeltaFilter(pru_clock_mhz=pru_clock_mhz)
 
         # Wire SD registers into memory bus (pru0 owns the register region)
         pru0_sd = self.cores["pru0"].io_port.sd_filter
@@ -130,13 +250,16 @@ class Simulator:
         self.memory.add_region(SDRegisterRegion(pru0_sd.registers))
 
         # RTU0 shares the same register space (same physical hardware)
-        rtu0_sd = self.cores["rtu0"].io_port.sd_filter
-        rtu0_sd.registers = pru0_sd.registers
+        rtu0_sd = (self.cores["rtu0"].io_port.sd_filter
+                   if self.capabilities.rtu else None)
+        if rtu0_sd is not None:
+            rtu0_sd.registers = pru0_sd.registers
 
         # Wire callback to update both cores' channel state on register writes
         def _combined_config_change(ch, field, value):
             pru0_sd._on_config_change(ch, field, value)
-            rtu0_sd._on_config_change(ch, field, value)
+            if rtu0_sd is not None:
+                rtu0_sd._on_config_change(ch, field, value)
         pru0_sd.registers.on_config_change = _combined_config_change
 
         # ---- Peripheral Interface (3-channel SCU): PRU0 + PRU1 --------------
@@ -147,7 +270,7 @@ class Simulator:
         self._perif = {}
         for name in core_order:
             core = self.cores[name]
-            perif = PeripheralInterface(pru_clock_mhz=core_clocks[name],
+            perif = PeripheralInterface(pru_clock_mhz=pru_clock_mhz,
                                         uart_clock_mhz=uart_clock_mhz)
             perif.registers = PerifRegisters(perif_bases[name])
             perif.build_channels()
@@ -165,12 +288,32 @@ class Simulator:
         self._gpcfg.on_mux_change = _on_mux_change
         self.memory.add_region(GpcfgRegion(self._gpcfg))
 
-        # IEP0 timer. Shared by all cores on the ICSSG, like the real peripheral,
-        # and clocked independently of them (iep_clock_mhz, default = PRU0 clock).
-        self.iep = IepTimer(clock_mhz=float(dev.get("iep_clock_mhz", str(pru_clock_mhz))))
+        # IEP0 timer. Shared by all cores on the ICSSG, like the real peripheral.
+        core_clock_rates = {name: pru_clock for name in self.cores}
+        self.iep = IepTimer(
+            clock_mhz=iep_clock,
+            ocp_clock_mhz=pru_clock,
+            core_clocks_mhz=core_clock_rates,
+        )
         self.memory.add_region(IepRegisterRegion(self.iep))
-        for core in self.cores.values():
+        self.memory.add_region(IepClockRegisterRegion(self.iep))
+        self._paced_pending: dict[tuple[str, frozenset[str]], dict[str, int | Fraction]] = {}
+        for name, core in self.cores.items():
             core.iep = self.iep
+
+            def observe_cycles(elapsed_cycles: int, *, _name=name, _core=core) -> None:
+                self.iep.observe_core_cycles(_name, _core.counters.cycles)
+
+            core.cycle_observer = observe_cycles
+
+            def reset_timeline(*, _name=name) -> None:
+                self._paced_pending.clear()
+                self.iep.rebase_core(_name)
+
+            core.reset_observer = reset_timeline
+            if name in self._perif:
+                self._perif[name].cycle_time_ns = (
+                    lambda cycles, _name=name: self.iep.core_time_ns(_name, cycles))
 
         # Loopback: PRU0 TX channel-N -> PRU1 RX channel-N.
         self._loopback = Loopback(self._perif["pru0"], self._perif["pru1"])
@@ -187,9 +330,12 @@ class Simulator:
         bus = MemoryBus()
 
         if not os.path.exists(config_path):
-            bus.add_region(MemoryRegion("DRAM0",       0x00000000, 0x2000,  2,  1,  0))
-            bus.add_region(MemoryRegion("DRAM1",       0x00002000, 0x2000,  2,  1,  0))
-            bus.add_region(MemoryRegion("ICSS_SHARED", 0x00010000, 0x10000, 2,  1,  0))
+            bus.add_region(MemoryRegion("DRAM0",       0x00000000, 0x2000,  2,  1,  0,
+                                         misaligned_write_penalty=1))
+            bus.add_region(MemoryRegion("DRAM1",       0x00002000, 0x2000,  2,  1,  0,
+                                         misaligned_write_penalty=1))
+            bus.add_region(MemoryRegion("ICSS_SHARED", 0x00010000, 0x10000, 2,  1,  0,
+                                         misaligned_write_penalty=1))
             bus.add_region(MemoryRegion("MS_RAM",      0x80000000, 0x10000, 40, 1, 10))
             return bus
 
@@ -206,21 +352,45 @@ class Simulator:
                     read_latency=int(cfg[section].get("read_latency", "0")),
                     write_latency=int(cfg[section].get("write_latency", "0")),
                     jitter=int(cfg[section].get("jitter", "0")),
+                    misaligned_write_penalty=int(
+                        cfg[section].get("misaligned_write_penalty", "0")),
+                    per_word_latency=int(cfg[section].get("per_word_latency", "1")),
+                    line_bytes=int(cfg[section].get("line_bytes", "0"), 0),
+                    line_cross_fit=int(cfg[section].get("line_cross_fit", "0")),
+                    line_readers=self._parse_line_readers(
+                        section, cfg[section].get("line_readers", "")),
                 ))
         return bus
 
+    @staticmethod
+    def _parse_line_readers(section: str, text: str) -> tuple[str, ...]:
+        names = tuple(text.lower().split())
+        known = {"pru0", "rtu0", "pru1", "rtu1"}
+        unknown = [n for n in names if n not in known]
+        if unknown:
+            raise ValueError(
+                f"[{section}] line_readers has unknown core name(s) {', '.join(unknown)}; "
+                f"expected any of {', '.join(sorted(known))}")
+        return names
+
     def _load_constants(self, config_path: str) -> ConstantTable:
-        """Load constants from the project root or its config directory."""
+        """Load the C0-C31 table for the config's [device] target.
+
+        Uses constants_<target>.cfg (e.g. constants_am261x.cfg) and falls back
+        to constants_am243x.cfg when the target has no file of its own.  AM243x,
+        AM261x, AM263x and AM62x each have a named file (AM263x's and AM62x's carry
+        the AM261x values; AM62x is unverified on hardware).  A
+        root-level config (memory.cfg) finds the file in its config/
+        subdirectory; a preset inside config/ finds it alongside.
+        """
         table = ConstantTable()
-        project_root = os.path.dirname(os.path.abspath(config_path))
-        candidates = (
-            os.path.join(project_root, "config", "constants_am243x.cfg"),
-            os.path.join(project_root, "constants_am243x.cfg"),
-        )
-        constants_path = next(
-            (path for path in candidates if os.path.exists(path)),
-            None,
-        )
+        cfg_dir = os.path.dirname(os.path.abspath(config_path))
+        target = self._get_device_config(config_path).get("target", "").strip().lower()
+        names = [f"constants_{target}.cfg"] if re.fullmatch(r"[a-z0-9_]+", target) else []
+        names.append("constants_am243x.cfg")
+        candidates = [os.path.join(d, n) for n in names
+                      for d in (os.path.join(cfg_dir, "config"), cfg_dir)]
+        constants_path = next((p for p in candidates if os.path.exists(p)), None)
         if constants_path is None:
             return table
         cfg = configparser.ConfigParser()
@@ -229,7 +399,14 @@ class Simulator:
             for key, val in cfg["constants"].items():
                 m = re.match(r'^c(\d+)$', key)
                 if m:
-                    table.set(int(m.group(1)), int(val, 0))
+                    n = int(m.group(1))
+                    if n >= PROGRAMMABLE_FIRST:
+                        # C24-C31 follow CTBIR0/1 and CTPPR0/1, not the config.
+                        logger.warning("%s: c%d ignored; C24-C31 follow the "
+                                       "CTBIR/CTPPR registers",
+                                       constants_path, n)
+                        continue
+                    table.set(n, int(val, 0))
         return table
 
     def _get_device_config(self, config_path: str) -> dict:
@@ -294,34 +471,99 @@ class Simulator:
         }
 
     def step_paced(self, lead: str, follow: str, count: int = 1,
-                   guard_ns: float = 20.0) -> None:
-        """Step *lead* by *count* instructions, pacing *follow* by perif time.
+                   guard_ns: float = 20.0, stop=None) -> dict:
+        """Step *lead* and pace *follow* by elapsed core time."""
+        return self.step_paced_many(lead, [follow], count=count, guard_ns=guard_ns,
+                                    stop=stop)
 
-        After each lead instruction, *follow* is stepped until its perif
-        clock trails lead's by at most *guard_ns* — follow never leads, so
-        an RX on follow only samples line history a TX on lead has already
-        recorded. Falls back to 1:1 instruction interleave when either
-        core has no perif block (e.g. rtu0).
+    def step_paced_many(self, lead: str, followers: list[str], count: int = 1,
+                        guard_ns: float = 20.0, stop=None) -> dict:
+        """Step a lead core and catch each follower up by exact elapsed time.
+
+        When both cores have enabled PERIF blocks, *guard_ns* keeps the follower
+        behind the lead's line history. If either PERIF is absent or disabled,
+        the follower catches up to the lead's exact core time without a guard.
+        PERIF clocks continue to advance while mux-disabled; the mux controls
+        signal routing, and the guard applies only while both routes are active.
+        Each follower catch-up is limited to 1000 instructions per lead step.
+        The result records the selected targets, actual lead_steps and incomplete work;
+        subsequent calls finish those targets before executing another lead step.
+        *stop*, if given, is called as ``stop(follower)`` before each follower
+        instruction; a truthy result ends the catch-up with reason "stopped" and
+        keeps the targets pending, like any other incomplete catch-up.
         """
+        if isinstance(guard_ns, bool) or not isinstance(guard_ns, (int, float)):
+            raise ValueError("guard_ns must be a number")
+        if isinstance(guard_ns, float) and not math.isfinite(guard_ns):
+            raise ValueError("guard_ns must be finite")
+        if guard_ns < 0:
+            raise ValueError("guard_ns must be non-negative")
         lead_pru = self._get_core(lead)
-        follow_pru = self._get_core(follow)
         lead_perif = self._perif.get(lead)
-        follow_perif = self._perif.get(follow)
-        paced = lead_perif is not None and follow_perif is not None
+        follower_states = [
+            (follower, self._get_core(follower), self._perif.get(follower))
+            for follower in followers
+        ]
+        guard_units = self.iep.nanoseconds_to_units(guard_ns)
+        lead_steps = 0
+
+        def catch_up(targets: dict[str, int | Fraction]) -> dict | None:
+            for follower, follow_pru, _ in follower_states:
+                if follower not in targets:
+                    continue
+                target = targets[follower]
+                steps = 0
+                while (
+                    self.iep.core_time_units(follower, follow_pru.counters.cycles) < target
+                    and not follow_pru.halted
+                    and follow_pru.pc < len(follow_pru.instructions)
+                ):
+                    if stop is not None and stop(follower):
+                        return {"complete": False, "reason": "stopped",
+                                "follower": follower, "targets": dict(targets),
+                                "lead_steps": lead_steps}
+                    if steps >= _MAX_CATCHUP_STEPS:
+                        return {"complete": False, "reason": "pacing_incomplete",
+                                "follower": follower, "targets": dict(targets),
+                                "lead_steps": lead_steps}
+                    previous_cycles = follow_pru.counters.cycles
+                    follow_pru.step()
+                    steps += 1
+                    if (follow_pru.counters.cycles == previous_cycles
+                            and not follow_pru.halted
+                            and follow_pru.pc < len(follow_pru.instructions)):
+                        return {"complete": False, "reason": "pacing_catchup_failed",
+                                "follower": follower, "targets": dict(targets),
+                                "lead_steps": lead_steps}
+            return None
+
+        # Resume the frozen targets before allowing the lead to add more time.
+        # Store every follower's target up front so later followers cannot starve.
+        # A different execution selection must not run or erase these followers.
+        pacing_key = (lead, frozenset(followers))
+        targets = self._paced_pending.get(pacing_key, {})
+        if targets:
+            incomplete = catch_up(targets)
+            if incomplete is not None:
+                return incomplete
+            del self._paced_pending[pacing_key]
         for _ in range(count):
             if not lead_pru.halted and lead_pru.pc < len(lead_pru.instructions):
                 lead_pru.step()
-            if not paced:
-                if not follow_pru.halted and follow_pru.pc < len(follow_pru.instructions):
-                    follow_pru.step()
-                continue
-            target = lead_perif._now_ns - guard_ns
-            safety = 1000
-            while (follow_perif._now_ns < target and safety > 0
-                   and not follow_pru.halted
-                   and follow_pru.pc < len(follow_pru.instructions)):
-                follow_pru.step()
-                safety -= 1
+                lead_steps += 1
+            lead_time = self.iep.core_time_units(lead, lead_pru.counters.cycles)
+            targets = {}
+            for follower, _, follow_perif in follower_states:
+                use_guard = (
+                    lead_perif is not None and follow_perif is not None
+                    and lead_perif.enabled and follow_perif.enabled
+                )
+                targets[follower] = lead_time - (guard_units if use_guard else 0)
+            incomplete = catch_up(targets)
+            if incomplete is not None:
+                self._paced_pending[pacing_key] = targets
+                return incomplete
+        return {"complete": True, "targets": dict(targets), "lead_steps": lead_steps}
 
     def registers(self, core: str) -> list[int]:
         """Return the 32 general-purpose register values for *core*."""
@@ -344,11 +586,47 @@ class Simulator:
         return {
             "gpo_pins": pru.io_port.get_gpo_pins(),
             "gpi_pins": pru.io_port.get_gpi_pins(),
+            "gpo_drive_mask": pru.io_port.gpo_drive_mask,
         }
 
     def set_input(self, core: str, pin: int, value: bool) -> None:
         """Set a single GPI pin on *core*'s I/O port."""
         self._get_core(core).io_port.set_gpi_pin(pin, value)
+
+    def set_gpio_drive_mask(self, core: str, mask: int) -> None:
+        """Set the GPIO output-enable bits for one core without changing R30."""
+        self._get_core(core).io_port.set_gpo_drive_mask(mask)
+
+    def add_gpio_wire(self, core_a: str, pin_a: int,
+                      core_b: str, pin_b: int) -> bool:
+        """Connect two GPIO pins through the shared DeviceBus resolver."""
+        return self.device_bus.add_gpio_wire(core_a, pin_a, core_b, pin_b)
+
+    def remove_gpio_wire(self, core_a: str, pin_a: int,
+                         core_b: str, pin_b: int) -> bool:
+        """Remove a direct GPIO connection."""
+        return self.device_bus.remove_gpio_wire(core_a, pin_a, core_b, pin_b)
+
+    def list_gpio_wires(self) -> list[dict]:
+        """Return configured cross-core GPIO connections."""
+        return self.device_bus.list_gpio_wires()
+
+    def attach_device(self, core: str, device: DeviceModel) -> DeviceModel:
+        """Attach a generic pin device at one core's GPIO endpoint."""
+        return self._get_core(core).io_port.attach_device(device)
+
+    def lease_gpio_outputs(self, core: str, mask: int, owner: object,
+                           drive_mask: int = 0) -> None:
+        """Lease GPIO directions and restore their initial state on release."""
+        self.device_bus.lease_core_outputs(core, mask, owner, drive_mask=drive_mask)
+
+    def detach_device(self, device: DeviceModel) -> None:
+        """Detach a generic device and release all pins it previously drove."""
+        self.device_bus.detach(device)
+
+    def device_state(self) -> dict:
+        """Return generic device, net, drive-mask, and contention state."""
+        return self.device_bus.get_state()
 
     def set_loopback(self, core: str, group: int, enabled: bool) -> None:
         """Enable/disable GPO→GPI loopback for a 4-bit *group* (0–4) on *core*."""
@@ -437,8 +715,9 @@ class Simulator:
     def set_strict_unsupported_xfr(self, enabled: bool) -> None:
         """Choose what happens when firmware drives an unmodelled XFR device ID.
 
-        The default (``False``) keeps the hardware-faithful result -- XIN reads
-        zeros, XOUT is ignored -- and records the event.  ``True`` makes such a
+        The default (``False``) keeps a simulator fallback -- XIN reads zeros,
+        XOUT is ignored -- and records the event.  That result is unverified on
+        hardware except for AM261x BSWAP_4_8 XIN.  ``True`` makes such a
         transfer raise :class:`~core.pru_core.UnsupportedXFRError` instead, for
         callers that would rather a run fail than continue on zero data.
         """
@@ -456,6 +735,24 @@ class Simulator:
                 for core in self.cores.values()
                 for record in core.unsupported_xfr.values()]
 
+    def ctrl_write(self, core: str, reg: int, value: int) -> None:
+        """Host write of CTBIR0/1 or CTPPR0/1 (*reg* 0-3) of *core*.
+
+        Goes through the memory bus to the core's CTRL block, the same path a
+        PRU store takes, so C24-C31 of that core update at once.
+        """
+        self._get_core(core)
+        base = self._ctrl_bases.get(core)
+        if base is None:
+            raise KeyError(f"Core '{core}' has no CTRL block with CTBIR/CTPPR")
+        self.memory.write(base + CTRL_REG_OFFSET + 4 * reg,
+                          (value & 0xFFFFFFFF).to_bytes(4, "little"))
+
+    def constant_table_view(self, core: str) -> list[dict]:
+        """List C0-C31 as *core* sees them: [{"c": n, "addr": value}, ...]."""
+        table = self._get_core(core).constant_table
+        return [{"c": n, "addr": table.resolve(n)} for n in range(32)]
+
     def hard_reset(self) -> None:
         """Full hardware reset: reset all cores, clear all SPAD banks, and reset XFR config.
 
@@ -464,10 +761,11 @@ class Simulator:
         so the UI's status bits start clean.  Configuration entered in the UI --
         perif config registers, GPCFG mux, loopback parameters -- is kept.
         """
+        self.iep.hardware_reset()
         for core in self.cores.values():
             core.reset()
+            core.constant_table.reset_ctrl()
         self.xfr.reset()
-        self.iep.hardware_reset()
 
     def uart_inject(
         self,

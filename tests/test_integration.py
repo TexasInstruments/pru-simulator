@@ -93,12 +93,12 @@ class TestSimulatorBasic:
         config_path = tmp_path / "memory.cfg"
         config_path.write_text("[device]\n", encoding="utf-8")
         (tmp_path / "constants_am243x.cfg").write_text(
-            "[constants]\nc24 = 0x1234\n", encoding="utf-8"
+            "[constants]\nc5 = 0x1234\n", encoding="utf-8"
         )
 
         sim = Simulator(config_path=str(config_path))
 
-        assert sim.constant_table.resolve(24) == 0x1234
+        assert sim.constant_table.resolve(5) == 0x1234
 
     def test_hard_reset_resets_iep(self):
         sim = Simulator(config_path="nonexistent.cfg")
@@ -210,14 +210,17 @@ class TestMACIntegration:
 
             MOV   R28, R10
             MOV   R29, R13
+            NOP                  ; MAC samples R28/R29 one instruction late (silicon, #58)
             XOUT  0, &R25, 1
 
             MOV   R28, R11
             MOV   R29, R14
+            NOP
             XOUT  0, &R25, 1
 
             MOV   R28, R12
             MOV   R29, R15
+            NOP
             XOUT  0, &R25, 1
 
             XIN   0, &R25, 1
@@ -239,6 +242,7 @@ class TestMACIntegration:
             XOUT  0, &R25, 1
             LDI   R28, 100
             LDI   R29, 100
+            NOP                  ; MAC samples R28/R29 one instruction late (silicon, #58)
             XOUT  0, &R25, 1
             HALT
         """

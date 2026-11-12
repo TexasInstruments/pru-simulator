@@ -21,6 +21,7 @@ class TestSDModeSwitch:
         sim.load("pru0", source)
         sim.step("pru0")
         assert sim.cores["pru0"].io_port.sd_filter.sd_en is True
+        assert sim.cores["pru0"].io_port.gpo == 0
 
     def test_r31_read_returns_sd_status_when_enabled(self):
         """When SD enabled, R31 read returns SD filter status not GPIO."""

@@ -1,6 +1,7 @@
 # tests/test_perif_loopback.py
 """Phase-3: timed serial-sample loopback PRU0 TX ch0 -> core-1 RX ch0."""
 import simulator
+import pytest
 
 
 def _w(regs, off, val):
@@ -105,3 +106,55 @@ def test_configure_and_state():
     # ppm clamped to +/-100
     s.perif_loopback(2, True, drift_ppm=999.0)
     assert s.loopback_state()["channels"][2]["drift_ppm"] == 100.0
+
+
+@pytest.mark.parametrize("reset_core", ["pru0", "pru1"])
+@pytest.mark.parametrize("direct", [False, True])
+def test_paced_loopback_after_one_core_reset_receives_only_the_new_byte(reset_core, direct):
+    s, tx, rx = _setup()
+    for core in ("pru0", "pru1"):
+        assert s.load(core, "nop\njmp 0") == []
+    for byte in _framed_byte(0xB6):
+        tx.channels[0].push_tx(byte)
+    tx.process_r31_command(1 << 18)
+    assert s.step_paced("pru0", "pru1", 1000)["complete"]
+
+    if direct:
+        s.cores[reset_core].reset()
+    else:
+        s.reset(reset_core)
+    tx.channels[0].tx_reinit()
+    for byte in _framed_byte(0x6D):
+        tx.channels[0].push_tx(byte)
+    tx.process_r31_command(1 << 18)
+    rx.channels[0].arm_rx(True)
+    rx.channels[0]._rx_next_edge_ns = tx._now_ns + 0.5 * tx.channels[0].tx_clock_period_ns()
+
+    for _ in range(40):
+        assert s.step_paced("pru0", "pru1", 1)["complete"]
+        if rx.channels[0].rx_fifo:
+            break
+    assert rx.channels[0].rx_fifo == [0x6D]
+    assert rx.channels[0].rx_eof is True
+    assert tx._now_ns - rx._now_ns <= 24
+
+
+def test_hardware_reset_restarts_both_peripheral_timelines_at_zero():
+    s, tx, rx = _setup()
+    for core in ("pru0", "pru1"):
+        assert s.load(core, "nop\njmp 0") == []
+    s.step_paced("pru0", "pru1", 1000)
+    s.reset("pru1")
+    s.hard_reset()
+    assert s.iep.now_ns == 0
+    assert tx._now_ns == rx._now_ns == 0
+    for byte in _framed_byte(0x6D):
+        tx.channels[0].push_tx(byte)
+    tx.process_r31_command(1 << 18)
+    rx.channels[0].arm_rx(True)
+    rx.channels[0]._rx_next_edge_ns = 0.5 * tx.channels[0].tx_clock_period_ns()
+    for _ in range(40):
+        s.step_paced("pru0", "pru1", 1)
+        if rx.channels[0].rx_fifo:
+            break
+    assert rx.channels[0].rx_fifo == [0x6D]

@@ -252,8 +252,14 @@ def run_rx(n_tx: int, option: str = "o1", num_frames: int = 1,
         _wu32(sim, T_GOFLAG, 1)
         steps = 0
         while steps < max_steps and ru32(sim, S_FRAMES) != i + 1:
-            sim.step_paced("pru0", "pru1", 500)
-            steps += 500
+            pacing = sim.step_paced("pru0", "pru1", min(500, max_steps - steps))
+            steps += pacing["lead_steps"]
+            if not pacing["complete"]:
+                if pacing["reason"] != "pacing_incomplete":
+                    raise RuntimeError(f"RX pacing failed: {pacing['reason']}")
+                continue  # retry the remaining follower work within the lead budget
+            if pacing["lead_steps"] == 0 and ru32(sim, S_FRAMES) != i + 1:
+                raise RuntimeError(f"TX stopped before frame {i} completed")
         if ru32(sim, S_FRAMES) != i + 1:
             raise RuntimeError(f"frame {i} did not complete within step budget")
     return sim

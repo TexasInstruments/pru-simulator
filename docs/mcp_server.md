@@ -70,6 +70,13 @@ print(mcp.pru_registers())           # {'r0': '0x0000002a', 'r1': '0x00000000', 
 | `pru_reset` | `core="pru0"` | `{ok}` | Reset core (PC=0, regs=0) |
 | `pru_breakpoint` | `core="pru0"`, `address: int` | `{id}` | Add a breakpoint |
 | `pru_status` | — | `{cores: {name: {pc, cycles, halted}}}` | Snapshot all cores |
+| `pru_run_until_multicore` | `lead="pru0"`, `follow="pru1"`, `condition="halt"`, `condition_core=""`, `max_steps=10000`, `guard_ns=0.0` | `{success, reason, lead_steps, breakpoint_core?, lead, follow}` | Run two time-paced cores until a condition (same grammar as `pru_run_until`, read on `condition_core`, default lead; `halt` = that core halted), a breakpoint on either core, or `max_steps` lead steps |
+| `pru_disassemble` | `core="pru0"`, `address=-1`, `before=5`, `after=10` | `{core, pc, program_length, instructions: [{address, text, opcode, line, label?, is_pc, breakpoint}]}` | Instructions around `address` (default PC), clamped to the program; works after ELF load |
+| `pru_breakpoint_list` | `core=""` | `{breakpoints: {core: [addr]}}` | List breakpoints (all cores if empty) |
+| `pru_breakpoint_remove` | `core="pru0"`, `address` | `{removed, breakpoints}` | Remove one breakpoint |
+| `pru_breakpoint_clear` | `core=""` | `{cleared}` | Remove all breakpoints on a core (all cores if empty) |
+| `pru_config` | — | `{processor, pru_clock_mhz, iep_clock_mhz, available_cores, config_path}` | Active processor and clocks (one PRU clock shared by all cores), read-only |
+| `pru_peripherals` | `core="pru0"` | `{io_mode, mux_sel, sd, perif, i2c, perif_loopback, iep, mac, crc, spad, xfr_shift_en, constant_table, device_bus, ...}` | Peripheral state as shown on the dashboard |
 
 Integer and boolean parameters are strictly typed: a bool is not accepted as an integer, and a string is not accepted as a boolean.
 

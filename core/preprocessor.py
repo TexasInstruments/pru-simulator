@@ -3,18 +3,29 @@
 Handles:
   - ; comment stripping
   - empty-line removal
-  - NAME .set VALUE    (text substitution; symbol in label field, TI syntax)
+  - NAME .set VALUE    (bounded integer expressions, TI label-field syntax)
   - .macro / .endm     (with optional parameters)
   - .if EXPR / .else / .endif
   - .include "file"
-  - .struct / .u8 / .u16 / .u32 / .ends
+  - flat TI .struct / .sassign, and legacy .struct / .u8 / .u16 / .u32 / .ends
 """
 
 from __future__ import annotations
 
+import ast
+import operator
 import os
 import re
 from typing import Optional
+
+
+class SourceLine(str):
+    """A cleaned line retaining its location through assembler expansion."""
+
+    def __new__(cls, text: str, source_line: int):
+        result = super().__new__(cls, text)
+        result.source_line = source_line
+        return result
 
 
 class Preprocessor:
@@ -22,6 +33,7 @@ class Preprocessor:
         self.defines: dict[str, str] = {}
         self.macros: dict[str, tuple[list[str], list[str]]] = {}  # name → (params, body_lines)
         self.structs: dict[str, int] = {}   # flat map: "StructName.field" → byte_offset
+        self.struct_fields: dict[str, list[tuple[str, int, int]]] = {}
         self.include_paths: list[str] = ["."]
 
     # ------------------------------------------------------------------
@@ -63,7 +75,9 @@ class Preprocessor:
 
         # State for .struct processing
         current_struct: Optional[str] = None
+        struct_line = 0
         struct_offset: int = 0
+        legacy_struct = False
 
         # Conditional-assembly stack: list of (emit: bool, seen_else: bool)
         cond_stack: list[tuple[bool, bool]] = []
@@ -74,36 +88,10 @@ class Preprocessor:
 
             # Strip inline ; comments
             line = _strip_comment(line).strip()
+            source_line = i
 
             if not line:
                 continue
-
-            # ------------------------------------------------------------------
-            # .struct / .ends / .u8 / .u16 / .u32  (processed unconditionally
-            # because they only define symbols, not output lines)
-            # ------------------------------------------------------------------
-            if _match_directive(line, ".struct"):
-                name = line.split(None, 1)[1].strip()
-                current_struct = name
-                struct_offset = 0
-                continue
-
-            if _match_directive(line, ".ends"):
-                current_struct = None
-                struct_offset = 0
-                continue
-
-            if current_struct is not None:
-                m = re.match(r"\.(u8|u16|u32)\s+(\w+)", line, re.IGNORECASE)
-                if m:
-                    type_name = m.group(1).lower()
-                    field_name = m.group(2)
-                    key = f"{current_struct}.{field_name}"
-                    self.structs[key] = struct_offset
-                    self.defines[key] = str(struct_offset)
-                    sizes = {"u8": 1, "u16": 2, "u32": 4}
-                    struct_offset += sizes[type_name]
-                    continue
 
             # ------------------------------------------------------------------
             # Conditional assembly: .if / .else / .endif
@@ -129,6 +117,68 @@ class Preprocessor:
             if cond_stack and not cond_stack[-1][0]:
                 continue
 
+            # Flat TI structures, plus the historical simulator spelling.
+            begin = re.fullmatch(r"(\w+)\s+\.struct\s*", line, re.I)
+            legacy = re.fullmatch(r"\.struct\s+(\w+)", line, re.I)
+            if begin or legacy:
+                if current_struct is not None:
+                    raise SyntaxError(f"line {i}: nested .struct is unsupported")
+                current_struct = (begin or legacy).group(1)
+                if current_struct in self.struct_fields:
+                    raise SyntaxError(f"line {i}: redefinition of structure {current_struct}")
+                struct_line = i
+                legacy_struct = legacy is not None
+                self.struct_fields[current_struct] = []
+                struct_offset = 0
+                continue
+            end = re.fullmatch(r"(?:(\w+)\s+)?\.endstruct", line, re.I)
+            if end or line.lower() == ".ends":
+                if current_struct is None:
+                    raise SyntaxError(f"line {i}: structure end without .struct")
+                if end and end.group(1):
+                    self._define_structure_symbol(end.group(1), str(struct_offset), i)
+                current_struct = None
+                continue
+            if current_struct is not None:
+                field = re.fullmatch(r"(\w+)\s+\.(ubyte|ushort|uint)", line, re.I)
+                if legacy_struct:
+                    old = re.fullmatch(r"\.(u8|u16|u32)\s+(\w+)", line, re.I)
+                    if old:
+                        field_name, kind = old.group(2), old.group(1).lower()
+                    else:
+                        raise SyntaxError(f"line {i}: unsupported structure member: {line}")
+                elif field:
+                    field_name, kind = field.group(1), field.group(2).lower()
+                else:
+                    raise SyntaxError(f"line {i}: unsupported structure member: {line}")
+                size = {"u8": 1, "u16": 2, "u32": 4,
+                        "ubyte": 1, "ushort": 2, "uint": 4}[kind]
+                key = f"{current_struct}.{field_name}"
+                if any(f[0] == field_name for f in self.struct_fields[current_struct]):
+                    raise SyntaxError(f"line {i}: duplicate structure member {field_name}")
+                self._define_structure_symbol(key, str(struct_offset), i)
+                self.structs[key] = struct_offset
+                self.struct_fields[current_struct].append((field_name, struct_offset, size))
+                struct_offset += size
+                continue
+
+            assign = re.fullmatch(r"(\w+)\s+\.sassign\s+r(\d+),\s*(\w+)", line, re.I)
+            if assign:
+                alias, reg, name = assign.groups()
+                fields = self.struct_fields.get(name)
+                if not fields:
+                    raise SyntaxError(f"line {i}: .sassign requires a defined nonempty structure: {name}")
+                for member, offset, size in fields:
+                    byte = int(reg) * 4 + offset
+                    index, sub = divmod(byte, 4)
+                    if index > 31 or sub + size > 4 or (size == 4 and sub):
+                        raise SyntaxError(f"line {i}: unsupported .sassign register layout for {alias}.{member}")
+                    suffix = "" if size == 4 else f".{'b' if size == 1 else 'w'}{sub}"
+                    self._define_structure_symbol(f"{alias}.{member}", f"r{index}{suffix}", i)
+                continue
+            if re.search(r"\.(?:struct|sassign|endstruct)\b", line, re.I):
+                raise SyntaxError(f"line {i}: unsupported structure syntax: {line}")
+
             # ------------------------------------------------------------------
             # NAME .set VALUE / NAME .equ VALUE
             # (symbol is a label; per TI PRU assembler syntax the symbol must
@@ -136,7 +186,17 @@ class Preprocessor:
             # ------------------------------------------------------------------
             m = re.match(r"^(\w+)\s+\.(?:set|equ)\b\s*(.+)$", line, re.IGNORECASE)
             if m:
-                self.defines[m.group(1)] = m.group(2).strip()
+                if m.group(1) in self.defines:
+                    raise SyntaxError(f"line {i}: redefinition of .set/.equ symbol {m.group(1)}")
+                value = self._apply_defines(m.group(2)).strip()
+                try:
+                    if re.fullmatch(r"r(?:[0-9]|[12][0-9]|3[01])", value, re.I):
+                        # Whole-register alias, e.g. "Counter .set r5".
+                        self.defines[m.group(1)] = value
+                    else:
+                        self.defines[m.group(1)] = str(_eval_integer(value))
+                except (ValueError, SyntaxError, ArithmeticError, RecursionError) as exc:
+                    raise SyntaxError(f"line {i}: unsupported .set/.equ expression for {m.group(1)}: {exc}") from exc
                 continue
 
             # ------------------------------------------------------------------
@@ -152,9 +212,12 @@ class Preprocessor:
             # ------------------------------------------------------------------
             # .macro NAME [param1 param2 ...]
             # ------------------------------------------------------------------
-            if _match_directive(line, ".macro"):
+            ti_macro = re.fullmatch(r"(\w+)\s+\.macro(?:\s+(.*))?", line, re.I)
+            if ti_macro or _match_directive(line, ".macro"):
                 # Split on whitespace only for the first two tokens
                 # (.macro  NAME  param1, param2, ...)
+                if ti_macro:
+                    line = f".macro {ti_macro.group(1)} {ti_macro.group(2) or ''}".strip()
                 parts = line.split(None, 2)
                 macro_name = parts[1] if len(parts) > 1 else ""
                 if len(parts) > 2:
@@ -170,7 +233,9 @@ class Preprocessor:
                     if _match_directive(mline_stripped, ".endm"):
                         break
                     body.append(mline_stripped)
-                self.macros[macro_name] = (params, body)
+                else:
+                    raise SyntaxError(f"line {source_line}: unterminated .macro {macro_name}")
+                self.macros[macro_name.lower()] = (params, body)
                 continue
 
             # ------------------------------------------------------------------
@@ -197,27 +262,38 @@ class Preprocessor:
             # Macro invocation
             # ------------------------------------------------------------------
             first_token = line.split()[0] if line.split() else ""
-            if first_token in self.macros:
-                expanded = self._expand_macro(first_token, line)
-                output.extend(expanded)
+            if first_token.lower() in self.macros:
+                expanded = self._expand_macro(first_token.lower(), line)
+                output.extend(SourceLine(item, source_line) for item in expanded)
                 continue
 
             # ------------------------------------------------------------------
             # Regular instruction / label line
             # ------------------------------------------------------------------
-            output.append(line)
+            output.append(SourceLine(line, source_line))
 
+        if current_struct is not None:
+            raise SyntaxError(f"line {struct_line}: unterminated .struct {current_struct}")
         return output
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
+    def _define_structure_symbol(self, name: str, value: str, line_no: int) -> None:
+        """Define a structure-derived symbol, refusing to overwrite an existing one."""
+        if name in self.defines:
+            raise SyntaxError(f"line {line_no}: redefinition of symbol {name}")
+        self.defines[name] = value
+
     def _apply_defines(self, line: str) -> str:
         """Replace defined symbols in *line* using whole-word substitution."""
-        for name, value in self.defines.items():
-            # Use word-boundary replacement so we don't mangle sub-strings
-            line = re.sub(r"\b" + re.escape(name) + r"\b", value, line)
+        # Dotted names (Struct.member) go first, and a plain name never matches
+        # right after a '.', so a symbol "count" cannot rewrite "Ctx.count".
+        ordered = sorted(self.defines.items(), key=lambda item: "." not in item[0])
+        for name, value in ordered:
+            end = r"(?![\w.])" if "." in name else r"\b"
+            line = re.sub(r"(?<![\w.])" + re.escape(name) + end, value, line)
         return line
 
     def _eval_condition(self, expr: str) -> bool:
@@ -239,7 +315,7 @@ class Preprocessor:
 
     def _expand_macro(self, name: str, invocation: str) -> list[str]:
         """Expand macro *name* given the full invocation line."""
-        params, body = self.macros[name]
+        params, body = self.macros[name.lower()]
         # Args are everything after the macro name
         parts = invocation.split(None, 1)
         raw_args = parts[1] if len(parts) > 1 else ""
@@ -280,4 +356,43 @@ def _strip_comment(line: str) -> str:
 
 def _match_directive(line: str, directive: str) -> bool:
     """Return True if *line* starts with *directive* (case-insensitive)."""
-    return line.lower().startswith(directive.lower())
+    parts = line.split(None, 1)
+    return bool(parts) and parts[0].lower() == directive.lower()
+
+
+def _eval_integer(expr: str) -> int:
+    """Evaluate the supported integer subset without executing source text.
+
+    Values and intermediate results may range from -2^31 to 2^32-1, so unsigned
+    32-bit masks are accepted. Division truncates toward zero, including for
+    negative operands.
+    Unsupported TI expression forms are deliberately load errors.
+    """
+    binary = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+              ast.BitAnd: operator.and_, ast.BitOr: operator.or_, ast.BitXor: operator.xor}
+    unary = {ast.UAdd: operator.pos, ast.USub: operator.neg, ast.Invert: operator.invert}
+
+    def visit(node):
+        value = evaluate(node)
+        if not -(1 << 31) <= value < (1 << 32):
+            raise ValueError("integer expression is outside the supported range -2^31 to 2^32-1")
+        return value
+
+    def evaluate(node):
+        if isinstance(node, ast.Constant) and type(node.value) is int:
+            return node.value
+        if isinstance(node, ast.UnaryOp) and type(node.op) in unary:
+            return unary[type(node.op)](visit(node.operand))
+        if isinstance(node, ast.BinOp):
+            left, right = visit(node.left), visit(node.right)
+            kind = type(node.op)
+            if kind in binary:
+                return binary[kind](left, right)
+            if kind in (ast.Div, ast.Mod):
+                quotient = (abs(left) // abs(right)) * (-1 if (left < 0) != (right < 0) else 1)
+                return quotient if kind is ast.Div else left - quotient * right
+            if kind in (ast.LShift, ast.RShift) and left >= 0 and 0 <= right <= 31:
+                return left << right if kind is ast.LShift else left >> right
+        raise ValueError(f"unsupported integer expression: {expr}")
+
+    return visit(ast.parse(expr.strip(), mode="eval").body)

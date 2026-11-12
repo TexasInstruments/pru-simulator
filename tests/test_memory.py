@@ -221,9 +221,14 @@ class TestMemoryBus:
 
 class TestConstantTable:
     def test_initial_entries_are_zero(self):
+        # C0-C23 are plain entries, 0 until loaded. C24-C31 follow the CTRL
+        # registers, whose reset value 0 gives the formula bases.
         ct = ConstantTable()
-        for i in range(32):
+        for i in range(24):
             assert ct.resolve(i) == 0
+        assert [ct.resolve(i) for i in range(24, 32)] == [
+            0, 0x2000, 0x2E000, 0x32000, 0,
+            0xD0000000, 0xE0000000, 0xF0000000]
 
     def test_set_and_resolve(self):
         ct = ConstantTable()

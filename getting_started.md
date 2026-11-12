@@ -88,6 +88,8 @@ endloop:
 **Source:**
 ```asm
 start:
+    ldi   r0, 0x100              ; CTPPR0.blk_ptr = 0x100: C28 -> Shared RAM (0x10000)
+    sbco &r0, c11, 0x28, 4       ; C11 = this core's CTRL block, CTPPR0 at +0x28
     ldi   r2, 1
     loop endloop, 100
     sbco &r2, c28, r2.b0, 1      ; write r2 → ICSS_SHARED[r2.b0]
@@ -102,7 +104,7 @@ endloop1:
     halt
 ```
 
-> `c24` = DRAM0 base (`0x00000000`), `c28` = ICSS_SHARED base (`0x00010000`). See `config/constants_am243x.cfg` for the full PRU constant table.
+> `c24` = DRAM0 base (`0x00000000`). `c28` follows CTPPR0 and is `0` out of reset, as on silicon; the first two instructions program `blk_ptr = 0x100`, which makes it the ICSS_SHARED base (`0x00010000`). See `config/constants_am243x.cfg` for the full PRU constant table.
 
 **Steps:**
 
@@ -116,7 +118,7 @@ endloop1:
 **What to observe:**
 - R2 counts from 1 upward in the Registers panel during execution.
 - The write loop fills ICSS_SHARED; the copy loop copies the first 25 values to DRAM0.
-- Counters panel shows 280 instructions and 455 cycles at HALT. The extra cycles are the memory access latencies set in `memory.cfg`.
+- Counters panel shows 282 instructions and 458 cycles at HALT. The extra cycles are the memory access latencies set in `memory.cfg`.
 
 ---
 
@@ -479,3 +481,20 @@ after the first rising edge — drop that first bit before grouping into octets.
 - **Step back:** Click **Step Back** (or press `←`) to reverse the last instruction. The full machine state — registers, memory, SD filter — is restored exactly.
 - **Layout:** Drag a panel title bar onto another panel to split the window. Layouts persist across sessions.
 - **Reset Layout:** Click the **⊞ Reset Layout** button in the toolbar to restore the default arrangement.
+
+### Core and IEP clocks
+
+Omitting `pru_clock_mhz` preserves the simulator's 200 MHz core default; all PRU and RTU cores always share this one frequency (the removed `pru1_clock_mhz` key is rejected with an error). Explicitly configured rates, including 250 MHz, remain unchanged. The external IEP defaults independently to 200 MHz, the rate the TRM gives for ICSSG_IEP_CLK (SPRUIM2J §6.4.13.2.4). Core and IEP clocks remain independently configurable, including positive fractional MHz values, and changing the core speed leaves the external IEP clock unchanged. Firmware's IEPCLK register selects which configured source drives the timer.
+
+| INI setting | Default |
+| --- | --- |
+| `pru_clock_mhz` | 200 |
+| `iep_clock_mhz` | 200 |
+
+With CNT_ENABLE=1 and DEFAULT_INC=1 and both rates omitted, 1000 unstalled core cycles produce 1000 IEP ticks at 200 MHz. The supplied `memory.cfg` explicitly selects 250 MHz cores; with the omitted 200 MHz external IEP rate, it instead produces 800 ticks for those 1000 core cycles. IEPCLK bit 0 clear selects the configured external clock; set selects the modeled OCP/core clock. Memory and wait stalls contribute elapsed cycles too.
+
+The simulator's IEP `GLOBAL_CFG` reset value, `0x550`, follows the TRM register defaults (IEP_GLOBAL_CFG_REG, Table 14-10907: `CMP_INC` and `DEFAULT_INC` reset to 5h, `CNT_ENABLE` to 0h). `DEFAULT_INC=5` counts nanoseconds at the default 200 MHz IEP clock, where one tick is 5 ns, so firmware that enables the counter with a read-modify-write (`GLOBAL_CFG | 1`) gets a nanosecond count. If you set a different IEP clock, for example 250 MHz (a 4 ns tick), firmware must set `DEFAULT_INC` itself (4 at 250 MHz) to keep a nanosecond count. A full-word write of `1` leaves `DEFAULT_INC=0`, and the counter does not advance. The SSI runtime (`pru_io/ssi_runtime.py`) is the in-repo example: it enables a stopped IEP with `DEFAULT_INC=1` written explicitly and sizes its timeouts from the active IEP clock.
+
+TI's [EnDAT3 example](https://software-dl.ti.com/processor-industrial-sw/esd/motor_control_sdk/am243x/latest/docs/api_guide_am243x/EXAMPLE_MOTORCONTROL_ENDAT3.html) uses configurations at 200 and 300 MHz; its [EtherNet/IP firmware](https://software-dl.ti.com/processor-industrial-sw/esd/ind_comms_sdk/am243x/2025_00_00_08/docs/api_guide_am243x/ETHERNETIP_ADAPTER_FWHAL.html) specifies 200 MHz for that configuration. The [GPIO example](https://git.ti.com/cgit/pru-software-support-package/pru-software-support-package/commit/examples?id=3895fa73784357366bbee5ca993660c6da50acc2) illustrates selecting the core source through IEPCLK. These firmware examples do not establish a universal IEP frequency; the simulator accepts positive fractional rates without a hardware whitelist. Register reset values are a separate hardware question.
+
+RTU1 is available for AM243x and AM64x profiles (an omitted target selects AM243x), including `tools.headless_runner --core rtu1`. Its local address 0 accesses DRAM1 and it runs at the same `pru_clock_mhz` as every other core. AM62x is selectable (`config/memory_am62x.cfg`) but copied from AM261x and not verified on hardware. An unknown target causes a configuration-load error. Each core has an independent mutable constant table.

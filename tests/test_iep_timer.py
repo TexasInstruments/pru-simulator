@@ -25,6 +25,11 @@ def r32(iep, off):
     return int.from_bytes(iep.read(off, 4), "little")
 
 
+def _cmp_reg0(j):
+    # CMP0..CMP7 from 0x78; IEP_RXIPG0/1 at 0xB8/0xBC; CMP8..CMP15 from 0xC0.
+    return 0x78 + 8 * j if j < 8 else 0xC0 + 8 * (j - 8)
+
+
 @pytest.fixture
 def iep():
     return IepTimer()
@@ -60,8 +65,8 @@ def test_reset_register_literals_from_am243x_trm(iep, reset_method):
     w32(iep, COUNT_REG1, 9)
     w32(iep, CMP_CFG, 0x1fffe)
     for slot in range(16):
-        w32(iep, CMP0_REG0 + 8 * slot, slot + 1)
-        w32(iep, CMP0_REG0 + 8 * slot + 4, 9)
+        w32(iep, _cmp_reg0(slot), slot + 1)
+        w32(iep, _cmp_reg0(slot) + 4, 9)
     iep.cmp_status = 0xffff
     iep.global_status = 1
     w32(iep, 0x18, 0x3ff)
@@ -79,8 +84,8 @@ def test_reset_register_literals_from_am243x_trm(iep, reset_method):
     assert r32(iep, CMP_STATUS) & 0xffff == 0
     assert r32(iep, 0x1c) & 0x3ff == 0
     for slot in range(16):
-        assert r32(iep, CMP0_REG0 + 8 * slot) == 0
-        assert r32(iep, CMP0_REG0 + 8 * slot + 4) == 0
+        assert r32(iep, _cmp_reg0(slot)) == 0
+        assert r32(iep, _cmp_reg0(slot) + 4) == 0
     for slot in range(10):
         assert r32(iep, 0x20 + 8 * slot) == 0
         assert r32(iep, 0x24 + 8 * slot) == 0
@@ -215,7 +220,7 @@ class TestIepThroughFirmware:
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
         from simulator import Simulator
         sim = Simulator(config_path="nonexistent.cfg")
-        sim.constant_table.set(26, 0x0002E000)
+        sim.cores["pru0"].constant_table.set(26, 0x0002E000)
         return sim
 
     def test_poll_on_count_terminates(self):
@@ -501,7 +506,8 @@ def test_iep_counts_stall_cycles_not_instructions(tmp_path):
 
 
 def test_two_cores_stepping_together_do_not_double_the_rate(tmp_path):
-    sim = _spin_sim(_cfg(tmp_path, pru_clock_mhz=250, pru1_clock_mhz=250))
+    sim = _spin_sim(_cfg(tmp_path, pru_clock_mhz=250,
+                         iep_clock_mhz=250))
     _step_until_enabled(sim)
     start = sim.iep.count
     for _ in range(1000):
@@ -511,7 +517,8 @@ def test_two_cores_stepping_together_do_not_double_the_rate(tmp_path):
 
 
 def test_paced_multicore_run_advances_at_the_iep_clock(tmp_path):
-    sim = _spin_sim(_cfg(tmp_path, pru_clock_mhz=250, pru1_clock_mhz=250))
+    sim = _spin_sim(_cfg(tmp_path, pru_clock_mhz=250,
+                         iep_clock_mhz=250))
     _step_until_enabled(sim)
     start_count, start_ns = sim.iep.count, sim.iep.now_ns
     sim.step_paced("pru0", "pru1", 2000)
@@ -535,9 +542,9 @@ def test_iep_clock_is_independent_of_the_pru_clock(tmp_path, core_mhz, iep_mhz,
     assert abs((sim.iep.count - start) - expected) <= 1
 
 
-def test_iep_clock_defaults_to_the_pru0_clock(tmp_path):
-    sim = Simulator(config_path=_cfg(tmp_path, pru_clock_mhz=250, pru1_clock_mhz=200))
-    assert sim.iep.clock_mhz == 250
+def test_iep_clock_defaults_to_200_mhz_independently_of_the_core_clock(tmp_path):
+    sim = Simulator(config_path=_cfg(tmp_path, pru_clock_mhz=250))
+    assert sim.iep.clock_mhz == 200
 
 
 def test_iep_clock_can_be_changed_at_runtime_without_a_jump(tmp_path):

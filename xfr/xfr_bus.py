@@ -35,6 +35,22 @@ class XFRBus:
         self.xfr_shift_en = False
         self._warned_unknown.clear()
 
+    def snapshot(self) -> dict:
+        """Capture shared scratchpad contents and XFR configuration."""
+        return {
+            "pads": {device_id: bytes(pad.data)
+                     for device_id, pad in self._pads.items()},
+            "xfr_shift_en": self.xfr_shift_en,
+            "warned_unknown": set(self._warned_unknown),
+        }
+
+    def restore(self, snapshot: dict) -> None:
+        """Restore shared scratchpad contents and XFR configuration."""
+        for device_id, data in snapshot["pads"].items():
+            self._pads[device_id].data[:] = data
+        self.xfr_shift_en = snapshot["xfr_shift_en"]
+        self._warned_unknown = set(snapshot["warned_unknown"])
+
     def _get_pad(self, device_id: int) -> Scratchpad | None:
         return self._pads.get(device_id)
 
@@ -43,8 +59,8 @@ class XFRBus:
 
         PRUCore also owns accelerator and shifted-SPAD dispatch. Keeping this
         query narrow lets the core recognise a transfer that reaches neither,
-        and report it, while still returning the zero/no-op result that an
-        unconnected broadside ID produces on hardware.
+        and report it, while still returning the zero/no-op simulator fallback
+        (unverified on hardware except for AM261x BSWAP_4_8 XIN).
         """
         return device_id in self._pads
 

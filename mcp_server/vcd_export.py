@@ -59,7 +59,7 @@ def export_pin_waveform(sim, core: str, path: str, max_steps: int = 10000,
 
     selected_pins = parse_pin_selection(pins)
     pru = sim._get_core(core)
-    clock_mhz = sim._pru1_clock_mhz if core == "pru1" else sim._pru_clock_mhz
+    clock_mhz = sim._pru_clock_mhz
     cycle_period_ps = round(1_000_000 / clock_mhz)
     if cycle_period_ps <= 0:
         raise ValueError(f"Invalid PRU clock frequency: {clock_mhz}")

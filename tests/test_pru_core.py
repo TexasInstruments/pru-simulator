@@ -49,11 +49,11 @@ def test_unmodelled_xfr_keeps_hardware_zero_semantics_and_is_recorded(caplog):
     silicon does not have -- so the run continues, and the record is what tells
     a caller the result came from an unmodelled widget rather than a real one.
     """
-    core = make_core("ldi r2, 0x1234\nxin 99, &r2, 4\nxin 99, &r2, 4\nhalt\n")
+    core = make_core("ldi r2, 0x1234\nxin 199, &r2, 4\nxin 199, &r2, 4\nhalt\n")
     with caplog.at_level(logging.WARNING, logger="core.pru_core"):
         run_to_halt(core)
     assert reg(core, 2) == 0
-    record = core.unsupported_xfr[99]
+    record = core.unsupported_xfr[199]
     assert record["core"] == "PRU0"
     assert record["opcodes"] == ["XIN"]
     assert record["count"] == 2
@@ -64,11 +64,11 @@ def test_unmodelled_xfr_keeps_hardware_zero_semantics_and_is_recorded(caplog):
 
 def test_unmodelled_xout_is_a_no_op_and_does_not_halt_the_run():
     """XOUT to an unconnected ID is ignored on hardware; the run must survive it."""
-    core = make_core("ldi r2, 0x1234\nxout 99, &r2, 4\nhalt\n")
+    core = make_core("ldi r2, 0x1234\nxout 199, &r2, 4\nhalt\n")
     run_to_halt(core)
     assert core.halted
     assert reg(core, 2) == 0x1234
-    assert core.unsupported_xfr[99]["opcodes"] == ["XOUT"]
+    assert core.unsupported_xfr[199]["opcodes"] == ["XOUT"]
 
 
 def test_registered_scratchpad_is_not_reported_as_unmodelled():
@@ -82,23 +82,27 @@ def test_registered_scratchpad_is_not_reported_as_unmodelled():
 
 
 def test_reset_clears_the_unsupported_xfr_record():
-    core = make_core("xin 99, &r2, 4\nhalt\n")
+    core = make_core("xin 199, &r2, 4\nhalt\n")
     run_to_halt(core)
-    assert 99 in core.unsupported_xfr
+    assert 199 in core.unsupported_xfr
     core.reset()
     assert core.unsupported_xfr == {}
 
 
 @pytest.mark.parametrize("opcode", ["xin", "xout", "xchg"])
 def test_strict_mode_fails_the_run_on_an_unmodelled_device(opcode: str):
-    """Opt-in oracle check: a caller can demand a failure instead of zero data."""
-    core = make_core(f"{opcode} 99, &r2, 4\nhalt\n")
+    """Opt-in oracle check: a caller can demand a failure instead of zero data.
+
+    199 (not 96-99, now the XFR2VBUS RD_ID0/RD_ID1/WR_ID0/WR_ID1 range
+    0x60-0x63) is picked to stay genuinely unmodelled.
+    """
+    core = make_core(f"{opcode} 199, &r2, 4\nhalt\n")
     core.strict_unsupported_xfr = True
     with pytest.raises(UnsupportedXFRError,
-                       match=rf"{opcode.upper()} XFR device ID 99 \(0x63\)"
+                       match=rf"{opcode.upper()} XFR device ID 199 \(0xC7\)"
                              rf".*4 byte\(s\).*R2\.b0"):
         core.run(4)
-    assert core.unsupported_xfr[99]["opcodes"] == [opcode.upper()]
+    assert core.unsupported_xfr[199]["opcodes"] == [opcode.upper()]
 
 
 # ---------------------------------------------------------------------------

@@ -26,7 +26,7 @@ EXIT_OK = 0
 EXIT_INPUT = 2
 EXIT_UNMET = 3
 EXIT_INTERNAL = 4
-_CORES = ("pru0", "pru1", "rtu0")
+_CORES = ("pru0", "pru1", "rtu0", "rtu1")
 _ELF_HEADER_SIZE = 52
 _ELF_SECTION_HEADER_SIZE = 40
 _ELF_PROGRAM_HEADER_SIZE = 32
@@ -293,11 +293,14 @@ def _next_instruction_cycle_bounds(sim: Simulator, core: str) -> tuple[int, int]
     length = pru._read_operand(length_operand)
     region = sim.memory._find_region(address)
     region._check_bounds(address, length)
-    words = region._word_count(address, length)
     if instruction.opcode in ("LBBO", "LBCO"):
-        minimum = 1 + region.read_latency + (words - 1)
+        # Ask the region (with the requesting core), so the runner and the core
+        # cannot disagree about reads such as the MSRAM line-crossing cost.
+        minimum = 1 + region.deterministic_read_stalls(address, length, requester=pru.name)
         return minimum, minimum + region.jitter
-    cycles = 1 + region.write_latency + (words - 1)
+    # Stores are deterministic: ask the region, so penalties such as the
+    # misaligned multi-word store cost (#77) are never re-derived here.
+    cycles = 1 + region.calc_write_stalls(address, length)
     return cycles, cycles
 
 
@@ -317,6 +320,8 @@ def run(args: argparse.Namespace) -> tuple[int, dict]:
 
     try:
         sim = Simulator(args.config)
+        if args.core not in sim.cores:
+            raise ValueError(f"Core {args.core} is unavailable for the configured target")
         condition_met = _compile_condition(sim, args.core, args.until)
         if args.assembly:
             include_paths = [str(input_path.resolve().parent)]
