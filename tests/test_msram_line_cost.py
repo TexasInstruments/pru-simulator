@@ -4,8 +4,7 @@ import pytest
 
 from mem.regions import MemoryRegion
 from simulator import Simulator
-from tests.test_msram_lbbo_cost import (AM243X_CFG, AM261X_200_CFG, AM261X_CFG, REPO_ROOT,
-                                        _lbbo_cycles)
+from tests.test_msram_lbbo_cost import AM243X_CFG, AM261X_CFG, REPO_ROOT, _lbbo_cycles
 
 import os
 ROOT_CFG = os.path.join(REPO_ROOT, "memory.cfg")
@@ -37,12 +36,13 @@ def test_am243x_reads_inside_line_unchanged(offset, nbytes):
     assert _lbbo_cycles(AM243X_CFG, BASE + offset, nbytes) == 20 + words
 
 
-# AM261x has no line term. LP-AM261 straddling reads at 225 MHz match the per-word cost.
-@pytest.mark.parametrize("cfg,first,per_word", [(AM261X_CFG, 21, 9), (AM261X_200_CFG, 22, 10)])
+# Model check only, no silicon claim: the AM261x config has no line term, so reads follow the
+# per-word cost wherever they fall. The offsets reuse the LP-AM243 table (its extras are not
+# used). No AM261x straddle measurement exists in this repo; 200 MHz is not covered here.
 @pytest.mark.parametrize("offset,nbytes,_extra", SILICON_CROSSINGS)
-def test_am261x_line_crossing_unchanged(cfg, first, per_word, offset, nbytes, _extra):
+def test_am261x_model_has_no_line_term(offset, nbytes, _extra):
     words = (offset % 4 + nbytes + 3) // 4
-    assert _lbbo_cycles(cfg, BASE + offset, nbytes) == first + (words - 1) * per_word
+    assert _lbbo_cycles(AM261X_CFG, BASE + offset, nbytes) == 21 + (words - 1) * 9
 
 
 @pytest.mark.parametrize("base", [0, 0x2000, 0x10000])
