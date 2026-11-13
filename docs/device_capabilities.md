@@ -10,15 +10,16 @@ raise `ValueError`. The target profile supplies the core version; the legacy
 Capabilities describe hardware presence, including hardware that is not yet
 simulated. Broadside IDs are the union across the subsystem: existing core
 restrictions still apply (for example, XFR2TR is RTU only). TX_PRU is present in
-ICSSG silicon but is not simulated. All four supported targets use V4 ISA;
-ICSSM is not a V3 instruction-set restriction.
+ICSSG silicon but is not simulated. ICSSG (AM243x, AM64x) is V4; ICSSM
+(AM261x, AM263x) is V3, per the OpenPRU PRU Assembly Instruction Cheat Sheet
+(`docs/PRU Assembly Instruction Cheat Sheet.md`, "Devices by Core Revision").
 
 | Target | Core version | Broadside ID set below | RTU | TX_PRU | `icssg_pwm` | Source |
 |---|---|---|---|---|---|---|
 | AM243x | V4 | ICSSG | true | true | true | SPRUIM2J §§6.4.1–6.4.4, Table 6-60, §6.4.10 (PWM) |
 | AM64x | V4 | ICSSG | true | true | true | SPRUIM2J covers both AM64x and AM243x, same sections |
-| AM261x | V4 | ICSSM | false | false | false | SPRUJB6B §§7.3.1–7.3.4, Table 7-35; §7.3.1.2 (integrated PWM module not supported); V4 clarification from TI hardware owners in [#32](https://github.com/TexasInstruments/pru-simulator/issues/32#issuecomment-6115296936) |
-| AM263x | V4 | ICSSM | false | false | false | Inferred from the AM261x table (SPRUJB6B Table 7-35) plus the hardware-owner statement in [#32](https://github.com/TexasInstruments/pru-simulator/issues/32) that AM261x/AM263x ICSSM are equivalent; no AM263x TRM was reviewed |
+| AM261x | V3 | ICSSM | false | false | false | SPRUJB6B §§7.3.1–7.3.4, Table 7-35; §7.3.1.2 (integrated PWM module not supported); V3 per the OpenPRU instruction cheat sheet, which supersedes the V4 statement in [#32](https://github.com/TexasInstruments/pru-simulator/issues/32#issuecomment-6115296936) |
+| AM263x | V3 | ICSSM | false | false | false | Inferred from the AM261x table (SPRUJB6B Table 7-35) plus the hardware-owner statement in [#32](https://github.com/TexasInstruments/pru-simulator/issues/32) that AM261x/AM263x ICSSM are equivalent; no AM263x TRM was reviewed |
 
 The PWM flag means the **ICSSG PWM module**, not SoC ePWM or firmware-generated
 PWM. No PWM peripheral is implemented by this change.
