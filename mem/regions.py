@@ -31,7 +31,8 @@ class MemoryRegion:
         # silicon (LP-AM261 ICSSM and LP-AM243 ICSSG); MSRAM charges 0.
         self.misaligned_write_penalty = misaligned_write_penalty
         # Cycles charged for each 32-bit word after the first of a burst read.
-        # 1 is the original model; LP-AM261 MSRAM measures 10 on silicon.
+        # 1 is the original model; LP-AM261 MSRAM measures 9 at the SDK's
+        # 225 MHz ICSSM clock and 10 at 200 MHz.
         self.per_word_latency = per_word_latency
         if line_bytes < 0 or line_bytes % 4:
             raise ValueError("line_bytes must be zero or a positive multiple of 4")
