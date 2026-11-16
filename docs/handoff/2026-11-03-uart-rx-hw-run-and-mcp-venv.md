@@ -183,8 +183,8 @@ New:
     for all five devices) in the GitHub web editor on the evening of
     2026-11-02: open-pru `00a2d89f` and `b38990d9` on
     `dev_tley_electronica2026_i2c_io`, PR #188 now at `b38990d9`. The second
-    one also adds a readme note that the TCAL9538 supports 1 Mbit/s but has
-    only 4 outputs. Still open:
+    one also adds a readme note that the TCAL9538 supports 1 Mbit/s and has
+    8 outputs. Still open:
     - the matching two FIXME items in `i2c_io/docs/porting_report.md`
       (lines 186 and 192), which are not ticked yet;
     - SysConfig re-save, untracked outputs and the visualizer minors.
