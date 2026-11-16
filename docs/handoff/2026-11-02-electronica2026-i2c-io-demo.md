@@ -56,8 +56,8 @@ Entry points:
   never open-drain. The firmware therefore drives SDA low during the ACK
   clock and does not sample ACK (`ldi r20, 0`). NACK detection is inactive
   on silicon.
-- **1 Mbit/s is kept on purpose.** The TCA9538 is rated for 400 kHz. The
-  demo only shows the bus on a scope.
+- **1 Mbit/s is kept on purpose.** The TCAL9538 is rated for 1 Mhz. The
+  demo shows the bus on a scope.
 - **Simulator checks:** the SCL edges of the port match the simulator source
   (671 of 671). One LED step is 100.03 ms with the pause.
 
