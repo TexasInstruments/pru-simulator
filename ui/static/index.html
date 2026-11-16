@@ -2362,7 +2362,7 @@ Example:
           <label class="spi-field" for="spi-mode">Mode
             <select id="spi-mode"><option value="0">0 (capture on rising)</option><option value="1">1 (capture on falling)</option></select>
           </label>
-          <label class="spi-field" for="spi-rate">SPI CLK
+          <label class="spi-field" for="spi-rate" title="Rates that pass in the simulator with a 5-cycle GPI delay on both cores. Simulator only: not verified on hardware.">SPI CLK <span class="spi-note">(simulator only)</span>
             <select id="spi-rate"></select>
           </label>
           <label class="spi-field" for="spi-miso-delay" title="Core cycles from each MISO launch edge to PRU0's MISO sample. Realisable values only; the passing window is marked.">MISO sample delay

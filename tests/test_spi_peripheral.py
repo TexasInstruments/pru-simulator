@@ -9,7 +9,8 @@ import bisect
 
 import pytest
 
-from pru_io.spi_link import (CMD_READ, CMD_RW, CMD_WRITE, HOP_DELAY_CYCLES,
+from pru_io.spi_link import (C_CS, CMD_READ, CMD_RW, CMD_WRITE, CTRL, CTRL_GO,
+                             CTRL_STATUS, HOP_DELAY_CYCLES, ST_IDLE,
                              P_MISO, P_RX, P_STATUS, P_TX, PATTERNS,
                              PERIPHERAL_SOURCE, SpiConfig, SpiLinkRuntime,
                              controller_delay_ok, render_header)
@@ -98,6 +99,24 @@ def test_rw_full_duplex(sim_config, mode):
     assert res["c_rx"] == p_tx
     assert rt.read_peripheral_rx(2) == c_tx
     assert rt.peripheral_status() == _status(frames=1, last_cmd=CMD_RW, last_addr=2)
+    rt.close()
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_timeout_leaves_the_link_usable(sim_config, mode):
+    """A transfer that times out mid-frame resets the controller before it
+    raises, so the next transfer starts from idle and is correct."""
+    sim, rt = _link(sim_config, mode)
+    c_tx, p_tx = PATTERNS["count"]
+    rt.preload_peripheral_tx(2, p_tx)
+    with pytest.raises(TimeoutError, match="not done after 200 cycles"):
+        rt.transfer(CMD_RW, 0x02, c_tx, max_cycles=200)     # a frame needs far more
+    ctrl = sim.memory_read(CTRL, 16)
+    assert ctrl[CTRL_GO] == 0 and ctrl[CTRL_STATUS] == ST_IDLE
+    assert sim.cores["pru0"].io_port.gpo & (1 << C_CS)      # /CS back at idle high
+    res = rt.transfer(CMD_RW, 0x02, c_tx)
+    assert res["c_rx"] == p_tx
+    assert rt.read_peripheral_rx(2) == c_tx
     rt.close()
 
 

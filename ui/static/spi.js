@@ -6,6 +6,9 @@
   const SCENARIO = 'SPI multi-core (controller + peripheral)';
   const FRAME_BYTES = 19;
   const GPI_DELAY_NOTE = '(calibrated 18 ns @ 333 MHz)';
+  // One silicon reading, applied as a fixed cycle count at every core clock: the rate
+  // list is a simulator result until a second clock point is measured.
+  const RATES_NOTE = 'The SPI CLK rate list is a simulator result with this delay at every core clock; it is not verified on hardware.';
   const COLORS = { cs: '#d64545', clk: '#f5a623', mosi: '#2f7fd6', miso: '#1f9d6b' };
   const FIELD_COLORS = { CMD: '#7b4fd6', ADR: '#2f7fd6', IDLE: '#888888', D: '#1f9d6b' };
 
@@ -553,7 +556,7 @@
     populateRates(cfg.mode, cfg.spi_mhz);
     populateMisoDelay(cfg);
     setText('spi-core-note', `Core ${cfg.core_mhz} MHz (set automatically, session only)`);
-    setText('spi-gpi-delay', `GPI delay ${state.hop_delay} cycles ${GPI_DELAY_NOTE}`);
+    setText('spi-gpi-delay', `GPI delay ${state.hop_delay} cycles ${GPI_DELAY_NOTE}. ${RATES_NOTE}`);
     if (!view.seeded && state.last) {
       view.seeded = true;
       byId('spi-cmd').value = String(state.last.cmd);

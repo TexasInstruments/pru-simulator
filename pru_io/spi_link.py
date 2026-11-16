@@ -39,7 +39,11 @@ ST_IDLE, ST_BUSY, ST_DONE = 0, 1, 2
 CMD_WRITE, CMD_READ, CMD_RW = 1, 2, 3
 ADDR_MAX = 0x7F
 FRAME_BYTES = 19
-HOP_DELAY_CYCLES = 5          # Ruling R6, confirmed by single-stepping
+# Ruling R6, confirmed by single-stepping. One silicon reading (18 ns at 333 MHz)
+# applied as a fixed cycle count at every core clock. Whether the real delay is a
+# fixed time or a fixed number of cycles is not known, so the supported-rate table
+# built on it is a simulator result until a second clock point is measured.
+HOP_DELAY_CYCLES = 5
 
 CORE_MHZ = (200, 225, 250, 300, 333)
 
@@ -778,6 +782,10 @@ class SpiLinkRuntime:
         status = CTRL + CTRL_STATUS
         while self.sim.memory_read(status, 1)[0] != ST_DONE:
             if pru0.counters.cycles - start > max_cycles:
+                # PRU0 is mid-frame with CTRL_GO still set. Restart it (CTRL
+                # cleared, /CS idle, one time base) so the next transfer
+                # starts from idle; PRU1 sees /CS rise and drops the frame.
+                self.reload_controller(self.cfg)
                 raise TimeoutError(f"SPI transfer not done after {max_cycles} cycles")
             if pru0.halted or pru0.fault is not None:
                 raise RuntimeError(f"PRU0 stopped: fault={pru0.fault}")
