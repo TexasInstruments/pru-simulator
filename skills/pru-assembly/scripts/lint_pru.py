@@ -26,8 +26,10 @@ Register use, per .asmfunc function (checks adapted from TI's internal PRULint r
                    multiplier) and across branches, labels and .if/.else.
     W PRU-C004     (--c-abi) Function writes r4-r13 without storing the incoming value before
                    the first write and loading it back from the same place on every path to a
-                   return, or writes r3.w2 (a nested call) without saving the return address
-                   first (references/c-interop.md). Writes inside macros are not seen.
+                   return, writes r3.w2 (a nested call) without saving the return address first,
+                   or returns through r3.w2 after a nested call without writing it back
+                   (references/c-interop.md). Not seen: writes inside macros, a register kept
+                   in another register, a save overwritten through a different register.
     W PRU-X001     r28 or r29 written on the instruction right before a MAC read (xin 0): the
                    MAC samples them one instruction late, so it uses the old value
 
@@ -454,15 +456,21 @@ def block_transfer(mnem, ops, symbols):
 
 
 def callee_saved_violations(rows, aliases, symbols):
-    """C ABI preservation in one function. Returns (register numbers, return address clobbered).
+    """C ABI preservation in one function.
+    Returns (register numbers, return address clobbered, return address not reloaded).
 
-    r4-r13, per byte: the incoming value has to be stored before the first write, and a load from
-    the same place has to bring it back on every path that reaches a return. Reading the new value,
-    loading from somewhere else, restoring one byte of a register that was overwritten whole, or
-    restoring on only one branch all leave the caller's value changed.
-    r3.w2: a write (a nested call) needs the return address saved somewhere first."""
+    r4-r13, per byte and per path through the function's branches: the incoming value has to be
+    stored before the first write, and a load from the same place has to bring it back before every
+    return. Reading the new value, loading from somewhere else, restoring one byte of a register
+    that was overwritten whole, saving or restoring on only one branch, or storing the changed value
+    over the saved one all leave the caller's value changed.
+    r3.w2: a write (a nested call) needs the return address saved somewhere first, and a return
+    through r3.w2 after a nested call needs it written back.
+
+    Not tracked: a saved value overwritten through a different register or an overlapping address,
+    a register kept in another register instead of memory, and anything a macro does."""
     nodes, label_at, waiting = [], {}, []
-    saved, touched, ret_saved, ret_clobbered = {}, set(), False, False
+    ret_saved = ret_clobbered = False
     for _, label, mnem, operands, _ in rows:
         if label:
             waiting.append(label)
@@ -486,18 +494,34 @@ def callee_saved_violations(rows, aliases, symbols):
             ret_saved = True
         if wrote & RETURN_BYTES and not ret_saved:
             ret_clobbered = True
-        restored = set()
-        if xfer and xfer[0] != "store":
-            restored = {b for b in xfer[2] if saved.get(b) == xfer[1]}
-        if xfer and xfer[0] != "load":
-            for b in xfer[2] & CALLEE_BYTES - touched:
-                saved[b] = xfer[1]
-        touched |= wrote
-        nodes.append(((wrote & CALLEE_BYTES) - restored, restored, mnem, ops[0] if ops else None))
+        nodes.append((mnem, ops[0] if ops else None, xfer, wrote))
+
+    def step(i, dirty, saved):
+        """State after instruction i: bytes that differ from the caller's, and where each incoming
+        byte is currently saved."""
+        mnem, _, xfer, wrote = nodes[i]
+        dirty, saved, restored = set(dirty), dict(saved), set()
+        if xfer:
+            kind, where, covered = xfer
+            if kind != "store":
+                restored = {b for b in covered if saved.get(b) == where}
+            if kind != "load":
+                for b in covered & CALLEE_BYTES:
+                    if b in restored or (b in dirty and saved.get(b) == where):
+                        del saved[b]           # that place now holds the changed value
+                    elif b not in dirty:
+                        saved[b] = where
+        dirty = (dirty - restored) | (wrote & CALLEE_BYTES - restored)
+        if wrote & RETURN_BYTES:
+            if mnem in ("JAL", "CALL"):
+                dirty |= RETURN_BYTES
+            else:
+                dirty -= RETURN_BYTES          # written back from wherever it was kept
+        return dirty, saved
 
     def successors(i):
         """Next instructions, or None when this one returns to the caller."""
-        _, _, mnem, target = nodes[i]
+        mnem, target = nodes[i][:2]
         if mnem == "RET" or (mnem == "JMP" and target and REG_RE.fullmatch(target)):
             return None
         if mnem == "HALT":
@@ -508,25 +532,34 @@ def callee_saved_violations(rows, aliases, symbols):
             return [i + 1, label_at[target]]
         return [i + 1]
 
-    # Forward pass over the branches: which changed bytes can still be unrestored at each instruction.
-    end, leaked = len(nodes), set()
-    dirty, work = {0: set()}, [0]
+    # Forward pass over the branches. Where paths meet, a byte is dirty if it is on either path
+    # and saved only if it is saved in the same place on both.
+    end, leaked, ret_lost = len(nodes), set(), False
+    state, work = {0: (set(), {})}, [0]
     while work:
         i = work.pop()
         if i == end:                           # running off the end of the function
-            leaked |= dirty[i]
+            leaked |= state[i][0]
             continue
-        changed, restored = nodes[i][0], nodes[i][1]
-        out = (dirty[i] - restored) | changed
+        dirty, saved = step(i, *state[i])
         following = successors(i)
         if following is None:
-            leaked |= out
+            leaked |= dirty
+            mnem, target = nodes[i][:2]
+            if dirty & RETURN_BYTES and (mnem == "RET" or reg_bytes(target) & RETURN_BYTES):
+                ret_lost = True
             continue
         for nxt in following:
-            if nxt not in dirty or not out <= dirty[nxt]:
-                dirty[nxt] = dirty.get(nxt, set()) | out
+            if nxt not in state:
+                state[nxt] = (set(dirty), dict(saved))
                 work.append(nxt)
-    return sorted({b // 4 for b in leaked}), ret_clobbered
+                continue
+            old_dirty, old_saved = state[nxt]
+            merged = {b: w for b, w in old_saved.items() if saved.get(b) == w}
+            if not dirty <= old_dirty or len(merged) != len(old_saved):
+                state[nxt] = (old_dirty | dirty, merged)
+                work.append(nxt)
+    return sorted({b // 4 for b in leaked & CALLEE_BYTES}), ret_clobbered, ret_lost and not ret_clobbered
 
 
 def register_checks(lines, blocks, aliases, symbols, opaque, c_abi):
@@ -576,7 +609,7 @@ def register_checks(lines, blocks, aliases, symbols, opaque, c_abi):
                 warnings.append((unset[0][0], "PRU-C001", f"{b['name']}: reads {', '.join(r for _, r in unset)} without "
                                  "writing them; if the caller supplies them, name them in the header"))
             if c_abi:
-                unsaved, ret_clobbered = callee_saved_violations(b["rows"], aliases, symbols)
+                unsaved, ret_clobbered, ret_lost = callee_saved_violations(b["rows"], aliases, symbols)
                 if unsaved:
                     warnings.append((b["line"], "PRU-C004", f"{b['name']}: writes "
                                      f"{', '.join(f'r{r}' for r in unsaved)} without saving the incoming value "
@@ -585,6 +618,9 @@ def register_checks(lines, blocks, aliases, symbols, opaque, c_abi):
                 if ret_clobbered:
                     warnings.append((b["line"], "PRU-C004", f"{b['name']}: writes r3.w2 (a nested call) without "
                                      "saving the return address first"))
+                if ret_lost:
+                    warnings.append((b["line"], "PRU-C004", f"{b['name']}: returns through r3.w2 after a nested "
+                                     "call without writing the saved return address back"))
     return warnings
 
 
