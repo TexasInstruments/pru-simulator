@@ -26,7 +26,11 @@ from mcp_server.server import PRUSimulatorMCP
 from core.branch import LoopState
 from core.peripheral_view import io_mode, read_crc, read_mac, read_spad
 from pru_io.device_profiles import discover_device_profiles
-from pru_io.scenarios import SCENARIOS, apply_scenario, ssi_demo_state, set_ssi_demo_position
+from pru_io.spi_link import SpiLinkRuntime, load_supported
+from pru_io.scenarios import (SCENARIOS, SPI_SCENARIO, apply_scenario, leave_spi_scenario,
+                              spi_config_row, spi_demo_state, spi_send, spi_sequence,
+                              spi_sequence_steps,
+                              spi_session_config, ssi_demo_state, set_ssi_demo_position)
 from pru_io.ssi_encoder_model import SSIEncoderModel
 from ui.live_sessions import DashboardConnection
 
@@ -200,6 +204,7 @@ def _snapshot_core(c) -> dict:
         },
         "unsupported_xfr": copy.deepcopy(c.unsupported_xfr),
         "ct_ctrl": c.constant_table.snapshot(),
+        "gpi_delay": c.io_port.gpi_delay_snapshot(),
     }
 
 
@@ -247,6 +252,8 @@ def _restore_core(c, snap: dict) -> None:
     c.unsupported_xfr = copy.deepcopy(snap.get("unsupported_xfr", {}))
     if "ct_ctrl" in snap:
         c.constant_table.restore(snap["ct_ctrl"])
+    if "gpi_delay" in snap:
+        c.io_port.gpi_delay_restore(snap["gpi_delay"])
 
 
 def _restore(core: str, snap: dict) -> None:
@@ -395,6 +402,80 @@ async def put_config(request: Request):
             return {"ok": True}
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=400)
+
+
+def _build_session_sim(core_mhz) -> Simulator:
+    """A fresh Simulator at *core_mhz* (the one PRU clock), from a temporary copy of
+    the config: memory.cfg is never written (SPI rate changes are session only)."""
+    cfg = configparser.ConfigParser()
+    cfg.read(config_path)
+    if "device" not in cfg:
+        cfg["device"] = {}
+    cfg["device"]["pru_clock_mhz"] = str(core_mhz)
+    with tempfile.TemporaryDirectory(prefix="spi-session-") as tmp:
+        tmp_cfg = os.path.join(tmp, "memory.cfg")
+        with open(tmp_cfg, "w") as f:
+            cfg.write(f)
+        config_dir = os.path.join(os.path.dirname(os.path.abspath(config_path)), "config")
+        if os.path.isdir(config_dir):    # constants are looked up beside the config file
+            shutil.copytree(config_dir, os.path.join(tmp, "config"))
+        return Simulator(config_path=tmp_cfg)
+
+
+def _supported_payload(scenario) -> dict:
+    """The supported-rate table travels once, with scenario_loaded (or on
+    request via the spi_supported action), never in the state pushes."""
+    return {"spi_supported": load_supported()} if scenario.name == SPI_SCENARIO else {}
+
+
+def _configured_clock() -> float:
+    """The PRU clock the active config file sets (all cores share it)."""
+    cfg = configparser.ConfigParser()
+    cfg.read(config_path)
+    dev = cfg["device"] if "device" in cfg else {}
+    return float(dev.get("pru_clock_mhz", "200"))
+
+
+def _leave_spi_restoring_clock() -> None:
+    """Leave the SPI scenario (Ruling R13). spi_setup changes the core clock for
+    the session only, so when the clock differs from memory.cfg, rebuild the
+    simulator from the real config (read only) and keep the IEP override."""
+    global sim
+    if not isinstance(getattr(sim, "_scenario_runtime", None), SpiLinkRuntime):
+        return
+    leave_spi_scenario(sim)
+    if sim._pru_clock_mhz != _configured_clock():
+        sim = Simulator(config_path=config_path)
+        _apply_iep_override()
+
+
+def _reapply_spi_scenario() -> bool:
+    """Ruling R21: Reset / HW Reset inside the SPI scenario re-apply it at the
+    session config (same clock, fresh time base) instead of leaving it.
+    Returns False when the SPI scenario is not loaded."""
+    config = spi_session_config(sim)
+    if config is None:
+        return False
+    apply_scenario(sim, SPI_SCENARIO, _device_api_for_current_sim(), config=config)
+    return True
+
+
+def _load_spi_scenario(config):
+    """Apply the SPI scenario, first rebuilding the simulator (session only) when
+    the rate needs another core clock. Returns the scenario; only replaces the
+    global sim once everything worked."""
+    global sim
+    row = spi_config_row(config)
+    if any(sim.cores[name].clock_mhz != row["core_mhz"] for name in ("pru0", "pru1")):
+        new_sim = _build_session_sim(row["core_mhz"])
+        scenario = apply_scenario(new_sim, SPI_SCENARIO,
+                                  PRUSimulatorMCP(config_path=config_path, simulator=new_sim),
+                                  config=config)
+        leave_spi_scenario(sim)
+        sim = new_sim
+        _apply_iep_override()
+        return scenario
+    return apply_scenario(sim, SPI_SCENARIO, _device_api_for_current_sim(), config=config)
 
 
 ALLOWED_CLOCK_MHZ = {200, 225, 250, 300, 333}
@@ -586,6 +667,9 @@ async def put_processor(request: Request):
             source = configs[processor]
             with open(source, "r", encoding="utf-8") as f:
                 text = f.read()
+            # An SPI session runs at a session-only clock: go back to the configured
+            # one first, so that is the frequency carried to the new processor.
+            _leave_spi_restoring_clock()
             # Keep the chosen core frequency when it is a supported preset.
             current = sim._pru_clock_mhz
             if current in ALLOWED_CLOCK_MHZ:
@@ -624,7 +708,7 @@ async def put_processor(request: Request):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    global _execution_owner, _execution_mode, _execution_cores, _last_observer_publish
+    global sim, _execution_owner, _execution_mode, _execution_cores, _last_observer_publish
     await websocket.accept()
     websocket = DashboardConnection(websocket)
     _connections.add(websocket)
@@ -645,7 +729,15 @@ async def websocket_endpoint(websocket: WebSocket):
                     continue
                 previous = _selected_execution_cores()
                 _execution_cores = cores
-                if _selected_execution_cores() != previous:
+                if (isinstance(getattr(sim, "_scenario_runtime", None), SpiLinkRuntime)
+                        and not {"pru0", "pru1"} <= set(cores)):
+                    # Ruling R22: the SPI link needs both PRUs; dropping one leaves it.
+                    _stop_execution()
+                    _clear_history()
+                    _leave_spi_restoring_clock()
+                    _execution_cores = cores
+                    _publish_updates()
+                elif _selected_execution_cores() != previous:
                     _stop_execution()
                     _flush_skipped_publish()
                 else:
@@ -693,7 +785,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json({"type": "error", "errors": ["Execution stopped or controlled by another tab"]})
                     await _send_state(websocket, core, run_id=msg.get("run_id"))
                     continue
-            elif action in {"load", "load_elf", "reset", "hard_reset", "step_back", "scenario_load"}:
+            elif action in {"load", "load_elf", "reset", "hard_reset", "step_back", "scenario_load",
+                            "spi_setup", "spi_send", "spi_sequence"}:
                 if _execution_owner is not None:
                     _stop_execution()
 
@@ -702,6 +795,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({"type": "capture_subscription", "enabled": websocket.capture})
             elif action == "load":
                 _clear_history()
+                _leave_spi_restoring_clock()
                 sim._scenario = None
                 filename = msg.get("filename")
                 include_paths = None
@@ -724,6 +818,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await _send_state(websocket, core)
             elif action == "load_elf":
                 _clear_history()
+                _leave_spi_restoring_clock()
                 sim._scenario = None
                 # ELF binary sent as base64-encoded string
                 elf_b64 = msg.get("data", "")
@@ -770,11 +865,13 @@ async def websocket_endpoint(websocket: WebSocket):
                             pass
             elif action == "reset":
                 _clear_history()
-                sim.reset(core)
+                if not _reapply_spi_scenario():
+                    sim.reset(core)
                 await _send_state(websocket, core)
             elif action == "hard_reset":
                 _clear_history()
-                sim.hard_reset()
+                if not _reapply_spi_scenario():
+                    sim.hard_reset()
                 await _send_state(websocket, core)
             elif action == "set_input":
                 sim.set_input(core, msg["pin"], bool(msg["value"]))
@@ -1117,18 +1214,70 @@ async def websocket_endpoint(websocket: WebSocket):
                 })
             elif action == "scenario_load":
                 try:
-                    scenario = apply_scenario(sim, msg.get("name"),
-                                              _device_api_for_current_sim(),
-                                              config=msg.get("config"))
+                    if msg.get("name") == SPI_SCENARIO:
+                        scenario = _load_spi_scenario(msg.get("config"))
+                    else:
+                        _leave_spi_restoring_clock()
+                        scenario = apply_scenario(sim, msg.get("name"),
+                                                  _device_api_for_current_sim(),
+                                                  config=msg.get("config"))
                     _execution_cores = list(scenario.cores)
                     _clear_history()
-                    await websocket.send_json({"type": "scenario_loaded", **scenario.describe()})
+                    await websocket.send_json({"type": "scenario_loaded", **scenario.describe(),
+                                               **_supported_payload(scenario)})
                 except (KeyError, TypeError, ValueError) as exc:
                     await websocket.send_json({"type": "error", "tag": "scenario",
                                                "errors": [str(exc)]})
                     scenario = None
                 for scenario_core in (scenario.cores if scenario else (core,)):
                     await _send_state(websocket, scenario_core)
+            elif action == "spi_supported":
+                await websocket.send_json({"type": "spi_supported", "supported": load_supported()})
+            elif action == "spi_steps":
+                try:
+                    await websocket.send_json({"type": "spi_steps", **spi_sequence_steps(sim)})
+                except ValueError as exc:
+                    await websocket.send_json({"type": "error", "tag": "spi", "errors": [str(exc)]})
+            elif action == "spi_setup":
+                try:
+                    async with _config_lock:
+                        config = {"mode": msg.get("mode"), "spi_mhz": msg.get("spi_mhz")}
+                        if msg.get("miso_delay") is not None:     # Ruling R17
+                            config["miso_delay"] = msg["miso_delay"]
+                        # unsupported rate or miso_delay: error before anything changes
+                        row = spi_config_row(config)
+                        if getattr(sim, "_scenario", None) is None or sim._scenario.name != SPI_SCENARIO:
+                            raise ValueError("Load the SPI example first")
+                        # Always a fresh Simulator: one time base, no memory.cfg write.
+                        new_sim = _build_session_sim(row["core_mhz"])
+                        scenario = apply_scenario(
+                            new_sim, SPI_SCENARIO,
+                            PRUSimulatorMCP(config_path=config_path, simulator=new_sim),
+                            config=config)
+                        leave_spi_scenario(sim)
+                        sim = new_sim
+                        _apply_iep_override()
+                        _execution_cores = list(scenario.cores)
+                        _clear_history()
+                        _stop_execution()
+                        _publish_updates(origin=websocket)
+                    await websocket.send_json({"type": "scenario_loaded", **scenario.describe(),
+                                               **_supported_payload(scenario)})
+                except (KeyError, TypeError, ValueError) as exc:
+                    await websocket.send_json({"type": "error", "tag": "spi", "errors": [str(exc)]})
+                    scenario = None
+                for scenario_core in (scenario.cores if scenario else (core,)):
+                    await _send_state(websocket, scenario_core)
+            elif action in ("spi_send", "spi_sequence"):
+                try:
+                    if action == "spi_send":
+                        spi_send(sim, msg.get("cmd"), msg.get("addr"), msg.get("pattern"))
+                    else:
+                        spi_sequence(sim)
+                    _clear_history()
+                except (KeyError, TypeError, ValueError, RuntimeError, TimeoutError) as exc:
+                    await websocket.send_json({"type": "error", "tag": "spi", "errors": [str(exc)]})
+                await _send_state(websocket, core)
             elif action == "ssi_demo_position":
                 try:
                     set_ssi_demo_position(sim, msg.get("position"))
@@ -1386,7 +1535,7 @@ def _state(core, at_breakpoint=False, captured=False):
     c = sim.cores[core]
     # R31 display reflects live GPI state (registers.regs[31] is never updated by set_gpi_pin)
     regs = list(c.registers.regs)
-    regs[31] = c.io_port.read_r31()
+    regs[31] = c.io_port.read_r31(c.counters.cycles)
     # GPO pins derived from R30 register value (avoids drift after reset)
     r30 = c.registers.read_full(30)
     gpo_pins = [(r30 >> i) & 1 for i in range(20)]
@@ -1406,6 +1555,9 @@ def _state(core, at_breakpoint=False, captured=False):
     demo = ssi_demo_state(sim)
     if demo is not None:
         io_section["ssi_demo"] = demo
+    spi_demo = spi_demo_state(sim)
+    if spi_demo is not None:
+        io_section["spi_demo"] = spi_demo
     if sim.device_bus.active:
         device_state = sim.device_state()
         io_section["device_bus"] = device_state
