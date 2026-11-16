@@ -24,9 +24,10 @@ Register use, per .asmfunc function (checks adapted from TI's internal PRULint r
                    function header (for example "Parameters: r14 = ...") count as inputs.
     W PRU-C003     Register written twice with no read between. Skipped for r25-r29 (the
                    multiplier) and across branches, labels and .if/.else.
-    W PRU-C004     (--c-abi) Function writes r4-r13 without saving the incoming value before
-                   the first write and loading it back afterwards; the C ABI needs r3.w2-r13
-                   preserved (references/c-interop.md)
+    W PRU-C004     (--c-abi) Function writes r4-r13 without storing the incoming value before
+                   the first write and loading it back from the same place on every path to a
+                   return, or writes r3.w2 (a nested call) without saving the return address
+                   first (references/c-interop.md). Writes inside macros are not seen.
     W PRU-X001     r28 or r29 written on the instruction right before a MAC read (xin 0): the
                    MAC samples them one instruction late, so it uses the old value
 
@@ -290,11 +291,11 @@ def reg_access(mnem, ops, symbols):
     elif mnem in ("SBBO", "SBCO") and len(ops) >= 4:
         reads += [t for op in ops[1:3] for t in reg_tokens(op)]
         reads += [f"r{i}" for i in reg_span(ops[0], size(3))]
-    elif mnem in ("XIN", "XOUT", "XCHG") and len(ops) >= 3:
+    elif mnem in XFR and len(ops) >= 3:
         reads += reg_tokens(ops[0])
-        if mnem != "XIN":
+        if not mnem.endswith("IN"):
             reads += [f"r{i}" for i in reg_span(ops[1], size(2))]
-        if mnem != "XOUT":
+        if not mnem.endswith("OUT"):
             writes += reg_tokens(ops[1])[:1]
             written = reg_span(ops[1], size(2))
     elif mnem in ("ZERO", "FILL") and len(ops) >= 2:
@@ -413,27 +414,119 @@ def header_checks(lines, blocks):
     return warnings
 
 
-STORES = {"SBBO", "SBCO", "XOUT", "SXOUT"}
-LOADS = {"LBBO", "LBCO", "XIN", "SXIN", "XCHG", "SXCHG"}
+CALLEE_BYTES = set(range(16, 56))   # r4-r13, as register number * 4 + byte
+RETURN_BYTES = {14, 15}             # r3.w2
+XFR = {"XIN", "XOUT", "XCHG", "SXIN", "SXOUT", "SXCHG"}
+
+
+def reg_bytes(op, size=False):
+    """Bytes (register number * 4 + byte) that a register operand covers. Pass `size` for a block
+    transfer starting there; None (count not resolvable) means up to the end of that register."""
+    m = REG_RE.search(op)
+    if not m or int(m.group(1)) > 31:
+        return set()
+    n, kind, idx = int(m.group(1)), (m.group(2) or "").lower(), int(m.group(3) or 0)
+    start = n * 4 + {"b": idx, "w": idx, "t": idx // 8}.get(kind, 0)
+    if size is False:
+        width = {"b": 1, "w": 2, "t": 1}.get(kind, 4)
+    else:
+        width = size if size and size > 0 else n * 4 + 4 - start
+    return set(range(start, min(start + width, 128)))
+
+
+def block_transfer(mnem, ops, symbols):
+    """(kind, where, bytes) for a block store, load or swap of registers, else None. `where` names
+    the far end (memory base and offset, or broadside device) together with the first register byte,
+    so a load only counts as a restore when it reads back what the matching store wrote."""
+    def norm(op):
+        value = evaluate(op, symbols)
+        return str(value) if value is not None else op.lstrip("&").lower()
+
+    if mnem in ("SBBO", "SBCO", "LBBO", "LBCO") and len(ops) >= 4:
+        kind, far = ("store" if mnem[0] == "S" else "load"), (mnem[1:], norm(ops[1]), norm(ops[2]))
+        covered = reg_bytes(ops[0], evaluate(ops[3], symbols))
+    elif mnem in XFR and len(ops) >= 3:
+        kind = "store" if mnem.endswith("OUT") else "load" if mnem.endswith("IN") else "swap"
+        far, covered = ("XFR", norm(ops[0])), reg_bytes(ops[1], evaluate(ops[2], symbols))
+    else:
+        return None
+    return (kind, far + (min(covered),), covered) if covered else None
 
 
 def callee_saved_violations(rows, aliases, symbols):
-    """r4-r13 written in a function without a store of the incoming value before the first write
-    and a load back into it afterwards. Reading the new value is not enough: that doesn't restore it."""
-    first_write, saved, restored = {}, set(), set()
-    for _, _, mnem, operands, _ in rows:
+    """C ABI preservation in one function. Returns (register numbers, return address clobbered).
+
+    r4-r13, per byte: the incoming value has to be stored before the first write, and a load from
+    the same place has to bring it back on every path that reaches a return. Reading the new value,
+    loading from somewhere else, restoring one byte of a register that was overwritten whole, or
+    restoring on only one branch all leave the caller's value changed.
+    r3.w2: a write (a nested call) needs the return address saved somewhere first."""
+    nodes, label_at, waiting = [], {}, []
+    saved, touched, ret_saved, ret_clobbered = {}, set(), False, False
+    for _, label, mnem, operands, _ in rows:
+        if label:
+            waiting.append(label)
         if not mnem or mnem.startswith("."):
             continue
+        for name in waiting:
+            label_at[name] = len(nodes)
+        waiting = []
         ops = [aliases.get(o.lstrip("&"), o) for o in operands]
-        if mnem in STORES and len(ops) >= 4:
-            size = evaluate(ops[3], symbols)
-            saved |= {r for r in reg_span(ops[0], size) if r not in first_write}
-        for r in reg_access(mnem, ops, symbols)[2]:
-            if 4 <= r <= 13:
-                first_write.setdefault(r, mnem)
-                if mnem in LOADS and r in saved:
-                    restored.add(r)
-    return {r for r in first_write if r not in saved or r not in restored}
+        reads, writes, _ = reg_access(mnem, ops, symbols)
+        xfer = block_transfer(mnem, ops, symbols)
+        if xfer and xfer[0] != "store":
+            wrote = xfer[2]
+        elif mnem in ("ZERO", "FILL") and len(ops) >= 2:
+            wrote = reg_bytes(ops[0], evaluate(ops[1], symbols))
+        elif mnem == "CALL":
+            wrote = set(RETURN_BYTES)          # CALL is JAL r3.w2
+        else:
+            wrote = set().union(*(reg_bytes(w) for w in writes))
+        if mnem not in BRANCH_LIKE and any(reg_bytes(r) & RETURN_BYTES for r in reads):
+            ret_saved = True
+        if wrote & RETURN_BYTES and not ret_saved:
+            ret_clobbered = True
+        restored = set()
+        if xfer and xfer[0] != "store":
+            restored = {b for b in xfer[2] if saved.get(b) == xfer[1]}
+        if xfer and xfer[0] != "load":
+            for b in xfer[2] & CALLEE_BYTES - touched:
+                saved[b] = xfer[1]
+        touched |= wrote
+        nodes.append(((wrote & CALLEE_BYTES) - restored, restored, mnem, ops[0] if ops else None))
+
+    def successors(i):
+        """Next instructions, or None when this one returns to the caller."""
+        _, _, mnem, target = nodes[i]
+        if mnem == "RET" or (mnem == "JMP" and target and REG_RE.fullmatch(target)):
+            return None
+        if mnem == "HALT":
+            return []
+        if mnem in ("JMP", "QBA"):
+            return [label_at[target]] if target in label_at else []   # a jump out is not a return
+        if mnem in QUICK_BRANCHES and target in label_at:
+            return [i + 1, label_at[target]]
+        return [i + 1]
+
+    # Forward pass over the branches: which changed bytes can still be unrestored at each instruction.
+    end, leaked = len(nodes), set()
+    dirty, work = {0: set()}, [0]
+    while work:
+        i = work.pop()
+        if i == end:                           # running off the end of the function
+            leaked |= dirty[i]
+            continue
+        changed, restored = nodes[i][0], nodes[i][1]
+        out = (dirty[i] - restored) | changed
+        following = successors(i)
+        if following is None:
+            leaked |= out
+            continue
+        for nxt in following:
+            if nxt not in dirty or not out <= dirty[nxt]:
+                dirty[nxt] = dirty.get(nxt, set()) | out
+                work.append(nxt)
+    return sorted({b // 4 for b in leaked}), ret_clobbered
 
 
 def register_checks(lines, blocks, aliases, symbols, opaque, c_abi):
@@ -483,11 +576,15 @@ def register_checks(lines, blocks, aliases, symbols, opaque, c_abi):
                 warnings.append((unset[0][0], "PRU-C001", f"{b['name']}: reads {', '.join(r for _, r in unset)} without "
                                  "writing them; if the caller supplies them, name them in the header"))
             if c_abi:
-                unsaved = callee_saved_violations(b["rows"], aliases, symbols)
+                unsaved, ret_clobbered = callee_saved_violations(b["rows"], aliases, symbols)
                 if unsaved:
                     warnings.append((b["line"], "PRU-C004", f"{b['name']}: writes "
-                                     f"{', '.join(f'r{r}' for r in sorted(unsaved))} without saving the incoming value "
-                                     "first and loading it back afterwards; the C ABI needs r3.w2-r13 preserved"))
+                                     f"{', '.join(f'r{r}' for r in unsaved)} without saving the incoming value "
+                                     "first and loading it back before every return; the C ABI needs r4-r13 "
+                                     "preserved"))
+                if ret_clobbered:
+                    warnings.append((b["line"], "PRU-C004", f"{b['name']}: writes r3.w2 (a nested call) without "
+                                     "saving the return address first"))
     return warnings
 
 

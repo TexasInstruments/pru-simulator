@@ -244,7 +244,7 @@ bad.asm: 2 error(s), 2 warning(s)          # exit 1</pre>
         <tbody>
           <tr><td>column1, immediate, register, label</td><td>Errors: mnemonic in column 1, literal outside operand range, invalid register or field, branch to undefined label</td></tr>
           <tr><td>extern, r31event, nohalt</td><td>Warnings: unresolved JMP/CALL symbol, R31 write without bit 5, no halt or return</td></tr>
-          <tr><td>PRU-C001 · C003 · C004</td><td>Per function: read before write (header-named inputs count), discarded write, and with <code>--c-abi</code> r4–r13 written but never read</td></tr>
+          <tr><td>PRU-C001 · C003 · C004</td><td>Per function: read before write (header-named inputs count), discarded write, and with <code>--c-abi</code> r4–r13 written without a save and a reload before every return, or r3.w2 overwritten without saving it</td></tr>
           <tr><td>PRU-M001 · M003 · M004 · M005</td><td>Macros and includes: undefined macro, self-invoking, redefined with a different body, unresolved <code>.include</code> (search folders via <code>-I</code>)</td></tr>
           <tr><td>tab, width, todo, include, PRU-D001–D003</td><td><code>--openpru</code> only: style rules and function or macro headers (Description, PEAK cycles, Parameters, Registers modified, Returns, Pseudo code)</td></tr>
         </tbody>

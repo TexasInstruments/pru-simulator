@@ -78,7 +78,10 @@ def config_clock_mhz(cfg):
 
 
 def with_clock(cfg, clock_mhz):
-    """Copy CFG with pru_clock_mhz set to CLOCK_MHZ; returns the temporary file's path."""
+    """Copy CFG with pru_clock_mhz set to CLOCK_MHZ; returns the temporary file's path.
+
+    The copy goes next to CFG: the simulator finds the target's constant table (and anything else
+    it reads) relative to the config's folder, so a copy elsewhere would run with an empty table."""
     with open(cfg, encoding="utf-8") as fh:
         text = fh.read()
     line = f"pru_clock_mhz = {clock_mhz:g}"
@@ -89,7 +92,7 @@ def with_clock(cfg, clock_mhz):
                           count=1, flags=re.MULTILINE)
         if not n:
             raise ValueError(f"{cfg} has no [device] section to set the clock in")
-    fd, path = tempfile.mkstemp(suffix=".cfg", prefix="pru_sim_")
+    fd, path = tempfile.mkstemp(suffix=".cfg", prefix=".pru_sim_clock_", dir=os.path.dirname(cfg))
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(text)
     return path
@@ -105,7 +108,11 @@ def resolve_config(args, sim_dir):
         if args.clock_mhz <= 0:
             print("--clock-mhz must be greater than zero")
             return None
-        tmp = with_clock(cfg, args.clock_mhz)
+        try:
+            tmp = with_clock(cfg, args.clock_mhz)
+        except OSError as exc:
+            print(f"--clock-mhz needs to write a temporary config next to {cfg}: {exc.strerror}")
+            return None
         return tmp, args.clock_mhz, tmp
     return cfg, config_clock_mhz(cfg), None
 
