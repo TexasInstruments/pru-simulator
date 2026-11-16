@@ -4,6 +4,7 @@ import asyncio
 import configparser
 import copy
 import json
+import logging
 import math
 import os
 import pathlib
@@ -560,6 +561,7 @@ PDM_PROGRAMS_NOTICE = ("Audio Run loaded pdm_gen.asm on PRU1 and pdm_rx.asm on P
                        "(Simulator-view programs replaced)")
 PDM_CORES = ("pru0", "pru1")      # the cores the Audio demo runs
 OWNERSHIP_ERROR = "Execution stopped or controlled by another tab"
+_log = logging.getLogger(__name__)
 _pdm = None            # PdmDemo of the current simulator, or None
 _pdm_clips = None      # {"left", "right", "swap"} of the last good setup
 
@@ -685,7 +687,7 @@ async def _pdm_run(websocket, msg) -> None:
     global _execution_owner, _execution_mode, _last_observer_publish
     extra = {"run_id": msg["run_id"]} if "run_id" in msg else {}
     if _execution_owner is not None and _execution_owner is not websocket:
-        await websocket.send_json({"type": "error", "errors": [OWNERSHIP_ERROR]})
+        await _pdm_error(websocket, OWNERSHIP_ERROR)
         return
     if _pdm_ready() and _pdm.done:
         if _execution_owner is not None:
@@ -714,6 +716,9 @@ async def _pdm_run(websocket, msg) -> None:
                                        "text": f"Run-ahead stopped mid-run: {'; '.join(exc.reasons)}"})
         elif not isinstance(exc, RuntimeError):
             raise
+        else:
+            # The browser only gets the message; keep where it came from.
+            _log.warning("PDM run chunk failed", exc_info=exc)
         await _pdm_error(websocket, str(exc))
         await websocket.send_json(_pdm_status_message(extra))
         return
@@ -737,7 +742,7 @@ async def _handle_pdm(websocket, action: str, msg: dict) -> None:
     """The pdm_* websocket actions (see the PDM section of the design spec)."""
     global _pdm
     if action in {"pdm_setup", "pdm_reset"} and _execution_owner not in (None, websocket):
-        await websocket.send_json({"type": "error", "errors": [OWNERSHIP_ERROR]})
+        await _pdm_error(websocket, OWNERSHIP_ERROR)
     elif action == "pdm_setup":
         swap = msg.get("swap", False)
         if not isinstance(swap, bool):
@@ -1225,6 +1230,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 # idle skip while anything is capturing.
                 idle_skip = sim.idle_skip and not capture
                 try:
+                    # max_steps is the size of one chunk of a continuous Run,
+                    # not an instruction limit: with the idle skip a skipped
+                    # span counts as one step, so a chunk covers more time.
+                    # (MCP run_until is the exact one, see its max_steps.)
                     steps = 0
                     while steps < max_steps and not pru.halted and pru.pc < len(pru.instructions):
                         if idle_skip:

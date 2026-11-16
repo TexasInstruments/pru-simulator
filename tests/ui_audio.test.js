@@ -377,10 +377,13 @@ test('server errors land in the view error line and end the run', async () => {
   assert.equal(elements.get('audio-error').textContent, 'unknown clip');
   assert.equal(elements.get('audio-error').hidden, false);
   assert.ok(!elements.get('audio-run').disabled);
-  // The ownership error carries no tag; while a request is pending it belongs to the view.
+  // An untagged error is the Simulator view's, also while a request of ours is pending.
   sent.length = 0;
   elements.get('audio-run').fire('click');
-  assert.equal(audio.handleMessage({ type: 'error', errors: ['Execution stopped or controlled by another tab'] }), true);
+  assert.equal(audio.handleMessage({ type: 'error', errors: ['assembly failed'] }), false);
+  assert.equal(elements.get('audio-error').hidden, true);
+  // The ownership refusal of a pdm_* request carries the tag.
+  assert.equal(audio.handleMessage({ type: 'error', tag: 'pdm', errors: ['Execution stopped or controlled by another tab'] }), true);
   assert.match(elements.get('audio-error').textContent, /another tab/);
   assert.ok(!elements.get('audio-run').disabled);
   // With nothing pending the error is not ours.
@@ -501,16 +504,18 @@ test('any error answering a pending request ends it and stops the loop', async (
   audio.handleMessage(status({ running: true, run_id: sent.at(-1).run_id }));   // loop is going
   assert.ok(elements.get('audio-run').disabled);
   const before = sent.length;
-  assert.equal(audio.handleMessage({ type: 'error', errors: ['core must be one of [pru0]'] }), true);
-  assert.equal(elements.get('audio-error').textContent, 'core must be one of [pru0]');
+  assert.equal(audio.handleMessage({ type: 'error', errors: ['core must be one of [pru0]'] }), false);
+  assert.ok(elements.get('audio-run').disabled, 'a Simulator error does not end the loop');
+  assert.equal(audio.handleMessage({ type: 'error', tag: 'pdm', errors: ['PCM ring 0 overrun: 3 samples lost'] }), true);
+  assert.equal(elements.get('audio-error').textContent, 'PCM ring 0 overrun: 3 samples lost');
   assert.ok(!elements.get('audio-run').disabled && elements.get('audio-stop').disabled, 'loop ended');
   audio.handleMessage(status({ running: true, run_id: sent.at(-1).run_id }));   // late chunk reply
   assert.equal(sent.length, before, 'no further pdm_run');
-  // A pending reset is answered by an untagged error too.
+  // A refused reset is answered with the tagged ownership error.
   audio.handleMessage(status({ done: false }));
   elements.get('audio-reset').fire('click');
   assert.equal(sent.at(-1).action, 'pdm_reset');
-  assert.equal(audio.handleMessage({ type: 'error', errors: ['Execution stopped or controlled by another tab'] }), true);
+  assert.equal(audio.handleMessage({ type: 'error', tag: 'pdm', errors: ['Execution stopped or controlled by another tab'] }), true);
   assert.ok(!elements.get('audio-reset').disabled);
 });
 

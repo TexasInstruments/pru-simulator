@@ -599,12 +599,9 @@
           else onError(msg.errors);
           return true;
         }
-        // The server answers a refused request (another tab owns execution, ...) with an
-        // untagged error. While one of our requests is pending it is the answer to that.
-        if (running || pendingStart || pendingRun !== null || pendingReset) {
-          onError(msg.errors);
-          return true;
-        }
+        // Every answer to a pdm_* request carries the tag, a refusal because another tab
+        // owns execution included. An untagged error belongs to the Simulator view, also
+        // while one of our requests is pending.
       }
       return false;
     }

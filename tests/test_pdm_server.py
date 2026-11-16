@@ -185,7 +185,7 @@ def test_second_client_cannot_run(server):
         assert srv._execution_owner is not None
         second.send_json({"action": "pdm_run", "run_id": 9})
         msg = _until(second, "error")[-1]
-        assert msg == {"type": "error",
+        assert msg == {"type": "error", "tag": "pdm",      # tagged: the Audio view's, not the Simulator's
                        "errors": ["Execution stopped or controlled by another tab"]}
         before = srv._pdm.status()["audio_ms"]
         second.send_json({"action": "pdm_history"})     # reading stays allowed
