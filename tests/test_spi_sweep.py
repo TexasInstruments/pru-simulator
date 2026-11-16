@@ -28,7 +28,7 @@ def _rates():
 
 
 def _runtime(sim_config, mode, core, k, d, hop=HOP_DELAY_CYCLES):
-    sim = Simulator(sim_config(pru_clock_mhz=core, pru1_clock_mhz=core))
+    sim = Simulator(sim_config(pru_clock_mhz=core))
     rt = SpiLinkRuntime(sim, SpiConfig(mode, core, k, d), hop_delay=hop)
     rt.load_controller()
     rt.load_peripheral()
@@ -112,7 +112,7 @@ def _subset(mode):
 @pytest.mark.parametrize("mode", [0, 1])
 def test_supported_json_matches_fresh_sweep_subset(sim_config, mode):
     for want in _subset(mode):
-        cfg = sim_config(pru_clock_mhz=want["core_mhz"], pru1_clock_mhz=want["core_mhz"])
+        cfg = sim_config(pru_clock_mhz=want["core_mhz"])
         got = spi_sweep.sweep_row(mode, want["core_mhz"], want["half_k"],
                                   want["hop_delay"], config_path=cfg)
         assert got["pass"] == want["pass"], want["id"]

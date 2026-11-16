@@ -51,7 +51,7 @@ _SAMPLE_LOOP = "\n".join(["mov r1, r31"] * 80 + ["halt"])
 
 
 def test_default_delay_is_zero_and_unchanged(sim_config):
-    sim = Simulator(sim_config(pru_clock_mhz=333, pru1_clock_mhz=333))
+    sim = Simulator(sim_config(pru_clock_mhz=333))
     assert sim.get_gpi_delay("pru0") == 0
     assert sim.load("pru0", "wbs r31, 14\nset r30, r30, 16\nhalt") == []
     raise_at = 5
@@ -63,7 +63,7 @@ def test_default_delay_is_zero_and_unchanged(sim_config):
 def test_delay_shifts_r31_view(sim_config):
     seen = {}
     for delay in (0, 3):
-        sim = Simulator(sim_config(pru_clock_mhz=333, pru1_clock_mhz=333))
+        sim = Simulator(sim_config(pru_clock_mhz=333))
         sim.set_gpi_delay("pru1", delay)
         assert sim.load("pru1", _SAMPLE_LOOP) == []
         seen[delay] = _sample_r31_log(sim, "pru1", 100, raise_at=10, pin=5)
@@ -71,7 +71,7 @@ def test_delay_shifts_r31_view(sim_config):
 
 
 def test_delay_is_per_core(sim_config):
-    sim = Simulator(sim_config(pru_clock_mhz=333, pru1_clock_mhz=333))
+    sim = Simulator(sim_config(pru_clock_mhz=333))
     sim.set_gpi_delay("pru1", 4)
     assert sim.get_gpi_delay("pru1") == 4
     assert sim.get_gpi_delay("pru0") == 0
@@ -81,23 +81,23 @@ def test_delay_is_per_core(sim_config):
 
 @pytest.mark.parametrize("bad", [-1, 17, 2.0, True])
 def test_rejects_bad_values(sim_config, bad):
-    sim = Simulator(sim_config(pru_clock_mhz=333, pru1_clock_mhz=333))
+    sim = Simulator(sim_config(pru_clock_mhz=333))
     with pytest.raises(ValueError):
         sim.set_gpi_delay("pru0", bad)
     assert sim.get_gpi_delay("pru0") == 0
 
 
 def test_delay_survives_hard_reset(sim_config):
-    sim = Simulator(sim_config(pru_clock_mhz=333, pru1_clock_mhz=333))
+    sim = Simulator(sim_config(pru_clock_mhz=333))
     sim.set_gpi_delay("pru0", 4)
     sim.hard_reset()
     assert sim.get_gpi_delay("pru0") == 4
-    fresh = Simulator(sim_config(pru_clock_mhz=333, pru1_clock_mhz=333))
+    fresh = Simulator(sim_config(pru_clock_mhz=333))
     assert fresh.get_gpi_delay("pru0") == 0
 
 
 def test_gpi_delay_survives_snapshot_restore(sim_config):
-    sim = Simulator(sim_config(pru_clock_mhz=333, pru1_clock_mhz=333))
+    sim = Simulator(sim_config(pru_clock_mhz=333))
     sim.set_gpi_delay("pru0", 4)
     assert sim.load("pru0", _SAMPLE_LOOP) == []
     pru = sim.cores["pru0"]
@@ -141,7 +141,7 @@ def test_gpi_delay_survives_snapshot_restore(sim_config):
 
 
 def _calibration_edges(sim_config, delay):
-    sim = Simulator(sim_config(pru_clock_mhz=333, pru1_clock_mhz=333))
+    sim = Simulator(sim_config(pru_clock_mhz=333))
     sim.add_gpio_wire("pru0", 16, "pru1", 1)
     sim.set_gpio_drive_mask("pru0", 1 << 16)
     sim.set_gpi_delay("pru1", delay)

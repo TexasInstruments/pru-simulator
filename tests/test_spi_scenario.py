@@ -14,12 +14,12 @@ from ui.server import app
 
 client = TestClient(app)
 SPI = "SPI multi-core (controller + peripheral)"
-SSI_MULTI = "SSI multi-core (emulator + reader)"
+SSI_MULTI = "SSI (encoder PRU + reader)"
 MEMORY_CFG = Path(__file__).parents[1] / "memory.cfg"
 
 
 def _use_config(monkeypatch, path):
-    """Point the server at a throw-away config (``_configured_clocks`` and
+    """Point the server at a throw-away config (``_configured_clock`` and
     ``_build_session_sim`` read ``srv.config_path``) and a fresh simulator
     built from it. The repo memory.cfg is never used: its clock is whatever
     the user last picked in the dashboard."""
@@ -41,14 +41,14 @@ def fresh_sim(monkeypatch, sim_config):
     """Server simulator at a configured 200 MHz: the default SPI rate (25 MHz
     mode 1) needs no rebuild. Assert on ``srv.sim`` after any load that may
     rebuild the simulator; this one is then discarded."""
-    return _use_config(monkeypatch, sim_config(pru_clock_mhz=200, pru1_clock_mhz=200))
+    return _use_config(monkeypatch, sim_config(pru_clock_mhz=200))
 
 
 @pytest.fixture
 def sim_250(monkeypatch, sim_config):
     """Server simulator at a configured 250 MHz (the committed memory.cfg's
     clock): loading the SPI default rate must rebuild at 200 MHz."""
-    return _use_config(monkeypatch, sim_config(pru_clock_mhz=250, pru1_clock_mhz=250))
+    return _use_config(monkeypatch, sim_config(pru_clock_mhz=250))
 
 
 def _drain_until(ws, kind):
@@ -313,8 +313,8 @@ def test_supported_table_sent_once_not_in_state(fresh_sim):
 def test_leaving_after_setup_restores_configured_clock(fresh_sim, leave):
     import ui.server as srv
     before = hashlib.sha256(MEMORY_CFG.read_bytes()).hexdigest()
-    configured = srv._configured_clocks()
-    fast = next(r for r in load_supported()[1] if r["core_mhz"] != configured[0])
+    configured = srv._configured_clock()
+    fast = next(r for r in load_supported()[1] if r["core_mhz"] != configured)
     with client.websocket_connect("/ws") as ws:
         _load_spi(ws)
         _state_after(ws, "spi_setup", mode=1, spi_mhz=fast["spi_mhz"])
@@ -322,7 +322,8 @@ def test_leaving_after_setup_restores_configured_clock(fresh_sim, leave):
         ws.send_json({"action": leave, **_LEAVE_EXTRA.get(leave, {})})
         while _receive(ws)["type"] != "state":
             pass
-        assert (srv.sim.cores["pru0"].clock_mhz, srv.sim.cores["pru1"].clock_mhz) == configured
+        assert srv.sim._pru_clock_mhz == configured
+        assert {c.clock_mhz for c in srv.sim.cores.values()} == {configured}
         assert srv.sim.get_gpi_delay("pru0") == 0
     assert hashlib.sha256(MEMORY_CFG.read_bytes()).hexdigest() == before
 
@@ -407,32 +408,6 @@ def test_spi_view_reports_measured_fetch(fresh_sim):
     spi_send(fresh_sim, 3, 2, "count")
     idle = next(r for r in spi_demo_state(fresh_sim)["timing"] if r["symbol"] == "tIDLE")
     assert idle["derived"] is False and idle["cycles"] == 12
-
-
-def test_clock_speed_group0_pins_configured_not_session_clock(monkeypatch, tmp_path):
-    """put_clock_speed (group 0) pins an inherited pru1 clock at the configured
-    rate, never at an SPI session's clock."""
-    import configparser
-    import shutil
-    import ui.server as srv
-    cfg = configparser.ConfigParser()
-    cfg.read(MEMORY_CFG)
-    cfg["device"]["pru_clock_mhz"] = "250"
-    cfg.remove_option("device", "pru1_clock_mhz")
-    path = tmp_path / "memory.cfg"
-    with open(path, "w") as f:
-        cfg.write(f)
-    shutil.copytree(MEMORY_CFG.parent / "config", tmp_path / "config")
-    _use_config(monkeypatch, str(path))
-    with client.websocket_connect("/ws") as ws:
-        _load_spi(ws)                      # session sim at 200 MHz
-        assert srv.sim._pru1_clock_mhz == 200
-    res = client.put("/config/clock_speed", json={"mhz": 300, "group": 0})
-    assert res.status_code == 200, res.text
-    out = configparser.ConfigParser()
-    out.read(path)
-    assert out["device"]["pru_clock_mhz"] == "300"
-    assert out["device"]["pru1_clock_mhz"] == "250"
 
 
 def test_monitor_edges_bounded_and_timing_survives(fresh_sim):

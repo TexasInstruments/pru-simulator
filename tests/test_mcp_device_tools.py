@@ -68,12 +68,11 @@ def test_attach_ssi_preset_and_report_layout_through_generic_tools():
     assert [d["name"] for d in mcp.pru_device_state()["devices"]] == ["axis"]
 
 
-def test_ssi_profile_defaults_to_exact_selected_core_clock(tmp_path):
+def test_ssi_profile_defaults_to_exact_core_clock(tmp_path):
     config = tmp_path / "clock.cfg"
     config.write_text(
         "[device]\n"
-        "pru_clock_mhz = 200.123456789123456\n"
-        "pru1_clock_mhz = 201.987654321987654\n",
+        "pru_clock_mhz = 200.123456789123456\n",
         encoding="utf-8",
     )
     mcp = PRUSimulatorMCP(config_path=str(config))
@@ -87,7 +86,7 @@ def test_ssi_profile_defaults_to_exact_selected_core_clock(tmp_path):
     axis0, axis1 = mcp.sim.device_bus.devices
 
     assert axis0.core_clock_hz == Fraction("200.123456789123456") * 1_000_000
-    assert axis1.core_clock_hz == Fraction("201.987654321987654") * 1_000_000
+    assert axis1.core_clock_hz == axis0.core_clock_hz
 
 
 @pytest.mark.parametrize("initially_output", [True, False])

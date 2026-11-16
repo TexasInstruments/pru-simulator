@@ -28,7 +28,7 @@ MODES = [0, 1]
 
 
 def _link(sim_config, mode, core=200, k=10, d=None):
-    sim = Simulator(sim_config(pru_clock_mhz=core, pru1_clock_mhz=core))
+    sim = Simulator(sim_config(pru_clock_mhz=core))
     cfg = SpiConfig(mode, core, k, MISO_DELAY[(mode, core, k)] if d is None else d)
     rt = SpiLinkRuntime(sim, cfg)
     rt.load_controller()
@@ -403,7 +403,7 @@ def _stim_frame(mode, data19, t, k, abort_after=None):
 def _run_stim(sim_config, mode, k, frames, gap, aborts=()):
     """Drive PRU1's GPI cycle by cycle; /CS high for ``gap`` cycles between
     frames. Returns the runtime after a long idle tail."""
-    sim = Simulator(sim_config(pru_clock_mhz=300, pru1_clock_mhz=300))
+    sim = Simulator(sim_config(pru_clock_mhz=300))
     rt = SpiLinkRuntime(sim, SpiConfig(mode, 300, 3, 16))
     pru1 = sim.cores["pru1"]
     rt.load_peripheral()                 # hop delay 5 on PRU1's GPI
@@ -508,7 +508,7 @@ def test_min_cs_gap_after_error_and_abort(sim_config, mode, k):
 
 def test_waits_for_cs_idle_before_arming(sim_config):
     """/CS low at start-up is not a frame: PRU1 first waits for /CS high."""
-    sim = Simulator(sim_config(pru_clock_mhz=200, pru1_clock_mhz=200))
+    sim = Simulator(sim_config(pru_clock_mhz=200))
     rt = SpiLinkRuntime(sim, SpiConfig(1, 200, 10, 25))
     rt.load_peripheral()                  # not wired: PRU1 GPI6 (/CS) reads 0
     for _ in range(200):
@@ -519,7 +519,7 @@ def test_waits_for_cs_idle_before_arming(sim_config):
 
 
 def test_helpers_validate(sim_config):
-    sim = Simulator(sim_config(pru_clock_mhz=200, pru1_clock_mhz=200))
+    sim = Simulator(sim_config(pru_clock_mhz=200))
     rt = SpiLinkRuntime(sim, SpiConfig(1, 200, 10, 25))
     with pytest.raises(ValueError):
         rt.preload_peripheral_tx(0x80, bytes(16))

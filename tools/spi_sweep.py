@@ -61,7 +61,6 @@ def make_config(core: int, workdir: str) -> str:
     if "device" not in cfg:
         cfg["device"] = {}
     cfg["device"]["pru_clock_mhz"] = str(core)
-    cfg["device"]["pru1_clock_mhz"] = str(core)
     path = os.path.join(workdir, "memory.cfg")
     with open(path, "w") as f:
         cfg.write(f)

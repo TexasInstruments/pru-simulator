@@ -41,7 +41,7 @@ def test_render_source_replaces_block(role):
 @pytest.mark.parametrize("path,core", [(CONTROLLER_SOURCE, "pru0"),
                                        (PERIPHERAL_SOURCE, "pru1")])
 def test_file_assembles_unmodified(sim_config, path, core):
-    sim = Simulator(sim_config(pru_clock_mhz=200, pru1_clock_mhz=200))
+    sim = Simulator(sim_config(pru_clock_mhz=200))
     errors = sim.load(core, path.read_text(encoding="utf-8"),
                       include_paths=[str(path.parent)])
     assert errors == []
@@ -55,7 +55,7 @@ def test_default_config_frame_passes_unmodified(sim_config, monkeypatch):
         CONTROLLER_SOURCE if role == "controller" else PERIPHERAL_SOURCE
     ).read_text(encoding="utf-8"))
     cfg = _default_cfg()
-    sim = Simulator(sim_config(pru_clock_mhz=cfg.core_mhz, pru1_clock_mhz=cfg.core_mhz))
+    sim = Simulator(sim_config(pru_clock_mhz=cfg.core_mhz))
     rt = SpiLinkRuntime(sim, cfg)
     rt.load_controller()
     rt.load_peripheral()

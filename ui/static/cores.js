@@ -28,7 +28,7 @@ globalThis.PruCores = (() => {
     shown = used.filter(core => Array.isArray(shown) && shown.includes(core));
     if (!shown.length) shown = [used[0]];
     if (!shown.includes(focus)) focus = shown[0];
-    return { used, shown, focus, pinned: source.pinned === true };
+    return { used, shown, focus };
   }
 
   function transition(state, action, available) {
@@ -70,9 +70,6 @@ globalThis.PruCores = (() => {
         break;
       case 'show-all':
         next.shown = next.used.slice();
-        break;
-      case 'pin':
-        next.pinned = !next.pinned;
         break;
       case 'reset':
         return normalize(null, cores);

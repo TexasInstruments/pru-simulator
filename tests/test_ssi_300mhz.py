@@ -18,7 +18,7 @@ CASES = [
 
 @pytest.fixture
 def config_300mhz(sim_config):
-    return sim_config(pru_clock_mhz=300, pru1_clock_mhz=300)
+    return sim_config(pru_clock_mhz=300)
 
 
 @pytest.mark.parametrize(("preset", "position", "error", "delay"), CASES)

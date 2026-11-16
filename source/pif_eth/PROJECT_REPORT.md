@@ -389,7 +389,7 @@ frames silently truncated to a fraction of their expected length.
 
 **`pif_eth_tx_n2_skipchecks.asm` must only ever be run with
 `pru_clock_mhz=250` and TXCFG div_factor=1 (n=2).** If `memory.cfg`'s
-`pru_clock_mhz` or the firmware's TXCFG divider ever changes, this firmware
+`pru_clock_mhz` (the single frequency shared by every core) or the firmware's TXCFG divider ever changes, this firmware
 will not error or hang loudly — it will **silently produce wrong data**
 (overrun, not a crash) unless re-validated at the new clock/divider
 combination first.

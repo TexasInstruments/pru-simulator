@@ -16,7 +16,7 @@ ADDR = 0x05
 
 
 def _sim(sim_config, core):
-    return Simulator(sim_config(pru_clock_mhz=core, pru1_clock_mhz=core))
+    return Simulator(sim_config(pru_clock_mhz=core))
 
 
 def _first_valid_delay(k, start=1):

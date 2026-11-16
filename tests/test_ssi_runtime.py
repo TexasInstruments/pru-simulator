@@ -101,26 +101,25 @@ def test_reader_runtime_preserves_data_pin_that_was_initially_an_input():
     assert sim.io("pru1")["gpo_drive_mask"] == initial_mask
 
 
-def test_reader_runtime_uses_exact_selected_core_clock(tmp_path):
+def test_reader_runtime_uses_exact_core_clock(tmp_path):
     config = tmp_path / "clock.cfg"
     config.write_text(
         "[device]\n"
-        "pru_clock_mhz = 200.123456789123456\n"
-        "pru1_clock_mhz = 201.987654321987654\n",
+        "pru_clock_mhz = 200.123456789123456\n",
         encoding="utf-8",
     )
     sim = Simulator(str(config))
 
     runtime = SSIRuntime(sim, core="pru1")
 
-    assert runtime.encoder.core_clock_hz == Fraction("201.987654321987654") * 1_000_000
+    assert runtime.encoder.core_clock_hz == Fraction("200.123456789123456") * 1_000_000
     runtime.close()
 
 
 def test_documented_300mhz_run_uses_copied_config_and_constants_sidecar(tmp_path):
     project = Path(__file__).resolve().parents[1]
     data = (project / "memory.cfg").read_bytes()
-    data = re.sub(rb"(?m)^(pru1?_clock_mhz\s*=)[^\r\n]*", rb"\g<1> 300", data)
+    data = re.sub(rb"(?m)^(pru_clock_mhz\s*=)[^\r\n]*", rb"\g<1> 300", data)
     config = tmp_path / "memory.cfg"
     config.write_bytes(data)
     sidecar = tmp_path / "config"

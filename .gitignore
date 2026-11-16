@@ -16,3 +16,6 @@ references/endat.gtar
 references/pdsp_v2p4p8.docx
 references/icss_g_scu_sd_functional_spec.md
 references/endat/ENDAT_INTERFACE_SPEC.md
+
+# Processor-selector runtime copies (session-only)
+.pru_runtime/
