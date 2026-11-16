@@ -553,7 +553,8 @@ async def put_clock_speed(request: Request):
 PDM_CLIPS_DIR = SOURCE_DIR / "pdm" / "clips"
 PDM_CHUNK_CYCLES = 400_000          # PRU0 cycles per pdm_run (tests lower it)
 PDM_CLOCK_MHZ = 200
-PDM_CLOCK_NOTICE = "PRU clocks set to 200 MHz for the PDM demo"
+PDM_CLOCK_NOTICE = ("PRU clock set to 200 MHz for the PDM demo; it stays at 200 MHz "
+                    "afterwards (saved in the config)")
 PDM_NOT_SET_UP = "PDM demo is not set up; send pdm_setup first"
 PDM_PROGRAMS_NOTICE = ("Audio Run loaded pdm_gen.asm on PRU1 and pdm_rx.asm on PRU0 "
                        "(Simulator-view programs replaced)")

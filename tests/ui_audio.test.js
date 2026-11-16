@@ -262,7 +262,7 @@ test('Run sets up, then re-sends pdm_run while running and not done', async () =
   elements.get('audio-swap').fire('change');
   elements.get('audio-run').fire('click');
   assert.deepEqual(sent, [{ action: 'pdm_setup', clip_left: 'hello.wav', clip_right: 'chirp.wav', swap: true }]);
-  audio.handleMessage({ type: 'pdm_notice', text: 'PRU clocks set to 200 MHz for the PDM demo' });
+  audio.handleMessage({ type: 'pdm_notice', text: 'PRU clock set to 200 MHz for the PDM demo; it stays at 200 MHz afterwards (saved in the config)' });
   audio.handleMessage({ type: 'state', core: 'pru0' });                 // clock change side effect: ignored
   assert.equal(sent.length, 1);
   audio.handleMessage(status({ audio_ms: 0, swap: true }));              // setup reply
@@ -406,7 +406,7 @@ test('the notices of one setup are all shown, a later one replaces them', async 
   const { audio, elements } = runSetup();
   await flush();
   elements.get('audio-run').fire('click');
-  const clock = 'PRU clocks set to 200 MHz for the PDM demo';
+  const clock = 'PRU clock set to 200 MHz for the PDM demo; it stays at 200 MHz afterwards (saved in the config)';
   const programs = 'Audio Run loaded pdm_gen.asm on PRU1 and pdm_rx.asm on PRU0 (Simulator-view programs replaced)';
   audio.handleMessage({ type: 'pdm_notice', text: clock });
   audio.handleMessage({ type: 'pdm_notice', text: programs });

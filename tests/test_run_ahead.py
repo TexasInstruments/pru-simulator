@@ -137,7 +137,7 @@ def test_repeated_calls_continue_where_the_last_stopped(nominal_config):
 
 def test_halted_producer_lets_the_consumer_finish(nominal_config):
     halting = PDM_DELAY_PRODUCER_ASM.read_text().replace(
-        "    qba   LOOP\n", "    add r20, r20, 1\n    qbgt LOOP, r20, 250\n    halt\n")
+        "    qba   BIT_LOOP\n", "    add r20, r20, 1\n    qbgt BIT_LOOP, r20, 250\n    halt\n")
     sim, _ = _pair(nominal_config, halting)
     out = sim.run_ahead("pru1", "pru0", 60_000, **NO_RANGES)
     assert sim.cores["pru1"].halted

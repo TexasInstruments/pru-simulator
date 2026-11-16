@@ -385,7 +385,7 @@ def test_paced_skip_with_busy_follower_is_exact(nominal_config):
 def test_paced_skip_with_follower_as_lead_producer_order_is_exact(nominal_config):
     """Consumer leads, producer follows (halted producer: infinite horizon)."""
     halting = PDM_DELAY_PRODUCER_ASM.read_text().replace(
-        "    qba   LOOP\n", "    add r20, r20, 1\n    qbgt LOOP, r20, 40\n    halt\n")
+        "    qba   BIT_LOOP\n", "    add r20, r20, 1\n    qbgt BIT_LOOP, r20, 40\n    halt\n")
 
     def run(skip, end=None):
         sim, pins = _build(nominal_config, SD_CONSUMER, halting, _link_consumer)
@@ -405,6 +405,28 @@ def test_paced_skip_with_follower_as_lead_producer_order_is_exact(nominal_config
         assert on[key] == off[key], key
     assert on_pins == off_pins
     assert on_sim.cores["pru0"].skipped_cycles > 0
+
+
+def test_paced_skip_reports_an_incomplete_catch_up_like_stepping(nominal_config):
+    """A follower far behind hits the 1000-instruction catch-up limit. The
+    return value, not only the state, is the same with and without skip."""
+    delay = "top:\n    loop  done, 200\n    nop\ndone:\n    qba   top\n"
+    out = {}
+    for skip in (True, False):
+        busy = "top:\n    add   r1, r1, 1\n    qba   top\n"   # a lead that never skips
+        sim, _ = _build(nominal_config, delay, busy)
+        lead = sim.cores["pru1"]
+        while lead.counters.cycles < 3000:      # the follower is now 3000 cycles behind
+            lead.step()
+        results = []
+        for _ in range(6):
+            r = sim.step_paced_many("pru1", ["pru0"], 1, idle_skip=skip)
+            results.append((r["complete"], r.get("reason"), r["lead_steps"],
+                            sim.cores["pru0"].counters.cycles))
+        out[skip] = (results, _state(sim))
+        assert results[0][:2] == (False, "pacing_incomplete")
+    assert out[True] == out[False]
+    assert sim.cores["pru0"].counters.cycles >= 3000
 
 
 def test_poll_with_breakpoint_on_spin_never_skips(nominal_config):

@@ -54,7 +54,7 @@ def cic3(bits: list[int]) -> tuple[int, int, int]:
 def load_pattern_producer(sim: Simulator, core: str = "pru1") -> None:
     with open(PDM_PRODUCER_ASM) as f:
         source = f.read()
-    assert f"0x{PDM_PATTERN >> 16:04X}_{PDM_PATTERN & 0xFFFF:04X}" in source
+    assert f"0x{PDM_PATTERN:08X}" in source
     assert sim.load(core, source) == []
 
 

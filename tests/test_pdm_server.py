@@ -102,7 +102,7 @@ def test_setup_forces_200mhz_with_notice(server):
     assert client.get("/config/clock_speed").json()["mhz"] == 250
     with client.websocket_connect("/ws") as ws:
         msgs = _setup(ws)
-    assert {"type": "pdm_notice", "text": "PRU clocks set to 200 MHz for the PDM demo"} in msgs
+    assert {"type": "pdm_notice", "text": "PRU clock set to 200 MHz for the PDM demo; it stays at 200 MHz afterwards (saved in the config)"} in msgs
     assert client.get("/config/clock_speed").json()["mhz"] == 200
     status = msgs[-1]
     assert status["type"] == "pdm_status" and status["running"] is False

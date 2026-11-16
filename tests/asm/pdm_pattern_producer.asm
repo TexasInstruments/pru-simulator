@@ -15,29 +15,29 @@
 ; to the edge that samples it, so a rising-edge and a falling-edge
 ; sampler on the same data pin see two different, known bit streams.
 ;
-; Timing (1 cycle per instruction, cycles counted from label LOOP):
+; Timing (1 cycle per instruction, cycles counted from label BIT_LOOP):
 ;   +3  data <- bit 2k      (clock low)
 ;   +5  clock rising edge
 ;   +9  data <- bit 2k+1    (clock high)
 ;   +12 clock falling edge
-;   +13 jmp LOOP
+;   +13 jmp BIT_LOOP
 ; One clock period = 14 cycles (70 ns at 200 MHz, ~14.3 MHz PDM clock),
 ; 7 cycles high, 7 cycles low.  The first rising edge is retired by the
-; instruction at LOOP+5 of the first pass.
+; instruction at BIT_LOOP+5 of the first pass.
 ;
 ; tests/test_sd_pin_input.py mirrors PDM_PATTERN and the timing above
 ; (PDM_PATTERN, PDM_PERIOD_CYCLES, rising_bits(), falling_bits());
 ; keep the two in sync.
 ; =============================================================
 
-PDM_PATTERN .set 0xC3A5_9E17
+PDM_PATTERN .set 0xC3A59E17
 
 start:
     ldi32 r2, PDM_PATTERN   ; pattern word
     ldi   r3, 0             ; bit index 0..31
     ldi   r30, 0            ; clock low, data low
 
-LOOP:
+BIT_LOOP:
     lsr   r4, r2, r3        ; +0  r4.t0 = pattern bit 2k
     and   r4, r4, 1         ; +1
     lsl   r4, r4, 1         ; +2  move it to GPO1
@@ -51,4 +51,4 @@ LOOP:
     add   r3, r3, 1         ; +10
     and   r3, r3, 31        ; +11 wrap the bit index
     mov   r30, r4           ; +12 FALLING edge (data unchanged)
-    jmp   LOOP              ; +13
+    jmp   BIT_LOOP              ; +13

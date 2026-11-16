@@ -187,8 +187,10 @@ Prerequisites: Python 3.10 or newer, and from the repository root
    `PRU_SIM_UI_PORT` and `PRU_SIM_UI_HOST` environment variables.
 2. Open the **Audio** tab.
 3. Pick **Gen L** `speech_librivox.wav` and **Gen R** `chirp_lin_100_7000.wav`
-   (or tick **Swap L<->R**). The first setup forces both PRU clocks to 200 MHz and
-   shows a notice.
+   (or tick **Swap L<->R**). The first setup forces the PRU clock to 200 MHz and
+   shows a notice. The clock stays at 200 MHz afterwards: the change is saved in
+   the active config (`memory.cfg` unless another processor is selected), so set
+   it back with the frequency control if you need another rate.
 4. **Run**. The first spectrogram column needs 256 samples (16 ms of audio), so at
    about 1.5 ms of audio per second it appears after about 11 s; after that a new
    8 ms column follows about every 5 s. The progress bar and "ms audio / s" show how
@@ -289,7 +291,7 @@ minutes each). Merge blockers: `test_idle_skip_equivalence_full_pipeline` and
 
 ### Checking the Audio view
 
-`ui/server.py` forces both PRU clocks to 200 MHz by rewriting `memory.cfg` in the
+`ui/server.py` forces the PRU clock to 200 MHz by rewriting `memory.cfg` in the
 project root, so the check tool never starts the repository's own server. It
 copies the working tree to a temporary directory, starts the server there on a
 free port, runs the check, stops the server and reports whether the repository's

@@ -641,12 +641,16 @@ class Simulator:
                     previous_cycles = follow_pru.counters.cycles
                     # idle_candidate() False means step_run would step():
                     # busy code skips the budget arithmetic.
+                    # A skipped span counts its instructions (one cycle each)
+                    # and ends at the limit, so the catch-up stops where
+                    # stepping would and returns the same result.
                     if idle_skip and follow_pru.idle_candidate():
-                        follow_pru.step_run(
-                            self._cycles_before(follower, follow_pru, target))
+                        steps += max(1, follow_pru.step_run(min(
+                            self._cycles_before(follower, follow_pru, target),
+                            _MAX_CATCHUP_STEPS - steps)))
                     else:
                         follow_pru.step()
-                    steps += 1
+                        steps += 1
                     if (follow_pru.counters.cycles == previous_cycles
                             and not follow_pru.halted
                             and follow_pru.pc < len(follow_pru.instructions)):
@@ -895,6 +899,12 @@ class Simulator:
         there for the four required range lists). The producer then never
         reads anything the consumer changes, and the consumer sees the
         producer only through the PdmLink's time-stamped edges.
+
+        For shared RAM that guarantee rests entirely on the four range lists:
+        neither the static scan nor the run-time guard below sees a computed
+        address into memory both cores use. If a list leaves out a region the
+        producer reads and the consumer writes, the run is not refused and the
+        result differs from lockstep.
 
         Each round runs the producer (``step_run`` with ``self.idle_skip``,
         else ``step``) until its time is >= the consumer's time plus
@@ -1227,7 +1237,9 @@ class Simulator:
         return link
 
     def detach_pdm_link(self) -> None:
-        """Remove the PDM link, if any. Pin-mode channels then get no clock."""
+        """Remove the PDM link, if any. Pin-mode channels then get no clock: they
+        stay on "pin" until ``set_sd_source`` changes them (``PdmDemo.teardown``
+        does both)."""
         link = self._pdm_link
         if link is None:
             return
@@ -1304,7 +1316,10 @@ class Simulator:
         Each core's reset also clears its IO port and Peripheral Interface state
         (TX/RX FIFOs, overrun/underrun, RX valid/overflow, busy, line history),
         so the UI's status bits start clean.  Configuration entered in the UI --
-        perif config registers, GPCFG mux, loopback parameters -- is kept.
+        perif config registers, GPCFG mux, loopback parameters -- is kept. So is
+        the PDM wiring: an attached PdmLink stays attached (its queue is
+        cleared) and SD channels keep their source. ``detach_pdm_link`` removes
+        the link; ``set_sd_source`` puts a channel back on "modulator".
         """
         self.iep.hardware_reset()
         for core in self.cores.values():
