@@ -141,6 +141,10 @@ class PRUCore:
         # no instruction runs after a reset: the reset's own pin change then
         # lands at cycle 0, the reset instant.
         self.step_start_cycle: int = -1
+        # An error a device found during an instruction (for example PdmLink's
+        # queue cap, from the R30 write). step() raises it once the instruction
+        # has retired, so the core is never left half-way through one.
+        self.deferred_error: Exception | None = None
         self.iep = None          # set by Simulator when an IEP is present
         self.cycle_observer = cycle_observer
         self.reset_observer = reset_observer
@@ -275,6 +279,7 @@ class PRUCore:
         for acc in self.accelerators.values():
             acc.reset()
         self.step_start_cycle = -1
+        self.deferred_error = None
         self.skipped_cycles = 0
         self.io_port.reset()
         self.unsupported_xfr.clear()
@@ -790,6 +795,9 @@ class PRUCore:
             self.task_ring.tick(elapsed_cycles)
         if self.cycle_observer is not None:
             self.cycle_observer(elapsed_cycles)
+        if self.deferred_error is not None:
+            error, self.deferred_error = self.deferred_error, None
+            raise error
 
     def _advance_idle_cycle(self) -> None:
         """Advance simulated time by one cycle with no instruction retiring.

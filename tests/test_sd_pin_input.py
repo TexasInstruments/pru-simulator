@@ -368,6 +368,38 @@ def test_queue_cap_raises_from_the_producer_without_losing_edges(nominal_config)
     assert len(link._queue) == 22
 
 
+def test_queue_cap_error_leaves_the_producer_between_instructions(nominal_config):
+    """The cap error is raised after the writing instruction has retired, so a
+    caller that reports it and carries on does not run that instruction twice."""
+    def producer(max_queue):
+        sim = Simulator(config_path=nominal_config)
+        assert sim.load("pru1", "top:\n    xor r30, r30, 1\n    qba top\n") == []
+        assert sim.load("pru0", _IDLE_LOOP) == []
+        link = sim.attach_pdm_link(clock_pin=0, keep_history=True)
+        if max_queue is not None:
+            link.max_queue = max_queue
+        return sim, link, sim.cores["pru1"]
+
+    sim, link, p = producer(20)
+    errors = 0
+    for _ in range(60):
+        try:
+            p.step()
+        except PdmLinkError:
+            errors += 1
+    assert errors >= 3
+    assert p.counters.instruction_count == 60      # an error does not undo its instruction
+    ref_sim, ref_link, ref = producer(None)
+    while ref.counters.instruction_count < 60:
+        ref.step()
+    def state(core):
+        return (core.pc, core.counters.cycles, core.io_port.gpo,
+                [core.registers.read_full(r) for r in range(32)])
+
+    assert state(p) == state(ref)
+    assert link.edge_history == ref_link.edge_history
+
+
 def test_queue_cap_default_and_constructor_kwarg(nominal_config):
     sim = Simulator(config_path=nominal_config)
     p, c = sim.cores["pru1"], sim.cores["pru0"]

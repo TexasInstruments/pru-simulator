@@ -22,8 +22,10 @@ Timing convention:
   ``time_of(consumer, d) > horizon()``.
 * The producer must not get unboundedly ahead of the consumer either: once
   more than ``max_queue`` edges wait (``MAX_QUEUE`` = 1,000,000 by default,
-  roughly 100 MB of queue), ``on_producer_gpo`` raises :class:`PdmLinkError`
-  from the producer's R30 write. The edge is queued first, so none is lost.
+  roughly 100 MB of queue), the producer's R30 write ends in a
+  :class:`PdmLinkError`. The edge is queued and the writing instruction
+  retires first (``PRUCore.deferred_error``), so no edge is lost and the
+  producer can be stepped again from a consistent state.
   That happens when the producer runs on its own (for example "Run PRU1" in
   the Simulator view with the link still attached); a run-ahead or lockstep
   pair keeps the queue at about one slice.
@@ -89,9 +91,11 @@ class PdmLink:
         stalls it counts. A producer reset (``c = -1``) stamps its pin drop at
         the reset instant.
 
-        Raises :class:`PdmLinkError` once more than ``max_queue`` edges wait,
-        after queuing this one (a reset's pin drop never raises, so a reset
-        always completes).
+        Once more than ``max_queue`` edges wait, a :class:`PdmLinkError` is
+        left for the producer's ``step()`` to raise when the instruction has
+        retired; raising here would stop the instruction half-way. This edge
+        is queued first (a reset's pin drop never raises, so a reset always
+        completes).
         """
         if not (old ^ new) & self._watch_mask:
             return
@@ -101,7 +105,7 @@ class PdmLink:
         if self.keep_history:
             self.edge_history.append((stamp, new))
         if len(self._queue) > self.max_queue and start >= 0:
-            raise PdmLinkError(
+            self.producer.deferred_error = PdmLinkError(
                 f"PDM link: consumer {self._consumer_name} is not advancing "
                 f"(queue > {self.max_queue} edges)")
 
