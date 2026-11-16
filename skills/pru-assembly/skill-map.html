@@ -329,19 +329,6 @@ ns between edges:
 
 
 <section>
-  <h2>Targets covered</h2>
-  <div class="tw"><table>
-    <thead><tr><th>Device</th><th>Subsystem</th><th>Cores</th><th>Path</th><th>Simulated</th></tr></thead>
-    <tbody>
-      <tr><td>AM243x, AM64x</td><td>PRU_ICSSG</td><td>pru, rtu_pru, tx_pru × 2</td><td>OpenPRU</td><td>AM243x</td></tr>
-      <tr><td>AM261x, AM263x, AM263Px</td><td>PRU-ICSSM</td><td>pru0, pru1</td><td>OpenPRU</td><td>AM263x</td></tr>
-      <tr><td>AM62x</td><td>PRUSS</td><td>pru0, pru1</td><td>OpenPRU</td><td>no</td></tr>
-    </tbody>
-  </table></div>
-  <p>What is simulated differs per target and changes between releases: check the simulator's <code>readme.md</code> feature tables. An unmodelled accelerator transfer only warns, so a PASS proves nothing for it.</p>
-</section>
-
-<section>
   <h2>The six pitfalls it guards against</h2>
   <div class="pit"><b>1 · Branch order.</b> <code>qbgt label, r1, r2</code> branches if r2 &gt; r1. Every branch costs 1 cycle, taken or not.</div>
   <div class="pit"><b>2 · Immediates.</b> Most are 0–255. Use <code>ldi</code> or <code>ldi32</code> for larger values.</div>

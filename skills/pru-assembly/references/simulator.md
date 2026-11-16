@@ -47,7 +47,7 @@ The simulator's assembler reports only the first error it meets. Run `scripts/li
 
 ## 4. MCP server
 
-Set up and use the MCP server from the simulator's own `docs/mcp_server.md`; this skill doesn't copy it. Its tool table can lag the implementation (tracked in simulator issue #101), so list the tools the server actually exposes instead of trusting a fixed list. The server reads `memory.cfg` relative to its working directory, so start it from the simulator checkout.
+Information to set up and use the MCP server is at `docs/mcp_server.md`. The server reads `memory.cfg` relative to its working directory, so start it from the simulator checkout.
 
 For a one-shot run or a pin-timing check, `scripts/simulate.py` is enough. Use the MCP tools when you need to stop, look at registers or memory, and continue.
 
