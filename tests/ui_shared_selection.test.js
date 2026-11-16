@@ -15,14 +15,14 @@ function tab() {
   const requests = [], stops = [];
   const context = vm.createContext({
     module: {exports:{}}, availableCores:['pru0','pru1','rtu0','rtu1'],
-    coreSelection:{used:['pru0'],shown:['pru0'],focus:'pru0',pinned:false},
+    coreSelection:{used:['pru0'],shown:['pru0'],focus:'pru0'},
     currentCore:'pru0', devicePanelCore:'pru0', multiCoreMode:false, coreStates:{},
     sharedExecution:{running:false}, executionStartPending:null, executionReady:true, captureStride:null,
     stopRun:notify => stops.push(['run',notify]), stopSim:notify => stops.push(['sim',notify]),
     sendAction:request => requests.push(request), persistCoreSelection() {}, renderCorePanes() {},
     selectEditorCore() {}, syncDeviceCoreSelect() {}, updateCoresControl() {}, paintCoreState() {},
     mcFreshRegs:() => [], sourceList:{replaceChildren() {}}, initSpadState() {},
-    syncGpioLoopback() {}, updateCtableForCore() {},
+    syncGpioLoopback() {}, updateCtableForCore() {}, lastAppliedCores:null, simRunning:false, runPending:null, prevExecutionOwner:false,
   });
   vm.runInContext(cores,context);
   load(context,'applyCoreSelection'); load(context,'receiveExecution');
@@ -68,18 +68,16 @@ test('Reset Layout preserves shared execution cores and does not stop a run', ()
   const t = tab(); let reset;
   Object.assign(t.context, {
     document:{getElementById() {}, addEventListener(name,fn) { if (name === 'pru-cores-reset') reset = fn; }},
-    createCoresDeck:() => ({}), changeGroupClock() {},
+    createCoresDeck:() => ({}), setClockDirect() {},
   });
   load(t.context,'initCoresControl');
   t.context.receiveExecution(session({running:true,owner:false}));
   t.context.coreSelection.shown = ['pru0','pru1'];
-  t.context.coreSelection.pinned = true;
   t.context.initCoresControl();
   t.stops.length = 0; t.requests.length = 0;
   reset();
   assert.deepEqual(plain(t.context.coreSelection.used),['pru0','pru1']);
   assert.deepEqual(plain(t.context.coreSelection.shown),['pru0']);
-  assert.equal(t.context.coreSelection.pinned,false);
   assert.equal(t.stops.length,0);
   assert.equal(t.requests.some(r => r.action === 'set_execution_cores'),false);
 });
@@ -88,8 +86,8 @@ test('manual CORES Use actions add and remove shared membership from either tab'
   const a = tab(), b = tab();
   for (const t of [a,b]) {
     Object.assign(t.context, {
-      document:{getElementById() {}, addEventListener() {}}, changeGroupClock() {},
-      createCoresDeck(_root,handlers) { t.click = handlers.action; return {shake() {}}; },
+      document:{getElementById() {}, addEventListener() {}}, setClockDirect() {},
+      createCoresDeck(_root,handlers) { t.click = handlers.action; return {shake() {}, pulse() {}}; },
     });
     load(t.context,'initCoresControl');
     t.context.initCoresControl();
@@ -109,8 +107,8 @@ test('Use cannot change local execution membership before shared state arrives',
   const t = tab();
   t.context.executionReady = false;
   Object.assign(t.context, {
-    document:{getElementById() {},addEventListener() {}}, changeGroupClock() {},
-    createCoresDeck(_root,handlers) { t.click = handlers.action; return {shake() {}}; },
+    document:{getElementById() {},addEventListener() {}}, setClockDirect() {},
+    createCoresDeck(_root,handlers) { t.click = handlers.action; return {shake() {}, pulse() {}}; },
   });
   load(t.context,'initCoresControl'); t.context.initCoresControl();
   for (const action of [{type:'use',core:'pru1'},{type:'use-all'}]) t.click(action);

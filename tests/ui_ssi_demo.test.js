@@ -17,7 +17,7 @@ const nodes = new Map();
 const get = id => { if (!nodes.has(id)) nodes.set(id, new Element()); return nodes.get(id); };
 const single = new Element(), multi = new Element();
 single.dataset.scenario = 'SSI encoder (single core)';
-multi.dataset.scenario = 'SSI multi-core (emulator + reader)';
+multi.dataset.scenario = 'SSI (encoder PRU + reader)';
 const buttons = [single, multi];
 const sent = [], files = [];
 let view = '';
@@ -30,7 +30,7 @@ const context = vm.createContext({ document, window: {}, Event: class { construc
   coreSelect: get('core-select'), mcPartnerSelect: get('mc-partner-select'),
   memAddrInput: get('mem-addr'), memLenInput: get('mem-len'), memAutoRefreshBox: get('mem-auto'),
   graphResizeWindow() {}, graphSetRecording() {}, drawGraph() {}, refreshMemory() {},
-  availableCores:['pru0','pru1','rtu0','rtu1'],coreSelection:{used:['pru1','rtu0'],shown:['pru1'],focus:'pru1',pinned:false},
+  availableCores:['pru0','pru1','rtu0','rtu1'],coreSelection:{used:['pru1','rtu0'],shown:['pru1'],focus:'pru1'},
   applyCoreSelection(next) {context.coreSelection=next;context.currentCore=next.focus;context.multiCoreMode=next.used.length>1;},
   applyMCCores() {}, syncDeviceCoreSelect() {}, selectEditorCore(core) { context.editorCore = core; },
   openFileAsTab: (path, source, core) => files.push([path, source, core]),

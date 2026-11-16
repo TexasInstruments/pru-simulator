@@ -111,11 +111,6 @@ def test_run_ahead_equals_lockstep_delay_producer(nominal_config):
     assert out["skipped"]["pru0"] > 0.5 * out["consumer_cycles"]
 
 
-def test_run_ahead_equals_lockstep_unequal_clocks(sim_config):
-    config = sim_config(pru_clock_mhz=200.0, pru1_clock_mhz=250.0)
-    _equivalence(config, 100_000, True)
-
-
 @pytest.mark.parametrize("slice_cycles", [1, 7, 100_000])
 def test_slice_size_does_not_change_the_result(nominal_config, slice_cycles):
     a_sim, a_pins = _pair(nominal_config)
@@ -403,44 +398,6 @@ def test_earlier_consumer_breakpoint_is_reported(nominal_config):
     out = sim.run_ahead("pru1", "pru0", 400_000, **NO_RANGES, slice_cycles=4096)
     assert out["breakpoint"] == "pru0"
     assert pru0.pc == store
-
-
-def _consumer_alone_to_breakpoint(sim, hits):
-    """Exact reference without lockstep: PRU1 far ahead, then PRU0 alone,
-    stopping at each breakpoint it reaches."""
-    pru0, pru1 = sim.cores["pru0"], sim.cores["pru1"]
-    while pru1.counters.cycles < 40_000:
-        pru1.step()
-    for _ in range(hits):
-        pru0.step()
-        while pru0.pc not in pru0.breakpoints:
-            pru0.step()
-
-
-@pytest.mark.parametrize("skip", [True, False], ids=["skip_on", "skip_off"])
-@pytest.mark.parametrize("hits", [1, 5])
-def test_fast_consumer_stops_at_breakpoint_lockstep_steps_over(sim_config, skip, hits):
-    """PRU0 at 400 MHz, PRU1 at 200 MHz: lockstep runs PRU0 two instructions
-    per lead step and only checks breakpoints between lead steps, so it can
-    step over a PRU0 breakpoint. Run-ahead stops on it (the intended stop;
-    lockstep is unchanged)."""
-    config = sim_config(pru_clock_mhz=400.0, pru1_clock_mhz=200.0)
-    sim, _ = _pair(config)
-    sim.idle_skip = skip
-    pru0 = sim.cores["pru0"]
-    store = _first_pc(pru0, "SBBO")
-    pru0.breakpoints.add(store)
-    for _ in range(hits):
-        out = sim.run_ahead("pru1", "pru0", 2_000_000, **NO_RANGES)
-        assert out["breakpoint"] == "pru0"
-        assert pru0.pc == store
-    ref, _ = _pair(config)
-    ref.cores["pru0"].breakpoints.add(store)
-    _consumer_alone_to_breakpoint(ref, hits)
-    assert ref.cores["pru0"].pc == store
-    a, b = _state(sim), _state(ref)
-    assert a["pru0"] == b["pru0"]
-    assert a["mem"] == b["mem"]
 
 
 def test_range_lists_are_required(nominal_config):

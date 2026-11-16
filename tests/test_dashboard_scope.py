@@ -9,7 +9,7 @@ def test_dashboard_demo_scope():
     assert set(discover_device_profiles()) == {"ssi_encoder", "tca9538"}
     assert set(SCENARIOS) == {
         "SSI encoder (single core)",
-        "SSI multi-core (emulator + reader)",
+        "SSI (encoder PRU + reader)",
     }
     root = Path(__file__).parents[1]
     html = (root / "ui/static/index.html").read_text()

@@ -34,7 +34,7 @@ def _write_wav(path, hz, frames=CLIP_FRAMES):
 def server(sim_config, tmp_path, monkeypatch):
     """Server on a pinned 200/200 MHz config with two short clips."""
     def make(**device):
-        cfg = sim_config(**{"pru_clock_mhz": 200, "pru1_clock_mhz": 200, **device})
+        cfg = sim_config(**{"pru_clock_mhz": 200, **device})
         clips = tmp_path / "clips"
         clips.mkdir(exist_ok=True)
         _write_wav(clips / "a.wav", 1000)
@@ -98,13 +98,12 @@ def test_clip_list(server, monkeypatch):
 
 
 def test_setup_forces_200mhz_with_notice(server):
-    client = server(pru_clock_mhz=250, pru1_clock_mhz=250)
+    client = server(pru_clock_mhz=250)
     assert client.get("/config/clock_speed").json()["mhz"] == 250
     with client.websocket_connect("/ws") as ws:
         msgs = _setup(ws)
     assert {"type": "pdm_notice", "text": "PRU clocks set to 200 MHz for the PDM demo"} in msgs
-    groups = client.get("/config/clock_speed").json()["groups"]
-    assert [g["mhz"] for g in groups] == [200, 200]
+    assert client.get("/config/clock_speed").json()["mhz"] == 200
     status = msgs[-1]
     assert status["type"] == "pdm_status" and status["running"] is False
     assert status["clips"] == {"left": "a.wav", "right": "b.wav"}

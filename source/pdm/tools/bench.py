@@ -32,13 +32,12 @@ CONFIGS = [("lockstep", False), ("lockstep", True),
 
 
 def nominal_config(out_dir: Path) -> str:
-    """Repo memory.cfg with PRU0 and PRU1 at 200 MHz, written to *out_dir*."""
+    """Repo memory.cfg with the PRU clock at 200 MHz, written to *out_dir*."""
     cfg = configparser.ConfigParser()
     cfg.read(REPO / "memory.cfg")
     if "device" not in cfg:
         cfg["device"] = {}
     cfg["device"]["pru_clock_mhz"] = str(CLOCK_MHZ)
-    cfg["device"]["pru1_clock_mhz"] = str(CLOCK_MHZ)
     path = out_dir / "memory.cfg"
     with open(path, "w") as f:
         cfg.write(f)

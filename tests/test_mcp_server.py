@@ -128,7 +128,7 @@ def test_pdm_link_error_is_a_tool_error_result(sim_config):
     from mcp_server.server import build_server
     from simulator import Simulator
 
-    sim = Simulator(config_path=sim_config(pru_clock_mhz=200, pru1_clock_mhz=200))
+    sim = Simulator(config_path=sim_config(pru_clock_mhz=200))
     assert sim.load("pru1", "loop:\n    qba loop\n") == []
     assert sim.load("pru0", "loop:\n    qba loop\n") == []
     sim.attach_pdm_link()

@@ -275,7 +275,7 @@ def test_overrun_is_reported(nominal_config):
 
 
 def test_wrong_clock_rejected(sim_config):
-    sim = Simulator(config_path=sim_config(pru1_clock_mhz=250, pru_clock_mhz=200))
+    sim = Simulator(config_path=sim_config(pru_clock_mhz=250))
     with pytest.raises(ValueError, match="200 MHz"):
         PdmDemo(sim).setup(CLIPS / "tone_1000.wav", CLIPS / "tone_3000.wav")
 

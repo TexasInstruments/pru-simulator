@@ -24,7 +24,7 @@ THEMES = {"dark": DARK, "light": {**DARK, **LIGHT}, "contrast": {**DARK, **CONTR
 
 
 # Component-local geometry variables (set by the glider script), not theme tokens.
-LOCAL_PROPERTIES = {"--glider-x", "--glider-w"}
+LOCAL_PROPERTIES = {"--glider-x", "--glider-w", "--core-color"}
 
 
 def _used_tokens() -> set:
