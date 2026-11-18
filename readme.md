@@ -7,7 +7,7 @@ simulator through an MCP server.
 ## Supported features
 
 The simulator models **AM243x/AM64x** (PRU_ICSSG) and **AM261x/AM263x**
-(PRU-ICSSM), all with V4 ISA. **AM62x** is also selectable; its profile is copied from
+(PRU-ICSSM; V3 cores, while ICSSG is V4). **AM62x** is also selectable; its profile is copied from
 AM261x and not verified on hardware. Integrated accelerators differ by target; see
 [device capabilities](docs/device_capabilities.md) for the hardware profiles,
 unsupported-transfer diagnostics and silicon evidence.

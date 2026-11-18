@@ -17,7 +17,7 @@ def test_capability_query(target, icssg):
 
     caps = get_device_capabilities(target.upper() + " # config comment")
     assert caps == get_device_capabilities(target)
-    assert caps.core_version == "V4"  # ICSSM hardware owners, upstream #32
+    assert caps.core_version == ("V4" if icssg else "V3")  # OpenPRU instruction cheat sheet
     assert caps.rtu is icssg
     assert caps.tx_pru is icssg
     assert caps.icssg_pwm is icssg
