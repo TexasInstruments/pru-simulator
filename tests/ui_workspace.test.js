@@ -39,10 +39,10 @@ class Element {
 }
 const ids = ['main', 'io-view', 'devices-view', 'peripherals-view', 'events-view',
   'panel-visibility', 'panel-visibility-buttons', 'device-runtime-panel', 'workspace-theme',
-  'device-event-log', 'io-subtabs', 'core-fault-banner', 'io-fault-badge'];
+  'device-event-log', 'io-subtabs', 'core-fault-banner', 'io-fault-badge', 'audio-view'];
 const elements = new Map(ids.map(id => [id, new Element()]));
 elements.get('io-fault-badge').children = [new Element(), new Element()];
-const buttons = ['simulator', 'io'].map((name, index) => {
+const buttons = ['simulator', 'io', 'audio'].map((name, index) => {
   const button = new Element(); button.dataset.workspaceView = name;
   button.box = { left: index * 100, width: 100 }; return button;
 });
@@ -138,7 +138,19 @@ assert.deepEqual(visiblePanes(), ['events-view']);
 assert.equal(key(subtabs[2], 'a'), false, 'unrelated keys keep their default action');
 assert.deepEqual(visiblePanes(), ['events-view']);
 
+// Audio: a top-level view of its own with no sub-tabs; the choice is remembered.
+buttons[2].listeners.click();
+assert.equal(elements.get('audio-view').hidden, false);
+assert.equal(elements.get('main').hidden, true);
+assert.equal(elements.get('io-view').hidden, true);
+assert.equal(elements.get('panel-visibility').hidden, true, 'panel toggles are Simulator-only');
+assert.equal(storage.get('pru-workspace-view'), 'audio');
+assert.equal(buttons[2].attributes['aria-pressed'], 'true');
+assert.equal(viewEvents.at(-1)[0], 'audio');
+assert.equal(viewSwitch.props['--glider-x'], '200px');
+
 buttons[0].listeners.click();
+assert.equal(elements.get('audio-view').hidden, true);
 assert.equal(elements.get('main').hidden, false);
 assert.equal(elements.get('panel-visibility').hidden, false);
 

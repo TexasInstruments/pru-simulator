@@ -6,19 +6,32 @@ Handles R30/R31 interface and async clock tick advancement.
 """
 
 from __future__ import annotations
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from pru_io.sd_channel import SDChannel
 from pru_io.sd_modulator import SDModulator
 
 if TYPE_CHECKING:
+    from pru_io.pdm_link import PdmLink
     from pru_io.sd_registers import SDRegisters
 
 _NUM_CHANNELS = 3
 
 
 class SigmaDeltaFilter:
-    """SD filter peripheral: 3 channels with pattern generators and R30/R31 interface."""
+    """SD filter peripheral: 3 channels with pattern generators and R30/R31 interface.
+
+    Each channel takes its bits from one source (``sources[ch]``):
+
+    * ``"modulator"`` (default): the internal pattern generator, advanced by
+      the async clock model in :meth:`tick`.
+    * ``"pin"``: SDn_D/SDn_CLK pins driven through :attr:`pin_link`; the
+      channel ticks in :meth:`clock_edge` on the edge chosen by
+      CLK_SEL/CLK_INV.
+    * ``"off"``: the channel never ticks.
+    """
+
+    SOURCES = ("modulator", "pin", "off")
 
     def __init__(self, pru_clock_mhz: float = 200.0):
         self.pru_clock_mhz = pru_clock_mhz
@@ -41,6 +54,20 @@ class SigmaDeltaFilter:
 
         # Previous R31 write value — for rising-edge command detection
         self._prev_r31_write: int = 0
+
+        # Per-channel bit source; see SOURCES.
+        self.sources: list[str] = ["modulator"] * _NUM_CHANNELS
+        # Producer-pin link feeding the "pin" channels (set by Simulator).
+        self.pin_link: PdmLink | None = None
+
+    def set_source(self, ch: int, mode: str) -> None:
+        """Select channel *ch*'s bit source: "modulator", "pin" or "off"."""
+        if not isinstance(ch, int) or isinstance(ch, bool) or not 0 <= ch < _NUM_CHANNELS:
+            raise ValueError(f"SD channel {ch!r} out of range 0-{_NUM_CHANNELS - 1}")
+        if mode not in self.SOURCES:
+            raise ValueError(
+                f"Unknown SD source {mode!r}; expected one of {', '.join(self.SOURCES)}")
+        self.sources[ch] = mode
 
     def process_r30(self, value: int) -> None:
         """Decode R30 control bits."""
@@ -91,10 +118,14 @@ class SigmaDeltaFilter:
     def tick(self) -> None:
         """Advance all channels by one PRU clock tick (async clock model).
 
-        Each channel advances 0 or more SD ticks based on its modulator's clock rate
-        relative to the PRU clock.
+        Each "modulator" channel advances 0 or more SD ticks based on its
+        modulator's clock rate relative to the PRU clock. "pin" and "off"
+        channels are not clocked here.
         """
+        sources = self.sources
         for i in range(_NUM_CHANNELS):
+            if sources[i] != "modulator":
+                continue
             mod = self.modulators[i]
             ratio = mod.sd_clock_mhz / self.pru_clock_mhz
             self._clock_acc[i] += ratio
@@ -102,6 +133,62 @@ class SigmaDeltaFilter:
                 self._clock_acc[i] -= 1.0
                 bit = mod.next_bit()
                 self.channels[i].tick(bit)
+
+    def tick_n(self, n: int) -> None:
+        """Exactly *n* calls of :meth:`tick`; O(1) with no "modulator" channel.
+
+        Channels are independent, so each one is advanced *n* times in turn;
+        the float accumulation per channel is the same as in :meth:`tick`.
+        """
+        for i in range(_NUM_CHANNELS):
+            if self.sources[i] != "modulator":
+                continue
+            mod = self.modulators[i]
+            channel = self.channels[i]
+            ratio = mod.sd_clock_mhz / self.pru_clock_mhz
+            acc = self._clock_acc[i]
+            for _ in range(n):
+                acc += ratio
+                while acc >= 1.0:
+                    acc -= 1.0
+                    channel.tick(mod.next_bit())
+            self._clock_acc[i] = acc
+
+    def sampling_edge(self, ch: int, net: int) -> bool | None:
+        """Which edge of clock *net* channel *ch* samples on.
+
+        True = rising, False = falling, None = the channel does not sample
+        *net* (not in "pin" mode, or CLK_SEL picks another clock).
+
+        CLK_SEL (TRM SD_CLK_SEL_REGn[1:0]): 0 = GPI R31[16] (not a link
+        net), 1 = the channel's own SDn_CLK (net n), 2 = the group clock
+        SD0/3/6_CLK (net 3*(n//3)), 3 = reserved. CLK_INV (bit 2) inverts
+        the selected clock, so the channel then samples on the falling edge.
+        Without wired registers every field reads as its reset value 0.
+        """
+        if self.sources[ch] != "pin" or self.registers is None:
+            return None
+        clk_sel = self.registers.get_clk_sel(ch)
+        if clk_sel == 1:
+            selected = ch
+        elif clk_sel == 2:
+            selected = 3 * (ch // 3)
+        else:
+            return None
+        if selected != net:
+            return None
+        return not self.registers.get_clk_inv(ch)
+
+    def clock_edge(self, net: int, rising: bool,
+                   data_level: Callable[[int], int]) -> None:
+        """Clock edge on SD clock *net*: tick every "pin" channel sampling it.
+
+        *data_level(ch)* returns the channel's data pin level at this edge.
+        """
+        for ch in range(_NUM_CHANNELS):
+            edge = self.sampling_edge(ch, net)
+            if edge is not None and edge == rising:
+                self.channels[ch].tick(data_level(ch))
 
     def _on_config_change(self, ch: int, field: str, value: int) -> None:
         """Handle config register changes."""
@@ -119,6 +206,7 @@ class SigmaDeltaFilter:
             "data_sel": self.data_sel,
             "clock_acc": list(self._clock_acc),
             "prev_r31_write": self._prev_r31_write,
+            "sources": list(self.sources),
             "regs": bytes(self.registers._data) if self.registers is not None else None,
             "channels": [ch.snapshot() for ch in self.channels],
             "modulators": [mod.snapshot() for mod in self.modulators],
@@ -132,6 +220,7 @@ class SigmaDeltaFilter:
         self.data_sel = snap["data_sel"]
         self._clock_acc = list(snap["clock_acc"])
         self._prev_r31_write = snap.get("prev_r31_write", 0)
+        self.sources = list(snap.get("sources", ["modulator"] * _NUM_CHANNELS))
         if snap["regs"] is not None and self.registers is not None:
             self.registers._data[:] = snap["regs"]
         for ch, ch_snap in zip(self.channels, snap["channels"]):
@@ -159,6 +248,7 @@ class SigmaDeltaFilter:
                     "ovf": ch.ovf,
                     "selected": i == self.ch_sel,
                     "osr": ch.osr,
+                    "source": self.sources[i],
                 }
                 for i, ch in enumerate(self.channels)
             ],

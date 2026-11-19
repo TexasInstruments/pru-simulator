@@ -5,8 +5,9 @@
   const Chrome = globalThis.PruChrome;
   const buttons = Array.from(document.querySelectorAll('[data-workspace-view]'));
   const subtabs = Array.from(document.querySelectorAll('[data-io-tab]'));
-  const views = { simulator: document.getElementById('main'),
-    io: document.getElementById('io-view') };
+  const views = Object.fromEntries(Object.entries({ simulator: document.getElementById('main'),
+    io: document.getElementById('io-view'), audio: document.getElementById('audio-view') })
+    .filter(([, element]) => element));
   const panes = { devices: document.getElementById('devices-view'),
     peripherals: document.getElementById('peripherals-view'),
     events: document.getElementById('events-view') };

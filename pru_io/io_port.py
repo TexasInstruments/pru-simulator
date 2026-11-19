@@ -37,6 +37,9 @@ class IOPort:
         self._device_pin_mask = 0
         self.gpo_drive_mask: int = 0
         self._device_cycle = 0        # last cycle seen, for write-triggered settles
+        # fn(old_gpo, new_gpo), called from write_r30 when the 20-bit GPO
+        # word changed (e.g. PdmLink.on_producer_gpo).
+        self.gpo_listeners: list[Callable[[int, int], None]] = []
 
     # ------------------------------------------------------------------
     # R30 / GPO
@@ -54,6 +57,9 @@ class IOPort:
         """
         old_gpo = self.gpo
         self.gpo = value & _MASK_20
+        if self.gpo_listeners and old_gpo != self.gpo:
+            for listener in self.gpo_listeners:
+                listener(old_gpo, self.gpo)
         if self.perif is not None:
             self.perif.process_r30(value, wstrb)
         if self.sd_filter is not None:
@@ -261,8 +267,15 @@ class IOPort:
         (overrun/underrun, RX valid/overflow, busy) and FIFOs.  GPI is left
         untouched — it models external stimulus (UI input pins, injected
         frames), not core state.
+
+        Driving the pins low is a real pin change, so GPO listeners are told
+        about it like any R30 write (a PDM link sees the clock drop).
         """
+        old_gpo = self.gpo
         self.gpo = 0
+        if self.gpo_listeners and old_gpo:
+            for listener in self.gpo_listeners:
+                listener(old_gpo, 0)
         self._device_cycle = 0
         if self.perif is not None:
             self.perif.reset()
