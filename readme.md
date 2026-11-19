@@ -123,7 +123,7 @@ pru_simulator/
 
 ## Memory Configuration
 
-The simulator loads `memory.cfg` at startup. Five built-in configs are provided in `config/`:
+The simulator loads `memory.cfg` at startup. Six built-in configs are provided in `config/`:
 
 | File | Target | Notes |
 |---|---|---|
@@ -131,6 +131,7 @@ The simulator loads `memory.cfg` at startup. Five built-in configs are provided 
 | `memory_am64x.cfg` | AM64x | Same PRU_ICSSG as AM243x (the A53 cores are not modeled); uses `constants_am243x.cfg` |
 | `memory_am263x.cfg` | AM263x | |
 | `memory_am261x.cfg` | AM261x | MSRAM burst timing measured on LP-AM261; selected by cfg file, not by target |
+| `memory_am261x_200mhz.cfg` | AM261x | 200 MHz ICSSM clock variant: MSRAM 12 + 10 cycles per word. `memory_am261x.cfg` is the 225 MHz SDK default (12 + 9 per word) |
 | `memory_am62x.cfg` | AM62x | Copied from AM261x; MS_RAM sized to the 64 KB OCRAM at 0x70000000 (SPRUIV7C). Timing not verified on hardware |
 
 Switch config by editing `memory.cfg` or copying one of the `config/` files over it.
