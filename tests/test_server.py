@@ -498,16 +498,21 @@ def test_iep_override_survives_core_reload_saved_config_clears_it(tmp_path, monk
     assert float(srv.sim.iep.external_clock_hz / 1e6) == 211.25
 
 
-def test_am263x_state_advertises_only_supported_cores(tmp_path, monkeypatch):
+@pytest.mark.parametrize("target", ["AM261x", "AM263x", "AM62x"])
+@pytest.mark.parametrize("missing_core", ["rtu0", "rtu1"])
+def test_icss_m_target_rejects_rtu_cores_and_advertises_actual_cores(tmp_path, monkeypatch, target, missing_core):
     import ui.server as srv
     cfg = tmp_path / 'memory.cfg'
-    cfg.write_text(srv._set_ini_value(client.get('/config').text, 'device', 'target', 'AM263x'))
+    cfg.write_text(srv._set_ini_value(client.get('/config').text, 'device', 'target', target))
     monkeypatch.setattr(srv, 'sim', Simulator(str(cfg)))
     sent = _run_websocket_actions([{'action': 'get_state'},
-                                  {'action': 'load', 'core': 'rtu1', 'source': 'halt'},
+                                  {'action': 'load', 'core': missing_core, 'source': 'halt'},
                                   {'action': 'get_state'}])
-    assert sent[0]['available_cores'] == ['pru0', 'rtu0', 'pru1']
+    assert sent[0]['available_cores'] == list(srv.sim.cores)
+    assert missing_core not in sent[0]['available_cores']
+    assert {'pru0', 'pru1'} <= set(sent[0]['available_cores'])
     assert sent[1]['type'] == 'error'
+    assert sent[1]['tag'] == 'core'
     assert sent[-1]['type'] == 'state'
 
 
@@ -544,7 +549,8 @@ def test_ws_ssi_attach_then_load_current_abi_firmware_keeps_session(fresh_sim):
 
 
 @pytest.mark.parametrize("target,has_rtu1", [
-    ("AM243x", True), ("AM64x", True), ("AM263x", False),
+    ("AM243x", True), ("AM64x", True), ("AM261x", False),
+    ("AM263x", False), ("AM62x", False),
 ])
 def test_dashboard_core_choices_follow_the_live_target(tmp_path, monkeypatch, target, has_rtu1):
     import ui.server as srv
