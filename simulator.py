@@ -219,8 +219,10 @@ class ConstantTableRegisterRegion(MemoryRegion):
     constant table at once; a read returns the stored value.
     """
 
-    def __init__(self, name: str, ctrl_base: int, table: ConstantTable):
-        super().__init__(name, ctrl_base + CTRL_REG_OFFSET, 4 * CTRL_REG_COUNT, 2, 1, 0)
+    def __init__(self, name: str, ctrl_base: int, table: ConstantTable,
+                 read_latency: int):
+        super().__init__(name, ctrl_base + CTRL_REG_OFFSET, 4 * CTRL_REG_COUNT,
+                         read_latency, 1, 0)
         self._table = table
 
     def read(self, addr: int, length: int) -> bytes:
@@ -356,7 +358,8 @@ class Simulator:
         self._ctrl_bases = ctrl_bases
         for name, base in ctrl_bases.items():
             self.memory.add_region(ConstantTableRegisterRegion(
-                f"{name.upper()}_CTRL_CT", base, self.cores[name].constant_table))
+                f"{name.upper()}_CTRL_CT", base, self.cores[name].constant_table,
+                self._ctrl_regions[name].read_latency))
 
         # One resolver owns generic external devices and cross-core GPIO nets.
         # It is inert until a device or wire is attached.

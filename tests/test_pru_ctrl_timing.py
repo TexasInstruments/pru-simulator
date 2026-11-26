@@ -59,6 +59,21 @@ def test_ctrl_window_cost_by_preset(preset, cycles):
     assert sim.cores["pru0"].counters.cycles == cycles
 
 
+@pytest.mark.parametrize("preset,core,base", [
+    ("memory_am243x.cfg", "pru0", 0x22000),
+    ("memory_am243x.cfg", "rtu0", 0x23000),
+    ("memory_am261x.cfg", "pru0", 0x22000),
+])
+def test_constant_table_register_read_uses_ctrl_window_latency(preset, core, base):
+    sim = Simulator(str(ROOT / "config" / preset))
+    region = next(r for r in sim.memory.regions if r.base_addr == base + 0x20)
+    ctrl = next(r for r in sim.memory.regions if r.base_addr == base)
+    assert region.read_latency == ctrl.read_latency
+    assert sim.load(core, "lbco &r2, c11, 0x20, 4\nhalt") == []
+    sim.step(core)
+    assert sim.cores[core].counters.cycles == 1 + ctrl.read_latency
+
+
 # Silicon words: back-to-back CYCLE reads / around a DMEM LBBO / around a CTRL LBBO.
 # LP-AM261 ICSSM0 PRU0 and PRU1, 16 reps each, identical: 4 / 7 / 8.
 # LP-AM243 ICSSG0, same method: 6 / 9 / 12. The AM263x preset reuses the AM261x
