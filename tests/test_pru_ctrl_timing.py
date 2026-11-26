@@ -171,8 +171,8 @@ def test_ctrl_storage_and_cycle_readback_restore_together(monkeypatch):
 
 
 @pytest.mark.parametrize("core,base", [("pru0", 0x22000), ("pru1", 0x24000)])
-def test_cycle_write_rebases_the_count(core, base):
-    # SPRUIM2J ICSSG_PRU_CYCLE is R/W: the clear-then-read idiom measures a delta.
+def test_cycle_write_clears_the_count(core, base):
+    # Reported LP-AM243 behavior: every width and value clears CYCLE.
     sim = Simulator(str(ROOT / "config" / "memory_am243x.cfg"))
     sim.cores[core].counters.cycles = 100
     sim.memory.write(base + 0x0C, bytes(4))
@@ -180,10 +180,10 @@ def test_cycle_write_rebases_the_count(core, base):
     assert int.from_bytes(sim.memory_read(base + 0x0C, 4), "little") == 7
     sim.memory.write(base + 0x0C, (50).to_bytes(4, "little"))
     sim.cores[core].counters.cycles = 109
-    assert int.from_bytes(sim.memory_read(base + 0x0C, 4), "little") == 52
-    # A partial write patches only its bytes of the current count.
+    assert int.from_bytes(sim.memory_read(base + 0x0C, 4), "little") == 2
+    # A partial write also clears the entire count.
     sim.memory.write(base + 0x0E, bytes([1, 0]))
-    assert int.from_bytes(sim.memory_read(base + 0x0C, 4), "little") == 0x10000 + 52
+    assert int.from_bytes(sim.memory_read(base + 0x0C, 4), "little") == 0
 
 
 def test_cycle_write_through_sbco_then_lbco():
@@ -193,6 +193,26 @@ def test_cycle_write_through_sbco_then_lbco():
     sim.step("pru0", 3)
     # The count was cleared by SBCO, so LBCO sees a small delta, not ~1000.
     assert 0 < sim.registers("pru0")[2] <= 12
+
+
+@pytest.mark.parametrize("preset", ["memory_am243x.cfg", "memory_am64x.cfg"])
+@pytest.mark.parametrize("offset,width", [(12, 1), (13, 1), (14, 1), (15, 1),
+                                         (12, 2), (13, 2), (14, 2)])
+def test_icssg_partial_cycle_writes_clear(preset, offset, width):
+    sim = Simulator(str(ROOT / "config" / preset))
+    sim.cores["pru0"].counters.cycles = 100
+    sim.memory.write(0x22000 + offset, bytes([0xff] * width))
+    assert int.from_bytes(sim.memory_read(0x2200c, 4), "little") == 0
+    sim.cores["pru0"].counters.cycles = 103
+    assert int.from_bytes(sim.memory_read(0x2200c, 4), "little") == 3
+
+
+@pytest.mark.parametrize("preset", ["memory_am261x.cfg", "memory_am263x.cfg"])
+def test_am26_cycle_write_keeps_load_behavior_unmeasured(preset):
+    sim = Simulator(str(ROOT / "config" / preset))
+    sim.cores["pru0"].counters.cycles = 100
+    sim.memory.write(0x2200c, (0x100).to_bytes(4, "little"))
+    assert int.from_bytes(sim.memory_read(0x2200c, 4), "little") == 0x100
 
 
 def test_cycle_saturates_instead_of_wrapping():

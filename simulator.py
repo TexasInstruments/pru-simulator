@@ -139,7 +139,7 @@ class PruControlRegion(MemoryRegion):
 
     CYCLE is at 0x0c (TI PRU Software Support Package, pru_ctrl.h). Per
     SPRUIM2J (ICSSG_PRU_CYCLE) it is writable and does not wrap: a write
-    rebases the count (so clear-then-read measures a delta) and a count past
+    clears the count on ICSSG targets; a count past
     FFFFFFFFh reads back saturated. The CONTROL ENABLE/COUNTER_ENABLE gating,
     the STALL register clearing and the other CTRL side effects are not
     modelled: the counter follows the simulator core's cycles whenever read.
@@ -150,11 +150,13 @@ class PruControlRegion(MemoryRegion):
     _CYCLE = 0x0C
     _OFFSET_BYTES = 8
 
-    def __init__(self, core: PRUCore, backing: MemoryRegion, read_latency: int):
+    def __init__(self, core: PRUCore, backing: MemoryRegion, read_latency: int,
+                 clear_on_write: bool = False):
         super().__init__(backing.name, backing.base_addr, backing.size,
                          read_latency, backing.write_latency, backing.jitter,
                          backing.misaligned_write_penalty, backing.per_word_latency)
         self._core = core
+        self._clear_on_write = clear_on_write
         # Keep ordinary CTRL storage in the standard snapshot/restore buffer.
         self._data = backing._data
         self._data.extend(bytes(self._OFFSET_BYTES))
@@ -184,9 +186,12 @@ class PruControlRegion(MemoryRegion):
         cycle_addr = self.base_addr + self._CYCLE
         start, end = max(addr, cycle_addr), min(addr + len(data), cycle_addr + 4)
         if start < end:
-            word = bytearray(self._cycle_value().to_bytes(4, "little"))
-            word[start - cycle_addr:end - cycle_addr] = data[start - addr:end - addr]
-            offset = self._core.counters.cycles - int.from_bytes(word, "little")
+            if self._clear_on_write:
+                offset = self._core.counters.cycles
+            else:
+                word = bytearray(self._cycle_value().to_bytes(4, "little"))
+                word[start - cycle_addr:end - cycle_addr] = data[start - addr:end - addr]
+                offset = self._core.counters.cycles - int.from_bytes(word, "little")
             self._data[self.size:self.size + self._OFFSET_BYTES] = offset.to_bytes(
                 self._OFFSET_BYTES, "little", signed=True)
 class ConstantTableRegisterRegion(MemoryRegion):
@@ -312,7 +317,9 @@ class Simulator:
             latency = backing.read_latency if explicit else int(
                 dev.get("pru_ctrl_read_latency", 2 if declared else backing.read_latency))
             if name in self.cores:
-                self._ctrl_regions[name] = PruControlRegion(self.cores[name], backing, latency)
+                self._ctrl_regions[name] = PruControlRegion(
+                    self.cores[name], backing, latency,
+                    clear_on_write=target.lower() in ("am243x", "am64x"))
                 self.memory.add_region(self._ctrl_regions[name])
             else:
                 # TX_PRU cores are not simulated: plain storage, CYCLE does not count.
