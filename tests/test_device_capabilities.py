@@ -10,7 +10,7 @@ from simulator import Simulator
 
 
 @pytest.mark.parametrize("target,icssg", [
-    ("am243x", True), ("am64x", True), ("am261x", False), ("am263x", False),
+    ("am243x", True), ("am64x", True), ("am261x", False), ("am263x", False), ("am62x", False),
 ])
 def test_capability_query(target, icssg):
     from core.device_capabilities import get_device_capabilities
@@ -42,7 +42,7 @@ def test_unknown_capability_target_is_rejected():
         get_device_capabilities("am999x")
 
 
-@pytest.mark.parametrize("target", ["am261x", "am263x"])
+@pytest.mark.parametrize("target", ["am261x", "am263x", "am62x"])
 def test_icssm_has_only_prus_and_listed_accelerators(sim_config, target):
     sim = Simulator(sim_config(target=target))
     assert set(sim.cores) == {"pru0", "pru1"}
@@ -92,7 +92,7 @@ def test_icssg_bswap_4_8_still_swaps_both_ranges(sim_config, target):
     assert not core.unsupported_xfr
 
 
-@pytest.mark.parametrize("target", ["am261x", "am263x"])
+@pytest.mark.parametrize("target", ["am261x", "am263x", "am62x"])
 @pytest.mark.parametrize("xid", [15, 30, 0x50, 0x54, 0x70, 0xA0, 0xA1, 0xA2])
 @pytest.mark.parametrize("opcode", ["xin", "xout", "xchg"])
 def test_absent_ids_use_diagnostic_fallback(sim_config, caplog, target, xid, opcode):
@@ -115,7 +115,7 @@ def test_absent_ids_use_diagnostic_fallback(sim_config, caplog, target, xid, opc
     assert "unverified hardware behaviour" in caplog.text
 
 
-@pytest.mark.parametrize("target", ["am261x", "am263x"])
+@pytest.mark.parametrize("target", ["am261x", "am263x", "am62x"])
 @pytest.mark.parametrize("xid", [15, 0x50, 0xA0, 0xA1, 0xA2])
 @pytest.mark.parametrize("opcode", ["xin", "xout", "xchg"])
 def test_strict_absent_xfr_raises_before_transfer(sim_config, target, xid, opcode):
@@ -130,7 +130,7 @@ def test_strict_absent_xfr_raises_before_transfer(sim_config, target, xid, opcod
     assert core.unsupported_xfr[xid]["count"] == 1
 
 
-@pytest.mark.parametrize("target", ["am261x", "am263x"])
+@pytest.mark.parametrize("target", ["am261x", "am263x", "am62x"])
 def test_icssm_retains_shared_spad(sim_config, target):
     sim = Simulator(sim_config(target=target))
     sim.cores["pru0"].registers.regs[2] = 0x12345678
@@ -142,7 +142,7 @@ def test_icssm_retains_shared_spad(sim_config, target):
     assert sim.registers("pru1")[2] == 0x12345678
 
 
-@pytest.mark.parametrize("target", ["am261x", "am263x"])
+@pytest.mark.parametrize("target", ["am261x", "am263x", "am62x"])
 @pytest.mark.parametrize("filename,expected", [
     ("mac_example.asm", {26: 1250, 27: 0}),  # multiply-only section: 50 * 25
     ("crc_example.asm", {10: 0xC9D7, 11: 0x383AD48D}),  # silicon-verified CRCs

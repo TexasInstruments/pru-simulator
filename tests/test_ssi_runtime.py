@@ -1,6 +1,7 @@
 from fractions import Fraction
 from pathlib import Path
 import shutil
+import re
 import struct
 
 import pytest
@@ -100,27 +101,25 @@ def test_reader_runtime_preserves_data_pin_that_was_initially_an_input():
     assert sim.io("pru1")["gpo_drive_mask"] == initial_mask
 
 
-def test_reader_runtime_uses_exact_selected_core_clock(tmp_path):
+def test_reader_runtime_uses_exact_core_clock(tmp_path):
     config = tmp_path / "clock.cfg"
     config.write_text(
         "[device]\n"
-        "pru_clock_mhz = 200.123456789123456\n"
-        "pru1_clock_mhz = 201.987654321987654\n",
+        "pru_clock_mhz = 200.123456789123456\n",
         encoding="utf-8",
     )
     sim = Simulator(str(config))
 
     runtime = SSIRuntime(sim, core="pru1")
 
-    assert runtime.encoder.core_clock_hz == Fraction("201.987654321987654") * 1_000_000
+    assert runtime.encoder.core_clock_hz == Fraction("200.123456789123456") * 1_000_000
     runtime.close()
 
 
 def test_documented_300mhz_run_uses_copied_config_and_constants_sidecar(tmp_path):
     project = Path(__file__).resolve().parents[1]
     data = (project / "memory.cfg").read_bytes()
-    data = data.replace(b"pru_clock_mhz = 250", b"pru_clock_mhz = 300", 1)
-    data = data.replace(b"pru1_clock_mhz = 250", b"pru1_clock_mhz = 300", 1)
+    data = re.sub(rb"(?m)^(pru_clock_mhz\s*=)[^\r\n]*", rb"\g<1> 300", data)
     config = tmp_path / "memory.cfg"
     config.write_bytes(data)
     sidecar = tmp_path / "config"
@@ -417,6 +416,16 @@ def test_successful_reader_reload_cannot_return_a_previous_frame():
         assert fresh["reached"] is True
         assert fresh["steps"] > 0
         assert fresh["mailbox"]["raw_frame"] == 0x123
+
+
+def test_ui_reader_loader_invalidates_the_previous_frame():
+    from pru_io.ssi_runtime import load_reader
+    sim = Simulator("memory.cfg")
+    with SSIRuntime(sim, position=0xABC, resolution=12) as runtime:
+        runtime.load()
+        assert runtime.run_until_frames(1, max_steps=16000)["reached"]
+        load_reader(sim, runtime.core, 12, 20, 2000)
+        assert runtime.run_until_frames(1, max_steps=0)["reached"] is False
 
 
 def test_failed_reader_reload_preserves_a_previously_received_mailbox():

@@ -52,5 +52,4 @@ def sim_config(tmp_path):
 @pytest.fixture
 def nominal_config(sim_config):
     """Path to a memory.cfg pinned to the nominal 200 MHz core clock."""
-    return sim_config(pru_clock_mhz=NOMINAL_CLOCK_MHZ,
-                      pru1_clock_mhz=NOMINAL_CLOCK_MHZ)
+    return sim_config(pru_clock_mhz=NOMINAL_CLOCK_MHZ)
