@@ -187,7 +187,12 @@ class PruControlRegion(MemoryRegion):
         start, end = max(addr, cycle_addr), min(addr + len(data), cycle_addr + 4)
         if start < end:
             if self._clear_on_write:
-                offset = self._core.counters.cycles
+                # A PRU store reaches CTRL before its instruction cycle is
+                # counted. Silicon clears at the end of that first cycle;
+                # host-side writes have no instruction cycle to defer.
+                offset = self._core.counters.cycles + int(
+                    getattr(self._core, "_store_active", False)
+                    and self._core.name in ("PRU0", "PRU1"))
             else:
                 word = bytearray(self._cycle_value().to_bytes(4, "little"))
                 word[start - cycle_addr:end - cycle_addr] = data[start - addr:end - addr]

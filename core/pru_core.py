@@ -522,7 +522,11 @@ class PRUCore:
             start_byte = (reg_op.offset // 8) if isinstance(reg_op, Register) else 0
             data = self._read_registers_to_bytes(start_reg, length, start_byte)
             try:
-                stalls = self.memory.write(addr, data)
+                self._store_active = True
+                try:
+                    stalls = self.memory.write(addr, data)
+                finally:
+                    self._store_active = False
                 self.counters.stall(stalls)
             except ValueError as e:
                 logger.error(f"SBCO fault at 0x{addr:08X}: {e}")
@@ -540,7 +544,11 @@ class PRUCore:
             start_byte = (reg_op.offset // 8) if isinstance(reg_op, Register) else 0
             data = self._read_registers_to_bytes(start_reg, length, start_byte)
             try:
-                stalls = self.memory.write(addr, data)
+                self._store_active = True
+                try:
+                    stalls = self.memory.write(addr, data)
+                finally:
+                    self._store_active = False
                 self.counters.stall(stalls)
             except ValueError as e:
                 logger.error(f"SBBO fault at 0x{addr:08X}: {e}"
