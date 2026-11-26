@@ -13,6 +13,21 @@ from simulator import Simulator
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize("core,expected", [
+    ("pru0", (1, 0x1B)), ("pru1", (1, 0x1B)),
+    ("rtu0", (2, 0x1A)),
+])
+def test_am243x_cycle_store_immediate_and_after_twenty_nops(core, expected):
+    sim = Simulator(str(ROOT / "config" / "memory_am243x.cfg"))
+    source = "\n".join(["ldi r1, 0", "sbco &r1, c11, 12, 4",
+                        "lbco &r2, c11, 12, 4", *(["nop"] * 20),
+                        "lbco &r3, c11, 12, 4", "halt"])
+    assert sim.load(core, source) == []
+    sim.step(core, 24)
+    assert sim.cores[core].fault is None
+    assert (sim.registers(core)[2], sim.registers(core)[3]) == expected
+
+
 # Back-to-back CYCLE reads: 6 cycles measured on LP-AM243 ICSSG0, 4 cycles measured
 # on LP-AM261 ICSSM0 (register level).
 @pytest.mark.parametrize("device,cycles", [("am243x", 6), ("am261x", 4)])
