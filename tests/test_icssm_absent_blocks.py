@@ -251,7 +251,11 @@ def test_am243x_unchanged(mode, tmp_path):
     # IEP0 still reaches its model; ICSSG-only blocks are not faked as zero.
     data, _ = sim.memory.read(0x0002E000, 4)
     assert len(data) == 4
-    for addr in (0x0002F000, 0x00023000, 0x00026130):
+    # ICSSG PWM is present and modelled on this branch, not an absent block.
+    assert hasattr(sim, "pwm")
+    sim.memory.write(0x0002616C, (0xA5A).to_bytes(4, "little"))
+    assert sim.memory_read(0x0002616C, 4) == (0xA5A).to_bytes(4, "little")
+    for addr in (0x0002F000, 0x00023000):
         with pytest.raises(ValueError, match="No memory region mapped"):
             sim.memory.read(addr, 4)
 
