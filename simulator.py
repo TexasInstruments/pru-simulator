@@ -151,12 +151,13 @@ class PruControlRegion(MemoryRegion):
     _OFFSET_BYTES = 8
 
     def __init__(self, core: PRUCore, backing: MemoryRegion, read_latency: int,
-                 clear_on_write: bool = False):
+                 clear_on_write: bool = False, rtu_cycle_read: bool = False):
         super().__init__(backing.name, backing.base_addr, backing.size,
                          read_latency, backing.write_latency, backing.jitter,
                          backing.misaligned_write_penalty, backing.per_word_latency)
         self._core = core
         self._clear_on_write = clear_on_write
+        self._rtu_cycle_read = rtu_cycle_read
         # Keep ordinary CTRL storage in the standard snapshot/restore buffer.
         self._data = backing._data
         self._data.extend(bytes(self._OFFSET_BYTES))
@@ -171,6 +172,18 @@ class PruControlRegion(MemoryRegion):
 
     def _cycle_value(self) -> int:
         return min(max(self._core.counters.cycles - self._offset(), 0), 0xFFFFFFFF)
+
+    def calc_read_stalls(self, addr: int, length: int, *, requester: str | None = None) -> int:
+        stalls = super().calc_read_stalls(addr, length, requester=requester)
+        # LP-AM243 ICSSG0 RTU_PRU0 CYCLE reads cost four cycles versus six
+        # for PRU CYCLE reads. RTU_PRU1 is assumed to share that timing.
+        # This applies only to a self-read of CYCLE, not the rest of CTRL.
+        cycle_addr = self.base_addr + self._CYCLE
+        if (self._rtu_cycle_read and requester is not None
+                and requester.upper() == self._core.name
+                and addr < cycle_addr + 4 and addr + length > cycle_addr):
+            return stalls - 2
+        return stalls
 
     def read(self, addr: int, length: int) -> bytes:
         data = bytearray(super().read(addr, length))
@@ -324,7 +337,10 @@ class Simulator:
             if name in self.cores:
                 self._ctrl_regions[name] = PruControlRegion(
                     self.cores[name], backing, latency,
-                    clear_on_write=target.lower() in ("am243x", "am64x"))
+                    clear_on_write=target.lower() in ("am243x", "am64x"),
+                    rtu_cycle_read=(name in ("rtu0", "rtu1")
+                                    and target.lower() in ("am243x", "am64x")
+                                    and not explicit and latency == 5))
                 self.memory.add_region(self._ctrl_regions[name])
             else:
                 # TX_PRU cores are not simulated: plain storage, CYCLE does not count.

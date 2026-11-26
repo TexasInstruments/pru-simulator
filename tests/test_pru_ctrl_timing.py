@@ -76,8 +76,8 @@ def test_root_template_ctrl_window_costs_six_on_am243x(core):
     assert sim.cores[core].counters.cycles == 6
 
 
-# RTU_PRU and TX_PRU CTRL (SPRUIM2J Table 6-63): not measured, assumed to cost
-# the same as the PRU windows. Covered by the root template and the preset.
+# RTU_PRU0 self-read of CYCLE was measured at four cycles. RTU_PRU1 uses
+# the same assumed timing. Other CTRL reads and TX_PRU remain unchanged.
 _OTHER_CTRL = [("rtu0", 0x23000), ("rtu1", 0x23800),
                ("tx_pru0", 0x25000), ("tx_pru1", 0x25800)]
 
@@ -103,7 +103,7 @@ def test_rtu_cycle_reads_observe_the_rtu(cfg, core, base):
     assert sim.load(core, "lbco &r2, c11, 12, 4\nlbco &r3, c11, 12, 4\nhalt") == []
     sim.step(core, 2)
     assert sim.cores[core].fault is None
-    assert sim.registers(core)[3] - sim.registers(core)[2] == 6
+    assert sim.registers(core)[3] - sim.registers(core)[2] == 4
 
 
 def test_rtu_ctrl_keeps_its_constant_table_registers():
