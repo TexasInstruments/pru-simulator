@@ -34,7 +34,9 @@ _ICSSG_IDS = _ICSSM_IDS | frozenset({
 _ICSSG = DeviceCapabilities("V4", _ICSSG_IDS, True, True, True)
 _ICSSM = DeviceCapabilities("V4", _ICSSM_IDS, False, False, False)
 _TARGETS = {"am243x": _ICSSG, "am64x": _ICSSG,
-            "am261x": _ICSSM, "am263x": _ICSSM}
+            "am261x": _ICSSM, "am263x": _ICSSM,
+            # AM62x: copied from AM261x, not verified on hardware
+            "am62x": _ICSSM}
 
 
 def get_device_capabilities(target: str = "am243x") -> DeviceCapabilities:
@@ -49,5 +51,5 @@ def get_device_capabilities(target: str = "am243x") -> DeviceCapabilities:
     except KeyError:
         raise ValueError(
             f"Unknown device target {target!r}; "
-            "expected one of AM243x, AM64x, AM261x, AM263x"
+            "expected one of AM243x, AM64x, AM261x, AM263x, AM62x"
         ) from None

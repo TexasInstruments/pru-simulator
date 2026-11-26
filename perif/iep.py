@@ -67,8 +67,8 @@ The ten slots follow register order: CAPR0..CAPR6, CAPF6, CAPR7, CAPF7.
 TIMING
 
 The IEP is shared by every configured core and advances to the furthest exact
-core time seen. Core rates come from [device] `pru_clock_mhz` and
-`pru1_clock_mhz`; an omitted first rate uses 200 MHz and the second inherits it. The
+core time seen. All cores run at the single [device] `pru_clock_mhz` rate (200 MHz
+when omitted). The
 IEP uses `iep_clock_mhz` (200 MHz when omitted, the TRM default ICSSG_IEP_CLK rate) while ICSS CFG IEPCLK bit 0 is
 clear, and the PRU0 OCP/core clock while it is set. Rational clock periods are
 represented with integer time units, so fractional MHz values and mixed core

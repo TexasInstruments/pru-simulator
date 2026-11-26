@@ -33,7 +33,7 @@ function dashboard() {
     currentCore: 'pru0', multiCoreMode: false, mcLastSourceKey: {},
     asmSource: get('asm-source'), sourceList: get('source-list'), btnLoad: get('btn-load'),
     coreSelect: get('core-select'), devicePanelCore: 'pru0', _lastSourceKey: '',
-    availableCores:['pru0','pru1'], coreSelection:{used:['pru0'],shown:['pru0'],focus:'pru0',pinned:false}, coreStates:{},
+    availableCores:['pru0','pru1'], coreSelection:{used:['pru0'],shown:['pru0'],focus:'pru0'}, coreStates:{},
     persistCoreSelection() {}, renderCorePanes() {}, paintCoreState() {}, updateCoresControl() {}, mcFreshRegs:()=>Array(32).fill('0x00000000'),
     clientBreakpoints: new Set(), signalGraph: { recording: false, windowSize: 128, buf: [], head: 0, fill: 0 },
     stopRun() {}, stopSim() {}, clearErrors() {}, renderTabs() {},
@@ -77,7 +77,7 @@ test('#53: switching cores with identical assembly keeps the source visible', ()
   d.loadFunction('applyCoreSelection');
   const instructions = [{ addr: 0, text: 'halt' }];
   d.context.updateSource(instructions, 0, {});
-  d.context.applyCoreSelection({used:['pru1'],shown:['pru1'],focus:'pru1',pinned:false});
+  d.context.applyCoreSelection({used:['pru1'],shown:['pru1'],focus:'pru1'});
   d.context.updateSource(instructions, 0, {});
   assert.equal(d.get('source-list').children.length, 1);
 });

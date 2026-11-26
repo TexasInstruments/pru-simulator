@@ -26,7 +26,7 @@ const context = vm.createContext({ document: { getElementById: get,
   localStorage: { setItem: (key, value) => storage.set(key, value) },
   sendAction: action => sent.push(action), currentCore: 'rtu1',
   availableCores: ['pru0','pru1','rtu0','rtu1'],
-  coreSelection: { used: ['pru0', 'pru1', 'rtu1'], shown: ['rtu1'], focus: 'rtu1', pinned: true },
+  coreSelection: { used: ['pru0', 'pru1', 'rtu1'], shown: ['rtu1'], focus: 'rtu1' },
   multiCoreMode: true, devicePanelCore: 'rtu1', coreStates: {},
   deviceCoreSelect: get('device-core-select'), iepClockSelect: get('iep-clock-select'),
   deviceCoreSelectWrap: get('device-core-select-wrap'), sourceList: new Element(),
@@ -44,11 +44,12 @@ function loadFunction(name) {
   vm.runInContext(app.slice(start, end), context);
 }
 for (const name of ['persistCoreSelection', 'applyCoreSelection', 'syncDeviceCoreSelect',
-  'syncGpioLoopback', 'showAvailableCores', 'showIepClock', 'buildGpioDirectionControls', 'updateGpioDirections']) loadFunction(name);
+  'syncGpioLoopback', 'showAvailableCores', 'showIepClock', 'buildGpioDirectionControls', 'updateGpioDirections', 'paintGpioDirections']) loadFunction(name);
+context.renderIoBlocks = () => {};   // I/O blocks are covered in dashboard_core_selection.test.cjs
 context.showAvailableCores(['pru0', 'rtu0', 'pru1']);
 assert.equal(context.currentCore, 'pru0');
 assert.deepEqual(JSON.parse(JSON.stringify(context.coreSelection)), {
-  used: ['pru0', 'pru1'], shown: ['pru0'], focus: 'pru0', pinned: true,
+  used: ['pru0', 'pru1'], shown: ['pru0'], focus: 'pru0',
 });
 assert.deepEqual(get('device-core-select').options.map(option => option.value), ['pru0', 'pru1', 'rtu0']);
 assert.equal(context.devicePanelCore, 'pru0');
@@ -65,10 +66,11 @@ context.showIepClock({ configured_mhz: 211.25, override_mhz: null,
   external_mhz: 211.25, clock_mhz: 211.25, core_clock: false });
 assert.equal(get('iep-clock-select').value, 'configured');
 
-context.buildGpioDirectionControls();
-assert.equal(get('gpio-drive-controls').children.length, 20);
-context.updateGpioDirections({ gpo_drive_mask: 3 });
-const buttons = get('gpio-drive-controls').children;
+context.IO_PIN_COUNT = 20;
+context.buildGpioDirectionControls(get('gpio-drive-controls-pru0'), 'pru0');
+assert.equal(get('gpio-drive-controls-pru0').children.length, 20);
+context.updateGpioDirections({ gpo_drive_mask: 3 }, 'pru0');
+const buttons = get('gpio-drive-controls-pru0').children;
 assert.equal(buttons[0].textContent, '0: Drive');
 assert.equal(buttons[2].textContent, '2: Release');
 buttons[2].listeners.click();
@@ -96,7 +98,7 @@ get('iep-clock-custom').value = '333.333';
 get('iep-clock-custom-form').listeners.submit({ preventDefault() {} });
 assert.equal(sent.at(-1).mhz, 333.333);
 
-// GPIO clicks address the core whose state was rendered, even after focus moves.
+// GPIO clicks address the block's own core, even after focus moves.
 context.currentCore = 'pru1';
 context.updateGpioDirections({ gpo_drive_mask: 1 }, 'pru0');
 buttons[1].listeners.click();
@@ -146,9 +148,11 @@ assert.equal(sent.at(-1).mhz, 275.125);
 // Reading the next focused core must replace the strip's previous active mask.
 const loopbackButtons = Array.from({length:5},(_,group)=>({dataset:{group:String(group)},
   active:false,classList:{toggle(name,value){loopbackButtons[group].active=value;}}}));
-context.document.querySelectorAll = () => loopbackButtons;
+const loopbackQueries = [];
+context.document.querySelectorAll = selector => { loopbackQueries.push(selector); return loopbackButtons; };
 loadFunction('syncGpioLoopback');
-context.syncGpioLoopback({gpio_loopback_mask:0xF});
+context.syncGpioLoopback({gpio_loopback_mask:0xF}, 'pru1');
+assert.deepEqual(loopbackQueries, ['#io-block-pru1 .lb-btn'], 'only that core strip is read');
 assert.deepEqual(loopbackButtons.map(b=>b.active),[true,false,false,false,false]);
-context.syncGpioLoopback({gpio_loopback_mask:0xF0});
+context.syncGpioLoopback({gpio_loopback_mask:0xF0}, 'pru1');
 assert.deepEqual(loopbackButtons.map(b=>b.active),[false,true,false,false,false]);

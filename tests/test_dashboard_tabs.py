@@ -74,7 +74,7 @@ def test_load_step_input_and_reset_are_visible_in_an_idle_second_tab(dashboard):
 
 @pytest.mark.parametrize("name,partners", [
     ("SSI encoder (single core)", []),
-    ("SSI multi-core (emulator + reader)", ["pru1"]),
+    ("SSI (encoder PRU + reader)", ["pru1"]),
 ])
 def test_ssi_signal_capture_and_mailbox_reach_a_recording_observer(dashboard, name, partners):
     with dashboard.websocket_connect("/ws") as control, dashboard.websocket_connect("/ws") as view:
@@ -105,9 +105,9 @@ def test_ssi_signal_capture_and_mailbox_reach_a_recording_observer(dashboard, na
 
 def test_clock_config_change_reaches_open_tabs_without_reload(dashboard):
     with dashboard.websocket_connect("/ws") as view:
-        response = dashboard.put("/config/clock_speed", json={"mhz": 250, "group": 0})
+        response = dashboard.put("/config/clock_speed", json={"mhz": 250})
         assert response.status_code == 200
-        assert state(view)["clocks"]["groups"][0]["mhz"] == 250
+        assert state(view)["clocks"]["mhz"] == 250
 
 
 def test_memory_updates_use_each_tabs_own_address(dashboard):
@@ -179,9 +179,8 @@ def test_new_tab_sees_running_status_and_owner_disconnect_stops_it(dashboard):
     ["pru0", "pru1", "rtu0", "rtu1"],
 ])
 def test_manual_multicore_steps_each_have_one_shared_undo(dashboard, cores):
-    # Unequal rates make a follower execute more than one instruction per click.
-    assert dashboard.put("/config/clock_speed", json={"mhz": 200, "group": 0}).status_code == 200
-    assert dashboard.put("/config/clock_speed", json={"mhz": 300, "group": 1}).status_code == 200
+    # All cores share one clock; use a uniform rate for deterministic follower behaviour.
+    assert dashboard.put("/config/clock_speed", json={"mhz": 200}).status_code == 200
     for index, core in enumerate(cores):
         assert srv.sim.load(core, "add r0, r0, 1\nsbbo &r0, r2, 0, 4\nqba 0") == []
         srv.sim.cores[core].registers.write_full(2, 0x10000 + index * 4)
@@ -358,7 +357,7 @@ def test_slow_controller_cannot_publish_old_capture_after_another_tabs_mutation(
         assert receive(view)["type"] == "state"
 
 
-MULTI_SSI = "SSI multi-core (emulator + reader)"
+MULTI_SSI = "SSI (encoder PRU + reader)"
 
 
 def test_scenario_selection_is_shared_with_observers_and_late_joiners(dashboard):
@@ -624,3 +623,38 @@ def test_trailing_publish_skips_the_owner_and_keeps_the_captured_flag(dashboard,
         # The owner got only chunk replies: the next state it sees is the reply to chunk 3.
         reply = run_chunk(control, 3)
         assert reply["run_id"] == 3 and reply["instruction_count"] == 30
+
+
+def test_throttled_chunk_trailing_publish_reaches_observer_via_real_timer(dashboard):
+    """Second chunk is throttled; the trailing timer must deliver the final state without Stop."""
+    assert srv.sim.load("pru0", "add r0, r0, 1\nqba 0") == []
+    with dashboard.websocket_connect("/ws") as control, dashboard.websocket_connect("/ws") as view:
+        control.send_json({"action": "start_execution", "mode": "run"})
+        assert receive(control)["running"] is True
+        until(view, lambda msg: msg["type"] == "execution")
+        # First chunk: within the interval from t=−∞ so it publishes immediately.
+        control.send_json({"action": "run", "managed": True, "max_steps": 10, "run_id": 1})
+        first = state(control)
+        assert first["instruction_count"] == 10
+        assert state(view)["instruction_count"] == 10
+        # Second chunk: arrives within OBSERVER_STATE_INTERVAL_S of the first → throttled.
+        control.send_json({"action": "run", "managed": True, "max_steps": 10, "run_id": 2})
+        second = state(control)
+        assert second["instruction_count"] == 20
+        # The owner then goes silent. The trailing timer (≤ OBSERVER_STATE_INTERVAL_S from now)
+        # must eventually wake up and push the final state to the observer.
+        async def sleep_past_interval():
+            await asyncio.sleep(srv.OBSERVER_STATE_INTERVAL_S + 0.05)
+        control.portal.call(sleep_past_interval)
+        trailing = state(view)
+        assert trailing["instruction_count"] == 20
+
+
+def test_device_discover_includes_processor(dashboard):
+    """device_profiles broadcast includes the processor name from sim.target."""
+    with dashboard.websocket_connect("/ws") as ws:
+        ws.send_json({"action": "device_discover", "core": "pru0"})
+        msg = until(ws, lambda m: m.get("type") == "device_profiles")
+        assert "processor" in msg
+        assert isinstance(msg["processor"], str)
+        assert msg["processor"]  # non-empty

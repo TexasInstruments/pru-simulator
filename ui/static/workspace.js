@@ -104,9 +104,12 @@
   const theme = document.getElementById('workspace-theme');
   let savedTheme = null;
   try { savedTheme = localStorage.getItem('pru-workspace-theme'); } catch (_) {}
+  if (!THEMES.includes(savedTheme)) savedTheme = null;
   const prefersLight = typeof window.matchMedia === 'function'
     && window.matchMedia('(prefers-color-scheme: light)').matches;
-  theme.value = THEMES.includes(savedTheme) ? savedTheme : (prefersLight ? 'light' : 'dark');
+  theme.value = savedTheme || (prefersLight ? 'light' : 'dark');
+  const addMq = (mq, fn) => mq.addEventListener ? mq.addEventListener('change', fn) : mq.addListener(fn);
+  const removeMq = (mq, fn) => mq.removeEventListener ? mq.removeEventListener('change', fn) : mq.removeListener(fn);
   function applyTheme(save) {
     document.documentElement.dataset.theme = theme.value;
     const next = THEMES[(THEMES.indexOf(theme.value) + 1) % THEMES.length];
@@ -116,7 +119,7 @@
     if (save) {
       try { localStorage.setItem('pru-workspace-theme', theme.value); } catch (_) {}
       savedTheme = theme.value;
-      if (mq) mq.removeEventListener('change', onOsThemeChange);
+      if (mq) removeMq(mq, onOsThemeChange);
     }
     // Canvases read their colours from the theme tokens, so they redraw on a change.
     document.dispatchEvent(new CustomEvent('pru-theme-changed', { detail: { theme: theme.value } }));
@@ -132,7 +135,7 @@
     theme.value = e.matches ? 'light' : 'dark';
     applyTheme(false);
   }
-  if (mq) mq.addEventListener('change', onOsThemeChange);
+  if (mq) addMq(mq, onOsThemeChange);
   applyTheme(false);
 
   // Icon and short label for each shared panel toggle.
