@@ -1,0 +1,36 @@
+<!doctype html>
+<!-- The only drawn (not recorded) picture of the series: a schematic terminal for the
+     three start commands of part 1. window.typeLine(i) types line i; window.showLine(i)
+     shows an output line at once. -->
+<html lang="en"><head><meta charset="utf-8"><title>Terminal</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #e9edf2; font-family: "Segoe UI Variable", Inter, system-ui, sans-serif; }
+  .win { position: absolute; left: 260px; top: 170px; width: 1400px; height: 700px; background: #14181f; border-radius: 12px;
+         box-shadow: 0 24px 60px rgba(20, 24, 31, .35); overflow: hidden; }
+  .bar { height: 44px; background: #232a35; display: flex; align-items: center; padding: 0 18px; color: #aab4c3; font-size: 16px; letter-spacing: .04em; }
+  .dots { display: flex; gap: 9px; margin-right: 18px; }
+  .dots i { width: 13px; height: 13px; border-radius: 50%; background: #55606f; display: block; }
+  pre { margin: 0; padding: 34px 40px; color: #e6ebf2; font: 28px/1.75 "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace; white-space: pre-wrap; }
+  .p { color: #7fd4a0; } .o { color: #8f9bad; } .line { visibility: hidden; } .line.on { visibility: visible; }
+  .note { position: absolute; left: 260px; top: 905px; width: 1400px; color: #4a5565; font-size: 22px; text-align: center; }
+</style></head><body>
+<div class="win"><div class="bar"><span class="dots"><i></i><i></i><i></i></span>Terminal</div>
+<pre id="t"><span class="line" data-cmd="git clone https://github.com/TexasInstruments/pru-simulator.git"><span class="p">$ </span><span class="c"></span></span>
+<span class="line" data-cmd="cd pru-simulator"><span class="p">$ </span><span class="c"></span></span>
+<span class="line" data-cmd="pip install -r requirements.txt"><span class="p">$ </span><span class="c"></span></span>
+<span class="line" data-cmd="python ui/server.py"><span class="p">$ </span><span class="c"></span></span>
+<span class="line o" data-out="1">INFO:     Uvicorn running on http://127.0.0.1:8080 (Press CTRL+C to quit)</span>
+</pre></div>
+<div class="note" id="note"></div>
+<script>
+  const lines = [...document.querySelectorAll('.line')];
+  window.typeLine = (i) => new Promise((done) => {
+    const line = lines[i], cmd = line.dataset.cmd, out = line.querySelector('.c');
+    line.classList.add('on');
+    let n = 0;
+    const timer = setInterval(() => { out.textContent = cmd.slice(0, ++n); if (n >= cmd.length) { clearInterval(timer); done(); } }, 34);
+  });
+  window.showLine = (i) => { lines[i].classList.add('on'); };
+  window.typed = (i) => lines[i].querySelector('.c')?.textContent === lines[i].dataset.cmd;
+  window.note = (text) => { document.getElementById('note').textContent = text; };
+</script></body></html>

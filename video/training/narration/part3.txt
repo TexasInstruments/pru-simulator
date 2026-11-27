@@ -1,0 +1,39 @@
+# Part 3. One cue per line: "key: subtitle text" or "key: subtitle text || spoken text".
+# "## id | Title" starts a chapter. Lines starting with "# " are comments.
+@title UART and I2C devices
+
+## devices-view | The I/O & Devices view
+part-intro: PRU simulator training, part 3: UART and I2C devices. || P R U simulator training, part three: you art and I two C devices.
+io-view: Click I/O & Devices. The view has three sub-tabs: Devices, Peripherals and Events. || Click I O and devices. The view has three sub-tabs: devices, peripherals and events.
+device-core: Devices shows what is plugged on the pins of one core. The Core selector picks the core that the SSI and I2C cards and the Attached devices list refer to. || Devices shows what is plugged on the pins of one core. The core selector picks the core that the S S I and I two C cards, and the attached devices list, refer to.
+core-clock: The examples of this part are timed for a 200 MHz core. The dashboard starts at 250 MHz, so open CORES and set the PRU core frequency to 200 MHz. Changing it reloads the simulator. || The examples of this part are timed for a two hundred megahertz core. The dashboard starts at two hundred fifty megahertz, so open cores, and set the P R U core frequency to two hundred megahertz. Changing it reloads the simulator.
+
+## uart-decode | UART decoder
+uart-load: The first example is uart_print.asm. It sends the text Hello 2026 on output pin 0 at 115200 baud. Open it, click Load & Assemble, then Reset. || The first example is you art print. It sends the text, hello twenty twenty-six, on output pin zero, at one hundred fifteen thousand two hundred baud. Open it, click load and assemble, then reset.
+uart-window: The UART decoder reads the recording of the Signal Graph. This text needs about 1740 samples, so set the graph window to 2048. || The you art decoder reads the recording of the signal graph. This text needs about seventeen hundred forty samples, so set the graph window to two thousand forty-eight.
+uart-record: The UART card is at the bottom of Devices. Record starts the capture. It is the same recording as REC in the Signal Graph. || The you art card is at the bottom of devices. Record starts the capture. It is the same recording as rec in the signal graph.
+uart-run: Click Run. The program sends its ten characters and halts on its own.
+uart-stop: The button now reads Stop recording. Click it.
+uart-decode: Decode detects the bit width in the GPO0 trace and shows the bytes as text: Hello 2026. || Click decode. It detects the bit width in the G P O zero trace, and shows the bytes as text: hello twenty twenty-six.
+uart-clear: Clear empties the decoder output.
+
+## uart-inject | UART RX Inject
+inject-load: The second example is uart_rx_11frame.asm. It waits for frames of eleven bytes on input pin 0, at 4 megabaud. Load it and click Reset. || The second example is you art R X eleven frame. It waits for frames of eleven bytes on input pin zero, at four megabaud. Load it and click reset.
+inject-mode: UART RX Inject drives such frames onto a pin. Hex and ASCII choose how you write the payload. Switching converts it. || You art R X inject drives such frames onto a pin. Hex and askey choose how you write the payload. Switching converts it.
+inject-payload: Type the payload: HelloWorld!. The counter shows 11 bytes. || Type the payload: hello world, with an exclamation mark. The counter shows eleven bytes.
+inject-settings: Pin offers GPI0 to GPI3. Baud is in megabaud. Frames is how many times the payload is sent. Leave them at GPI0, 4.00 and 1. || Pin offers G P I zero to G P I three. Baud is in megabaud. Frames is how many times the payload is sent. Leave them at G P I zero, four, and one.
+inject-arm: Inject arms the generator. The status line reads: Armed, 11 bytes, 1 frame, run to receive. || Inject arms the generator. The status line reads: armed, eleven bytes, one frame, run to receive.
+inject-run: Click Run. The frame arrives and the firmware stores it. Click Stop.
+inject-memory: In the Simulator view, click Refresh in Memory 1 and choose Byte. Address 0 holds 48 65 6C 6C 6F, the letters of Hello. || In the simulator view, click refresh in memory one, and choose byte. Address zero holds forty-eight, sixty-five, six C, six C, six F, the letters of hello.
+inject-reset: Reset inputs restores the form defaults and clears the status line. It does not cancel an armed injection.
+
+## i2c-expander | I2C expander
+i2c-load: The third example is i2c_tca9538_running_led.asm, an I2C master with SCL on pin 0 and SDA on pin 1. Load it and click Reset. || The third example is I two C, T C A ninety-five thirty-eight, running L E D: an I two C master with S C L on pin zero, and S D A on pin one. Load it and click reset.
+i2c-name: The I2C expander card attaches a simulated TCA9538. Device name is its name in lists and events. I2C address takes the 7-bit address, here 0x23. || The I two C expander card attaches a simulated T C A ninety-five thirty-eight. Device name is its name in lists and events. I two C address takes the seven bit address, here hex twenty-three.
+i2c-pins: SCL pin and SDA pin select the two bus pins, here 0 and 1. || S C L pin and S D A pin select the two bus pins, here zero and one.
+i2c-attach: Click Attach expander. The card shows the eight pins, P0 on the left. They are all inputs until the firmware configures them. || Click attach expander. The card shows the eight pins, P zero on the left. They are all inputs until the firmware configures them.
+i2c-run: Click Run. CONFIG becomes 0x00, so all pins are outputs, and the lit box walks from pin to pin. || Click run. The config register becomes hex zero zero, so all pins are outputs, and the lit box walks from pin to pin.
+i2c-status: Below the boxes you see the OUTPUT, POLARITY and CONFIG registers, the counts of bus events and faults, and the last transaction. || Below the boxes you see the output, polarity and config registers, the counts of bus events and faults, and the last transaction.
+i2c-list: Attached devices, below the cards, lists every device on this core with its wiring and a Detach button.
+i2c-detach: Click Stop. Detach on the card removes the expander, from the card and from the list.
+part-end: That was part 3. Part 4 covers the SSI encoder, peripherals and events. || That was part three. Part four covers the S S I encoder, peripherals and events.

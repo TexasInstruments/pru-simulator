@@ -1,0 +1,67 @@
+# Part 2. One cue per line: "key: subtitle text" or "key: subtitle text || spoken text".
+# "## id | Title" starts a chapter. Lines starting with "# " are comments.
+@title Memory, pins, cores and clocks
+
+## memory | Memory
+part-intro: PRU simulator training, part 2: memory, pins, cores and clocks. || P R U simulator training, part two: memory, pins, cores and clocks.
+mem-run: Open mem_copy.asm, load it, reset and run. It writes 1 to 100 into the shared RAM and copies the first 25 bytes to data RAM 0. || Open mem copy, load it, reset and run. It writes one to one hundred into the shared ram, and copies the first twenty-five bytes to data ram zero.
+mem-refresh: The first Memory panel starts at address 0, data RAM 0. The second starts at the shared RAM. Refresh reads a range again. || The first memory panel starts at address zero, data ram zero. The second starts at the shared ram. Refresh reads a range again.
+mem-address: Address takes a hex address, or a region name from memory.cfg such as DRAM0. Bytes is the length. || Address takes a hex address, or a region name from memory dot C F G, such as D ram zero. Bytes is the length.
+mem-format: The format buttons change the view. Bin shows bits; Byte, 16b, 24b and 32b show hex words. || The format buttons change the view. Bin shows bits; byte, sixteen b, twenty-four b and thirty-two b show hex words.
+mem-endian: LSB and MSB set the byte order inside a word. With MSB, the lowest address comes first. || L S B and M S B set the byte order inside a word. With M S B, the lowest address comes first.
+mem-compare: In Byte view you see the copy: bytes 1 to 0x19 are the same in both panels. || In byte view you see the copy: bytes one to hex nineteen are the same in both panels.
+mem-edit: Double-click a cell to edit it. Type a hex value and press Enter.
+mem-auto: Auto keeps the panel live while a program steps or runs, and reads at least once per second. Reset and run again: the copy overwrites your edit.
+mem-second: The second Memory panel has the same controls for another range.
+
+## fill-graph | Fill and Memory Graph
+fill-open: Fill opens the Memory Fill dialog. Start and Length come from the panel.
+fill-format: Format is the size of one value: Byte, 16-bit or 32-bit. || Format is the size of one value: byte, sixteen bit or thirty-two bit.
+fill-pattern: Pattern repeats one value.
+fill-sequence: Sequence counts up from Start in steps of Step.
+fill-waveform: Waveform writes a Sine, Square, Triangle or Sawtooth, and draws a preview.
+fill-wave-fields: Amplitude, Cycles and DC Offset shape the wave. Signed makes it swing around the offset. || Amplitude, cycles and D C offset shape the wave. The signed checkbox makes it swing around the offset.
+fill-buttons: Cancel closes the dialog and writes nothing. Fill writes the values into memory.
+mgraph-add: The Memory Graph plots memory as a curve. Add channel takes an address, a number of values and a format: uint8, uint16, uint32 or int32. || The memory graph plots memory as a curve. Add channel takes an address, a number of values, and a format: unsigned eight bit, unsigned sixteen bit, unsigned thirty-two bit, or signed thirty-two bit.
+mgraph-tools: The round arrow reads the memory again. The cross removes a channel.
+mgraph-height: The two arrows make the graph area shorter or taller. You can also drag its lower edge.
+
+## io-pins | I/O pins
+io-blocks: The I/O Pins panel has one block per core, PRU0 and PRU1. Load mvi_gpio_loopback.asm. || The I O pins panel has one block per core, P R U zero and P R U one. Load M V I, G P I O, loopback.
+io-mux: GP Mux gives the pins to GPIO, to the Peripheral Interface or to SD, the sigma-delta filter. Part 4 covers the last two. || G P mux gives the pins to G P I O, to the peripheral interface, or to S D, the sigma delta filter. Part four covers the last two.
+io-gpo: The R30 grid shows the 20 outputs. Run for a moment: a filled box is a high pin. || The R thirty grid shows the twenty outputs. Run for a moment: a filled box is a high pin.
+io-gpi: The R31 grid shows the inputs. Click a box to toggle an input: box 5 sets bit 5 of R31. || The R thirty-one grid shows the inputs. Click a box to toggle an input: box five sets bit five of R thirty-one.
+io-loopback: Each of the five loopback buttons wires four outputs to the same four inputs. Switch on 3:0 and 7:4. || Each of the five loopback buttons wires four outputs to the same four inputs. Switch on three to zero, and seven to four.
+io-loopback-run: Set the SIM interval to 0.02 seconds and click SIM. Every bit written to R30 comes back on R31. || Set the sim interval to zero point zero two seconds, and click sim. Every bit written to R thirty comes back on R thirty-one.
+io-drive: Drive / Release is the GPIO output enable. Each button shows whether the core drives that pin. A click switches it; R30 does not change. || Drive, release is the G P I O output enable. Each button shows whether the core drives that pin. A click switches it; R thirty does not change.
+
+## signal-graph | Signal Graph
+sg-room: The Signal Graph draws the pins over time. Collapse the I/O Pins panel to give it more room. || The signal graph draws the pins over time. Collapse the I O pins panel to give it more room.
+sg-rec: REC starts recording. Start SIM again: every pin that changes gets a lane. || Rec starts recording. Start sim again: every pin that changes gets a lane.
+sg-rate: SIM records every instruction. Run records only every 100th instruction in GPIO mode. || Sim records every instruction. Run records only every hundredth instruction in G P I O mode.
+sg-window: The window selector sets how many samples are kept: 128 to 8192. || The window selector sets how many samples are kept: one hundred twenty-eight, up to eight thousand one hundred ninety-two.
+sg-height: The two arrows change the height. You can drag the lower edge too.
+sg-export: Stop SIM. Export CSV downloads the samples as a file, one row per sample, followed by the Memory Graph channels. || Stop sim. Export C S V downloads the samples as a file, one row per sample, followed by the memory graph channels.
+sg-clear: Clear empties the graph. REC stays on until you click it again. || Clear empties the graph. Rec stays on, until you click it again.
+
+## cores | Cores
+cores-open: Point at CORES and the deck opens: one card per core. Click CORES to keep it open until you click outside it. || Point at cores, and the deck opens: one card per core. Click cores to keep it open, until you click outside it.
+cores-use: Use adds a core to Run, Step and SIM. Use PRU1: it gets a pane in Source and in Registers, and a telemetry button. || Use adds a core to run, step and sim. Use P R U one: it gets a pane in source and in registers, and a telemetry button.
+cores-show: Show hides the panes of a used core, or shows them again. A hidden core stays in use.
+cores-name: Click the name on a card to show only that core, and to make it the focus core.
+cores-all: Use all selects every core. Show all used opens a pane for each. Use on a used core takes it out again.
+cores-clock: The slider sets the core frequency of all cores: 200, 225, 250, 300 or 333 MHz. Releasing it reloads the simulator and clears the loaded programs. || The slider sets the core frequency of all cores: two hundred, two twenty-five, two fifty, three hundred, or three thirty-three megahertz. Releasing it reloads the simulator, and clears the loaded programs.
+cores-chips: The core chips in a panel title, and the cross on a pane, hide a core in that panel only.
+cores-telemetry: The telemetry buttons choose the focus core. Telemetry, the breakpoint row and Load into follow it. Load a program into each core. || The telemetry buttons choose the focus core. Telemetry, the breakpoint row, and load into, follow it. Load a program into each core.
+cores-step: Click Reset, then Step. Both cores execute one instruction, and both program counters show 1. || Click reset, then step. Both cores execute one instruction, and both program counters show one.
+
+## clocks-config | Processor, clocks and config
+proc-select: The processor selector offers AM243x, AM261x, AM263x, AM62x and AM64x. || The processor selector offers A M two four three X, two six one X, two six three X, six two X, and six four X.
+proc-confirm: Choose AM261x. The dashboard asks: Switching to AM261x reloads the simulator and clears loaded programs. Continue? Click OK. || Choose A M two six one X. The dashboard asks: switching to A M two six one X reloads the simulator, and clears loaded programs. Continue? Click O K.
+proc-back: The deck now has only PRU0 and PRU1. Switch back to AM243x the same way. || The deck now has only P R U zero and P R U one. Switch back to A M two four three X the same way.
+iep-select: The IEP clock selector sets the clock of the IEP counter, with the same five rates as the slider. It applies to this session only. || The I E P clock selector sets the clock of the I E P counter, with the same five rates as the slider. It applies to this session only.
+iep-custom: IEP custom rate opens a field. Type a rate in MHz, for example 312.5, and click Apply rate. || I E P custom rate opens a field. Type a rate in megahertz, for example three hundred twelve point five, and click apply rate.
+iep-configured: IEP configured rate returns to the configured rate, here 200 MHz. The tooltip lists the active, configured and external rate. || I E P configured rate returns to the configured rate, here two hundred megahertz. The tooltip lists the active, configured and external rate.
+config-open: Config shows memory.cfg: target, core clock, and the memory regions with their latencies. The slider wrote the 300 MHz. || Config shows memory dot C F G: target, core clock, and the memory regions with their latencies. The slider wrote the three hundred megahertz.
+config-buttons: Save & Reload writes your edits and reloads the simulator. Cancel closes the dialog and changes nothing. || Save and reload writes your edits, and reloads the simulator. Cancel closes the dialog, and changes nothing.
+part-end: That was part 2. Part 3 covers the UART and I2C devices on the pins. || That was part two. Part three covers the you art and I two C devices on the pins.

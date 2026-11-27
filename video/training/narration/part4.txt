@@ -1,0 +1,39 @@
+# Part 4. One cue per line: "key: subtitle text" or "key: subtitle text || spoken text".
+# "## id | Title" starts a chapter. Lines starting with "# " are comments.
+@title SSI encoder, peripherals and events
+
+## ssi | SSI encoder
+part-intro: PRU simulator training, part 4: SSI encoder, peripherals and events. || P R U simulator training, part four: S S I encoder, peripherals and events.
+ssi-open: Click I/O & Devices. The SSI encoder card is the first card on the Devices sub-tab. || Click I O and devices. The S S I encoder card is the first card on the devices sub-tab.
+ssi-preset: The SSI encoder card needs no file. Preset offers twelve encoder frames, or Custom. Choose TTK70: Frame length becomes 26, Error bits 2, and Encoding Gray code. || The S S I encoder card needs no file. Preset offers twelve encoder frames, or custom. Choose T T K seventy: frame length becomes twenty-six, error bits two, and encoding gray code.
+ssi-position: Position is the value the encoder sends, in decimal. Error value is the content of its error field.
+ssi-frame: Frame length counts all clocked bits, including the Error bits. Encoding is Binary or Gray code. You can still edit all three.
+ssi-model: Set up reader + encoder model loads a reader program into PRU0 and attaches a software encoder, with the clock on GPO0 and the data on GPI16. It replaces the loaded programs, devices and wiring. || Set up reader plus encoder model loads a reader program into P R U zero, and attaches a software encoder, with the clock on G P O zero, and the data on G P I sixteen. It replaces the loaded programs, devices and wiring.
+ssi-run: Click Run. Received position shows 2748, the position you set, and Received frames counts up. || Click run. Received position shows twenty-seven forty-eight, the position you set, and received frames counts up.
+ssi-next: Type 1234 into Next position and click Set next position. A later frame carries it, and Received position becomes 1234. || Type twelve thirty-four into next position, and click set next position. A later frame carries it, and received position becomes twelve thirty-four.
+ssi-list: The encoder model is also listed under Attached devices, with its latest frame, fields for the next position and error, Set position, Set error and Detach.
+ssi-pru: Click Stop. Set up reader + encoder PRU replaces the model by encoder firmware on PRU1, wired to the reader on PRU0. CORES now shows both cores in use. || Click stop. Set up reader plus encoder P R U replaces the model by encoder firmware on P R U one, wired to the reader on P R U zero. Cores now shows both cores in use.
+ssi-pru-run: Click Run again. The same readouts work, now with two cores executing.
+ssi-waveforms: Show waveforms switches to the Simulator view. While the program runs, the Signal Graph draws the clock and data lines of both cores. Click Stop to keep the picture.
+ssi-advanced: Back in Devices, Advanced is for your own reader program. Set Device name, Clock GPO pin and Data GPI pin. Attach device only adds an encoder model and loads nothing. Detach in the list removes it again. || Back in devices, advanced is for your own reader program. Set device name, clock G P O pin, and data G P I pin. Attach device only adds an encoder model, and loads nothing. Detach in the list removes it again.
+
+## peripherals | Peripherals
+periph-tab: Peripherals shows two blocks inside the chip that share the GP pins: the Sigma-delta filter and the Peripheral Interface. Each card says it is inactive until the GP mux selects it. || Peripherals shows two blocks inside the chip that share the G P pins: the sigma delta filter, and the peripheral interface. Each card says it is inactive, until the G P mux selects it.
+pi-switch: Click the link Switch GP mux to Peripheral Interface. That card is now live, and the other one names the new mux mode. || Click the link, switch G P mux to peripheral interface. That card is now live, and the other one names the new mux mode.
+pi-cfg: RXCFG and TXCFG are its two configuration registers. Type 0x00070010 into TXCFG and click Apply. The line below decodes it: tx_div is 7. || R X config and T X config are its two configuration registers. Type hex zero zero zero seven, zero zero one zero into T X config, and click apply. The line below decodes it: T X div is seven.
+pi-loopback: The three channel cards show FIFOs and flags. Loopback feeds a channel back to the receiver on PRU1: tick the channel, set latency, jitter and drift, and click Apply. || The three channel cards show fifos and flags. Loopback feeds a channel back to the receiver on P R U one: tick the channel, set latency, jitter and drift, and click apply.
+sd-switch: Switch GP mux to SD activates the Sigma-delta filter card with its three channels. || The link, switch G P mux to S D, activates the sigma delta filter card, with its three channels.
+sd-pattern: The Pattern Generator is the simulated modulator of each channel. Signal is DC or Sine, Clk MHz is the modulator clock, and DC Level is the input level. || The pattern generator is the simulated modulator of each channel. Signal is D C or sine, clock megahertz is the modulator clock, and D C level is the input level.
+sd-sine: Choose Sine, and DC Level is replaced by Amp, Period and Phase. || Choose sine, and D C level is replaced by amp, period and phase.
+sd-osr: The chips under Config Registers set the oversampling ratio. Click one and the browser asks: Channel 0 OSR (4-256). Enter 64, and channel 0 shows OSR 64. || The chips under config registers set the oversampling ratio. Click one, and the browser asks: channel zero O S R, four to two hundred fifty-six. Enter sixty-four, and channel zero shows O S R sixty-four.
+sd-gpio: Switch to GPIO sets the mux back, and both cards are inactive again. || Switch to G P I O sets the mux back, and both cards are inactive again.
+
+## events | Events and faults
+events-program: Events lists what devices report, and faults. To provoke a fault, open the program.asm tab in the Assembly Editor and type a program that reads from an address with no memory behind it. || Events lists what devices report, and faults. To provoke a fault, open the program tab in the assembly editor, and type a program that reads from an address with no memory behind it.
+events-run: Click Load & Assemble, Reset and Run. The core stops, and a red Core fault band names the core, the instruction and the address. || Click load and assemble, reset, and run. The core stops, and a red core fault band names the core, the instruction and the address.
+events-badge: The I/O & Devices button now carries a badge that counts the new faults. || The I O and devices button now carries a badge that counts the new faults.
+events-tab: Click I/O & Devices and open Events. The fault is listed here, and opening Events clears the badge. || Click I O and devices, and open events. The fault is listed here, and opening events clears the badge.
+
+## next | Where to go next
+next-examples: getting_started.md walks through more examples, among them the MAC accelerator, the SDFM SINC3 demo and the Peripheral Interface test patterns. || Getting started dot M D walks through more examples, among them the mack accelerator, the S D F M sinc three demo, and the peripheral interface test patterns.
+next-tools: The simulator also works without the dashboard: as an MCP server for AI assistants, see docs/mcp_server.md, and as a command-line runner made for CI, tools/headless_runner.py. This ends the training. || The simulator also works without the dashboard: as an M C P server for A I assistants, documented in M C P server dot M D, in the docs folder, and as a command line runner made for C I, headless runner dot P Y in the tools folder. This ends the training.

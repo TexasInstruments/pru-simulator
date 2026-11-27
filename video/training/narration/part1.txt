@@ -1,0 +1,65 @@
+# Part 1. One cue per line: "key: subtitle text" or "key: subtitle text || spoken text".
+# "## id | Title" starts a chapter. Lines starting with "# " are comments.
+@title First steps
+
+## start | Start
+part-intro: PRU simulator training, part 1: first steps. || P R U simulator training, part one: first steps.
+install: Clone the repository from GitHub and install the Python packages with pip. || Clone the repository from git hub, and install the Python packages with pip.
+start-server: Then start the dashboard server. || Then start the dashboard server.
+open-browser: It listens on localhost, port 8080. Open that address in your browser. || It listens on local host, port eighty eighty. Open that address in your browser.
+
+## screen | The screen
+dashboard: This is the dashboard. The page is only the front end; the simulator itself runs in the Python server.
+views: Two views share one simulator session. Simulator is for debugging firmware. I/O & Devices holds everything that is wired to the pins. || Two views share one simulator session. Simulator is for debugging firmware. I O and devices holds everything that is wired to the pins.
+header-target: At the top left you find the processor, the cores in use, and the IEP clock. Part 2 covers them. || At the top left you find the processor, the cores in use, and the I E P clock. Part two covers them.
+header-execute: Execute holds Step, Run and SIM, with the SIM interval next to it. || Execute holds step, run and sim, with the sim interval next to it.
+header-session: Session holds Reset, HW Reset, Config, Reset Layout and Help. || Session holds reset, hardware reset, config, reset layout and help.
+header-status: Status shows whether the core is halted or running, and whether the page is connected to the server.
+telemetry: The telemetry strip shows cycles, stalls, instructions, instructions per cycle and the program counter of the focus core.
+panels: The Simulator view has eight panels: Source / Disassembly, Registers, I/O Pins, Signal Graph, Memory Graph, two Memory panels and the Assembly Editor. || The simulator view has eight panels: source and disassembly, registers, I O pins, signal graph, memory graph, two memory panels, and the assembly editor.
+
+## first-program | First program
+editor: Programs come in through the Assembly Editor.
+load-into: Load into selects the core that receives the program. Leave it on PRU0. || Load into selects the core that receives the program. Leave it on P R U zero.
+open: Open lists the assembly files in the server's source folder. Browse file system opens any assembly file or compiled .out file from your PC. || Open lists the assembly files in the server's source folder. Browse file system opens any assembly file, or compiled dot out file, from your P C.
+open-file: Pick running_led.asm. It opens in its own tab, and you can edit it right here. || Pick running L E D. It opens in its own tab, and you can edit it right here.
+tabs: Every open file has a tab. Click a tab to switch to it. The cross closes the file; a program that is already loaded stays in the core.
+project-save: Project opens a whole project folder as tabs. Save writes the active tab to disk.
+load-assemble: Load & Assemble assembles the source and loads it into the core. Source / Disassembly now lists the instructions with their addresses. || Load and assemble assembles the source and loads it into the core. Source and disassembly now lists the instructions with their addresses.
+reset-first: Loading does not reset the core, so click Reset before you run a newly loaded program.
+step: Step executes one instruction. R30 becomes 1, and output pin 0 lights up in the I/O Pins panel. || Step executes one instruction. R thirty becomes one, and output pin zero lights up in the I O pins panel.
+step-loop: Two more steps: the loop starts and shifts the bit to pin 1. || Two more steps: the loop starts, and shifts the bit to pin one.
+arrow-keys: Click into the listing, and the Arrow Right key steps as well. Arrow Left steps back and restores the complete machine state. || Click into the listing, and the arrow right key steps as well. Arrow left steps back, and restores the complete machine state.
+run: Run executes continuously. The button becomes Stop and the status changes to running.
+stop: Click Stop. The cycle counter stands still.
+sim: SIM is the slow mode: one instruction per interval. Set the interval to 0.1 seconds and click SIM to watch the running light. || Sim is the slow mode: one instruction per interval. Set the interval to zero point one seconds, and click sim, to watch the running light.
+sim-stop: Stop SIM ends it. || Stop sim ends it.
+reset: Reset sets the registers and the program counter of this core back to zero. The program stays loaded.
+hw-reset: HW Reset is the hardware reset. It also clears the scratch pad banks, the XFR configuration and the Peripheral Interface state of every core. || Hardware reset is the bigger one. It also clears the scratch pad banks, the transfer configuration, and the peripheral interface state of every core.
+
+## breakpoints | Breakpoints
+bp-dblclick: Double-click a line in the listing to set a breakpoint. A dot marks the line, and the breakpoint row above lists its address.
+bp-run: Run now stops at the breakpoint, and the status shows break.
+bp-space: Space toggles a breakpoint at the current program counter. Here it removes the one you just hit.
+bp-address: You can also type an address and click Set. Set two: address 2 and address 1.
+bp-remove: The cross on a chip removes that one breakpoint. Clear all removes every breakpoint of this core.
+
+## registers | Registers
+reg-panel: The Registers panel shows R0 to R31 of the focus core. The line above them shows the carry flag, the multiplier mode and the CRC value. || The registers panel shows R zero to R thirty-one of the focus core. The line above them shows the carry flag, the multiplier mode, and the C R C value.
+reg-edit: Double-click a value to edit it. Type the new hex value and press Enter.
+ctable: C-Table shows the constant table, C0 to C31. The marked rows are per-core entries. Click an address to jump the first Memory panel there. || C table shows the constant table, C zero to C thirty-one. The marked rows are per-core entries. Click an address to jump the first memory panel there.
+xfr-load: The scratch pad banks have their own columns. Load xfr_test.asm to see them. || The scratch pad banks have their own columns. Load X F R test to see them.
+spad: B0, B1 and B2 add one column per scratch pad bank. IPC adds the inter-processor scratch pad. || B zero, B one and B two add one column per scratch pad bank. I P C adds the inter-processor scratch pad.
+spad-step: Step through the program: XOUT copies R2 and the registers after it into bank 0. || Step through the program: X out copies R two, and the registers after it, into bank zero.
+spad-xin: The program clears the registers, and XIN reads them back from the bank. || The program clears the registers, and X in reads them back from the bank.
+shf: SHF toggles the shift enable bit of the scratch pad, XFR_SHIFT_EN. The last lines of this example use it. || S H F toggles the shift enable bit of the scratch pad. The last lines of this example use it.
+
+## layout-help | Layout, theme and help
+panel-toggles: The Panels buttons hide and show panels. Hide the Memory Graph, and its neighbours take the space.
+collapse: The minus sign in a panel's corner collapses it to its title bar.
+drag-title: Drag a panel by its title onto the edge of another panel to move it there.
+drag-divider: Drag a divider to resize the panels next to it.
+reset-layout: Reset Layout restores the default arrangement with all eight panels.
+theme: The round button switches the theme: light, high contrast and dark.
+help: Help opens a quick reference of all controls and keyboard shortcuts. The question mark key opens it too.
+part-end: That was part 1. Part 2 covers memory, pins, cores and clocks. || That was part one. Part two covers memory, pins, cores and clocks.
