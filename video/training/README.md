@@ -11,9 +11,10 @@ dashboard that show every control and run the basic examples. Design and plan ar
 | 3 | UART and I2C devices | The Devices view, UART decoder, UART RX inject, I2C expander |
 | 4 | SSI encoder, peripherals and events | SSI encoder, Peripherals, Events, Where to go next |
 
-The videos are not committed. `./build.sh` writes them to
-`build/pru-simulator-training-<N>-<title>.mp4`: 1920x1080, 30 fps, H.264, mono AAC,
-an English subtitle track and chapter marks.
+The finished videos are committed in [`build/`](build) as
+`pru-simulator-training-<N>-<title>.mp4` (66 MB together): 1920x1080, 30 fps, H.264,
+mono AAC, an English subtitle track and chapter marks. `./build.sh` writes them
+again; everything else in `build/` is not committed.
 
 ## How it works
 
@@ -65,7 +66,7 @@ it.
 | `AUTHORING.md` | How to write or change a part |
 | `test/`, `test_audio.py` | Tests of the pipeline code |
 
-`build/`, `node_modules/` and `.venv/` are not committed.
+`node_modules/`, `.venv/` and `build/` (except the four MP4s) are not committed.
 
 ## Rebuild
 

@@ -1,4 +1,6 @@
-build/
+# Everything a build writes, except the finished videos.
+build/*
+!build/*.mp4
 node_modules/
 .venv/
 __pycache__/

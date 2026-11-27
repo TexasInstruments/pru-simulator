@@ -209,12 +209,11 @@ marketing. Numbers and names are spelled for the voice after `||`.
 
 - `video/training/` sources: committed on `docs/training-video`, PR into `main`.
 - The MP4s: written to `video/training/build/pru-simulator-training-1-first-steps.mp4`
-  and so on, and **not committed** (call). An earlier 5-minute video is 24 MB;
-  the four parts are 66 MB together, and every customer clone would carry
-  them. **Open for Thomas:** where customers
-  get it (GitHub release assets, attachments in the readme, a TI video
-  page). The readme links are added once that is known. This does not change
-  what is built.
+  and so on, and committed there (decided by Thomas on 2026-11-27; the first
+  draft kept them out of git). The four parts are 66 MB together, each under
+  GitHub's 50 MB warning, and every rebuilt video adds its size to the
+  history. Still open: a link from the main readme, and whether customers
+  should also get them as release assets or on a TI video page.
 
 ## Checks
 
